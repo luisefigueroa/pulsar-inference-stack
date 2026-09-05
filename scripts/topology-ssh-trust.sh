@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Enroll and verify topology-bound SSH identities for control and RoCE endpoints.
 set -euo pipefail
+# shellcheck disable=SC2034 # consumed by lib.sh diagnostics
 SCRIPT_NAME=topology-ssh-trust
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -59,14 +60,14 @@ cleanup_trust_tmpdir() {
 }
 
 collect_and_check_idle() {
-  local tmpdir="$1" rows kind rank node_id hostname alias control_ip _rest
+  local tmpdir="$1" rows kind rank _node_id hostname alias control_ip _rest
   local probe_file remote_command running remote_query host_key_alias
   COLLECTED_PROBE_FILES=()
 
   rows=$(python3 "$MANIFEST_TOOL" rows "$CLUSTER_TOPOLOGY_FILE") \
     || die "confirmed topology is invalid"
   enrollment_ssh_options
-  while IFS=$'\t' read -r kind rank node_id hostname alias control_ip _rest; do
+  while IFS=$'\t' read -r kind rank _node_id hostname alias control_ip _rest; do
     [ "$kind" = NODE ] || continue
     probe_file="$tmpdir/probe-rank-${rank}.json"
     if [ "$rank" = 0 ]; then
@@ -132,7 +133,6 @@ cmd_check() {
 
 cmd_enroll() {
   local yes=0 accept_key_change=0 tmpdir staged_topology staged_config
-  local answer
   local -a probe_files=() enroll_args=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -144,9 +144,13 @@ cmd_enroll() {
     shift
   done
 
+  if [ "$yes" = 0 ] && [ ! -t 0 ]; then
+    die "SSH enrollment needs an interactive confirmation or explicit --yes"
+  fi
+
   require_cmd python3 "$PULSAR_SSH" "$PULSAR_DOCKER"
   [ -f "$CLUSTER_TOPOLOGY_FILE" ] \
-    || die "confirmed topology is missing; run scripts/detect-fabric.sh --write-topology"
+    || die "confirmed topology is missing; run pulsar topology configure"
   [ -r "$PROBE_TOOL" ] || die "missing node probe: $PROBE_TOOL"
   [ -x "$MANIFEST_TOOL" ] || die "missing topology helper: $MANIFEST_TOOL"
   [ -x "$TRUST_TOOL" ] || die "missing SSH trust helper: $TRUST_TOOL"
@@ -181,15 +185,17 @@ cmd_enroll() {
 
   echo
   print_hanging "  Effect    " \
-    "Writes topology schema 2 and .cluster-ssh-config. The topology ID changes, so prior catalog/hot preparation state must be refreshed before serving."
+    "Saves confirmed SSH identities and endpoint configuration. If topology identity changes, prepare the selected model again before serving."
   if [ "$yes" = 0 ]; then
-    printf 'Enroll these SSH identities? [y/N] '
-    read -r answer
-    case "$answer" in
-      y|Y|yes|YES) ;;
-      *) log "not enrolled"; return 0 ;;
-    esac
+    . "$REPO_DIR/scripts/ui.sh"
+    if ! confirm 'Enroll these SSH identities?'; then
+      log "not enrolled"
+      return 0
+    fi
   fi
+
+  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" || die "existing cluster is not idle"
+  require_topology_rewrite_idle "$staged_topology" || die "proposed cluster is not idle"
 
   python3 "$MANIFEST_TOOL" write-trust-bundle \
     "$staged_topology" "$CLUSTER_TOPOLOGY_FILE" "$CLUSTER_SSH_CONFIG_FILE"
@@ -199,7 +205,7 @@ cmd_enroll() {
     --ssh-config "$CLUSTER_SSH_CONFIG_FILE" \
     --probe "$PROBE_TOOL" \
     --ssh-bin "$PULSAR_SSH"
-  log "next: refresh the model-library catalog and prepare the diagnostic model again"
+  log "next: pulsar topology check; model preparation and launch remain separate actions"
 }
 
 command_name="${1:-}"

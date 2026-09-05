@@ -13,11 +13,23 @@ of this stack do not establish physical serving results for any model.
 ./pulsar help
 ./pulsar models
 ./pulsar release list
+./pulsar topology show
 ```
 
 The menu also supports direct commands. Browsing reads saved observations;
 select **Check now** to refresh the chosen entry. Acquiring files, restoring
 an archive, preparing copies and starting a service are separate operations.
+
+Use `./pulsar gum` or bare `./pulsar` for the interactive menu. **Cluster
+topology** offers saved membership, live checks, discovery, explicit
+configuration and SSH trust. `./pulsar topology detect` discovers candidates
+without saving; `./pulsar topology configure` asks before saving membership.
+The workbench exposes these same actions through its pinned stack.
+
+For first use, choose **First-use setup** or run `./pulsar topology setup`.
+It guides membership and SSH identity enrollment with separate confirmations,
+then checks readiness. The workbench provides `./workbench topology setup`
+and `./workbench ssh-trust check|enroll` through that same stack.
 
 Use [Operations](docs/OPERATIONS.md) for the complete operator workflow,
 storage configuration and recovery. [Architecture](docs/ARCHITECTURE.md)

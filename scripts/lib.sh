@@ -1015,6 +1015,16 @@ pulsar_rsync_remote_shell() {
   shell_join_q "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}"
 }
 
+# Probe a known control address with its saved alias for identity and host keys.
+# Command-line options take precedence over aliases that may resolve elsewhere.
+ssh_control_endpoint() {
+  local host="$1" control="$2"; shift 2
+  "$PULSAR_SSH" -o "HostName=$control" -o "HostKeyAlias=$host" \
+    -o StrictHostKeyChecking=yes -o UpdateHostKeys=no \
+    -o CanonicalizeHostname=no -o ProxyCommand=none -o ProxyJump=none \
+    "${PULSAR_SSH_OPTS[@]}" -- "$host" "$@"
+}
+
 ssh_node() {
   local rank="${1:?rank required}"
   shift
@@ -1472,8 +1482,8 @@ require_topology_rewrite_idle() {
     else
       printf -v remote_query 'docker ps -q --filter %q' \
         "label=${PULSAR_MANAGED_LABEL}=true"
-      if ! running=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- \
-          "$ssh_host" "$remote_query" 2>/dev/null); then
+      if ! running=$(ssh_control_endpoint "$ssh_host" "$control_ip" \
+          "$remote_query" 2>/dev/null); then
         warn "cannot query rank $rank Docker on $ssh_host before topology rewrite"
         return 1
       fi

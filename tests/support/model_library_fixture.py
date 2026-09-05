@@ -189,6 +189,9 @@ def tool(kind, argv):
             print(json.dumps([row for row in containers if row["Id"] in argv[1:]])); return 0
         raise RuntimeError("unexpected Docker action in storage-only fixture: " + repr(argv))
     if kind == "hf":
+        if "--local-dir" in argv and "--cache-dir" in argv:
+            print("Cannot use both --local-dir and --cache-dir", file=sys.stderr)
+            return 2
         if argv[:2] != ["download", cfg["model_id"]] or cfg.get("hub_unavailable"):
             return 2
         revision = argv[argv.index("--revision") + 1]

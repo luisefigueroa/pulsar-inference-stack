@@ -170,6 +170,7 @@ import json,os,pathlib,sys
 a=sys.argv; out=pathlib.Path(a[a.index('--local-dir')+1]); stage=out.parent.parent
 assert a[1:3]==['download','example/synthetic']
 assert a[a.index('--revision')+1]=='a'*40
+assert '--cache-dir' not in a, 'hf rejects --local-dir together with --cache-dir'
 for key in ('HF_HUB_CACHE','HF_XET_CACHE','HF_ASSETS_CACHE','TMPDIR'):
     assert pathlib.Path(os.environ[key]).is_relative_to(stage/'.download-cache')
 assert os.environ['HF_HOME']=='unchanged-auth-location'
