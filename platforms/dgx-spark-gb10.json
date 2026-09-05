@@ -1,0 +1,25 @@
+{
+  "accelerators_per_node": 1,
+  "architectures": [
+    "aarch64",
+    "arm64"
+  ],
+  "display_name": "GB10",
+  "gpu_name": "NVIDIA GB10",
+  "kind": "pulsar-platform-reference",
+  "memory": {
+    "cold_start_footprint_slack": 0.92,
+    "hard_floor_available_gib": 4,
+    "launch_spike_gib": 3,
+    "min_os_buffer_gib": 8,
+    "model": "unified",
+    "overhead_gib_default": 10,
+    "preflight_warn_available_gib": 100
+  },
+  "platform_id": "dgx-spark-gb10",
+  "rdma": {
+    "min_active_links_for_qualify": 1,
+    "verbs_device": "/dev/infiniband/uverbs0"
+  },
+  "schema_version": 1
+}

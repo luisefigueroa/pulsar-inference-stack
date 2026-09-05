@@ -1,0 +1,64 @@
+{
+  "benchmark-serving": {
+    "explicit_request_count": null,
+    "input_tokens": 512,
+    "levels": [
+      {
+        "aggregate_tps": "40",
+        "completion": "complete",
+        "concurrency": 1,
+        "decode_tps_p50": "10",
+        "measured_request_count": 4,
+        "reason": "completed",
+        "requested_request_count": 4,
+        "ttft_p50_ms": "10",
+        "ttft_p95_ms": "20",
+        "wall_s": "1"
+      },
+      {
+        "aggregate_tps": "40",
+        "completion": "complete",
+        "concurrency": 2,
+        "decode_tps_p50": "10",
+        "measured_request_count": 4,
+        "reason": "completed",
+        "requested_request_count": 4,
+        "ttft_p50_ms": "10",
+        "ttft_p95_ms": "20",
+        "wall_s": "1"
+      },
+      {
+        "aggregate_tps": "40",
+        "completion": "complete",
+        "concurrency": 4,
+        "decode_tps_p50": "10",
+        "measured_request_count": 8,
+        "reason": "completed",
+        "requested_request_count": 8,
+        "ttft_p50_ms": "10",
+        "ttft_p95_ms": "20",
+        "wall_s": "1"
+      },
+      {
+        "aggregate_tps": "40",
+        "completion": "complete",
+        "concurrency": 8,
+        "decode_tps_p50": "10",
+        "measured_request_count": 16,
+        "reason": "completed",
+        "requested_request_count": 16,
+        "ttft_p50_ms": "10",
+        "ttft_p95_ms": "20",
+        "wall_s": "1"
+      }
+    ],
+    "output_tokens": 256,
+    "prompt_style": "synthetic"
+  },
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "benchmark-serving",
+  "program": "validate/bench_serve.py",
+  "reason": "completed",
+  "schema_version": 1
+}

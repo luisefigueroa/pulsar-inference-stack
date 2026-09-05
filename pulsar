@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Thin operator dispatcher; each selected command performs one explicit action.
+set -euo pipefail
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+export PYTHONDONTWRITEBYTECODE=1
+command="${1:-}"
+[ $# -eq 0 ] || shift
+case "$command" in
+  "") exec "$REPO_DIR/scripts/home.sh" ;;
+  wizard) exec "$REPO_DIR/wizard.sh" "$@" ;;
+  models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
+  model) exec "$REPO_DIR/scripts/model-library.sh" "$@" ;;
+  start) exec "$REPO_DIR/scripts/up.sh" "$@" ;;
+  stop) exec "$REPO_DIR/scripts/down.sh" "$@" ;;
+  status) exec "$REPO_DIR/scripts/status.sh" "$@" ;;
+  inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
+  doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
+  release) exec "$REPO_DIR/scripts/release.sh" "$@" ;;
+  topology) exec python3 "$REPO_DIR/scripts/topology_manifest.py" "$@" ;;
+  ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
+  configure)
+    topic="${1:-}"; [ $# -eq 0 ] || shift
+    case "$topic" in
+      archive-root) exec "$REPO_DIR/scripts/configure-archive-root.sh" "$@" ;;
+      *) echo 'usage: pulsar configure archive-root [show|set|disable]' >&2; exit 2 ;;
+    esac ;;
+  help|-h|--help)
+    PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
+from scripts.terminal_format import TerminalWriter
+w=TerminalWriter()
+w.emit('Pulsar Inference Stack')
+w.emit('Catalog, model storage, recovery and exact-spec serving.')
+w.blank()
+for command,description in [
+ ('pulsar','Open the workflow menu; no automatic checks or model actions.'),
+ ('pulsar models','Browse catalog and saved storage observations.'),
+ ('pulsar models show SPEC','Show recipe, known copies, pins and blockers.'),
+ ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),
+ ('pulsar model --help','Acquire, restore, move, prepare, pin, purge and archive.'),
+ ('pulsar start SPEC','Recheck prerequisites and start the exact selected spec.'),
+ ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
+ ('pulsar status SPEC','Observe the live service on all participating nodes.'),
+ ('pulsar release list','Read the released-spec catalog.'),
+ ('pulsar inventory','Inspect service ownership and current resource use.'),
+ ('pulsar doctor','Run explicit host and topology diagnostics.'),
+ ('pulsar topology --help','Inspect, assemble and confirm topology records.'),
+ ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
+ ('pulsar configure archive-root','Select an existing recovery directory.')]:
+    w.emit(command)
+    w.emit(description,initial_indent='  ')
+w.blank()
+w.emit('SPEC is the complete catalog spec ID. Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. See docs/OPERATIONS.md.')
+PY
+    ;;
+  *) printf 'Unknown command: %s\nTry: ./pulsar help\n' "$command" >&2; exit 2 ;;
+esac

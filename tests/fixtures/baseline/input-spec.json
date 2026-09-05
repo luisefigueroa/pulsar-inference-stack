@@ -1,0 +1,76 @@
+{
+  "baselines": [
+    {
+      "claim": "example claim",
+      "claimed": "1",
+      "measured": "1",
+      "metric": "example-metric",
+      "source": "example-source",
+      "unit": "score"
+    }
+  ],
+  "evidence": [],
+  "identity": {
+    "container_env": [
+      "VLLM_MARLIN_USE_ATOMIC_ADD=1"
+    ],
+    "engine_args": [
+      "--max-model-len",
+      "131072",
+      "--moe-backend",
+      "marlin"
+    ],
+    "geometry": {
+      "fabric": "local",
+      "nodes": 1,
+      "platform_id": "dgx-spark-gb10",
+      "pp": 1,
+      "tp": 1
+    },
+    "image": {
+      "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "model_id": "example-org/example-model",
+    "snapshot_manifest": {
+      "file_count": 2,
+      "files": [
+        {
+          "path": "config.json",
+          "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+          "size": 12
+        },
+        {
+          "path": "model.safetensors",
+          "sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+          "size": 8
+        }
+      ],
+      "kind": "model-library-snapshot-manifest",
+      "manifest_id": "c1f04ed98a7afa381025f79cc2b8a774cc75a9fdf210b8fa7ac2017cdfb91bfd",
+      "model_id": "example-org/example-model",
+      "schema_version": 1,
+      "snapshot_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "total_bytes": 20
+    },
+    "snapshot_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "kind": "pulsar-release-spec",
+  "launch_contract": {
+    "argv": [
+      "--max-model-len",
+      "131072",
+      "--moe-backend",
+      "marlin",
+      "--tensor-parallel-size",
+      "1",
+      "--pipeline-parallel-size",
+      "1"
+    ],
+    "stack_version": "0.0.0-test"
+  },
+  "measurements": [],
+  "review": {},
+  "schema_version": 1,
+  "spec_id": "9cd7164d49591f763ba506d7845a13f96b247bbae193bce49f978a67e1e4aa16",
+  "state": "measured"
+}

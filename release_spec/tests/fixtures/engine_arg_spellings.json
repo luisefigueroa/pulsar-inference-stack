@@ -1,0 +1,40 @@
+{
+  "container_env": {
+    "canonical": [
+      "ALPHA=1",
+      "BETA=2"
+    ],
+    "spellings": [
+      [
+        "BETA=2",
+        "ALPHA=1"
+      ],
+      [
+        "ALPHA=1",
+        "BETA=2"
+      ]
+    ]
+  },
+  "engine_args": {
+    "canonical": [
+      "--max-model-len",
+      "131072",
+      "--moe-backend",
+      "marlin"
+    ],
+    "spellings": [
+      [
+        "--max-model-len",
+        "131072",
+        "--moe-backend",
+        "marlin"
+      ],
+      [
+        "--max-model-len=131072",
+        "--moe-backend=marlin"
+      ],
+      "--max-model-len 131072 --moe-backend marlin",
+      "--max-model-len=131072 --moe-backend=marlin"
+    ]
+  }
+}
