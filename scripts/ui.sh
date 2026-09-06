@@ -100,6 +100,7 @@ _ui_gum_choose_style_args() {
     --cursor.foreground="$PULSAR_ACCENT"
     --header.foreground="$PULSAR_ACCENT"
     --selected.foreground="$PULSAR_ACCENT"
+    --padding "1 0"
   )
 }
 
@@ -108,7 +109,82 @@ _ui_gum_confirm_style_args() {
     --prompt.foreground="$PULSAR_ACCENT"
     --selected.foreground="$_PULSAR_CONFIRM_SELECTED_FG"
     --selected.background="$_PULSAR_CONFIRM_SELECTED_BG"
+    --padding "1 0"
   )
+}
+
+_ui_frame_inner_width() {
+  PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+    'from scripts.terminal_format import terminal_width; print(max(32, terminal_width() - 4))'
+}
+
+_ui_gum_style_frame_args() {
+  GUM_STYLE_FRAME_ARGS=(
+    --border rounded
+    --border-foreground "$PULSAR_ACCENT"
+    --padding "0 1"
+    --margin "1 0"
+  )
+}
+
+_ui_gum_input_style_args() {
+  GUM_INPUT_STYLE_ARGS=(
+    --prompt.foreground="$PULSAR_ACCENT"
+    --header.foreground="$PULSAR_ACCENT"
+    --placeholder.foreground="8"
+    --padding "1 0"
+  )
+}
+
+# emit_frame
+# Reads stdin. With Gum, print a rounded accent-bordered box. Otherwise print
+# the text unchanged (no box-drawing characters).
+emit_frame() {
+  if [ "$have_gum" = 1 ]; then
+    _ui_gum_style_frame_args
+    "$GUM_CMD" style "${GUM_STYLE_FRAME_ARGS[@]}"
+    return
+  fi
+  cat
+}
+
+# emit_error
+# Reads stdin. With Gum, print in red on stderr. Otherwise print the text
+# uncolored on stderr.
+emit_error() {
+  echo >&2
+  if [ "$have_gum" = 1 ]; then
+    "$GUM_CMD" style --foreground 1 --bold >&2
+    return
+  fi
+  cat >&2
+}
+
+# prompt_input HEADER [PLACEHOLDER]
+# Prints the entered line on stdout. Returns 1 on cancel or empty input.
+prompt_input() {
+  local header="$1" placeholder="${2:-}" out rc value=""
+  if [ "$have_gum" = 1 ]; then
+    _ui_gum_input_style_args
+    set +e
+    out=$("$GUM_CMD" input \
+      "${GUM_INPUT_STYLE_ARGS[@]}" \
+      --header "$header" \
+      --placeholder "$placeholder")
+    rc=$?
+    set -e
+    if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
+      return 1
+    fi
+    printf '%s\n' "$out"
+    return 0
+  fi
+  printf '%s ' "$header" >&2
+  if ! read -r value; then
+    return 1
+  fi
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
 }
 
 # ---------------------------------------------------------------------------

@@ -233,7 +233,7 @@ fi
 if ! load_cluster_topology; then
   record fail topology "Confirmed topology or saved SSH identity configuration is invalid"
 elif [ "$CLUSTER_TOPOLOGY_COUNT" -lt 1 ] || [ -z "$CLUSTER_TOPOLOGY_ID" ]; then
-  record fail topology "No confirmed topology; explicitly discover and confirm membership before serving"
+  record fail topology "No confirmed topology; run ./pulsar and confirm cluster membership (scripts/detect-fabric.sh --write-topology)"
 else
   record ok topology "Confirmed membership: $CLUSTER_TOPOLOGY_COUNT nodes"
   if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
@@ -309,7 +309,9 @@ PY
 else
   echo
   if [ "$FAIL" = 0 ]; then
-    if [ "$WARN" = 1 ]; then
+    if [ "${count:-1}" = 0 ]; then
+      doctor_ready_line "host checks passed; catalog is empty until a recipe is reviewed"
+    elif [ "$WARN" = 1 ]; then
       doctor_ready_line "host checks passed; review warnings and run selected-spec launch checks"
     else
       doctor_ready_line "host checks passed; selected-spec launch checks still apply"

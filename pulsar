@@ -32,7 +32,7 @@ w.emit('Pulsar Inference Stack')
 w.emit('Catalog, model storage, recovery and exact-spec serving.')
 w.blank()
 for command,description in [
- ('pulsar','Open the workflow menu; no automatic checks or model actions.'),
+ ('pulsar','Open the workflow menu; bind this checkout to the cluster before catalog actions.'),
  ('pulsar models','Browse catalog and saved storage observations.'),
  ('pulsar models show SPEC','Show recipe, known copies, pins and blockers.'),
  ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),

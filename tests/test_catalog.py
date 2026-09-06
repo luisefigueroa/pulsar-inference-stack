@@ -47,6 +47,7 @@ class Catalog(unittest.TestCase):
         self.assertFalse(self.store.root.exists())
         output = io.StringIO(); render([], writer=TerminalWriter(stream=output))
         self.assertIn("catalog is empty", output.getvalue())
+        self.assertIn("confirms cluster membership first", output.getvalue())
 
     def test_catalog_spec_without_files_stays_unknown(self):
         self.add_spec()

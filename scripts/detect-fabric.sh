@@ -287,3 +287,13 @@ fi
 
 "$MANIFEST_TOOL" write "$verified" "$CLUSTER_TOPOLOGY_FILE"
 log "wrote $CLUSTER_TOPOLOGY_FILE"
+node_count=$(python3 -c 'import json,sys
+document=json.load(open(sys.argv[1],encoding="utf-8"))
+topology=document["topology"] if isinstance(document.get("topology"),dict) else document
+print(len(topology.get("nodes") or []))
+' "$verified")
+if [ "$node_count" -gt 1 ]; then
+  print_hanging "  Next      " "./pulsar ssh-trust enroll"
+else
+  print_hanging "  Next      " "./pulsar doctor"
+fi

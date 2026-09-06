@@ -199,7 +199,7 @@ cmd_enroll() {
     --ssh-config "$CLUSTER_SSH_CONFIG_FILE" \
     --probe "$PROBE_TOOL" \
     --ssh-bin "$PULSAR_SSH"
-  log "next: refresh the model-library catalog and prepare the diagnostic model again"
+  print_hanging "  Next      " "./pulsar"
 }
 
 command_name="${1:-}"

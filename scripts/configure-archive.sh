@@ -2,46 +2,50 @@
 # Configure an existing operator-selected archive directory; no storage administration.
 set -euo pipefail
 STACK_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_DIR="$STACK_ROOT"
+CONFIG_ROOT="${PULSAR_SETUP_ROOT:-$STACK_ROOT}"
 export PYTHONPATH="$STACK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 command_name="${1:-show}"
 if [ "$command_name" != menu ]; then
   if [ "$#" -eq 0 ]; then set -- show; fi
-  exec python3 -m model_library.configuration --repo-root "$STACK_ROOT" "$@"
+  exec python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"
 fi
-if [ ! -t 0 ]; then
+if [ ! -t 0 ] && [ "${PULSAR_FORCE_MENU:-0}" != 1 ]; then
   echo 'Archive configuration menu needs a terminal.' >&2
   echo 'Use: ./pulsar configure archive-root show|set PATH --yes|disable --yes' >&2
   exit 2
 fi
-python3 -m model_library.configuration --repo-root "$STACK_ROOT" show
-if command -v gum >/dev/null 2>&1 && [ "${PULSAR_PLAIN:-0}" != 1 ]; then
-  choice=$(gum choose 'Set archive location' 'Disable archives' 'Back') || exit 0
-  case "$choice" in
-    'Set archive location')
-      path=$(gum input --placeholder 'Existing absolute directory') || exit 0
-      gum confirm "Save this archive location? $path" || exit 0
-      exec python3 -m model_library.configuration --repo-root "$STACK_ROOT" set "$path" --yes
-      ;;
-    'Disable archives')
-      gum confirm 'Disable the saved archive location?' || exit 0
-      exec python3 -m model_library.configuration --repo-root "$STACK_ROOT" disable --yes
-      ;;
-    *) exit 0 ;;
-  esac
-fi
-printf '\n1. Set archive location\n2. Disable archives\n3. Back\nChoice: '
-read -r choice
+# shellcheck source=ui.sh
+. "${PULSAR_HOME_UI:-$STACK_ROOT/scripts/ui.sh}"
+
+archive_cli() {
+  python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"
+}
+
+archive_cli show
+choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") || exit 0
 case "$choice" in
+  0)
+    while true; do
+      path=$(prompt_input "Existing absolute directory:" "/existing/absolute/directory") || exit 0
+      if [ ! -d "$path" ]; then
+        printf '%s\n' "$path is not an existing directory. Pulsar does not create archive storage." | emit_error
+        confirm "Try another path?" yes || exit 0
+        continue
+      fi
+      confirm "Save this archive location? $path" no || exit 0
+      if ! output=$(archive_cli set "$path" --yes 2>&1); then
+        printf '%s\n' "$output" | emit_error
+        confirm "Try another path?" yes || exit 0
+        continue
+      fi
+      printf '%s\n' "$output"
+      exit 0
+    done
+    ;;
   1)
-    printf 'Existing absolute directory: '
-    read -r path
-    printf 'Save this archive location? [y/N] '
-    read -r confirm
-    case "$confirm" in y|Y|yes|YES) exec python3 -m model_library.configuration --repo-root "$STACK_ROOT" set "$path" --yes ;; esac
+    confirm "Disable the saved archive location?" no || exit 0
+    archive_cli disable --yes
     ;;
-  2)
-    printf 'Disable the saved archive location? [y/N] '
-    read -r confirm
-    case "$confirm" in y|Y|yes|YES) exec python3 -m model_library.configuration --repo-root "$STACK_ROOT" disable --yes ;; esac
-    ;;
+  *) exit 0 ;;
 esac

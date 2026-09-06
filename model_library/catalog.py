@@ -112,7 +112,7 @@ def render(rows, *, details=False, writer=None):
     out = writer or TerminalWriter()
     if not rows:
         out.emit("The catalog is empty.")
-        out.emit("A qualifying recipe enters the catalog after review and merge. Model experiments belong in the private workbench.")
+        out.emit("A qualifying recipe enters the catalog after review and merge. Interactive ./pulsar confirms cluster membership first. ./pulsar models still lists the catalog without topology.")
         return
     out.emit("Catalog review, prepared files and running service are separate states.")
     out.emit("These are saved observations. Start rechecks its prerequisites.")

@@ -38,12 +38,16 @@ Withdrawal never stops services or removes model files or archives.
 
 ## Configure topology and storage
 
-Confirmed topology determines membership and physical node identity. Start
-with `scripts/detect-fabric.sh --help`, inspect discovery, then use its explicit
-`--write-topology` flow to confirm membership. Use `./pulsar topology --help` for
-lower-level topology inspection and validation, and `./pulsar ssh-trust --help`
-for explicit SSH trust enrollment. Host and fabric diagnostics are available
-through `./pulsar doctor`. Catalog browsing works before topology is configured.
+Confirmed topology determines membership and physical node identity. On a
+terminal, `./pulsar` offers only the next bind step (confirm membership, enroll
+SSH trust, or select an archive directory) until this checkout is bound to the
+cluster. That menu uses saved local files; it does not probe nodes. The same
+commands remain available directly: start with `scripts/detect-fabric.sh --help`,
+inspect discovery, then use its explicit `--write-topology` flow. Use
+`./pulsar topology --help` for lower-level topology inspection and
+`./pulsar ssh-trust --help` for SSH trust enrollment. Host and fabric
+diagnostics are available through `./pulsar doctor`. `./pulsar models` still
+lists the catalog before topology is configured.
 
 A **home** is the complete local copy of one exact snapshot. Other serving
 nodes use prepared working copies. The library records their explicit
@@ -58,8 +62,8 @@ Select an existing recovery directory with:
 ./pulsar configure archive-root set <existing-directory> --yes
 ```
 
-The same workflow is available through the main menu's **Archive storage
-configuration** entry. `PULSAR_COLD_ROOT` is the explicit configuration
+The same workflow is available through the menu's archive step (during setup)
+or **Archive storage configuration** after the checkout is bound. `PULSAR_COLD_ROOT` is the explicit configuration
 variable: process value first, then the repository's `.env`; empty disables
 archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.

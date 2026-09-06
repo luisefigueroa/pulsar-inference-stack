@@ -95,7 +95,7 @@ ssh_node() {{
 
     def test_narrow_doctor_and_image_output(self):
         result=self.run_tool('doctor.sh');self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('selected-spec launch checks',result.stdout)
+        self.assertIn('catalog is empty',result.stdout)
         result=self.run_tool('check-image.sh',[self.spec['spec_id']]);self.assertEqual(result.returncode,0,result.stderr)
         self.assertTrue(all(len(line)<=48 for line in result.stdout.splitlines()))
 

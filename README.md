@@ -11,13 +11,17 @@ of this stack do not establish physical serving results for any model.
 
 ```sh
 ./pulsar help
+./pulsar
 ./pulsar models
 ./pulsar release list
 ```
 
-The menu also supports direct commands. Browsing reads saved observations;
-select **Check now** to refresh the chosen entry. Acquiring files, restoring
-an archive, preparing copies and starting a service are separate operations.
+On a terminal, `./pulsar` confirms cluster membership, SSH trust and archive
+location before offering catalog actions. The catalog begins empty; browsing
+with `./pulsar models` does not require topology. Direct commands still
+perform one explicit action. Select **Check now** to refresh a chosen entry.
+Acquiring files, restoring an archive, preparing copies and starting a
+service remain separate operations.
 
 Use [Operations](docs/OPERATIONS.md) for the complete operator workflow,
 storage configuration and recovery. [Architecture](docs/ARCHITECTURE.md)
