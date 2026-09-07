@@ -129,5 +129,35 @@ class IntegrityTests(unittest.TestCase):
         with self.assertRaises(StorageError):
             Store(root).put('homes','b'*64,{'unsafe':True})
 
+    def test_rename_no_replace_fallback_publishes_absent_destination(self):
+        from unittest.mock import patch
+        from model_library.integrity import rename_no_replace
+        parent = self.base / 'publish'
+        parent.mkdir()
+        stage = parent / '.pending-stage'
+        dest = parent / 'published'
+        stage.mkdir()
+        (stage / 'marker').write_bytes(b'ok')
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            rename_no_replace(stage, dest)
+        self.assertFalse(stage.exists())
+        self.assertEqual((dest / 'marker').read_bytes(), b'ok')
+
+    def test_rename_no_replace_fallback_refuses_existing_destination(self):
+        from unittest.mock import patch
+        from model_library.integrity import rename_no_replace
+        parent = self.base / 'occupied'
+        parent.mkdir()
+        stage = parent / '.pending-stage'
+        dest = parent / 'published'
+        stage.mkdir()
+        dest.mkdir()
+        (dest / 'keep').write_bytes(b'original')
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            with self.assertRaisesRegex(StorageError, 'without replacement'):
+                rename_no_replace(stage, dest)
+        self.assertTrue(stage.is_dir())
+        self.assertEqual((dest / 'keep').read_bytes(), b'original')
+
 if __name__=='__main__':
     unittest.main()

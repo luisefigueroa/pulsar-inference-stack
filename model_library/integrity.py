@@ -214,18 +214,54 @@ def atomic_json(path: Path, value: Any, *, replace: bool = True, private: bool =
                 pass
 
 
+_RENAME_NOREPLACE = 1
+_UNSUPPORTED_RENAMEAT2 = {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}
+
+
+def _renameat2_no_replace(src_fd: int, src_name: bytes, dest_fd: int, dest_name: bytes) -> bool:
+    """Return True if published. False if this filesystem rejected RENAME_NOREPLACE."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        rename = libc.renameat2
+    except AttributeError:
+        return False
+    rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    rename.restype = ctypes.c_int
+    ctypes.set_errno(0)
+    if rename(src_fd, src_name, dest_fd, dest_name, _RENAME_NOREPLACE) == 0:
+        return True
+    code = ctypes.get_errno()
+    if code in _UNSUPPORTED_RENAMEAT2:
+        return False
+    raise StorageError(f"cannot publish snapshot without replacement: {os.strerror(code)}")
+
+
+def _rename_absent_destination(src_fd: int, src_name: str, dest_fd: int, dest_name: str) -> None:
+    """Rename only when the destination name is absent. Existing names refuse."""
+    try:
+        os.stat(dest_name, dir_fd=dest_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise StorageError("cannot publish snapshot without replacement: File exists")
+    try:
+        os.rename(src_name, dest_name, src_dir_fd=src_fd, dst_dir_fd=dest_fd)
+    except OSError as exc:
+        raise StorageError(f"cannot publish snapshot without replacement: {exc.strerror}") from exc
+
+
 def rename_no_replace(source: Path, destination: Path) -> None:
-    """Linux atomic no-replace directory publication; no weaker rename fallback."""
+    """Publish a directory without replacing an existing destination.
+
+    Prefer Linux renameat2(RENAME_NOREPLACE). Filesystems that reject that
+    flag (NFSv3 EINVAL) fall back to an absence check plus renameat; an
+    existing destination still refuses publication.
+    """
     with directory(source.parent) as src, directory(destination.parent) as dest:
-        libc = ctypes.CDLL(None, use_errno=True)
-        try:
-            rename = libc.renameat2
-        except AttributeError as exc:
-            raise StorageError('atomic no-replace publication requires renameat2') from exc
-        rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-        rename.restype = ctypes.c_int
-        if rename(src, os.fsencode(source.name), dest, os.fsencode(destination.name), 1):
-            code = ctypes.get_errno()
-            raise StorageError(f"cannot publish snapshot without replacement: {os.strerror(code)}")
+        if _renameat2_no_replace(src, os.fsencode(source.name), dest, os.fsencode(destination.name)):
+            os.fsync(dest)
+            os.fsync(src)
+            return
+        _rename_absent_destination(src, source.name, dest, destination.name)
         os.fsync(dest)
         os.fsync(src)
