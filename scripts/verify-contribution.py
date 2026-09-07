@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from release_spec.contribution import verify_contribution
+from release_spec.contribution import CLAIM_STATUSES, verify_contribution
 
 
 def main():
@@ -23,8 +23,13 @@ def main():
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:
-        print('Contribution verified: all six baseline-v1 criteria pass.')
-        print('Physical execution and archive availability still require maintainer review.')
+        from release_spec import load_spec
+        spec = load_spec(args.spec)
+        if spec['review']['status'] in CLAIM_STATUSES:
+            print('Contribution verified: all six baseline-v1 criteria pass.')
+        else:
+            print('Contribution verified: released spec and declared evidence bind.')
+        print('Review status does not authorize or block serving. Physical execution still requires maintainer review.')
     return 0
 
 

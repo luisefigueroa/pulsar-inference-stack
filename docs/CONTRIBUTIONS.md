@@ -18,9 +18,15 @@ python3 scripts/check_publishable_privacy.py
 scripts/selftest.sh
 ```
 
-The catalog checker independently verifies file hashes, complete gate coverage,
-the approved baseline policy and thresholds, run/spec consistency, the closed
-summary, and current consumer compatibility. It does not access the private
+The catalog is `releases/`: every document there must be `state=released` and
+serveable. Review status is an operator label (`experimental`, `stable`,
+`validated`, `failed`, `withdrawn`, and later values the schema allows). The
+stack does not refuse to catalog or serve a spec because of that label.
+
+Byte integrity and baseline-v1 success are separate checks. Declared evidence
+must match its hashes. Claiming `stable` or `validated` still requires the six
+unchanged baseline-v1 criteria to recompute as pass. The catalog checker also
+confirms current consumer compatibility. It does not access the private
 workbench and does not claim to reproduce physical execution. The named private
 lab commit is provenance for maintainers with access, not publicly inspectable
 source evidence.
@@ -32,10 +38,10 @@ performance measurements at concurrency 1, 2, 4 and 8. Performance is measured
 without a minimum speed threshold. No deep or maximum-context qualification is
 implied. The deeper `validated` suite remains deferred.
 
-The workbench must verify a matching recovery archive before export and before
-publication. Public checks validate its compact declaration; they cannot access
-a maintainer's private archive. Review and merge, rather than an exporter flag,
-establish the catalog contribution.
+The workbench packages measured evidence and does not mint catalog `stable`.
+Public checks validate compact declarations; they cannot access a maintainer's
+private archive. Review and merge establish that a spec is released into
+`releases/`. The operator chooses the review status.
 
 An existing recipe may later be withdrawn by a reviewed metadata change with a
 clear reason. Preserve its identity, measurements and archive. The catalog warns

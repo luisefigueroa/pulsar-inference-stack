@@ -76,14 +76,15 @@ same-boot repeatability, pinned GSM8K accuracy, the 60-minute soak and required
 performance measurements. Every participating node is checked before and after
 measurement; missing nodes, altered contracts or restarts invalidate the run.
 
-All criteria must pass before export, and the matching recovery archive must
-be verified. Export creates a local package; explicitly requested publication
-opens a contribution PR. The public verifier checks hashes, complete criteria,
-the fixed policy, provenance consistency and recomputed outcomes without
-private workbench code. These deterministic checks establish document
-consistency; physical execution claims still require maintainer review.
+The workbench packages measured evidence without assigning catalog review
+status. Explicitly requested publication opens a contribution PR. A released
+spec in `releases/` is in the catalog and is serveable regardless of review
+status. Claiming `stable` or `validated` still requires independently
+recomputed baseline-v1 passes, the fixed policy, and matching evidence hashes.
+These deterministic checks establish document consistency; physical execution
+claims still require maintainer review.
 
-The catalog starts empty, with no imported experiments or recipes. Failed and
-incomplete candidates stay in the workbench. The deeper `validated` suite is
-deferred. Withdrawn catalog specs preserve their reason and remain available
-for exact serving when operational prerequisites pass.
+The catalog starts empty, with no imported experiments or recipes. Incomplete
+private attempts stay in the workbench until released. The deeper `validated`
+suite is deferred. Review status does not authorize or block serving;
+operational prerequisites still apply.

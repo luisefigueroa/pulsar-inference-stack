@@ -462,6 +462,9 @@ class ReleaseSpecTests(unittest.TestCase):
         document["review"]["status"] = "Validated"
         with self.assertRaisesRegex(ReleaseSpecError, "review.status"):
             verify_spec(document)
+        experimental = _copy(self.released)
+        experimental["review"]["status"] = "experimental"
+        verify_spec(experimental)
 
     def test_measurements_rules(self) -> None:
         missing_digest = _copy(self.measured)

@@ -19,7 +19,7 @@ sys.path.insert(0, str(STACK_ROOT))
 
 from release_spec import load_spec, spec_id_for
 from release_spec.baseline_evaluate import OPERATION_FILES
-from release_spec.contribution import verify_contribution
+from release_spec.contribution import CLAIM_STATUSES, verify_contribution
 from release_spec.measurement import parse_strict_json, read_stable_bytes
 from release_spec.summary import verify_summary
 from scripts import release_consumer as consumer
@@ -99,17 +99,27 @@ def check_catalog(repo_root: str | Path) -> dict:
         spec_id = spec['spec_id']
         if name != f'{spec_id}.json' or spec['state'] != 'released':
             raise CatalogError(f'releases/{name}: filename or state differs from catalog identity')
-        if spec['review']['status'] not in {'stable', 'withdrawn'}:
-            raise CatalogError('catalog accepts stable or withdrawn recipes; deep qualification remains deferred')
         base = Path('baseline-v1') / spec_id
-        expected_paths = {operation: (Path('results') / base / filename).as_posix()
-                          for operation, filename in OPERATION_FILES.items()}
-        expected_paths['baseline-run'] = (Path('results') / base / 'run.json').as_posix()
-        if {row['id']: row['path'] for row in spec['evidence']} != expected_paths:
-            raise CatalogError(f'{spec_id}: evidence paths differ from the canonical compact layout')
-        paths = {(base / filename).as_posix() for filename in [*OPERATION_FILES.values(), 'run.json', 'summary.json']}
+        if spec['review']['status'] in CLAIM_STATUSES:
+            expected_paths = {operation: (Path('results') / base / filename).as_posix()
+                              for operation, filename in OPERATION_FILES.items()}
+            expected_paths['baseline-run'] = (Path('results') / base / 'run.json').as_posix()
+            if {row['id']: row['path'] for row in spec['evidence']} != expected_paths:
+                raise CatalogError(f'{spec_id}: evidence paths differ from the canonical compact layout')
+            paths = {(base / filename).as_posix() for filename in [*OPERATION_FILES.values(), 'run.json', 'summary.json']}
+        else:
+            paths = set()
+            for row in spec['evidence']:
+                relative = Path(row['path'])
+                if relative.parts[:1] != ('results',) or len(relative.parts) < 3:
+                    raise CatalogError(f'{spec_id}: evidence path is not under results/')
+                paths.add(Path(*relative.parts[1:]).as_posix())
+            summary = (base / 'summary.json').as_posix()
+            if (root / 'results' / summary).is_file():
+                paths.add(summary)
         expected_results.update(paths)
-        expected_dirs.update({'baseline-v1', base.as_posix()})
+        if paths:
+            expected_dirs.update({'baseline-v1', *(str(Path(path).parent) for path in paths)})
         specs.append(spec)
     actual_results, actual_dirs = regular_tree(root / 'results')
     actual_results.discard('README.md')
@@ -121,10 +131,12 @@ def check_catalog(repo_root: str | Path) -> dict:
     for spec in specs:
         path = releases / f'{spec["spec_id"]}.json'
         base = root / 'results' / 'baseline-v1' / spec['spec_id']
-        verify_contribution(path, root, base / 'run.json')
-        run = parse_strict_json(read_stable_bytes(base / 'run.json', label='qualification run'), label='qualification run')
-        summary = parse_strict_json(read_stable_bytes(base / 'summary.json', label='qualification summary'), label='qualification summary')
-        verify_summary(summary, spec, run)
+        run_file = base / 'run.json'
+        verify_contribution(path, root, run_file if run_file.is_file() else path)
+        if run_file.is_file() and (base / 'summary.json').is_file():
+            run = parse_strict_json(read_stable_bytes(run_file, label='qualification run'), label='qualification run')
+            summary = parse_strict_json(read_stable_bytes(base / 'summary.json', label='qualification summary'), label='qualification summary')
+            verify_summary(summary, spec, run)
         current_projection(spec)
     return {'schema_version': 1, 'kind': 'pulsar-catalog-verification', 'verified': True,
             'spec_count': len(specs), 'evidence_file_count': len(expected_results)}

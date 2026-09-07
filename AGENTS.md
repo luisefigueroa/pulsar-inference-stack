@@ -34,13 +34,13 @@ public contribution. The operator command is `./pulsar`.
 
 ## Evidence and publication
 
-A passing baseline makes a candidate eligible for promotion; it does not merge
-or publish it. Public contributions contain a spec, compact measurements, a run
-record, and a summary, with a verified recovery archive required before export.
-Keep the baseline-v1 criteria and thresholds unchanged unless a separately
-agreed policy change says otherwise. Failed or incomplete candidates remain in
-the workbench. Withdrawal retains a spec with its reason, removes recommendations,
-and does not stop services or delete archives automatically.
+A passing baseline is evaluation, not catalog admission. Released specs in
+`releases/` are catalog members and are serveable regardless of review status.
+The operator may label a release `experimental`, `stable`, `validated`, `failed`,
+or `withdrawn`. Claiming `stable` or `validated` still requires the unchanged
+baseline-v1 criteria. Failed or incomplete private attempts remain in the
+workbench until released. Withdrawal retains a spec with its reason and does
+not stop services or delete archives automatically.
 
 Keep topology files, hostnames, addresses, SSH identity, user paths, credentials,
 and raw experiment outputs out of tracked public files. Use the existing privacy

@@ -76,6 +76,10 @@ class CatalogContributions(unittest.TestCase):
         self.spec['review'].update(status='withdrawn',reason='A later observation requires caution.')
         self.write_spec();self.assertTrue(self.check()['verified'])
 
+    def test_experimental_recipe_is_in_the_catalog(self):
+        self.spec['review']['status']='experimental'
+        self.write_spec();self.assertTrue(self.check()['verified'])
+
     def test_changed_hash_missing_gate_and_weakened_threshold(self):
         for mode in ('hash','gate','threshold'):
             with tempfile.TemporaryDirectory() as temp:
@@ -116,13 +120,15 @@ class CatalogContributions(unittest.TestCase):
         self.write_spec();self.path.rename(self.root/'releases'/('d'*64+'.json'))
         with self.assertRaisesRegex(ValueError,'filename'):self.check()
 
-    def test_unreleased_failed_and_deep_status_not_admitted(self):
-        for mode in ('measured','failed','validated'):
-            spec=copy.deepcopy(self.spec)
-            if mode=='measured':spec['state']='measured';spec['review']={}
-            else:spec['review']['status']=mode
-            self.path.write_bytes(pretty_json_bytes(spec))
-            with self.subTest(mode=mode),self.assertRaises(ValueError):self.check()
+    def test_unreleased_and_validated_without_deep_suite_are_rejected(self):
+        measured=copy.deepcopy(self.spec);measured['state']='measured';measured['review']={}
+        self.path.write_bytes(pretty_json_bytes(measured))
+        with self.assertRaises(ValueError):self.check()
+        self.spec['review']['status']='failed'
+        self.write_spec();self.assertTrue(self.check()['verified'])
+        self.spec['review']['status']='validated'
+        self.write_spec()
+        with self.assertRaises(ValueError):self.check()
 
     def test_symlink_and_special_file_do_not_hide_private_content(self):
         extra=self.directory/'extra';extra.symlink_to('/dev/null')

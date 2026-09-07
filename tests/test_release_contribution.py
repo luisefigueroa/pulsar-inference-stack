@@ -13,7 +13,7 @@ from release_spec import load_spec, pretty_json_bytes, runtime_contract_id, veri
 from release_spec.identity import argv_from_identity
 from release_spec.baseline_evaluate import evaluate, OPERATION_FILES
 from release_spec.baseline_policy import load_policy, applied_accuracy_floor
-from release_spec.contribution import verify_contribution
+from release_spec.contribution import verify_compact_evidence, verify_contribution
 from release_spec.run_record import GATE_NAMES
 
 FIXTURES=ROOT/'tests/fixtures/baseline'
@@ -159,6 +159,22 @@ class Contributions(unittest.TestCase):
         self.assertTrue(self.check()['verified'])
         del self.spec['review']['reason']
         with self.assertRaises(ValueError):self.check()
+
+    def test_experimental_review_is_catalog_membership(self):
+        self.spec['review']['status']='experimental'
+        self.assertTrue(self.check()['verified'])
+
+    def test_measured_spec_is_not_a_catalog_contribution(self):
+        self.spec['state']='measured';self.spec['review']={}
+        self.path.write_bytes(pretty_json_bytes(self.spec))
+        with self.assertRaisesRegex(ValueError,'released spec'):
+            verify_contribution(self.path,self.root,self.dest/'run.json')
+        self.assertTrue(verify_compact_evidence(self.path,self.root,self.dest/'run.json')['verified'])
+
+    def test_compact_evidence_ignores_review_status(self):
+        self.spec['review']['status']='experimental'
+        self.path.write_bytes(pretty_json_bytes(self.spec))
+        self.assertTrue(verify_compact_evidence(self.path,self.root,self.dest/'run.json')['verified'])
 
 
 if __name__=='__main__':unittest.main()
