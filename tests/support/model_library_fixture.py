@@ -65,10 +65,7 @@ def node_request(value, cfg, current):
     return value
 
 
-def guarded_node_arguments(argv, cfg, current):
-    if argv[:1] != ["-c"] or len(argv) != 2:
-        raise RuntimeError("fixture expected one immutable bundled node program")
-    program = argv[1]
+def rewrite_bundled_program(program, cfg, current):
     tree = ast.parse(program)
     assignments = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
         and len(n.targets) == 1 and isinstance(n.targets[0], ast.Attribute)
@@ -84,7 +81,11 @@ def guarded_node_arguments(argv, cfg, current):
     replacement = base64.b64encode(json.dumps(value, separators=(",", ":")).encode()).decode()
     if program.count(repr(encoded)) != 1:
         raise RuntimeError("fixture node request cannot be safely replaced")
-    return ["-c", program.replace(repr(encoded), repr(replacement))], value
+    return program.replace(repr(encoded), repr(replacement)), value
+
+
+def run_bundled_node_program(program, **kwargs):
+    return subprocess.run([sys.executable, "-"], input=program.encode(), **kwargs)
 
 
 def check_shell_paths(command):
@@ -159,18 +160,20 @@ def tool(kind, argv):
         if argv == ["-m", "model_library.node"]:
             value = node_request(json.load(sys.stdin), cfg, current)
             return subprocess.run([sys.executable, *argv], input=json.dumps(value).encode()).returncode
-        guarded, request = guarded_node_arguments(argv, cfg, current)
+        if argv != ["-"]:
+            raise RuntimeError("fixture expected one immutable bundled node program on stdin")
+        rewritten, request = rewrite_bundled_program(sys.stdin.read(), cfg, current)
         event("node-operation", operation=request["operation"])
         fault = cfg.get("node_fault", {})
         if fault.get("operation") == request["operation"] and fault.get("rank") == rank():
             if fault.get("after"):
-                result = subprocess.run([sys.executable, *guarded], capture_output=True)
+                result = run_bundled_node_program(rewritten, capture_output=True)
                 if result.returncode:
                     sys.stderr.buffer.write(result.stderr)
                     return result.returncode
             print("fixture interrupted the selected node operation", file=sys.stderr)
             return 255
-        os.execv(sys.executable, [sys.executable, *guarded])
+        return run_bundled_node_program(rewritten).returncode
     if kind == "node-check":
         return 0 if cfg["nodes"][int(argv[0])]["available"] else 255
     if kind == "control":
