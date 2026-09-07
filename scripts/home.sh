@@ -12,13 +12,8 @@ export PYTHONDONTWRITEBYTECODE=1
 SETUP_PY="${PULSAR_SETUP_STATUS_PY:-$REPO_DIR/scripts/setup_status.py}"
 status_json=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format json)
 echo
-if [ "${have_gum:-0}" = 1 ]; then
-  python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text \
-    --width "$(_ui_frame_inner_width)" | emit_frame
-else
-  python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text | emit_frame
-  echo
-fi
+python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text
+echo
 complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("complete") else "0")')
 
 if [ "$complete" = 1 ]; then
