@@ -81,7 +81,9 @@ SH
   command+="export HF_HUB_CACHE=$(printf '%q' "$cache/hub") HF_XET_CACHE=$(printf '%q' "$cache/xet"); "
   command+="export HF_ASSETS_CACHE=$(printf '%q' "$cache/assets") TMPDIR=$(printf '%q' "$cache/tmp"); "
   command+='exec "$cli" '
-  command+="$(shell_join_q download "$model" --revision "$revision" --local-dir "$snapshot" --cache-dir "$cache/hub" --quiet)"
+  # hf treats local-dir and cache-dir as mutually exclusive. The environment
+  # above still confines auxiliary caches without changing authentication.
+  command+="$(shell_join_q download "$model" --revision "$revision" --local-dir "$snapshot" --quiet)"
   if [ "$rank" -eq 0 ]; then
     bash -c "$command" >&2 || return $?
   else

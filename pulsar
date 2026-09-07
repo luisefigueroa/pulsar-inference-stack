@@ -6,7 +6,7 @@ export PYTHONDONTWRITEBYTECODE=1
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
-  "") exec "$REPO_DIR/scripts/home.sh" ;;
+  ""|gum) exec "$REPO_DIR/scripts/home.sh" ;;
   wizard) exec "$REPO_DIR/wizard.sh" "$@" ;;
   models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
   model) exec "$REPO_DIR/scripts/model-library.sh" "$@" ;;
@@ -16,7 +16,7 @@ case "$command" in
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
   release) exec "$REPO_DIR/scripts/release.sh" "$@" ;;
-  topology) exec python3 "$REPO_DIR/scripts/topology_manifest.py" "$@" ;;
+  topology) exec "$REPO_DIR/scripts/topology.sh" "$@" ;;
   ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
   configure)
     topic="${1:-}"; [ $# -eq 0 ] || shift
@@ -43,7 +43,9 @@ for command,description in [
  ('pulsar release list','Read the released-spec catalog.'),
  ('pulsar inventory','Inspect service ownership and current resource use.'),
  ('pulsar doctor','Run explicit host and topology diagnostics.'),
- ('pulsar topology --help','Inspect, assemble and confirm topology records.'),
+ ('pulsar gum','Open the interactive Gum/plain workflow menu.'),
+ ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
+ ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),
  ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
  ('pulsar configure archive-root','Select an existing recovery directory.')]:
     w.emit(command)

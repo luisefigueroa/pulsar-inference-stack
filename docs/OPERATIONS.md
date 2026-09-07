@@ -2,8 +2,8 @@
 
 An operator selects a **spec**: an exact model snapshot, serving recipe,
 container image and hardware geometry frozen together. Its complete spec ID
-is the argument to serving and model-storage commands. A recipe belongs in
-the catalog only after qualification and repository review.
+is the argument to serving and model-storage commands. Released specs in
+`releases/` are catalog members and are serveable regardless of review status.
 
 ## Browse and check
 
@@ -41,13 +41,59 @@ Withdrawal never stops services or removes model files or archives.
 Confirmed topology determines membership and physical node identity. On a
 terminal, `./pulsar` offers only the next bind step (confirm membership, enroll
 SSH trust, or select an archive directory) until this checkout is bound to the
-cluster. That menu uses saved local files; it does not probe nodes. The same
-commands remain available directly: start with `scripts/detect-fabric.sh --help`,
-inspect discovery, then use its explicit `--write-topology` flow. Use
-`./pulsar topology --help` for lower-level topology inspection and
-`./pulsar ssh-trust --help` for SSH trust enrollment. Host and fabric
-diagnostics are available through `./pulsar doctor`. `./pulsar models` still
-lists the catalog before topology is configured.
+cluster. That menu uses saved local files; it does not probe nodes. After the
+checkout is bound, open `./pulsar` and choose **Cluster topology**. The same
+actions are available directly:
+
+```sh
+./pulsar topology setup
+./pulsar topology show
+./pulsar topology check --json
+./pulsar topology detect --json
+./pulsar topology detect --candidate HOST
+./pulsar topology configure
+```
+
+Start with `setup` on a fresh checkout. It guides membership configuration,
+checks SSH enrollment, offers missing enrollment with a separate key-confirmation
+prompt, and finishes with a topology readiness check. Healthy existing setup is
+reused. Cancellation or failed enrollment cannot report success. This applies
+to single-node clusters too. The menu exposes the same **First-use setup** action.
+Initial key-based SSH login must already work; this flow verifies and records
+host identities, rather than installing remote login keys. No step starts or
+stops a model. For noninteractive agents, use configuration and SSH enrollment
+as separate explicitly approved commands; guided setup itself requires a terminal.
+
+`show` reads saved membership without probing. `check` checks every saved node's
+identity, confirmed control endpoint, platform readiness and pairwise fabric
+connectivity. Its JSON distinguishes missing, invalid and blocked state from
+ready; a saved row alone does not establish current readiness. These observations
+do not prepare files, choose model geometry or promise a model can start.
+
+`detect` probes local, advertised, explicitly supplied and previously confirmed
+nodes without saving membership or enrolling new SSH trust. Repeat `--candidate`
+for more addresses. Missing confirmed nodes remain visible and make discovery
+incomplete; a partial scan cannot silently remove them. Invalid saved state also
+blocks automatic replacement. Investigate identity, trust or connectivity before
+retrying. The saved configuration remains untouched.
+
+`configure` displays discovered membership and changes, then asks before saving.
+Noninteractive use requires explicit `--yes`. Active services or an unobservable
+required node block replacement; the check repeats after confirmation. It never
+stops services for you. Saving a discovery establishes membership, not enrolled
+SSH trust; use the menu's separate SSH-trust enrollment action or
+`./pulsar ssh-trust enroll` afterward. Explicit `--accept-new-host-keys` is
+available only on configuration through this CLI, not on read-only detection.
+
+Show, check and detection support `--json`. `./pulsar topology menu` opens just
+this menu; opening either menu performs no probes. Gum and plain terminal modes
+use the same commands. Low-level manifest utilities remain available under
+`pulsar topology` with their existing arguments. The private workbench delegates
+its `workbench topology` commands to this stack and creates no second topology.
+
+Topology and SSH files stay private in the selected stack checkout. Host and
+fabric diagnostics are also available through `./pulsar doctor`. Catalog
+browsing works before topology is configured.
 
 A **home** is the complete local copy of one exact snapshot. Other serving
 nodes use prepared working copies. The library records their explicit
@@ -153,8 +199,9 @@ delete archives; permanent removal belongs to deliberate storage administration.
 The private workbench may pass an explicit `--spec-file` candidate to the
 same storage and serving boundaries without adding a catalog entry. The
 maintainer approves each variant before launch. Candidates that fail or leave
-baseline criteria incomplete stay private. Publication supplies the qualifying
-spec, six compact measurements, run record and summary through a reviewed PR.
+baseline criteria incomplete stay private until released. Publication proposes
+a released spec and compact evidence through a reviewed PR; review status is
+an operator label and does not authorize or block serving.
 
 Existing bytes may be brought forward with the explicit verified-reuse
 migration tool, `scripts/migrate-model-storage.sh --help`. Preview first.

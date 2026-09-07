@@ -66,7 +66,11 @@ if [ "$JSON" = 1 ] && [ "$WRITE" = 1 ]; then
   die "--json and --write-topology are separate operations"
 fi
 
+if [ "$WRITE" = 1 ] && [ "$YES" != 1 ] && [ ! -t 0 ]; then
+  die "refusing write without a TTY; rerun interactively or pass --yes"
+fi
 require_cmd python3
+. "$REPO_DIR/scripts/topology-probes.sh"
 PROBE="$REPO_DIR/scripts/probe-node.py"
 MANIFEST_TOOL="$REPO_DIR/scripts/topology_manifest.py"
 [ -r "$PROBE" ] || die "missing node probe: $PROBE"
@@ -74,6 +78,9 @@ MANIFEST_TOOL="$REPO_DIR/scripts/topology_manifest.py"
 
 tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-discovery.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT
+if [ -e "$CLUSTER_TOPOLOGY_FILE" ]; then
+  cp -- "$CLUSTER_TOPOLOGY_FILE" "$tmpdir/saved-before.json"
+fi
 candidates_file="$tmpdir/candidates"
 : >"$candidates_file"
 
@@ -119,13 +126,33 @@ elif [ "$JSON" != 1 ]; then
   warn "avahi-browse unavailable — probing explicit/existing candidates only"
 fi
 
-# Existing confirmed nodes remain candidates, so regeneration preserves ranks
-# and does not depend on their naming convention.
+# Pin saved aliases to their confirmed control endpoints, even before enrollment.
+declare -A saved_controls=()
+existing_valid=0
 if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
-  while IFS=$'\t' read -r kind _rank _id _hostname ssh_host _rest; do
-    [ "$kind" = NODE ] || continue
-    [ "$ssh_host" = local ] || add_candidate "$ssh_host"
-  done < <("$MANIFEST_TOOL" rows "$CLUSTER_TOPOLOGY_FILE" 2>/dev/null || true)
+  if saved_rows=$("$MANIFEST_TOOL" rows "$CLUSTER_TOPOLOGY_FILE" 2>/dev/null); then
+    existing_valid=1
+    while IFS=$'\t' read -r kind _rank _id _hostname ssh_host control _rest; do
+      [ "$kind" = NODE ] || continue
+      if [ "$_rank" != 0 ]; then
+        add_candidate "$ssh_host"
+        saved_controls["$ssh_host"]="$control"
+      fi
+    done <<<"$saved_rows"
+    # An unusable enrolled config must not fall back to ordinary SSH trust.
+    if ! load_cluster_topology; then
+      python3 "$REPO_DIR/scripts/topology_actions.py" discovery "$CLUSTER_TOPOLOGY_FILE" \
+        --failure "Saved SSH configuration is unusable. Run pulsar ssh-trust check and repair enrollment before discovery." \
+        >"$tmpdir/access-failure.json" || :
+      if [ "$JSON" = 1 ]; then
+        cat "$tmpdir/access-failure.json"
+      else
+        python3 "$REPO_DIR/scripts/topology_actions.py" changes "$CLUSTER_TOPOLOGY_FILE" \
+          --document "$tmpdir/access-failure.json"
+      fi
+      exit 1
+    fi
+  fi
 fi
 sort -u "$candidates_file" -o "$candidates_file"
 
@@ -139,9 +166,9 @@ declare -a probe_pids=()
 declare -a probe_outputs=()
 declare -a probe_hosts=()
 
-ssh_opts=("${PULSAR_SSH_OPTS[@]}")
-if [ "$ACCEPT_NEW" = 1 ] || [ "${DETECT_FABRIC_ACCEPT_NEW:-0}" = 1 ]; then
-  ssh_opts+=(-o StrictHostKeyChecking=accept-new)
+ssh_opts=(-o StrictHostKeyChecking=yes -o UpdateHostKeys=no "${PULSAR_SSH_OPTS[@]}")
+if [ "$ACCEPT_NEW" = 1 ]; then
+  ssh_opts=(-o StrictHostKeyChecking=accept-new -o UpdateHostKeys=no "${PULSAR_SSH_OPTS[@]}")
 fi
 
 index=0
@@ -152,8 +179,13 @@ while IFS= read -r candidate; do
   error_output=$(printf '%s/probe-%04d.err' "$tmpdir" "$index")
   remote_command=$(probe_node_remote_python_command "$candidate")
   (
-    "$PULSAR_SSH" "${ssh_opts[@]}" -- "$candidate" "$remote_command" \
-      <"$PROBE" >"$output" 2>"$error_output"
+    if [ -n "${saved_controls[$candidate]:-}" ]; then
+      topology_control_ssh "$candidate" "${saved_controls[$candidate]}" "$remote_command" \
+        <"$PROBE" >"$output" 2>"$error_output"
+    else
+      "$PULSAR_SSH" "${ssh_opts[@]}" -- "$candidate" "$remote_command" \
+        <"$PROBE" >"$output" 2>"$error_output"
+    fi
   ) &
   probe_pids+=("$!")
   probe_outputs+=("$output")
@@ -166,7 +198,7 @@ for position in "${!probe_pids[@]}"; do
     if [ -s "${probe_outputs[$position]}" ]; then
       probe_files+=("${probe_outputs[$position]}")
     fi
-  elif [ "$JSON" != 1 ]; then
+  else
     skipped_probe_count=$((skipped_probe_count + 1))
   fi
 done
@@ -182,12 +214,19 @@ report_skipped_candidates() {
 
 
 assemble_args=(assemble)
-if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
+if [ "$existing_valid" = 1 ]; then
   assemble_args+=(--existing "$CLUSTER_TOPOLOGY_FILE")
 fi
 assemble_args+=("${probe_files[@]}")
 discovery="$tmpdir/discovery.json"
 "$MANIFEST_TOOL" "${assemble_args[@]}" >"$discovery"
+membership_ok=1
+python3 "$REPO_DIR/scripts/topology_actions.py" discovery "$CLUSTER_TOPOLOGY_FILE" \
+  --document "$discovery" >"$tmpdir/membership.json" || membership_ok=0
+mv "$tmpdir/membership.json" "$discovery"
+if [ "$JSON" != 1 ]; then
+  python3 "$REPO_DIR/scripts/topology_actions.py" changes "$CLUSTER_TOPOLOGY_FILE" --document "$discovery"
+fi
 
 if ! "$MANIFEST_TOOL" validate "$discovery" >/dev/null 2>&1; then
   if [ "$JSON" = 1 ]; then
@@ -210,31 +249,19 @@ fi
 
 # Verify every advertised rail in both directions. A structurally matching
 # subnet is not enough to become confirmed cluster state.
-ping_plan="$tmpdir/ping-plan"
-"$MANIFEST_TOOL" ping-plan "$discovery" >"$ping_plan"
 connectivity_ok=1
-ping_checks=0
-while IFS=$'\t' read -r source_rank source_host target_rank target_ip network; do
-  [ -n "$source_rank" ] || continue
-  ping_checks=$((ping_checks + 1))
-  source_label=$(human_cluster_node "$source_rank")
-  target_label=$(human_cluster_node "$target_rank")
-  if [ "$source_rank" = 0 ]; then
-    if ! ping -c1 -W2 "$target_ip" >/dev/null 2>&1; then
-      connectivity_ok=0
-      [ "$JSON" = 1 ] || warn "$source_label cannot reach $target_label at $target_ip ($network)"
-    fi
-  else
-    remote_ping="ping -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1"
-    if ! "$PULSAR_SSH" "${ssh_opts[@]}" -- "$source_host" "$remote_ping" </dev/null; then
-      connectivity_ok=0
-      [ "$JSON" = 1 ] || warn "$source_label cannot reach $target_label at $target_ip ($network)"
-    fi
-  fi
-done <"$ping_plan"
+topology_check_fabric "$discovery" || connectivity_ok=0
 
 if [ "$connectivity_ok" != 1 ]; then
-  [ "$JSON" = 1 ] && cat "$discovery"
+  if [ "$JSON" = 1 ]; then
+    python3 - "$discovery" <<'PY'
+import json, sys
+document = json.load(open(sys.argv[1]))
+document['result'] = 'incomplete'
+document['discovery_issues'] = ['Pairwise RoCE connectivity failed.']
+print(json.dumps(document, sort_keys=True))
+PY
+  fi
   [ "$JSON" = 1 ] || warn "pairwise RoCE verification failed; topology will not be written"
   exit 1
 fi
@@ -244,17 +271,22 @@ verified="$tmpdir/verified.json"
 
 if [ "$JSON" = 1 ]; then
   cat "$verified"
-  exit 0
+  [ "$membership_ok" = 1 ]
+  exit
 fi
 
 echo
 "$MANIFEST_TOOL" render "$verified" --skipped-ssh "$skipped_probe_count"
+if [ "$membership_ok" != 1 ]; then
+  warn "discovery is incomplete; confirmed membership was not changed"
+  exit 1
+fi
 
 if [ "$WRITE" != 1 ]; then
   echo
   echo "REVIEW ONLY"
   print_hanging "  Result    " "No files changed."
-  print_hanging "  Next      " "Save this membership later with scripts/detect-fabric.sh --write-topology."
+  print_hanging "  Next      " "Save this membership later with pulsar topology configure."
   exit 0
 fi
 
@@ -274,17 +306,24 @@ if [ "$YES" != 1 ]; then
   if [ ! -t 0 ]; then
     die "refusing write without a TTY; rerun interactively or pass --yes"
   fi
-  printf 'Save this cluster membership? [y/N] '
-  read -r answer
-  case "$answer" in
-    y|Y|yes|YES) ;;
-    *)
-      log "aborted — topology not modified"
-      exit 0
-      ;;
-  esac
+  . "$REPO_DIR/scripts/ui.sh"
+  if ! confirm "Save this cluster membership?"; then
+    log "aborted — topology not modified"
+    exit 0
+  fi
 fi
 
+# Recheck after the human prompt so a newly started service blocks saving.
+if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
+  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" || die "existing cluster is not idle"
+fi
+require_topology_rewrite_idle "$verified" || die "proposed cluster is not idle"
+if [ -f "$tmpdir/saved-before.json" ]; then
+  cmp -s "$tmpdir/saved-before.json" "$CLUSTER_TOPOLOGY_FILE" \
+    || die "saved membership changed during discovery; review it and retry"
+else
+  [ ! -e "$CLUSTER_TOPOLOGY_FILE" ] || die "membership was configured concurrently; review it and retry"
+fi
 "$MANIFEST_TOOL" write "$verified" "$CLUSTER_TOPOLOGY_FILE"
 log "wrote $CLUSTER_TOPOLOGY_FILE"
 node_count=$(python3 -c 'import json,sys

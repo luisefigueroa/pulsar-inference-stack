@@ -23,14 +23,15 @@ complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" i
 
 if [ "$complete" = 1 ]; then
   choice=$(choose_index "Pulsar Inference Stack" "Catalog and storage" "Live service inventory" \
-    "Host diagnostics" "Archive storage configuration" "Help" "Exit") || exit 0
+    "Host diagnostics" "Archive storage configuration" "Cluster topology" "Help" "Exit") || exit 0
   case "$choice" in
     0) exec "$REPO_DIR/scripts/model-storage.sh" menu ;;
     1) exec "$REPO_DIR/scripts/inventory.sh" ;;
     2) exec "$REPO_DIR/scripts/doctor.sh" ;;
     3) exec "$REPO_DIR/pulsar" configure archive-root menu ;;
-    4) exec "$REPO_DIR/pulsar" help ;;
-    5) exit 0 ;;
+    4) exec "$REPO_DIR/scripts/topology.sh" menu ;;
+    5) exec "$REPO_DIR/pulsar" help ;;
+    6) exit 0 ;;
   esac
 fi
 
