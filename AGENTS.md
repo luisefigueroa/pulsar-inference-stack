@@ -59,6 +59,27 @@ their own explicit flags and authority.
 Do not claim physical serving results from mocked tests. Resolve significant
 changes to the agreed plan with the maintainer before implementing them.
 
+## Terminology and naming
+
+Use plain, specific names that tell a reader what an object is or what an
+operation does. Use the same term for the same concept in Stack and Workbench,
+including function names, variables, CLI output, schema fields, documentation,
+tests, and diagrams. Qualify ambiguous names by their subject: `stack_commit`,
+`model_commit`, `schema_version`, `spec_id`, or `container_id`.
+
+Call a Git commit a `commit`; do not call it a release, version, or build.
+Reserve `version` for an explicitly versioned format or software release,
+`spec` for a serving specification, `recipe` for its execution configuration,
+and `publication` for adding reviewed content to the catalog. Distinguish
+intended configuration from observed state and from historical measurements.
+
+During a refactor, replace misleading internal names in the affected code and
+update explanations and tests together. Rename persisted fields, public commands,
+or container labels only through an explicit compatibility or migration plan;
+do not rewrite historical evidence merely to improve its terminology. Avoid
+unrelated rename sweeps and do not introduce multiple aliases without a defined
+compatibility purpose and retirement condition.
+
 ## Verification and operator experience
 
 Run directly affected tests while iterating, relevant subsystem tests after a
