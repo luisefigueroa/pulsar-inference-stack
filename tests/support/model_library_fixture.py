@@ -332,6 +332,11 @@ ssh_node() {{
             "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_MODEL_LIBRARY_DIR": str(self.state),
             "PULSAR_COLD_ROOT": str(self.archive), "PULSAR_NODE_PYTHON": str(binary / "node-python"),
             "PULSAR_HOME_ROOT": self.cfg["configured_home_root"], "PULSAR_HOT_ROOT": self.cfg["configured_view_root"],
+            # Synthetic snapshots need bytes, not the production 64-GiB reserve.
+            # Explicit test policy also prevents inherited operator budgets from
+            # changing the scenario on small CI disks.
+            "PULSAR_HOT_RESERVE_BYTES": str(1024**2),
+            "PULSAR_HOT_BUDGET_BYTES": str(32 * 1024**2),
             "HF_CACHE": str(self.root / "hf-cache"), "HF_HOME": str(self.root / "hf-auth"), "TMPDIR": str(temporary),
             "PULSAR_DOCKER": str(binary / "docker"), "PULSAR_IP": str(binary / "ip"),
             "PULSAR_RSYNC": str(binary / "rsync"), "PULSAR_SSH": str(binary / "ssh"),

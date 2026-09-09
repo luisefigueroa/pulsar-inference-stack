@@ -30,7 +30,7 @@ class ModelLibraryCLI(unittest.TestCase):
         return Fixture(self.root, nodes)
 
     def success(self, result):
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
         self.assertTrue(result.stdout.strip(), "successful storage operation returned no result")
         return json.loads(result.stdout)
 
@@ -94,6 +94,18 @@ class ModelLibraryCLI(unittest.TestCase):
         self.success(f.run("prepare", "--yes", spec=True))
         self.success(f.run("info", "--full", spec=True))
         self.assertFalse(any("receipt" in str(p.relative_to(f.state)) for p in f.state.rglob("*")))
+
+    def test_insufficient_copy_budget_reports_blocker_without_publishing(self):
+        f=self.fixture(nodes=2)
+        self.acquire_candidate(f,nodes=2)
+        f.env['PULSAR_HOT_BUDGET_BYTES']='0'
+        result=f.run('prepare','--yes',spec=True)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        plan=json.loads(result.stdout)
+        self.assertFalse(plan['eligible'])
+        self.assertTrue(any('insufficient copy budget' in item for item in plan['blockers']))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        self.assertEqual(f.events('transfer'),[])
 
     def test_two_nodes_with_remote_home(self):
         f = self.fixture(nodes=2)

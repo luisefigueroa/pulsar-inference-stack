@@ -81,4 +81,27 @@ class PublishablePrivacy(unittest.TestCase):
         self.assertIn('stable-hostname',result.stderr)
         self.assertNotIn(private_email,result.stderr)
 
+    def test_commit_versions_are_allowed_but_network_context_and_secrets_are_rejected(self):
+        for name,value in [('user.name','Fixture'),('user.email','fixture@example.invalid')]:
+            subprocess.run(['git','config',name,value],cwd=self.repo,check=True)
+        subprocess.run(['git','commit','--allow-empty','-qm','Base'],cwd=self.repo,check=True)
+        address='10.23.'+'45.67'
+        cases=[('Upgrade 1.2.3.4 to 1.2.3.5',True),
+               ('Set control address to '+address,False),
+               ('Connect to https://'+address,False),
+               ('hostname=private-fixture-node',False),
+               ('Credential '+'hf_'+'a'*40,False)]
+        for message,allowed in cases:
+            subprocess.run(['git','commit','--allow-empty','-qm',message],cwd=self.repo,check=True)
+            result=subprocess.run([sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
+                '--repo-root',str(self.repo),'--range','HEAD^..HEAD'],text=True,capture_output=True)
+            with self.subTest(allowed=allowed,message_type=message.split()[0]):
+                self.assertEqual(result.returncode==0,allowed,result.stderr)
+        # Identity fields remain strict even without network words in the name.
+        env={**os.environ,'GIT_AUTHOR_NAME':address}
+        subprocess.run(['git','commit','--allow-empty','-qm','Ordinary change'],cwd=self.repo,env=env,check=True)
+        result=subprocess.run([sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
+            '--repo-root',str(self.repo),'--range','HEAD^..HEAD'],text=True,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+
 if __name__=='__main__': unittest.main()

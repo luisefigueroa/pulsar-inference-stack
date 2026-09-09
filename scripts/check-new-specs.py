@@ -27,16 +27,17 @@ def commit(root,ref):
 def check(root,*,base=None,head='HEAD',staged=False):
     root=Path(root).absolute()
     if staged:
-        names=git(root,'diff','--cached','--name-only','--diff-filter=AM','--no-renames','-z','--','releases/').split(b'\0')
+        changes=git(root,'diff','--cached','--name-status','--no-renames','-z','--','releases/').split(b'\0')[:-1]
     else:
         if base is None: raise ValueError('select --base or --staged')
         base_commit,head_commit=commit(root,base),commit(root,head)
-        names=git(root,'diff','--name-only','--diff-filter=AM','--no-renames','-z',base_commit,head_commit,'--','releases/').split(b'\0')
+        changes=git(root,'diff','--name-status','--no-renames','-z',base_commit,head_commit,'--','releases/').split(b'\0')[:-1]
     checked=0
-    for raw_name in names:
-        if not raw_name: continue
+    for status,raw_name in zip(changes[::2],changes[1::2]):
         name=raw_name.decode()
         if name=='releases/README.md': continue
+        if status==b'D':
+            raise ValueError('catalog records must remain readable history; deletion or renaming is not allowed')
         if not re.fullmatch(r'releases/[0-9a-f]{64}\.json',name):
             raise ValueError('new catalog entry has an invalid filename')
         if staged:

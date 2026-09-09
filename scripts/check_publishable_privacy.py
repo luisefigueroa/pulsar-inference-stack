@@ -462,7 +462,7 @@ def _scan_json_string_values(
     return findings
 
 
-def scan_bytes(relative: str, data: bytes) -> list[Finding]:
+def scan_bytes(relative: str, data: bytes, *, network_context_only: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     for match in STABLE_DGX_HOST_RE.finditer(relative):
         findings.append(
@@ -480,7 +480,8 @@ def scan_bytes(relative: str, data: bytes) -> list[Finding]:
                 "publishable file must be UTF-8 text or receive an explicit reviewed format",
             )
         ]
-    findings.extend(_scan_text(relative, text))
+    findings.extend(_scan_text(relative, text,
+        scan_all_ips_override=False if network_context_only else None))
     if pathlib.PurePosixPath(relative).suffix.lower() == ".json":
         try:
             document = json.loads(text)

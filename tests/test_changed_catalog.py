@@ -21,8 +21,9 @@ class ChangedCatalog(unittest.TestCase):
         self.git('config', 'user.name', 'Fixture')
         self.git('config', 'user.email', 'fixture@example.invalid')
         (self.root/'releases').mkdir()
-        self.old = self.root/'releases'/('f'*64+'.json')
-        self.old.write_text('{"schema_version":1}')
+        historical=json.loads((ROOT/'release_spec/tests/fixtures/golden_measured.json').read_text())
+        self.old = self.root/'releases'/(historical['spec_id']+'.json')
+        self.old.write_text(json.dumps(historical))
         self.git('add', '.')
         self.git('commit', '-qm', 'Historical fixture')
         self.base = self.git('rev-parse', 'HEAD').strip()
@@ -53,6 +54,37 @@ class ChangedCatalog(unittest.TestCase):
         self.git('add', '.')
         with self.assertRaises(ValueError):
             checker.check(self.root, staged=True)
+
+    def assert_removal_rejected(self, base):
+        self.git('add','-A')
+        with self.assertRaisesRegex(ValueError,'deletion or renaming'):
+            checker.check(self.root,staged=True)
+        self.git('commit','-qm','Removal fixture')
+        with self.assertRaisesRegex(ValueError,'deletion or renaming'):
+            checker.check(self.root,base=base)
+
+    def test_historical_deletion_is_rejected_in_index_and_commit(self):
+        self.old.unlink()
+        self.assert_removal_rejected(self.base)
+
+    def test_current_deletion_is_also_rejected(self):
+        self.stage_current();self.git('commit','-qm','Current fixture')
+        base=self.git('rev-parse','HEAD').strip()
+        self.path.unlink()
+        self.assert_removal_rejected(base)
+
+    def test_renaming_history_outside_catalog_cannot_hide_removal(self):
+        self.old.rename(self.root/'historical.json')
+        self.assert_removal_rejected(self.base)
+
+    def test_readme_removal_is_not_a_catalog_record_removal(self):
+        path=self.root/'releases/README.md';path.write_text('Catalog documentation\n')
+        self.git('add','.');self.git('commit','-qm','Documentation fixture')
+        base=self.git('rev-parse','HEAD').strip()
+        path.unlink();self.git('add','-A')
+        self.assertEqual(checker.check(self.root,staged=True),0)
+        self.git('commit','-qm','Remove documentation fixture')
+        self.assertEqual(checker.check(self.root,base=base),0)
 
     def test_wrong_filename_and_symlink_are_rejected(self):
         self.stage_current()

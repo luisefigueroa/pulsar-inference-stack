@@ -47,7 +47,11 @@ def check(root: Path, revision_range: str) -> tuple[int, list[tuple[str, str, st
     findings: list[tuple[str, str, str]] = []
     for commit in commits(root, revision_range):
         checked += 1
-        for finding in scan_bytes(f'commit/{commit}.txt', metadata(root, commit)):
+        identity, _, message = metadata(root, commit).partition(b'\n\n')
+        findings_for_commit = scan_bytes(f'commit/{commit}/identity.txt', identity)
+        findings_for_commit += scan_bytes(f'commit/{commit}/message.txt', message,
+                                         network_context_only=True)
+        for finding in findings_for_commit:
             findings.append((commit, finding.rule, finding.message))
     return checked, findings
 
