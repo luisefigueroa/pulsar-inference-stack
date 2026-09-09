@@ -14,7 +14,7 @@ cd "$REPO_DIR"
 . "$REPO_DIR/scripts/lib.sh"
 
 case "${1:-}" in -h|--help)
-  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--dry-run] [--skip-preflight] [--skip-warmup]'
+  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
   exit 0 ;;
 esac
@@ -24,6 +24,7 @@ SPEC_MODE=auto
 SKIP_PREFLIGHT=0
 SKIP_WARMUP=0
 DRY_RUN=0
+REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
@@ -33,6 +34,7 @@ while [ $# -gt 0 ]; do
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
     --skip-warmup) SKIP_WARMUP=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --replace) REPLACE=1 ;;
     --force) refuse_removed_force_flag ;;
     --weight-source|--weight-mode)
       refuse_removed_weight_mode_flag
@@ -156,17 +158,32 @@ cluster_abort() {
   done
 }
 
-echo "[cluster] removing stale stack-managed ranks (ownership required)"
-stale_rc=0
-remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
-if [ "$stale_rc" -eq 2 ]; then
-  echo "[cluster] ERROR: ownership not proven on every existing rank of $CONTAINER" >&2
-  echo "[cluster] No ambiguous rank was removed. Inspect labels or stop manually." >&2
-  exit 1
+existing=0
+for ((rank = 1; rank < NODES; rank++)); do
+  host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
+  probe_rc=0
+  container_ownership_inspect_remote "$host" "$CONTAINER" >/dev/null || probe_rc=$?
+  case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank $rank; refusing launch" ;; esac
+done
+probe_rc=0
+container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
+case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank 0; refusing launch" ;; esac
+if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
+  die "service $CONTAINER already exists; inspect every rank, then pass --replace only with explicit replacement approval"
 fi
-if [ "$stale_rc" -ne 0 ]; then
-  echo "[cluster] ERROR: failed while removing stale cluster ranks (rc=$stale_rc)" >&2
-  exit 1
+if [ "$REPLACE" = 1 ]; then
+  echo "[cluster] removing existing stack-managed ranks (ownership required)"
+  stale_rc=0
+  remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
+  if [ "$stale_rc" -eq 2 ]; then
+    echo "[cluster] ERROR: ownership not proven on every existing rank of $CONTAINER" >&2
+    echo "[cluster] No ambiguous rank was removed. Inspect labels or stop manually." >&2
+    exit 1
+  fi
+  if [ "$stale_rc" -ne 0 ]; then
+    echo "[cluster] ERROR: failed while removing existing cluster ranks (rc=$stale_rc)" >&2
+    exit 1
+  fi
 fi
 
 STARTUP_STARTED_NS=$(date +%s%N)

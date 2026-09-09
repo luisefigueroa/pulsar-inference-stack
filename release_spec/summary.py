@@ -22,10 +22,18 @@ def archive_proof(proof: Any, spec: dict) -> dict:
 
 def summary_document(spec: dict, record: dict, proof: Any, exported_at: str) -> dict:
     _time(exported_at, 'summary export time')
+    baseline = [row for row in spec.get('measurements', []) if row.get('suite') == 'baseline-v1']
+    if (len(baseline) != 6
+            or len({row.get('criterion_id') for row in baseline}) != 6
+            or any(row.get('outcome') != 'pass' for row in baseline)
+            or record.get('proposed_status') != 'stable'
+            or record.get('observation_complete') is not True
+            or record.get('same_boot') is not True):
+        fail('qualification summary requires six passing baseline-v1 criteria and a complete stable run')
     return {'schema_version': 1, 'kind': 'pulsar-qualification-summary',
             'spec_id': spec['spec_id'], 'suite': 'baseline-v1', 'status': 'pass',
             'exported_at': exported_at,
-            'criteria': sorted(row['criterion_id'] for row in spec['measurements']),
+            'criteria': sorted(row['criterion_id'] for row in baseline),
             'policy_digest': record['policy_digest'], 'lab_commit': record['lab_commit'],
             'stack_commit': record['stack_commit'],
             'evidence_sha256': {row['id']: row['sha256'] for row in spec['evidence']},

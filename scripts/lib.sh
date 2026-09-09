@@ -311,7 +311,7 @@ spec_overlay_node_selector() {
   printf '%s\n' "$selector"
 }
 
-# Launch admission for a released spec: refuse to start outside the spec's
+# Launch admission for a catalog or explicitly selected spec: refuse to start outside the spec's
 # frozen platform. Called by every launcher (up.sh, serve.sh,
 # cluster/start-cluster.sh) right after load_conf; never by status or stop,
 # which must still load a spec after the platform setting changed.
@@ -319,11 +319,11 @@ require_spec_platform_admission() {
   local name="${1:-${CONF_NAME:-}}" active="${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
-    || die "released spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
+    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
 }
 
 _finalize_loaded_profile() {
-  local name="${1:?profile name required}"
+  local name="${1:?profile name required}" item recipe_nccl_qps=""
   [ -n "$MODEL" ] || die "$name: MODEL unset in conf"
   SERVED_NAME="${SERVED_NAME:-$name}"
   IMAGE="${IMAGE:-$VLLM_IMAGE_MAINLINE}"
@@ -347,11 +347,24 @@ _finalize_loaded_profile() {
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
   fi
   CONF_NAME="$name"
+  if [ "$NODES" -gt 1 ]; then
+    for item in ${CONTAINER_ENV[@]+"${CONTAINER_ENV[@]}"}; do
+      case "$item" in
+        NCCL_IB_QPS_PER_CONNECTION=*)
+          recipe_nccl_qps="${item#*=}"
+          ;;
+      esac
+    done
+    NCCL_IB_QPS_PER_CONNECTION="${recipe_nccl_qps:-4}"
+    [[ "$NCCL_IB_QPS_PER_CONNECTION" =~ ^[1-9][0-9]*$ ]] \
+      || die "$name: NCCL_IB_QPS_PER_CONNECTION must be a positive integer"
+    export NCCL_IB_QPS_PER_CONNECTION
+  fi
   [[ "$NODES" =~ ^[1-9][0-9]*$ ]] || die "$name: NODES must be a positive integer"
   validate_profile_contract
 }
 
-# Load a released spec plus the site overlay into caller shell (no conf).
+# Load a catalog spec plus the site overlay into caller shell (no conf).
 load_spec_profile() {
   local spec_id="${1:?load_spec_profile: spec_id required}"
   local releases_root="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}"
@@ -375,7 +388,7 @@ load_spec_profile() {
     export_args+=(--releases-root "$PULSAR_RELEASES_ROOT")
   fi
   # Lab path: a measured spec file (validate/baseline-v1.sh --spec) is the
-  # profile before promotion; the file's spec_id must equal the profile.
+  # profile before catalog publication; the file's spec_id must equal the profile.
   if [ -n "${PULSAR_SPEC_FILE:-}" ]; then
     export_args+=(--spec-file "$PULSAR_SPEC_FILE")
   fi
@@ -967,7 +980,7 @@ refuse_removed_weight_mode_flag() {
 # get a generic "unknown arg".
 REMOVED_FORCE_MESSAGE='--force was removed (ADR 0008): status labels never block serving. Drop the flag.'
 REMOVED_ALLOW_UNVALIDATED_MESSAGE='--allow-unvalidated was removed (ADR 0008): drop the flag. Lab expected-identity files are not a live product (ADR 0012).'
-REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are released specs whose review.status is display-only (scripts/release.sh list). It does not mean ADR 0004 Validated.'
+REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are catalog specs whose review.status is display-only (scripts/release.sh list). It does not mean ADR 0004 Validated.'
 REMOVED_CATALOG_VALIDATED_MESSAGE='--validated was removed (ADR 0008): drop the flag. --reviewed-identity is retired (ADR 0012). It does not mean ADR 0004 Validated.'
 REMOVED_ACTIVATE_MESSAGE='activate was removed (ADR 0008): use prepare.'
 refuse_removed_force_flag() {
@@ -1299,6 +1312,19 @@ load_docker_argv_from_plan() {
 
 # Build a validated launch-plan JSON file from the currently loaded profile,
 # confirmed topology, and resolved model-library instance. Not a permit.
+stack_build_revision() {
+  local revision dirty
+  revision=$(git -C "$REPO_DIR" rev-parse --verify HEAD 2>/dev/null) \
+    || { printf 'unversioned\n'; return; }
+  dirty=$(git -C "$REPO_DIR" status --porcelain --untracked-files=normal 2>/dev/null) \
+    || { printf '%s-unknown\n' "$revision"; return; }
+  if [ -n "$dirty" ]; then
+    printf '%s-dirty\n' "$revision"
+  else
+    printf '%s\n' "$revision"
+  fi
+}
+
 write_launch_plan_file() {
   local dest="${1:?destination required}"
   local action="${2:-start}"
@@ -1378,6 +1404,7 @@ print(json.dumps(ranks))
   PULSAR_PLAN_EXTRA_ENV_JSON="$extra_json" \
   PULSAR_PLAN_SPEC_ARGS_JSON="$spec_json" \
   PULSAR_PLAN_VLLM_EXTRA_JSON="$vllm_json" \
+  PULSAR_STACK_BUILD="$(stack_build_revision)" \
   CONF_NAME="$CONF_NAME" \
   SERVED_NAME="$SERVED_NAME" \
   MODEL="$MODEL" \
@@ -1412,6 +1439,7 @@ def load_list(name):
 
 facts = {
     "platform_id": os.environ.get("PULSAR_PLATFORM_ID", "dgx-spark-gb10"),
+    "stack_build": os.environ["PULSAR_STACK_BUILD"],
     "lifecycle_action": os.environ.get("PULSAR_PLAN_ACTION") or "start",
     "profile": os.environ["CONF_NAME"],
     "served_name": os.environ["SERVED_NAME"],
@@ -1529,7 +1557,7 @@ expected_rank_for_nodes() {
   fi
 }
 
-# Node count of a profile, read from the released spec's geometry without
+# Node count of a profile, read from the catalog spec's geometry without
 # loading it (a profile is a spec id, ADR 0017 Stage 4). Fails for anything
 # else, including a conf name.
 profile_nodes_for_conf() {
@@ -1773,7 +1801,7 @@ container_all_candidate_is_safe() {
   [ -n "$rank" ] || return 1
   local nodes
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
-    # Retired profile (no released spec under releases/, or a conf name from
+    # Retired profile (no catalog spec under releases/, or a conf name from
     # before ADR 0017 Stage 4): ownership is still proven by labels, so the
     # container must remain stoppable. Geometry comes from its own labels.
     if [ "$rank" = single ]; then

@@ -129,7 +129,6 @@ case "$OP" in
   archive)
     if [ "$ARCHIVE_ACTION" = verify ]; then
       result=$(archive_verify) || die "archive verification failed"
-      result=$(model_ctl "$(model_json operation archive-record snapshot_manifest_id "$MANIFEST_ID" root "$PULSAR_COLD_ROOT" result: "$result")") || die "archive verified but its observation could not be recorded"
       emit_result "$result"
     else archive_create; fi ;;
 

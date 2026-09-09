@@ -1,16 +1,17 @@
 # Review a catalog contribution
 
-The private workbench exports a local package. Export does not publish.
-Publication proposes the spec and compact evidence through a reviewed pull
-request against this public stack. A separate contribution worktree protects
-the experiment checkout.
+The workbench maintainer decides which specs are published to the catalog.
+Publishing places one schema-valid `releases/<spec-id>.json` in this repository;
+the filename must equal the document's complete `spec_id`. The stack does not
+promote, classify, or infer catalog authority from state, review, evidence,
+archive observations, or launch compatibility.
 
-A contribution contains exactly one `releases/<spec-id>.json` and the six
-baseline measurement documents, `run.json`, and `summary.json` under
-`results/baseline-v1/<spec-id>/`. Raw captures, detailed logs, topology, local
-paths and credentials do not belong in the public contribution.
+`state` may be `measured`, `released`, or null. `review` may be a valid review
+object, an empty object, or null. Both are display metadata. A catalog spec is
+selectable regardless of either value, while actual storage and serving actions
+continue to enforce their live prerequisites.
 
-Run these checks on the proposed checkout:
+Run the catalog and publication-safety checks on the proposed checkout:
 
 ```sh
 python3 scripts/check-catalog.py
@@ -18,32 +19,39 @@ python3 scripts/check_publishable_privacy.py
 scripts/selftest.sh
 ```
 
-The catalog is `releases/`: every document there must be `state=released` and
-serveable. Review status is an operator label (`experimental`, `stable`,
-`validated`, `failed`, `withdrawn`, and later values the schema allows). The
-stack does not refuse to catalog or serve a spec because of that label.
+`check-catalog.py` checks the release-spec schema, regular-file layout, and the
+filename-to-`spec_id` binding. The privacy scanner remains a separate mandatory
+publication safeguard.
 
-Byte integrity and baseline-v1 success are separate checks. Declared evidence
-must match its hashes. Claiming `stable` or `validated` still requires the six
-unchanged baseline-v1 criteria to recompute as pass. The catalog checker also
-confirms current consumer compatibility. It does not access the private
-workbench and does not claim to reproduce physical execution. The named private
-lab commit is provenance for maintainers with access, not publicly inspectable
-source evidence.
+## Optional assessments
 
-The six minimum requirements are exact model-file identity; serving smoke;
-strict repeatability within one server boot; the pinned 100-question GSM8K
-subset with its fixed accuracy floor; a 60-minute error-free soak; and complete
-performance measurements at concurrency 1, 2, 4 and 8. Performance is measured
-without a minimum speed threshold. No deep or maximum-context qualification is
-implied. The deeper `validated` suite remains deferred.
+A contribution may also contain compact measurements, `run.json`, and a
+qualification summary. These files do not grant or remove catalog membership.
+Assess complete compact evidence explicitly with:
 
-The workbench packages measured evidence and does not mint catalog `stable`.
-Public checks validate compact declarations; they cannot access a maintainer's
-private archive. Review and merge establish that a spec is released into
-`releases/`. The operator chooses the review status.
+```sh
+python3 scripts/verify-evidence.py \
+  --spec releases/<spec-id>.json \
+  --evidence-root . \
+  --run results/baseline-v1/<spec-id>/run.json \
+  --summary results/baseline-v1/<spec-id>/summary.json
+```
 
-An existing recipe may later be withdrawn by a reviewed metadata change with a
-clear reason. Preserve its identity, measurements and archive. The catalog warns
-and removes recommendations; exact serving remains possible when operational
-checks pass. No new baseline or archive deletion is implied by withdrawal.
+Assess whether the current stack can statically reproduce the recipe with:
+
+```sh
+python3 scripts/check-launch-compatibility.py \
+  --spec releases/<spec-id>.json
+```
+
+These diagnostics report only what they checked. Evidence consistency does not
+prove that physical measurements occurred, and static launch compatibility does
+not prove that model files, the image, topology, memory, ports, or services are
+currently ready. `./pulsar start` performs the authoritative live checks.
+
+Raw captures, detailed logs, topology, local paths, credentials, and private
+workbench state do not belong in the public contribution. Publication never
+downloads weights, launches or stops a model, or changes archives.
+
+A later metadata change, including withdrawal, does not alter spec identity and
+does not automatically stop services or remove files or archives.

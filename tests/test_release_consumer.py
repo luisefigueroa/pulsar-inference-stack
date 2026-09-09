@@ -7,7 +7,9 @@ import tempfile
 import unittest
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from release_spec import load_spec, pretty_json_bytes, spec_id_for, runtime_contract_id, verify_snapshot_manifest
+from release_spec import (load_spec, pretty_json_bytes, spec_id_for,
+                          runtime_contract_id, verify_snapshot_manifest,
+                          build_profile_identity)
 from release_spec.identity import argv_from_identity
 from scripts import release_consumer as consumer
 
@@ -25,6 +27,9 @@ class Consumer(unittest.TestCase):
 
     def test_empty_catalog(self):
         self.assertEqual(consumer.list_releases(self.root/'new'),[])
+
+    def test_script_projector_is_the_supported_release_spec_api(self):
+        self.assertIs(consumer.build_profile_identity, build_profile_identity)
 
     def test_manifest_verification_catches_changed_files(self):
         manifest=copy.deepcopy(self.spec['identity']['snapshot_manifest'])
@@ -56,6 +61,16 @@ class Consumer(unittest.TestCase):
         variables=consumer.spec_profile_variables(consumer.load_release(self.root,self.spec['spec_id']),dict(port=8000,served_name='example'),'example/image')
         self.assertEqual(variables['RECOMMENDED_SPEC'],'0')
         self.assertEqual(variables['CONF_NAME'],self.spec['spec_id'])
+
+    def test_nullable_catalog_metadata_loads_and_lists(self):
+        self.spec['state']=None;self.spec['review']=None
+        path=self.root/'releases'/f'{self.spec["spec_id"]}.json'
+        path.write_bytes(pretty_json_bytes(self.spec))
+        loaded=consumer.load_release(self.root,self.spec['spec_id'])
+        self.assertIsNone(loaded['state']);self.assertIsNone(loaded['review'])
+        row=consumer.list_releases(self.root)[0]
+        self.assertIsNone(row['state']);self.assertIsNone(row['review_status'])
+        self.assertIsNone(row['withdrawal_reason'])
 
     def test_deployment_changes_do_not_change_runtime_id(self):
         before=runtime_contract_id(self.spec)

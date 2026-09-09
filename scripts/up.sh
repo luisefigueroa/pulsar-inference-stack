@@ -16,7 +16,9 @@ usage: scripts/up.sh SPEC_ID [options]
   --verbose             Show full diagnostic output
   --node NODE_ID        Select a confirmed node for a one-node spec
   --accept-memory-warn  Explicitly accept a memory warning
-  --pull-image / --yes  Permit staging the pinned image when missing
+  --pull-image          Permit staging the pinned image when missing
+  --replace             Permit stopping an existing exact-name service
+  --yes                 Confirm the requested start only; never implies the above
   --skip-preflight      Use when the cluster preflight was run separately
 
 Model-file verification cannot be skipped. Recipe changes, including
@@ -29,8 +31,8 @@ NAME="${1:-}"
 [ -n "$NAME" ] || die "usage: $0 <model-name> [options]"
 shift
 
-SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0
-DRY=0 YES=0 VERBOSE=0 NODE_SELECTOR=""
+SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
+DRY=0 VERBOSE=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
     --skip-weights-check) die "model-file verification cannot be skipped" 2 ;;
     --accept-memory-warn) ACCEPT_MEM=1 ;;
     --pull-image) PULL_IMG=1 ;;
+    --replace) REPLACE=1 ;;
     --weight-source|--weight-mode)
       refuse_removed_weight_mode_flag
       ;;
@@ -50,7 +53,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --dry-run) DRY=1 ;;
-    --yes|-y) YES=1 ;;
+    --yes|-y) : ;;  # Compatibility acknowledgement; grants no extra action.
     --verbose|-v) VERBOSE=1 ;;
     -h|--help)
       up_usage
@@ -64,7 +67,7 @@ done
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
-  die "released spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
+  die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
 fi
 require_spec_platform_admission "$NAME"
 NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
@@ -132,7 +135,7 @@ if [ "$img_rc" != 0 ]; then
       die "confirmed topology has fewer ranks than this profile requires"
       ;;
     missing-on-worker|missing-on-rank)
-      if [ "$DRY" != 1 ] && { [ "$PULL_IMG" = 1 ] || [ "$YES" = 1 ]; }; then
+      if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
         "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after rank sync"
@@ -147,7 +150,7 @@ if [ "$img_rc" != 0 ]; then
       die "Docker is unavailable on one or more required physical nodes"
       ;;
     missing-on-head|missing-on-target|missing-both|unknown|"")
-      if [ "$DRY" != 1 ] && { [ "$PULL_IMG" = 1 ] || [ "$YES" = 1 ]; }; then
+      if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
         "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after sync"
@@ -246,6 +249,9 @@ case "$SPEC_MODE" in
 esac
 
 launch_flags=()
+if [ "$REPLACE" = 1 ]; then
+  launch_flags+=(--replace)
+fi
 if [ "$NODES" -gt 1 ]; then
   # up.sh already ran (or explicitly skipped) this preflight. Always suppress
   # start-cluster.sh's duplicate run while preserving the caller's decision.
@@ -262,7 +268,7 @@ if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
   trap 'rm -f "${PLAN_FILE:-}"' EXIT
 fi
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo start)"
-echo "PASS  plan      schema=1 ranks=$NODES classifier=inventory (not a permit)"
+echo "PASS  plan      schema=2 ranks=$NODES classifier=inventory (not a permit)"
 
 if [ "$DRY" = 1 ]; then
   cat <<EOF

@@ -28,19 +28,18 @@ if str(_REPO_ROOT) not in sys.path:
 
 from release_spec import (  # noqa: E402
     ReleaseSpecError,
-    build_snapshot_manifest,
-    identity_block,
     load_spec,
-    normalize_container_env,
-    normalize_engine_args,
     pretty_json_bytes,
     spec_id_for,
+)
+from release_spec.recipe import (  # noqa: E402
+    build_profile_identity as canonical_build_profile_identity,
+    profile_image_digest as canonical_profile_image_digest,
 )
 from release_spec.identity import argv_from_identity as spec_argv_from_identity  # noqa: E402
 from release_spec.schema import (  # noqa: E402
     FABRIC_LOCAL,
     FABRIC_ROCE_V2,
-    FORBIDDEN_ENGINE_FLAGS,
     SHA256_HEX_RE,
     require_public_string,
 )
@@ -49,9 +48,6 @@ try:
     from scripts.terminal_format import TerminalWriter
 except ModuleNotFoundError:  # pragma: no cover - direct script invocation
     from terminal_format import TerminalWriter  # type: ignore[no-redef]
-
-# Image references must carry an immutable content digest.
-IMAGE_PIN_RE = re.compile(r"@sha256:([0-9a-f]{64})$")
 
 RELEASES_DIR = "releases"
 OVERLAY_KIND = "pulsar-deployment-overlay"
@@ -104,7 +100,6 @@ USAGE = (
     "       python3 scripts/release_consumer.py project-batch --records FILE"
 )
 DEFAULT_IMAGE_REPO = "vllm/vllm-openai"
-COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 SPEC_ID_RE = re.compile(r"[0-9a-f]{64}")
 EMPTY_PROJECTION = {"manifest": "missing", "identities": []}
 UNREADABLE_PROJECTION = {"manifest": "unreadable", "identities": []}
@@ -116,22 +111,6 @@ class ReleaseConsumerError(ValueError):
 
 def fail(message: str) -> None:
     raise ReleaseConsumerError(message)
-
-
-def blocking_gap(
-    *,
-    field: str,
-    source: str,
-    reason: str,
-    section: str = "identity",
-) -> dict[str, str]:
-    return {
-        "class": "blocking",
-        "section": section,
-        "field": field,
-        "source": source,
-        "reason": reason,
-    }
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -177,10 +156,10 @@ def load_json(path: str | pathlib.Path) -> Any:
 
 def profile_image_digest(image: str) -> str:
     """Return ``sha256:<hex>`` from a conf IMAGE pin; fail if unpinned."""
-    match = IMAGE_PIN_RE.search(image or "")
-    if match is None:
-        fail("profile image must be pinned by @sha256 digest")
-    return "sha256:" + match.group(1)
+    try:
+        return canonical_profile_image_digest(image)
+    except ReleaseSpecError as exc:
+        fail(str(exc))
 
 
 def _flag_and_value(item: str, index: int, tokens: list[str]) -> tuple[str, str, int] | None:
@@ -195,283 +174,7 @@ def _flag_and_value(item: str, index: int, tokens: list[str]) -> tuple[str, str,
     return None
 
 
-def strip_profile_parallelism(engine_args: list[str]) -> tuple[int, int, list[str]]:
-    """Mirror ``_profile_parallelism``: tp/pp default 1; GPU_MEM_UTIL must not repeat."""
-    values = {"--tensor-parallel-size": 1, "--pipeline-parallel-size": 1}
-    seen: set[str] = set()
-    remaining: list[str] = []
-    index = 0
-    while index < len(engine_args):
-        item = engine_args[index]
-        matched = _flag_and_value(item, index, engine_args)
-        if matched is None:
-            remaining.append(item)
-            index += 1
-            continue
-        flag, raw, next_index = matched
-        canonical = PARALLELISM_CANONICAL.get(flag, flag)
-        if canonical in seen:
-            fail(f"profile repeats structured engine argument {canonical}")
-        seen.add(canonical)
-        if canonical in values:
-            try:
-                parsed = int(raw)
-            except ValueError:
-                fail(f"profile {item} must be an integer")
-            if parsed < 1:
-                fail(f"profile {item} must be positive")
-            values[canonical] = parsed
-        elif canonical == "--gpu-memory-utilization":
-            fail("profile engine_args duplicate GPU_MEM_UTIL")
-        index = next_index
-    return (
-        values["--tensor-parallel-size"],
-        values["--pipeline-parallel-size"],
-        remaining,
-    )
-
-
-def _forbidden_flag(token: str) -> str | None:
-    for flag in FORBIDDEN_ENGINE_FLAGS:
-        if token == flag or token.startswith(flag + "="):
-            return flag
-    return None
-
-
-def _reject_forbidden(tokens: list[str]) -> str | None:
-    for token in tokens:
-        flag = _forbidden_flag(token)
-        if flag is not None:
-            return flag
-    return None
-
-
-def build_profile_identity(
-    *,
-    model_id: str,
-    image: str,
-    nodes: int,
-    gpu_mem_util: str,
-    engine_args: list[str],
-    container_env: list[str],
-    spec_decode_args: list[str],
-    spec_decode: bool,
-    platform_id: str,
-    snapshot_revision: str | None,
-    files: list[dict[str, Any]] | None,
-    source_model_id: str | None = None,
-) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
-    """Return ``(identity, blocking_gaps)``. Identity is None when blocked."""
-    blocking: list[dict[str, str]] = []
-    if source_model_id is not None and source_model_id != model_id:
-        blocking.append(
-            blocking_gap(
-                field="model_id",
-                source="snapshot manifest",
-                reason="snapshot manifest model_id differs from the profile MODEL",
-            )
-        )
-
-    digest: str | None = None
-    try:
-        digest = profile_image_digest(image)
-    except ReleaseConsumerError as exc:
-        blocking.append(
-            blocking_gap(
-                field="image",
-                source="conf:IMAGE",
-                reason=str(exc),
-            )
-        )
-
-    if spec_decode and not spec_decode_args:
-        blocking.append(
-            blocking_gap(
-                field="engine_args",
-                source="conf:SPEC_DECODE_ARGS",
-                reason="profile has no SPEC_DECODE_ARGS; refusing --spec-decode",
-            )
-        )
-
-    remaining: list[str] | None = None
-    tensor_parallel = 1
-    pipeline_parallel = 1
-    try:
-        normalized = normalize_engine_args(
-            list(engine_args), path="identity.engine_args"
-        )
-        tensor_parallel, pipeline_parallel, remaining = strip_profile_parallelism(
-            normalized
-        )
-    except (ReleaseSpecError, ReleaseConsumerError) as exc:
-        blocking.append(
-            blocking_gap(
-                field="engine_args",
-                source="conf:ENGINE_ARGS",
-                reason=str(exc),
-            )
-        )
-        remaining = None
-
-    if remaining is not None:
-        forbidden = _reject_forbidden(remaining)
-        if forbidden is not None:
-            blocking.append(
-                blocking_gap(
-                    field="engine_args",
-                    source="conf:ENGINE_ARGS",
-                    reason=(
-                        f"profile ENGINE_ARGS must not include {forbidden} "
-                        "(geometry or deployment overlay owns this flag)"
-                    ),
-                )
-            )
-            remaining = None
-        elif any(
-            token == "--gpu-memory-utilization"
-            or token.startswith("--gpu-memory-utilization=")
-            for token in remaining
-        ):
-            blocking.append(
-                blocking_gap(
-                    field="engine_args",
-                    source="conf:ENGINE_ARGS",
-                    reason="profile engine_args duplicate GPU_MEM_UTIL",
-                )
-            )
-            remaining = None
-
-    if not isinstance(gpu_mem_util, str) or not gpu_mem_util:
-        blocking.append(
-            blocking_gap(
-                field="engine_args",
-                source="conf:GPU_MEM_UTIL",
-                reason="GPU_MEM_UTIL must be a non-empty string",
-            )
-        )
-        remaining = None
-
-    if remaining is not None:
-        remaining = [
-            *remaining,
-            "--gpu-memory-utilization",
-            gpu_mem_util,
-        ]
-        if spec_decode and spec_decode_args:
-            remaining.extend(list(spec_decode_args))
-        try:
-            remaining = normalize_engine_args(
-                remaining, path="identity.engine_args"
-            )
-        except ReleaseSpecError as exc:
-            blocking.append(
-                blocking_gap(
-                    field="engine_args",
-                    source="conf:ENGINE_ARGS",
-                    reason=str(exc),
-                )
-            )
-            remaining = None
-
-    if remaining is not None:
-        forbidden = _reject_forbidden(remaining)
-        if forbidden is not None:
-            blocking.append(
-                blocking_gap(
-                    field="engine_args",
-                    source="conf:ENGINE_ARGS",
-                    reason=(
-                        f"profile ENGINE_ARGS must not include {forbidden} "
-                        "(geometry or deployment overlay owns this flag)"
-                    ),
-                )
-            )
-            remaining = None
-
-    if remaining is not None and tensor_parallel * pipeline_parallel != nodes:
-        blocking.append(
-            blocking_gap(
-                field="geometry",
-                source="conf:NODES",
-                reason="tp * pp must equal nodes",
-            )
-        )
-
-    env_tokens: list[str] | None
-    try:
-        env_tokens = normalize_container_env(
-            list(container_env), path="identity.container_env"
-        )
-    except ReleaseSpecError as exc:
-        blocking.append(
-            blocking_gap(
-                field="container_env",
-                source="conf:CONTAINER_ENV",
-                reason=str(exc),
-            )
-        )
-        env_tokens = None
-
-    manifest: dict[str, Any] | None = None
-    if (
-        files is not None
-        and snapshot_revision is not None
-        and not any(
-            item["field"] == "model_id" and item["class"] == "blocking"
-            for item in blocking
-        )
-    ):
-        try:
-            manifest = build_snapshot_manifest(
-                model_id=model_id,
-                snapshot_revision=snapshot_revision,
-                files=files,
-            )
-        except ReleaseSpecError as exc:
-            blocking.append(
-                blocking_gap(
-                    field="snapshot_manifest",
-                    source="snapshot manifest",
-                    reason=str(exc),
-                )
-            )
-
-    if blocking:
-        return None, blocking
-    if (
-        remaining is None
-        or env_tokens is None
-        or digest is None
-        or manifest is None
-        or snapshot_revision is None
-    ):
-        return None, blocking
-    identity = {
-        "model_id": model_id,
-        "snapshot_revision": snapshot_revision,
-        "snapshot_manifest": manifest,
-        "engine_args": remaining,
-        "container_env": env_tokens,
-        "image": {"digest": digest},
-        "geometry": {
-            "platform_id": platform_id,
-            "nodes": nodes,
-            "tp": tensor_parallel,
-            "pp": pipeline_parallel,
-            "fabric": FABRIC_LOCAL if nodes == 1 else FABRIC_ROCE_V2,
-        },
-    }
-    try:
-        identity = identity_block(identity)
-    except ReleaseSpecError as exc:
-        return None, [
-            blocking_gap(
-                field="identity",
-                source="generator",
-                reason=str(exc),
-            )
-        ]
-    return identity, []
+build_profile_identity = canonical_build_profile_identity
 
 
 def profile_identity(
@@ -649,7 +352,7 @@ def spec_profile_variables(
     *,
     active_platform_id: str | None = None,
 ) -> dict[str, Any]:
-    """Map a released spec plus overlay into load_conf-shaped variables.
+    """Map a catalog spec plus overlay into load_conf-shaped variables.
 
     ``SPEC_PLATFORM_ID`` is always exported so the start path can refuse a
     spec frozen for another platform. Pass ``active_platform_id`` only from
@@ -674,7 +377,7 @@ def spec_profile_variables(
         fail("spec identity.geometry.platform_id is missing")
     if active_platform_id and spec_platform != active_platform_id:
         fail(
-            f"released spec {spec_id} targets platform {spec_platform!r}; "
+            f"catalog spec {spec_id} targets platform {spec_platform!r}; "
             f"this stack is {active_platform_id!r} (refusing to launch outside "
             "the spec's frozen geometry)"
         )
@@ -942,8 +645,6 @@ def _load_released_file(path: pathlib.Path) -> dict[str, Any]:
         spec = load_spec(path)
     except ReleaseSpecError as exc:
         fail(f"{path}: {exc}")
-    if spec["state"] != "released":
-        fail(f"{path}: state must be 'released', not {spec['state']!r}")
     stem = path.stem
     if stem != spec["spec_id"]:
         fail(
@@ -959,11 +660,11 @@ def load_release(
     *,
     releases_root: str | pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    """Load one released spec; fail without fallback on any mismatch."""
+    """Load one catalog spec; fail without fallback on any mismatch."""
     digest = _require_spec_id(spec_id)
     path = _releases_root(repo_root, releases_root) / f"{digest}.json"
     if not path.exists():
-        fail(f"{path}: released spec is missing")
+        fail(f"{path}: catalog spec is missing")
     return _load_released_file(path)
 
 
@@ -984,7 +685,7 @@ def matching_release_for_profile(
     source_model_id: str | None,
     recommended_spec: bool = False,
 ) -> dict[str, Any]:
-    """Load the released spec whose id recomputes from these fields plus the snapshot manifest.
+    """Load the catalog spec whose id recomputes from these fields plus the snapshot manifest.
 
     Absent identity or missing file: ``state=absent`` (no new prepare check).
     An invalid file at that id fails without fallback. Never scans by
@@ -1011,7 +712,7 @@ def matching_release_for_profile(
     root = _releases_root(repo_root, releases_root)
     spec, state = try_load_release(root, spec_id)
     if state == "invalid":
-        fail(f"{root / f'{spec_id}.json'}: released spec file is invalid")
+        fail(f"{root / f'{spec_id}.json'}: catalog spec file is invalid")
     if spec is None:
         return {"state": "absent", "spec_id": spec_id, "snapshot_manifest": None}
     manifest = spec["identity"]["snapshot_manifest"]
@@ -1031,7 +732,7 @@ def try_load_release(
     """Return ``(spec, state)`` with state ``absent``, ``valid``, or ``invalid``.
 
     ``invalid`` means the exact ``<spec_id>.json`` exists but fails
-    verification (malformed, hash mismatch, or not ``state=released``). The
+    schema or filename verification. The
     catalog reports that explicitly instead of pretending no spec exists.
     """
     try:
@@ -1290,6 +991,10 @@ def _project_profile(
             snapshot_revision=snapshot_revision,
             files=files,
             source_model_id=source_model_id,
+            freeze_nccl_qps=any(
+                item.startswith("NCCL_IB_QPS_PER_CONNECTION=")
+                for item in own["identity"]["container_env"]
+            ),
         )
         if identity is None:
             identities.append(
@@ -1345,7 +1050,7 @@ def _released_spec_named_by_profile(
     profile: str,
     context: ProjectionContext | None,
 ) -> dict[str, Any] | None:
-    """The released spec whose id is ``profile`` (a profile is a spec id)."""
+    """The catalog spec whose id is ``profile`` (a profile is a spec id)."""
     if not SPEC_ID_RE.fullmatch(profile or ""):
         return None
     if context is not None:
@@ -1379,7 +1084,7 @@ def list_releases(
                 "state": spec["state"],
                 "review_status": status,
                 "reviewed_at": reviewed_at,
-                "withdrawal_reason": spec["review"].get("reason"),
+                "withdrawal_reason": (spec.get("review") or {}).get("reason"),
                 "path": f"{RELEASES_DIR}/{path.name}",
             }
         )
@@ -1465,7 +1170,7 @@ def _overlay_entry(value: Any, *, path: str) -> dict[str, Any]:
 def default_overlay() -> dict[str, Any]:
     """The overlay a site has before it writes one: every default unset, so
     the port is 8000, the served name is the model id, and placement is
-    resolved at start. A fresh clone serves a released spec with it."""
+    resolved at start. A fresh clone serves a catalog spec with it."""
     return {
         "schema_version": OVERLAY_SCHEMA_VERSION,
         "kind": OVERLAY_KIND,
@@ -1540,9 +1245,9 @@ def overlay_for_spec(
 
 
 def load_spec_file_for_id(spec_file: str | pathlib.Path, spec_id: str) -> dict[str, Any]:
-    """A spec document (measured or released) whose spec_id is ``spec_id``.
+    """A spec document whose spec_id is ``spec_id``.
 
-    The lab starts a measured spec for its baseline run before promotion:
+    The lab may start a spec directly before catalog publication:
     ``PULSAR_SPEC_FILE`` names the file and the profile is its spec id.
     """
     digest = _require_spec_id(spec_id)
@@ -1604,7 +1309,7 @@ def _review_text(status: str | None, reviewed_at: str | None) -> str:
 def markdown_release_table(rows: list[dict[str, Any]]) -> str:
     """The generated support-matrix block for docs/MODELS.md.
 
-    One row per released spec: the spec id is the profile name operators pass
+    One row per catalog spec: the spec id is the profile name operators pass
     to ``./pulsar start``; review is display-only (ADR 0017).
     """
     lines = [
@@ -1622,7 +1327,7 @@ def markdown_release_table(rows: list[dict[str, Any]]) -> str:
             )
         )
     if len(lines) == 2:
-        lines.append("| (no released specs) | | | | |")
+        lines.append("| (no catalog specs) | | | | |")
     return "\n".join(lines) + "\n"
 
 
@@ -1673,7 +1378,7 @@ def cmd_verify(
         return 0
     term = TerminalWriter()
     term.field("spec_id", spec["spec_id"])
-    term.field("state", spec["state"])
+    term.field("state", spec["state"] or "not specified")
     term.field("review", _review_text(status, reviewed_at))
     return 0
 
@@ -1786,7 +1491,7 @@ def cmd_project_batch(args: argparse.Namespace, parser: argparse.ArgumentParser)
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Read released specs under releases/",
+        description="Read catalog specs under releases/",
         usage=USAGE,
     )
     parser.add_argument(

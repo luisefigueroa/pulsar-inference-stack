@@ -6,6 +6,9 @@ mutable image, identity, topology, ownership, and health prerequisites must
 be rechecked immediately before mutation. Bash remains the operator and
 process boundary; this module owns the JSON contracts.
 
+Launch-plan schema 2 records the actual stack build. Multi-node NCCL QPs come
+from recipe identity; the remaining runtime values are deployment provenance.
+
 Current N=1 vs N>1 launcher differences preserved by ``rank_docker_argv``
 (changing them would change launch behavior and needs physical revalidation):
 
@@ -47,7 +50,7 @@ except ModuleNotFoundError:
         load_current_platform,
     )
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 PROBE_SCHEMA_VERSION = 1
 RANK_SPEC_SCHEMA_VERSION = 1
 PLAN_KIND = "pulsar-launch-plan"
@@ -112,6 +115,7 @@ LABEL_MODEL_REVISION = "io.pulsar.gb10.model-revision"
 LABEL_IDENTITY_STATUS = "io.pulsar.gb10.model-identity-status"
 LABEL_LAUNCH_CONTRACT = "io.pulsar.gb10.launch-contract"
 LABEL_SPEC_DECODE = "io.pulsar.gb10.spec-decode"
+LABEL_STACK_BUILD = "io.pulsar.gb10.stack-build"
 
 # Pair-only aggregate names that N-rank paths must not emit.
 LEGACY_PAIR_IMAGE_STATES = {
@@ -496,6 +500,7 @@ def validate_launch_plan(document: Any) -> dict[str, Any]:
         "is_permit": False,
         "lifecycle_action": action,
         "platform_id": require_text(plan.get("platform_id", "dgx-spark-gb10"), "platform_id"),
+        "stack_build": require_text(plan.get("stack_build"), "stack_build"),
         "profile": profile,
         "served_name": served,
         "model_id": model_id,
@@ -565,6 +570,7 @@ def rank_container_spec(plan: dict[str, Any], rank: int) -> dict[str, Any]:
         LABEL_NODE_ID: row["node_id"],
         LABEL_LAUNCH_CONTRACT: plan["launch_contract_id"],
         LABEL_SPEC_DECODE: spec_state,
+        LABEL_STACK_BUILD: plan["stack_build"],
         LABEL_WEIGHT_SOURCE: STORAGE_MECHANISM,
         LABEL_WEIGHT_OWNER: storage["home_node_id"],
         LABEL_WEIGHT_CONFIG: storage["content_id"],
@@ -657,6 +663,7 @@ def rank_docker_argv(
         LABEL_NODE_ID,
         LABEL_LAUNCH_CONTRACT,
         LABEL_SPEC_DECODE,
+        LABEL_STACK_BUILD,
         LABEL_WEIGHT_SOURCE,
         LABEL_WEIGHT_OWNER,
         LABEL_WEIGHT_CONFIG,
@@ -673,6 +680,7 @@ def rank_docker_argv(
             LABEL_WEIGHT_SOURCE,
             LABEL_LAUNCH_CONTRACT,
             LABEL_SPEC_DECODE,
+            LABEL_STACK_BUILD,
         ]
         for key in early:
             argv.extend(["--label", f"{key}={labels[key]}"])
@@ -762,6 +770,10 @@ def rank_docker_argv(
             ]
         )
     for item in runtime["container_env"]:
+        if (plan["nodes"] > 1
+                and item.startswith("NCCL_IB_QPS_PER_CONNECTION=")):
+            # This recipe-owned value is emitted in the fixed multi-node block.
+            continue
         argv.extend(["-e", item])
     for item in runtime["extra_env"]:
         argv.extend(["-e", item])

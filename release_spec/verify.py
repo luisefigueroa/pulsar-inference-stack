@@ -246,12 +246,12 @@ def _verify_launch_contract(value: Any, *, path: str) -> dict[str, Any]:
     }
 
 
-def _verify_review(value: Any, *, state: str, path: str) -> dict[str, Any]:
+def _verify_review(value: Any, *, path: str) -> dict[str, Any] | None:
+    if value is None:
+        return None
     if not isinstance(value, dict):
-        fail(f"{path} must be an object")
-    if state == "measured":
-        if value != {}:
-            fail(f"{path} must be an empty object when state is measured")
+        fail(f"{path} must be null or an object")
+    if value == {}:
         return {}
     status = value.get("status")
     keys = REVIEW_KEYS | {"reason"} if status == "withdrawn" else REVIEW_KEYS
@@ -269,7 +269,7 @@ def _verify_review(value: Any, *, state: str, path: str) -> dict[str, Any]:
 
 
 def _require_status_evidence(
-    review: dict[str, Any],
+    review: dict[str, Any] | None,
     measurements: list[dict[str, Any]],
 ) -> None:
     """Couple passing review statuses to passing measurement suites.
@@ -278,7 +278,7 @@ def _require_status_evidence(
     ``validated`` means it also passed the deep suite. This checks recorded
     outcomes only; it does not judge thresholds or read the policy file.
     """
-    status = review.get("status")
+    status = (review or {}).get("status")
     if status not in {"stable", "validated"}:
         return
     baseline = [item for item in measurements if item["suite"] == "baseline-v1"]
@@ -308,8 +308,8 @@ def verify_spec(document: Any) -> dict[str, Any]:
     if document.get("kind") != KIND:
         fail(f"document.kind must be {KIND!r}")
     state = document.get("state")
-    if state not in {"measured", "released"}:
-        fail("document.state must be 'measured' or 'released'")
+    if state not in {None, "measured", "released"}:
+        fail("document.state must be null, 'measured', or 'released'")
     spec_id = require_sha256_hex(document.get("spec_id"), path="spec_id")
     identity = canonical_identity(document.get("identity"), path="identity")
     evidence, evidence_ids = _verify_evidence(
@@ -326,7 +326,7 @@ def verify_spec(document: Any) -> dict[str, Any]:
         document.get("launch_contract"),
         path="launch_contract",
     )
-    review = _verify_review(document.get("review"), state=state, path="review")
+    review = _verify_review(document.get("review"), path="review")
     _require_status_evidence(review, measurements)
     computed = spec_id_for(identity)
     if spec_id != computed:

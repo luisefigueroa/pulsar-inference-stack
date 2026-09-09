@@ -10,10 +10,13 @@ public contribution. The operator command is `./pulsar`.
 
 - Use Bash for operator commands, confirmed topology, SSH, process orchestration,
   and transport. Use Python 3 for schemas, planning, identity, state, and tests.
-- `release_spec/` owns canonical immutable specs, snapshot manifests, measurement
-  contracts, the baseline policy evaluator, and public contribution verification.
+- `release_spec/` owns canonical immutable specs, snapshot manifests, the public
+  recipe projector, measurement contracts, the baseline policy evaluator, and
+  catalog-spec schema verification.
   Preserve the exact model bytes, image, recipe arguments, and hardware geometry
   in the selected spec. Deployment settings do not authorize recipe changes.
+  Multi-node NCCL QPs are recipe identity; other launcher defaults are recorded
+  deployment provenance. Every launched container identifies the actual stack build.
 - `model_library/` owns manifest verification, explicit homes, prepared copies,
   pins, archives, migration, and local records. Records locate bytes; manifests
   and actual verification establish their identity. Reuse the shared schema.
@@ -34,22 +37,25 @@ public contribution. The operator command is `./pulsar`.
 
 ## Evidence and publication
 
-A passing baseline is evaluation, not catalog admission. Released specs in
-`releases/` are catalog members and are serveable regardless of review status.
-The operator may label a release `experimental`, `stable`, `validated`, `failed`,
-or `withdrawn`. Claiming `stable` or `validated` still requires the unchanged
-baseline-v1 criteria. Failed or incomplete private attempts remain in the
-workbench until released. Withdrawal retains a spec with its reason and does
-not stop services or delete archives automatically.
+The workbench maintainer decides what is published. A schema-valid spec under
+`releases/`, with a filename equal to its complete `spec_id`, is a catalog
+member. `state` and `review` are nullable metadata and never catalog or serving
+gates. Do not infer, promote, or rewrite either value. Baseline results, archive
+proof, and current launch compatibility are independent optional assessments;
+their outcome does not add or remove catalog membership. Withdrawal metadata
+does not stop services or delete archives automatically.
 
 Keep topology files, hostnames, addresses, SSH identity, user paths, credentials,
-and raw experiment outputs out of tracked public files. Use the existing privacy
-scanner before publication and its `--staged` mode before committing. Retain
+and raw experiment outputs out of tracked public files. Privacy remains a
+publication-safety check even though evidence is not a catalog gate. Use the
+existing privacy scanner before publication and its `--staged` mode before committing. Retain
 licenses and attribution for carried-forward code. Fresh repository history does
 not mean importing former experiment evidence or serving catalog entries.
 
 Do not perform physical downloads, launches, service replacement, destructive
 cleanup, or remote publication outside the maintainer's explicitly agreed scope.
+Starting is non-replacing by default; image staging and replacement require
+their own explicit flags and authority.
 Do not claim physical serving results from mocked tests. Resolve significant
 changes to the agreed plan with the maintainer before implementing them.
 

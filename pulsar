@@ -15,6 +15,7 @@ case "$command" in
   status) exec "$REPO_DIR/scripts/status.sh" "$@" ;;
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
+  contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
   release) exec "$REPO_DIR/scripts/release.sh" "$@" ;;
   topology) exec "$REPO_DIR/scripts/topology.sh" "$@" ;;
   ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
@@ -40,9 +41,10 @@ for command,description in [
  ('pulsar start SPEC','Recheck prerequisites and start the exact selected spec.'),
  ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
  ('pulsar status SPEC','Observe the live service on all participating nodes.'),
- ('pulsar release list','Read the released-spec catalog.'),
+ ('pulsar release list','Read the schema-valid catalog specs.'),
  ('pulsar inventory','Inspect service ownership and current resource use.'),
  ('pulsar doctor','Run explicit host and topology diagnostics.'),
+ ('pulsar contract','Show the versioned stack/workbench integration contract.'),
  ('pulsar gum','Open the interactive Gum/plain workflow menu.'),
  ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
  ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),

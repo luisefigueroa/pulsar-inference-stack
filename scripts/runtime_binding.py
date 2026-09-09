@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from release_spec import load_spec, runtime_contract_id, canonical_json_digest
+from release_spec import (load_spec, runtime_contract_id, canonical_json_digest,
+                          nccl_qps_from_identity)
 from scripts.release_consumer import spec_profile_variables, format_shell_assignments
 from scripts import launch_plan
 
@@ -53,9 +54,11 @@ def bind_plan(facts,spec_path,prepared):
         if runtime[field] != expected[key]:fail(f'launch recipe {field} differs from selected spec')
     if runtime['extra_env'] or runtime['vllm_extra_args'] or runtime['spec_decode_args'] or facts['spec_decode']['enabled']:
         fail('recipe overrides require a new candidate spec')
-    for key in ('hf_hub_offline','vllm_logging_level','restart_policy','health_start_period','nccl_ib_qps','nccl_debug','master_port'):
+    for key in ('hf_hub_offline','vllm_logging_level','restart_policy','health_start_period','nccl_debug','master_port'):
         if runtime.get(key,launch_plan.DEFAULT_RUNTIME[key]) != launch_plan.DEFAULT_RUNTIME[key]:
             fail(f'implicit runtime setting {key} differs from fixed stack defaults; encode recipe environment in the spec')
+    if runtime.get('nccl_ib_qps',launch_plan.DEFAULT_RUNTIME['nccl_ib_qps']) != nccl_qps_from_identity(identity):
+        fail('launch NCCL QPs differ from the selected recipe identity')
     if Decimal(str(facts['gpu_mem_util']))!=Decimal(expected['GPU_MEM_UTIL']):fail('launch GPU memory setting differs from spec')
     if facts['image'].split('@')[-1]!=identity['image']['digest']:fail('launch image differs from spec')
     if facts['profile']!=spec['spec_id'] or facts['nodes']!=identity['geometry']['nodes'] or facts['platform_id']!=identity['geometry']['platform_id']:

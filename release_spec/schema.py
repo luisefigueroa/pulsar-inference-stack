@@ -19,7 +19,7 @@ KIND = "pulsar-release-spec"
 SNAPSHOT_MANIFEST_SCHEMA_VERSION = 1
 SNAPSHOT_MANIFEST_KIND = "model-library-snapshot-manifest"
 
-STATES = frozenset({"measured", "released"})
+STATES = frozenset({None, "measured", "released"})
 REVIEW_STATUSES = frozenset({"experimental", "stable", "validated", "failed", "withdrawn"})
 MEASUREMENT_SUITES = frozenset({"baseline-v1", "deep"})
 MEASUREMENT_OUTCOMES = frozenset(

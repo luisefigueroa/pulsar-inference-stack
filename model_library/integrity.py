@@ -236,32 +236,90 @@ def _renameat2_no_replace(src_fd: int, src_name: bytes, dest_fd: int, dest_name:
     raise StorageError(f"cannot publish snapshot without replacement: {os.strerror(code)}")
 
 
-def _rename_absent_destination(src_fd: int, src_name: str, dest_fd: int, dest_name: str) -> None:
-    """Rename only when the destination name is absent. Existing names refuse."""
+def _move_tree_without_replacement(source_fd: int, destination_fd: int) -> None:
+    """Move one owned tree using exclusive mkdir/link operations only."""
+    names = sorted(os.listdir(source_fd), key=lambda name: (name == 'manifest.json', name))
+    for name in names:
+        observed = os.stat(name, dir_fd=source_fd, follow_symlinks=False)
+        if stat.S_ISDIR(observed.st_mode):
+            os.mkdir(name, stat.S_IMODE(observed.st_mode), dir_fd=destination_fd)
+            child_source = os.open(
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=source_fd,
+            )
+            child_destination = os.open(
+                name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=destination_fd,
+            )
+            try:
+                _move_tree_without_replacement(child_source, child_destination)
+            finally:
+                os.close(child_destination)
+                os.close(child_source)
+            os.rmdir(name, dir_fd=source_fd)
+        elif stat.S_ISREG(observed.st_mode):
+            os.link(
+                name, name, src_dir_fd=source_fd, dst_dir_fd=destination_fd,
+                follow_symlinks=False,
+            )
+            os.unlink(name, dir_fd=source_fd)
+        else:
+            raise StorageError(f"staging contains a link or special file: {name}")
+        os.fsync(destination_fd)
+        os.fsync(source_fd)
+
+
+def _publish_reserved_destination(src_fd: int, src_name: str, dest_fd: int, dest_name: str) -> None:
+    """Reserve an absent directory, then publish without replacing any entry.
+
+    The canonical ``manifest.json`` is moved last. A failed move can leave a
+    reserved but incomplete destination, which readers reject because the
+    manifest is absent; explicit recovery can inspect both owned locations.
+    """
+    source = os.open(
+        src_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=src_fd,
+    )
     try:
-        os.stat(dest_name, dir_fd=dest_fd, follow_symlinks=False)
-    except FileNotFoundError:
-        pass
-    else:
-        raise StorageError("cannot publish snapshot without replacement: File exists")
-    try:
-        os.rename(src_name, dest_name, src_dir_fd=src_fd, dst_dir_fd=dest_fd)
+        mode = stat.S_IMODE(os.fstat(source).st_mode)
+        try:
+            os.mkdir(dest_name, mode, dir_fd=dest_fd)
+        except FileExistsError as exc:
+            raise StorageError(
+                "cannot publish snapshot without replacement: File exists"
+            ) from exc
+        destination = os.open(
+            dest_name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=dest_fd,
+        )
+        try:
+            _move_tree_without_replacement(source, destination)
+        finally:
+            os.close(destination)
+        os.rmdir(src_name, dir_fd=src_fd)
+    except StorageError:
+        raise
     except OSError as exc:
-        raise StorageError(f"cannot publish snapshot without replacement: {exc.strerror}") from exc
+        raise StorageError(
+            f"cannot publish snapshot without replacement: {exc.strerror}"
+        ) from exc
+    finally:
+        os.close(source)
 
 
 def rename_no_replace(source: Path, destination: Path) -> None:
     """Publish a directory without replacing an existing destination.
 
     Prefer Linux renameat2(RENAME_NOREPLACE). Filesystems that reject that
-    flag (NFSv3 EINVAL) fall back to an absence check plus renameat; an
-    existing destination still refuses publication.
+    flag (NFSv3 EINVAL) fall back to an exclusive destination reservation and
+    per-entry no-replace moves. The manifest moves last, so incomplete reserved
+    destinations never look published.
     """
     with directory(source.parent) as src, directory(destination.parent) as dest:
         if _renameat2_no_replace(src, os.fsencode(source.name), dest, os.fsencode(destination.name)):
             os.fsync(dest)
             os.fsync(src)
             return
-        _rename_absent_destination(src, source.name, dest, destination.name)
+        _publish_reserved_destination(src, source.name, dest, destination.name)
         os.fsync(dest)
         os.fsync(src)

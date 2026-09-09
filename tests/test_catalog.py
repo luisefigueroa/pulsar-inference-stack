@@ -58,6 +58,19 @@ class Catalog(unittest.TestCase):
         self.assertIsNone(row["checked_at"])
         self.assertFalse(self.store.root.exists())
 
+    def test_nullable_state_and_review_are_visible_without_gating(self):
+        spec = self.add_spec()
+        spec["state"] = None
+        spec["review"] = None
+        (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(
+            pretty_json_bytes(spec))
+        row = entries(self.repo, self.store, now=self.now)[0]
+        self.assertIsNone(row["state"])
+        self.assertIsNone(row["review"])
+        output = io.StringIO()
+        render([row], writer=TerminalWriter(stream=output))
+        self.assertGreaterEqual(output.getvalue().count("not specified"), 2)
+
     def test_explicit_missing_differs_from_unknown(self):
         spec = self.add_spec()
         self.observe(spec, local_state="missing", archive_state="missing", blockers=["No home was found."])

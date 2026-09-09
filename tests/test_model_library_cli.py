@@ -195,6 +195,20 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertTrue(archive_file.exists())
         self.assertTrue(Path(acquired["home"]["path"]).exists())
 
+    def test_archive_verify_is_read_only(self):
+        f = self.fixture()
+        self.acquire_candidate(f)
+        self.success(f.run("archive", "create", "--yes", spec=True))
+        manifest_id = f.spec["identity"]["snapshot_manifest"]["manifest_id"]
+        store = Store(f.state)
+        store.remove("archives", manifest_id)
+        before = sorted(path.relative_to(f.state) for path in f.state.rglob("*"))
+        verified = self.success(f.run("archive", "verify", spec=True))
+        after = sorted(path.relative_to(f.state) for path in f.state.rglob("*"))
+        self.assertTrue(verified["verified"])
+        self.assertEqual(after, before)
+        self.assertIsNone(Store(f.state).get("archives", manifest_id))
+
     def test_lab_discard_requires_explicit_acknowledgement(self):
         f = self.fixture()
         acquired = self.acquire_candidate(f)

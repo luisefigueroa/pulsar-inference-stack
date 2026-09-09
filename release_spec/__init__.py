@@ -52,9 +52,28 @@ __all__ = [
 from .manifest import load_snapshot_manifest, verify_snapshot_manifest
 __all__ += ["load_snapshot_manifest", "verify_snapshot_manifest"]
 
+from .recipe import (
+    DEFAULT_NCCL_IB_QPS,
+    NCCL_QPS_ENV,
+    build_profile_identity,
+    nccl_qps_from_identity,
+    profile_image_digest,
+)
+__all__ += [
+    "DEFAULT_NCCL_IB_QPS",
+    "NCCL_QPS_ENV",
+    "build_profile_identity",
+    "nccl_qps_from_identity",
+    "profile_image_digest",
+]
+
 
 def runtime_contract_id(spec):
-    """Identity of an exact runtime recipe, independent of deployment settings."""
+    """Identity of an exact runtime recipe, independent of deployment settings.
+
+    New multi-node specs include NCCL QPs in ``identity.container_env``, so the
+    nested ``spec_id`` binds that recipe-affecting value.
+    """
     document = verify_spec(spec)
     return canonical_json_digest({"kind": "pulsar-launch-contract",
                                   "spec_id": document["spec_id"],

@@ -144,7 +144,7 @@ def _working_tree_files(repo_root: pathlib.Path) -> list[tuple[str, bytes]]:
         if not item:
             continue
         relative = item.decode("utf-8", errors="strict")
-        if relative in seen or not is_publishable_path(relative):
+        if relative in seen:
             continue
         path = repo_root / relative
         if path.is_symlink():
@@ -331,7 +331,12 @@ def _generic_identity_value(value: str) -> bool:
     return False
 
 
-def _scan_text(relative: str, text: str) -> list[Finding]:
+def _scan_text(
+    relative: str,
+    text: str,
+    *,
+    scan_all_ips_override: bool | None = None,
+) -> list[Finding]:
     findings: set[Finding] = set()
 
     pattern_rules = (
@@ -386,7 +391,11 @@ def _scan_text(relative: str, text: str) -> list[Finding]:
                 )
             )
 
-    scan_all_ips = pathlib.PurePosixPath(relative).suffix.lower() != ".json"
+    scan_all_ips = (
+        pathlib.PurePosixPath(relative).suffix.lower() != ".json"
+        if scan_all_ips_override is None
+        else scan_all_ips_override
+    )
     for line_number, line in enumerate(text.splitlines(), 1):
         has_network_context = bool(
             NETWORK_CONTEXT_RE.search(line) or NETWORK_SCHEME_RE.search(line)
@@ -512,12 +521,17 @@ def scan_repository_bytes(relative: str, data: bytes) -> list[Finding]:
         "ssh-public-key",
         "ssh-fingerprint",
         "hashed-known-host",
+        "stable-hostname",
+        "network-address",
+        "mac-address",
+        "gpu-uuid",
+        "runtime-hostname",
         "site-home-path",
         *(rule for rule, _pattern in SECRET_PATTERNS),
     }
     return [
         finding
-        for finding in _scan_text(relative, text)
+        for finding in _scan_text(relative, text, scan_all_ips_override=False)
         if finding.rule in high_confidence
     ]
 

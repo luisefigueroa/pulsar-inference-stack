@@ -59,7 +59,7 @@ INVENTORY_SSH="${INVENTORY_SSH:-$PULSAR_SSH}"
 INVENTORY_NVIDIA_SMI="${INVENTORY_NVIDIA_SMI:-nvidia-smi}"
 
 # ---------------------------------------------------------------------------
-# Profile catalog (released specs under releases/)
+# Profile catalog (schema-valid specs under releases/)
 # ---------------------------------------------------------------------------
 build_profile_catalog_json() {
   # Pure bash catalog so we do not depend on Python seeing REPO_DIR, then
