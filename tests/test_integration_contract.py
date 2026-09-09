@@ -84,6 +84,13 @@ class IntegrationContract(unittest.TestCase):
                                   text=True,capture_output=True)
             self.assertEqual(result.returncode,0,result.stderr+result.stdout)
             self.assertEqual(json.loads(result.stdout)['result'],manifest)
+            # Undeclared FIFO entries must be rejected without opening them.
+            import os
+            os.mkfifo(package/'unlisted-pipe')
+            result=subprocess.run([str(ROOT/'pulsar'),'contribution','verify','--package',str(package),'--json'],
+                                  text=True,capture_output=True,timeout=5)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('regular files',json.loads(result.stdout)['error']['message'])
 
 
 if __name__=='__main__':

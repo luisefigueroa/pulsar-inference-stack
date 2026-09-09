@@ -95,6 +95,15 @@ class ContainerRuntime(unittest.TestCase):
         with self.assertRaises(ValueError):
             runtime.observe_rank(other,0,containers[0],images[0])
 
+    def test_extra_and_duplicate_ulimits_cannot_disappear_from_evidence(self):
+        _,_,_,plan,containers,images=fixture()
+        for extra in ({'Name':'nofile','Soft':128,'Hard':128},
+                      {'Name':'memlock','Soft':-1,'Hard':-1}):
+            container=copy.deepcopy(containers[0])
+            container['HostConfig']['Ulimits'].append(extra)
+            with self.subTest(name=extra['Name']),self.assertRaisesRegex(ValueError,'ulimits'):
+                runtime.observe_rank(plan,0,container,images[0])
+
     def test_plan_cannot_change_after_binding(self):
         _,_,_,plan,_,_=fixture()
         plan['port']=9000

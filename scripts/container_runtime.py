@@ -319,9 +319,9 @@ def observe_rank(plan, rank, container, image):
                 "restart_policy", "restart_max_retries"):
         if observed[key] != c[key]:
             fail(f"rank {rank}: container {key} differs")
-    for name, limit in c["ulimits"].items():
-        if observed["ulimits"].get(name) != limit:
-            fail(f"rank {rank}: ulimit {name} differs")
+    if (observed['ulimits'] != c['ulimits']
+            or len(host.get('Ulimits') or []) != len(observed['ulimits'])):
+        fail(f'rank {rank}: container ulimits differ')
     requests = observed["accelerator_requests"]
     if (len(requests) != 1 or requests[0].get("Count") != -1 or requests[0].get("DeviceIDs")
             or not any("gpu" in capabilities for capabilities in requests[0].get("Capabilities") or [])):
@@ -362,7 +362,7 @@ def observe_rank(plan, rank, container, image):
                                  for item in matching]
     portable = {key: observed[key] for key in ('network_mode','ipc_mode','shm_size_bytes',
         'memory_limit_bytes','cpu_limit_nanos','restart_policy','restart_max_retries')}
-    portable['ulimits'] = {name: observed['ulimits'][name] for name in c['ulimits']}
+    portable['ulimits'] = observed['ulimits']
     portable['accelerator_access'] = 'all'  # All-device request was checked above.
     portable['devices'] = ['infiniband'] if devices else []
     if health:

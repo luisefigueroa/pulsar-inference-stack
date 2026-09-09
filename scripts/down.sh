@@ -15,16 +15,15 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-load_cluster_topology || die "confirmed topology is required for safe stop"
-[ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
 if [ "$TARGET" = --all ]; then
   [ -z "$NODE_SELECTOR" ] || die "--node cannot be used with --all" 2
-  if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ]; then
-    exec "$REPO_DIR/cluster/stop-cluster.sh" --all
-  fi
-  remove_all_stack_managed_local
-else
-  [[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || die "stop requires an exact spec id" 2
-  stop_named_service_by_labels "$TARGET" "$NODE_SELECTOR"
+  # The delegated command acquires the lock once for all confirmed ranks.
+  exec "$REPO_DIR/cluster/stop-cluster.sh" --all
 fi
+acquire_model_library_lifecycle_lock exclusive
+load_cluster_topology || die "confirmed topology is required for safe stop"
+[ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
+[[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || die "stop requires an exact spec id" 2
+stop_named_service_by_labels "$TARGET" "$NODE_SELECTOR"
+retire_stopped_service_indexes "$TARGET" "$NODE_SELECTOR"
 log "Stopped. Model files, pins, archives and experiment evidence are retained."

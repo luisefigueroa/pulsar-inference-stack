@@ -102,6 +102,20 @@ class ServingSpec(unittest.TestCase):
         with self.assertRaises(ReleaseSpecError):
             serving.apply_overrides(spec, {"container": {"network_mode": "bridge"}})
 
+    def test_image_repository_components_are_docker_compatible(self):
+        for repository in ('vllm/','vllm//openai','/vllm','vllm/.openai','vllm/openai-',
+                           'vllm/openai___test','vllm/OpenAI','registry_bad.example/model',
+                           'vllm/openai:latest','vllm/openai@sha256:'+'a'*64,'a'*250):
+            self.draft['source']['image_repository']=repository
+            with self.subTest(repository=repository),self.assertRaises(ReleaseSpecError):
+                serving.freeze(self.draft,self.manifest)
+            value=copy.deepcopy(self.spec);value['source']['image_repository']=repository
+            with self.assertRaises(ReleaseSpecError): serving.verify_spec(value)
+        for repository in ('vllm','vllm/openai','ghcr.io/example/model','example/model__variant',
+                           'example/model--variant','Registry.example/model'):
+            self.draft['source']['image_repository']=repository
+            self.assertEqual(serving.freeze(self.draft,self.manifest)['spec_id'],self.spec['spec_id'])
+
 
 if __name__ == "__main__":
     unittest.main()

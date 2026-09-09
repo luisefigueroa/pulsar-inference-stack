@@ -43,7 +43,7 @@ SSH_FINGERPRINT_RE = re.compile(r"\bSHA256:[A-Za-z0-9+/]{24,}={0,2}\b")
 HASHED_KNOWN_HOST_RE = re.compile(r"(?m)^\|1\|[A-Za-z0-9+/=]{12,}\|[A-Za-z0-9+/=]{12,}")
 SECRET_PATTERNS = (
     ("hugging-face-token", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
-    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("openai-token", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),

@@ -8,7 +8,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from model_library.state import Store
+from model_library.state import Store, checked_id
 from scripts.container_runtime import validate_plan, PLAN_LABEL
 from release_spec.serving import load_json
 
@@ -40,6 +40,25 @@ def locate(store, *, service_id=None, selected_spec_id=None):
     return plan
 
 
+def retire(store, *, topology_id, node_ids, selected_spec_id=None):
+    """Retire active locators after proven stop; caller holds the lifecycle lock."""
+    checked_id(topology_id)
+    if selected_spec_id is not None: checked_id(selected_spec_id)
+    if not node_ids: raise ValueError('stop must identify its confirmed nodes')
+    retired=[]
+    for row in store.records('services'):
+        if selected_spec_id is not None and row['selected_spec_id']!=selected_spec_id:
+            continue
+        plan=store.get('service-plans',row['plan_id'])
+        validate_plan(plan)
+        if plan['service_id']!=row['service_id']:
+            raise ValueError('service index differs from saved plan')
+        if plan['topology_id']==topology_id and {rank['node_id'] for rank in plan['ranks']}<=set(node_ids):
+            store.remove('services',row['service_id'])
+            retired.append(row['service_id'])
+    return retired
+
+
 def actual_plan(store, locator, containers):
     ids = {(container.get('Config', {}).get('Labels') or {}).get(PLAN_LABEL) for container in containers}
     if len(ids) != 1 or None in ids:
@@ -55,19 +74,24 @@ def actual_plan(store, locator, containers):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['save','locate','actual'])
+    parser.add_argument('command',choices=['save','locate','actual','retire'])
     parser.add_argument('--state-root',required=True)
     parser.add_argument('--plan')
     parser.add_argument('--service-id')
     parser.add_argument('--selected-spec-id')
     parser.add_argument('--observations')
+    parser.add_argument('--topology-id')
+    parser.add_argument('--node-id',action='append',default=[])
     args=parser.parse_args()
     try:
         store=Store(args.state_root)
         if args.command=='save':
             save(store,load_json(args.plan))
             return 0
-        if args.command=='locate':
+        if args.command=='retire':
+            result={'retired_service_ids':retire(store,topology_id=args.topology_id,
+                node_ids=args.node_id,selected_spec_id=args.selected_spec_id)}
+        elif args.command=='locate':
             result=locate(store,service_id=args.service_id,selected_spec_id=args.selected_spec_id)
         else:
             locator=load_json(args.plan)

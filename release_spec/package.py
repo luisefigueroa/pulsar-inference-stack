@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path, PurePosixPath
 import re
+import stat
 
 from . import serving
 from .baseline_evaluate import OPERATION_FILES
@@ -40,9 +41,13 @@ def verify_package(root):
             raise ValueError('package artifact digest differs')
     actual=set()
     for path in root.rglob('*'):
-        if path.is_symlink():
+        mode=path.lstat().st_mode
+        if stat.S_ISLNK(mode):
             raise ValueError('package may not contain symlinks')
-        if path.is_file(): actual.add(path.relative_to(root).as_posix())
+        if stat.S_ISREG(mode):
+            actual.add(path.relative_to(root).as_posix())
+        elif not stat.S_ISDIR(mode):
+            raise ValueError('package may contain only regular files and directories')
     if actual!=set(package['files'])|{'package.json'}:
         raise ValueError('package contains missing or undeclared artifacts')
     runs={PurePosixPath(name).parts[3] for name in package['files'] if name.startswith('results/')}

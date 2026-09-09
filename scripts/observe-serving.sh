@@ -23,15 +23,20 @@ chmod 700 "$OBS"
 locator=(--selected-spec-id "$NAME")
 [ -z "$SERVICE_ID" ] || locator=(--service-id "$SERVICE_ID")
 python3 "$REPO_DIR/scripts/service_state.py" locate --state-root "$PULSAR_MODEL_LIBRARY_DIR" "${locator[@]}" >"$OBS/plan.json"
-python3 - "$OBS/plan.json" "$OBS/selected-spec.json" <<'PYCODE'
+python3 - "$OBS/plan.json" "$OBS/selected-spec.json" "$OBS/overlay.json" <<'PYCODE'
 import json,sys
 from pathlib import Path
 plan=json.loads(Path(sys.argv[1]).read_text())
 Path(sys.argv[2]).write_text(json.dumps(plan['selected_spec']))
+# The same private overlay reaches the model-file verification subprocess.
+# Today's overlay describes future launches, not this recorded service.
+Path(sys.argv[3]).write_text(json.dumps(dict(schema_version=1,kind='pulsar-deployment-overlay',
+    defaults=dict(port=plan['port'],served_name=plan['served_name'],cache_root=None,placement=None),specs={})))
 PYCODE
 NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_spec_id"])' "$OBS/plan.json")
 unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 export PULSAR_SPEC_FILE="$OBS/selected-spec.json"
+export PULSAR_OVERLAY_PATH="$OBS/overlay.json"
 load_conf "$NAME"
 require_spec_platform_admission "$NAME"
 recorded_node=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ranks"][0]["node_id"])' "$OBS/plan.json")
@@ -41,7 +46,6 @@ if [ "$NODES" = 1 ]; then
 fi
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$OBS/plan.json")
 if [ "$NODES" = 1 ]; then
-  NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" || die "placement is not confirmed"
   load_cluster_topology || die "confirmed topology required"
   API_URL=$(single_node_api_base_url "$PORT")

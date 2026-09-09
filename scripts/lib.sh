@@ -1307,6 +1307,19 @@ persist_launch_plan_file() {
   python3 "$REPO_DIR/scripts/service_state.py" save --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$1"
 }
 
+retire_stopped_service_indexes() {
+  local target="${1:?stopped spec or --all required}" selector="${2:-}" node
+  local -a args=(retire --state-root "$PULSAR_MODEL_LIBRARY_DIR" --topology-id "$CLUSTER_TOPOLOGY_ID")
+  [ "$target" = --all ] || args+=(--selected-spec-id "$target")
+  if [ -n "$selector" ]; then
+    resolve_single_node_placement "$selector" || return 1
+    args+=(--node-id "$SINGLE_NODE_ID")
+  else
+    for node in "${CLUSTER_NODE_IDS[@]}"; do args+=(--node-id "$node"); done
+  fi
+  python3 "$REPO_DIR/scripts/service_state.py" "${args[@]}" >/dev/null
+}
+
 runtime_context_for_rank() {
   local index="${1:?physical rank required}"
   if [ "$index" = 0 ]; then

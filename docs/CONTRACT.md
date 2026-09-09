@@ -12,6 +12,12 @@ A schema-2 `pulsar-serving-spec` contains `schema_version`, `kind`, `spec_id`,
 JSON containing the schema version and complete recipe. The source image
 repository locator and nullable catalog metadata do not affect identity.
 
+Image repository locators must have valid Docker repository components; empty
+components, invalid separators, and uppercase repository paths are rejected.
+The contract continues to exclude tags, digests, and registry ports from this
+field. Component validation follows the
+[Distribution reference grammar](https://github.com/distribution/reference/blob/main/regexp.go).
+
 The recipe contains the model ID and model commit, complete snapshot manifest,
 image digest, engine argument tokens, literal container environment, hardware
 geometry, and explicit container settings. Snapshot manifests retain schema 1
@@ -87,6 +93,16 @@ recorded configuration, not today's checkout defaults or deployment overlay.
 Compatible code updates alone do not require a container restart. A different
 checkout must explicitly use the intended confirmed topology and state location;
 a missing launch record is not reconstructed by guessing current defaults.
+
+Observation passes the recorded deployment settings through model-file
+verification, so an overlay edited for future launches cannot redirect an
+existing service check. Ulimit comparison includes the complete configured map;
+extra limits cannot be dropped from compact evidence.
+
+A successful stop retires active service indexes only for the selected spec,
+confirmed topology, and fully stopped nodes. Failed stops retain those indexes.
+Immutable launch plans remain as history, while subsequent starts get an
+unambiguous active service selector.
 
 ## Public operations
 

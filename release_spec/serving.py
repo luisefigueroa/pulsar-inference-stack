@@ -168,8 +168,24 @@ def spec_id(recipe: dict) -> str:
 def source_location(value: Any) -> dict:
     source = closed(value, {"image_repository"}, "source")
     repository = require_public_string(source["image_repository"], path="source.image_repository")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", repository) or ".." in repository.split("/"):
-        invalid("source.image_repository", "expected a public repository without tag, digest, or endpoint")
+    # Distribution's repository-component grammar, limited to the contract's
+    # existing public registry/name form (no port, tag, or digest here).
+    parts=repository.split('/')
+    domain='docker.io'
+    if len(parts)>1 and ('.' in parts[0] or ':' in parts[0]
+                        or parts[0]=='localhost' or parts[0].lower()!=parts[0]):
+        domain=parts.pop(0)
+        domain_component=r'[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?'
+        if not re.fullmatch(domain_component+r'(?:\.'+domain_component+r')*',domain):
+            invalid('source.image_repository','invalid public registry hostname')
+        if domain=='index.docker.io': domain='docker.io'
+    component=r'[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*'
+    if any(not re.fullmatch(component,part) for part in parts):
+        invalid('source.image_repository','expected Docker repository components without a tag, digest, or port')
+    normalized='/'.join(parts)
+    if domain=='docker.io' and len(parts)==1: normalized='library/'+normalized
+    if len(domain+'/'+normalized)>255:
+        invalid('source.image_repository','normalized Docker repository name exceeds 255 characters')
     return {"image_repository": repository}
 
 

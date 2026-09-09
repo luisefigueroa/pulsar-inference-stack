@@ -10,11 +10,12 @@ cd "$REPO_DIR"
 
 ARG="${1:-}"
 [ -n "$ARG" ] || { echo "usage: $0 <model-name|--all>" >&2; exit 2; }
+acquire_model_library_lifecycle_lock exclusive
 
 if [ "$ARG" = --all ]; then
   load_cluster_topology || exit 1
-  [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] || {
-    echo "[stop] ERROR: no confirmed remote cluster ranks" >&2
+  [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] || {
+    echo "[stop] ERROR: no confirmed cluster ranks" >&2
     exit 1
   }
   echo "[stop] removing stack-managed containers across $CLUSTER_TOPOLOGY_COUNT confirmed ranks"
@@ -48,6 +49,7 @@ if [ "$ARG" = --all ]; then
 
   case "$rc" in
     0)
+      retire_stopped_service_indexes --all
       echo "[stop] clean — no stack-managed containers remain"
       exit 0
       ;;
@@ -105,6 +107,7 @@ for ((rank = 1; rank < NODES; rank++)); do
 done
 
 if [ "$left" -eq 0 ]; then
+  retire_stopped_service_indexes "$ARG"
   echo "[stop] clean — $EXACT absent from all $NODES active ranks"
   exit 0
 fi

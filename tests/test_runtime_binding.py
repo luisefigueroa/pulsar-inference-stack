@@ -32,6 +32,10 @@ class ObservationShell(unittest.TestCase):
                 (root/f'container-{rank}.json').write_text(json.dumps(containers[rank]));(root/f'image-{rank}.json').write_text(json.dumps(images[rank]))
             (root/'prepared.json').write_text(json.dumps(prepared))
             (root/'overlay.json').write_text(json.dumps(dict(schema_version=1,kind='pulsar-deployment-overlay',defaults=dict(port=8000,served_name='example',cache_root=None,placement=None),specs={})))
+            if mode=='changed-overlay':
+                overlay=json.loads((root/'overlay.json').read_text())
+                overlay['defaults'].update(port=9000,served_name='future-service',placement={'node_id':'node-1'})
+                (root/'overlay.json').write_text(json.dumps(overlay))
             tool=root/'docker.py';tool.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);rank=int(os.environ.get('FIXTURE_RANK','0'));mode=os.environ.get('FIXTURE_MODE','ok')
@@ -85,6 +89,15 @@ PY
 remove_stack_owned_single_at_resolved_node() { verify_replacement_plan; }
 remove_stack_owned_cluster() { verify_replacement_plan; }
 ''')
+            if mode=='changed-overlay':
+                with envfile.open('a') as stream:
+                    stream.write('''
+library_hot_info_for_profile() {
+  # Check the overlay that the real verification subprocess would inherit.
+  bash -c 'load_conf "$1"; spec_overlay_node_selector node-0 >/dev/null' _ "$1" || return
+  cat "$FIXTURE_ROOT/prepared.json"
+}
+''')
             script=ROOT/('serve.sh' if nodes==1 else 'cluster/start-cluster.sh') if launcher else ROOT/'scripts/observe-serving.sh'
             flags=['--replace'] if replacing else ['--dry-run'] if launcher else ['--json']
             if launcher and nodes>1:flags += ['--skip-preflight']
@@ -105,6 +118,13 @@ remove_stack_owned_cluster() { verify_replacement_plan; }
         self.assertTrue(document['ok'])
         self.assertEqual(document['result']['schema_version'],2)
         self.assertIn('producer',document['result'])
+
+    def test_recorded_service_ignores_future_overlay_placement_and_endpoint(self):
+        result=self.run_scenario(1,mode='changed-overlay',public=True)
+        self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+        observed=json.loads(result.stdout)['result']
+        self.assertEqual(observed['served_name'],'example')
+        self.assertTrue(observed['api_url'].endswith(':8000'))
 
     def test_low_level_dry_run_uses_spec_and_distinct_mounts(self):
         for nodes in (1,2):
