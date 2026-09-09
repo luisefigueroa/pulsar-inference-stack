@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Emit a self-contained node program from checked-in code and one JSON request."""
+"""Emit a self-contained node program from checked-in code and one JSON request.
+
+Callers must run the program with `python3 -` and the source on stdin.
+`python3 -c` hits Linux MAX_ARG_STRLEN once the inlined packages plus a
+real snapshot request exceed ~128KiB.
+"""
 import base64
 import io
 import json

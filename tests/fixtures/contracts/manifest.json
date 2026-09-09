@@ -1,0 +1,16 @@
+{
+  "file_count": 1,
+  "files": [
+    {
+      "path": "config.json",
+      "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "size": 2
+    }
+  ],
+  "kind": "model-library-snapshot-manifest",
+  "manifest_id": "43b47a7856106c0aa8f24a39dc3b2f88f203e31fa74617f718ce2ceac1bd672c",
+  "model_id": "example/model",
+  "schema_version": 1,
+  "snapshot_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "total_bytes": 2
+}

@@ -300,6 +300,11 @@ require_topology_rewrite_idle "$verified" \
   || die "proposed cluster is not idle; stop managed services and restore access to every node"
 
 echo
+impact_args=(--new "$verified" --state-root "$PULSAR_MODEL_LIBRARY_DIR")
+[ ! -f "$CLUSTER_TOPOLOGY_FILE" ] || impact_args+=(--old "$CLUSTER_TOPOLOGY_FILE")
+python3 "$REPO_DIR/scripts/topology_storage_impact.py" "${impact_args[@]}" \
+  || die "managed storage impact could not be inspected; topology was not changed"
+echo
 "$MANIFEST_TOOL" render-save "$verified" "$CLUSTER_TOPOLOGY_FILE"
 
 if [ "$YES" != 1 ]; then

@@ -1,6 +1,7 @@
 """The public spec/evidence gate audits actual working and staged bytes."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -46,8 +47,69 @@ class PublishablePrivacy(unittest.TestCase):
         self.assertIn('private-operational-state',result.stderr)
         self.assertNotIn('custom-test-credential',result.stderr)
 
+    def test_source_code_host_and_address_are_audited(self):
+        path=self.repo/'scripts/tool.py';path.parent.mkdir()
+        hostname='dgx-spark-'+'99.example.invalid'
+        address='10.23.'+'45.67'
+        path.write_text(f'HOST="{hostname}"\nCONTROL_IP="{address}"\n')
+        result=self.check()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('stable-hostname',result.stderr)
+        self.assertIn('network-address',result.stderr)
+
     def test_generic_rank_and_public_model_identity_are_allowed(self):
         self.path.write_text(json.dumps({'rank':0,'model_id':'example/model','geometry':{'nodes':2,'platform_id':'dgx-spark-gb10'}}))
         self.assertEqual(self.check().returncode,0)
+
+    def test_commit_metadata_scanner_rejects_site_identity_without_echoing_it(self):
+        subprocess.run(['git','config','user.name','Fixture'],cwd=self.repo,check=True)
+        subprocess.run(['git','config','user.email','fixture@example.invalid'],cwd=self.repo,check=True)
+        (self.repo/'README.md').write_text('fixture\n')
+        subprocess.run(['git','add','README.md'],cwd=self.repo,check=True)
+        subprocess.run(['git','commit','-qm','safe base'],cwd=self.repo,check=True)
+        (self.repo/'README.md').write_text('next\n')
+        subprocess.run(['git','add','README.md'],cwd=self.repo,check=True)
+        private_email='operator@dgx-spark-'+'99.example.invalid'
+        env={**os.environ,'GIT_AUTHOR_NAME':'Fixture','GIT_AUTHOR_EMAIL':private_email,
+             'GIT_COMMITTER_NAME':'Fixture','GIT_COMMITTER_EMAIL':private_email}
+        subprocess.run(['git','commit','-qm','next'],cwd=self.repo,env=env,check=True)
+        result=subprocess.run([
+            sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
+            '--repo-root',str(self.repo),'--range','HEAD~1..HEAD',
+        ],text=True,capture_output=True)
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('stable-hostname',result.stderr)
+        self.assertNotIn(private_email,result.stderr)
+
+    def test_commit_versions_are_allowed_but_network_context_and_secrets_are_rejected(self):
+        for name,value in [('user.name','Fixture'),('user.email','fixture@example.invalid')]:
+            subprocess.run(['git','config',name,value],cwd=self.repo,check=True)
+        subprocess.run(['git','commit','--allow-empty','-qm','Base'],cwd=self.repo,check=True)
+        address='10.23.'+'45.67'
+        fine_token='github_'+'pat_'+'a'*22+'_'+'B'*59
+        cases=[('Upgrade 1.2.3.4 to 1.2.3.5',True),
+               ('Set control address to '+address,False),
+               ('Connect to https://'+address,False),
+               ('hostname=private-fixture-node',False),
+               ('Credential '+'hf_'+'a'*40,False),('Credential '+fine_token,False)]
+        for message,allowed in cases:
+            subprocess.run(['git','commit','--allow-empty','-qm',message],cwd=self.repo,check=True)
+            result=subprocess.run([sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
+                '--repo-root',str(self.repo),'--range','HEAD^..HEAD'],text=True,capture_output=True)
+            with self.subTest(allowed=allowed,message_type=message.split()[0]):
+                self.assertEqual(result.returncode==0,allowed,result.stderr)
+        # Identity fields remain strict even without network words in the name.
+        for identity in (address,fine_token):
+            env={**os.environ,'GIT_AUTHOR_NAME':identity,'GIT_COMMITTER_NAME':identity}
+            subprocess.run(['git','commit','--allow-empty','-qm','Ordinary change'],cwd=self.repo,env=env,check=True)
+            result=subprocess.run([sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
+                '--repo-root',str(self.repo),'--range','HEAD^..HEAD'],text=True,capture_output=True)
+            self.assertNotEqual(result.returncode,0)
+            self.assertNotIn(fine_token,result.stderr)
+        self.path.write_text(json.dumps({'note':fine_token}))
+        result=self.check()
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn('github-token',result.stderr)
+        self.assertNotIn(fine_token,result.stderr)
 
 if __name__=='__main__': unittest.main()

@@ -25,22 +25,24 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 case "${1:-}" in -h|--help)
-  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--node NODE_ID] [--port N] [--dry-run]'
-  echo 'Use --list to inspect catalog specs. Recipe changes require a new candidate.'
+  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--override-file FILE] [--node NODE_ID] [--port N] [--replace] [--dry-run]'
+  echo 'Use --list to inspect catalog specs. Explicit overrides produce a modified recipe.'
   exit 0 ;;
 esac
 MODEL_NAME="${1:?usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--node NODE_ID] [--dry-run]}"
 shift
 
-DETACH="" SPEC_MODE=auto DRY_RUN=0 PORT_OVERRIDE="" NODE_SELECTOR=""
+DETACH="" SPEC_MODE=auto DRY_RUN=0 PORT_OVERRIDE="" NODE_SELECTOR="" REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     -d) DETACH="-d" ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
     --dry-run) DRY_RUN=1 ;;
+    --replace) REPLACE=1 ;;
     --force) refuse_removed_force_flag ;;
     --weight-source|--weight-mode)
       refuse_removed_weight_mode_flag
@@ -73,7 +75,6 @@ if [ -n "$PORT_OVERRIDE" ]; then
   PORT="$PORT_OVERRIDE"
 fi
 resolve_spec_decode "$SPEC_MODE"
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 SPEC_DECODE_STATE=$([ "$SPEC_DECODE_ENABLED" = 1 ] && printf on || printf off)
 
 
@@ -102,7 +103,9 @@ CONTAINER=$(container_name_for "$MODEL_NAME" 1)
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # shellcheck disable=SC2064
 trap 'rm -f "${PLAN_FILE:-}"' EXIT
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo start)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 CMD=()
 load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
 _api_key="${VLLM_API_KEY:-${API_KEY:-}}"
@@ -121,21 +124,38 @@ fi
 
 require_launch_operational_checks
 # Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" start
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
 load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
 
-# Replace only when the exact name is provably stack-managed for this conf.
-# Capture ID, revalidate labels, remove by ID — never blind docker rm -f by name.
-stale_rc=0
-remove_stack_owned_single_at_resolved_node "$MODEL_NAME" || stale_rc=$?
-if [ "$stale_rc" -eq 2 ]; then
-  echo "[serve] ERROR: refusing to replace $CONTAINER on $(single_node_display) — ownership or physical node identity is not proven" >&2
-  echo "[serve] Inspect labels (${PULSAR_MANAGED_LABEL}/${PULSAR_CONF_LABEL}/${PULSAR_RANK_LABEL}/${PULSAR_NODE_ID_LABEL}) or remove manually if you intend to clobber it." >&2
-  exit 1
+# Starting is non-replacing by default. Inspect the exact target first; only an
+# explicit --replace reaches the ownership-proven removal transaction.
+existing_rc=0
+if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
+  container_ownership_inspect_remote "$SINGLE_NODE_SSH_HOST" "$CONTAINER" >/dev/null \
+    || existing_rc=$?
+else
+  container_ownership_inspect_local "$CONTAINER" >/dev/null || existing_rc=$?
 fi
-if [ "$stale_rc" -ne 0 ]; then
-  echo "[serve] ERROR: failed while removing prior container $CONTAINER on $(single_node_display) (rc=$stale_rc)" >&2
-  exit 1
+case "$existing_rc" in
+  0)
+    [ "$REPLACE" = 1 ] \
+      || die "service $CONTAINER already exists on $(single_node_display); inspect it, then pass --replace only with explicit replacement approval"
+    ;;
+  3) ;;
+  *) die "cannot determine whether $CONTAINER already exists on $(single_node_display); refusing launch" ;;
+esac
+if [ "$REPLACE" = 1 ]; then
+  stale_rc=0
+  remove_stack_owned_single_at_resolved_node "$MODEL_NAME" || stale_rc=$?
+  if [ "$stale_rc" -eq 2 ]; then
+    echo "[serve] ERROR: refusing to replace $CONTAINER on $(single_node_display) — ownership or physical node identity is not proven" >&2
+    echo "[serve] Inspect labels (${PULSAR_MANAGED_LABEL}/${PULSAR_CONF_LABEL}/${PULSAR_RANK_LABEL}/${PULSAR_NODE_ID_LABEL}) or remove manually if you intend to clobber it." >&2
+    exit 1
+  fi
+  if [ "$stale_rc" -ne 0 ]; then
+    echo "[serve] ERROR: failed while removing prior container $CONTAINER on $(single_node_display) (rc=$stale_rc)" >&2
+    exit 1
+  fi
 fi
 
 port_probe='import socket,sys; s=socket.socket(); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()'
@@ -159,8 +179,10 @@ else
 fi
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   remote_cmd=$(shell_join_q "${CMD[@]}")
+  persist_launch_plan_file "$PLAN_FILE"
   exec "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- \
     "$SINGLE_NODE_SSH_HOST" "$remote_cmd"
 fi
 CMD[0]="$PULSAR_DOCKER"
+persist_launch_plan_file "$PLAN_FILE"
 exec "${CMD[@]}"

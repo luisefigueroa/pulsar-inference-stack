@@ -1,4 +1,5 @@
 """Independent public checks for compact evidence and catalog membership."""
+import copy
 from pathlib import Path, PurePosixPath
 from typing import Any
 from . import load_spec
@@ -39,10 +40,6 @@ def _bind_declared_evidence(spec: dict[str, Any], evidence_root: str | Path) -> 
     return data
 
 
-def _has_complete_baseline(spec: dict[str, Any]) -> bool:
-    return set(row["id"] for row in spec["evidence"]) >= set(OPERATION_FILES) | {"baseline-run"}
-
-
 def verify_compact_evidence(spec_path: str | Path, evidence_root: str | Path,
                             run_path: str | Path, *, require_pass: bool = True) -> dict[str, Any]:
     """Recompute baseline-v1 judgements and bind the six operation documents.
@@ -51,6 +48,12 @@ def verify_compact_evidence(spec_path: str | Path, evidence_root: str | Path,
     six-gate success check used when a spec claims ``stable`` or ``validated``.
     """
     spec = load_spec(spec_path)
+    if spec['schema_version'] == 2:
+        from .evidence_v2 import verify_evidence
+        result=verify_evidence(spec_path,run_path,evidence_root)
+        if require_pass and result['outcome']!='pass':
+            fail('all six baseline-v1 criteria and unchanged observations must pass')
+        return result
     policy, policy_digest = _policy()
     required_ids = set(OPERATION_FILES) | {"baseline-run"}
     evidence = {row["id"]: row for row in spec["evidence"]}
@@ -77,46 +80,42 @@ def verify_compact_evidence(spec_path: str | Path, evidence_root: str | Path,
     if not (_time(soak_gate["started_at"], "soak invocation start") <= _time(soak["started_at"], "soak start")
             <= _time(soak["ended_at"], "soak end") <= _time(soak_gate["ended_at"], "soak invocation end")):
         fail("soak measurement lies outside its run window")
+    evaluation_input = copy.deepcopy(spec)
+    evaluation_input["review"] = None
     recomputed, outcomes, proposed = evaluate(
-        spec=spec, policy=policy, policy_digest=policy_digest, documents=documents,
+        spec=evaluation_input, policy=policy, policy_digest=policy_digest, documents=documents,
         evidence_rows=spec["evidence"],
         accuracy_floor=applied_accuracy_floor(policy, spec["identity"]["model_id"]))
-    if spec["measurements"] != recomputed["measurements"]:
+    recorded_baseline = [
+        row for row in spec["measurements"] if row["suite"] == "baseline-v1"
+    ]
+    if recorded_baseline != recomputed["measurements"]:
         fail("recorded outcomes, thresholds or evidence references differ from independent evaluation")
     if require_pass and (proposed != "stable" or any(outcome != "pass" for outcome in outcomes.values())):
         fail("all six baseline-v1 criteria must pass")
+    other_suites = sorted({
+        row["suite"] for row in spec["measurements"] if row["suite"] != "baseline-v1"
+    })
     return {"kind": "pulsar-contribution-verification", "schema_version": 1,
             "spec_id": spec["spec_id"], "policy_digest": policy_digest,
             "lab_commit": run["lab_commit"], "stack_commit": run["stack_commit"],
-            "gates": outcomes, "verified": True}
+            "gates": outcomes, "verified_suite": "baseline-v1",
+            "unverified_suites": other_suites, "verified": True}
 
 
-def verify_contribution(spec_path: str | Path, evidence_root: str | Path,
-                        run_path: str | Path) -> dict[str, Any]:
-    """Catalog membership: a released spec whose declared evidence binds.
+def verify_contribution(spec_path: str | Path, evidence_root: str | Path | None = None,
+                        run_path: str | Path | None = None) -> dict[str, Any]:
+    """Validate the spec document selected for maintainer publication.
 
-    Review status is an operator label. Claiming ``stable`` or ``validated``
-    still requires independently recomputed baseline-v1 passes. Serving loads
-    any released catalog spec.
+    Catalog membership is established by the maintainer publishing a
+    schema-valid document under ``releases/``. State, review, evidence, and
+    launch compatibility are independent metadata or diagnostics; they never
+    authorize or block catalog membership here. ``evidence_root`` and
+    ``run_path`` remain accepted for callers using the former interface.
     """
     spec = load_spec(spec_path)
-    if spec["state"] != "released":
-        fail("catalog contribution must be a released spec")
-    status = spec["review"]["status"]
-    if status in CLAIM_STATUSES or _has_complete_baseline(spec):
-        return verify_compact_evidence(
-            spec_path, evidence_root, run_path,
-            require_pass=status in CLAIM_STATUSES)
-    _, policy_digest = _policy()
-    evidence = {row["id"]: row for row in spec["evidence"]}
-    data = _bind_declared_evidence(spec, evidence_root)
-    if "baseline-run" in evidence:
-        expected_run_path = Path(evidence_root).absolute() / evidence["baseline-run"]["path"]
-        if Path(run_path).absolute() != expected_run_path:
-            fail("--run must name the run file bound in spec evidence")
-        verify_run_record(
-            parse_strict_json(data["baseline-run"], label="baseline run"),
-            spec, policy_digest, require_success=False)
     return {"kind": "pulsar-contribution-verification", "schema_version": 1,
-            "spec_id": spec["spec_id"], "policy_digest": policy_digest,
+            "spec_id": spec["spec_id"], "state": spec["state"],
+            "review": spec["review"], "schema_valid": True,
+            "evidence_verified": False, "launch_compatible": None,
             "verified": True}

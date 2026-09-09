@@ -11,6 +11,7 @@ from .schema import fail, require_object, require_commit, require_sha256_hex
 
 GATE_NAMES = ("verify-snapshot-manifest", "serve-smoke", "run-gates",
               "evaluate-gsm8k", "validate-soak")
+RUN_SCHEMA_VERSION = 2
 RUN_KEYS = frozenset({"schema_version", "kind", "spec_id", "policy_digest",
                      "lab_commit", "stack_commit", "image_digest", "launch_contract_id",
                      "snapshot_manifest_id", "ranks_before", "ranks_after", "gates",
@@ -36,8 +37,9 @@ def verify_run_record(document: Any, spec: dict, policy_digest: str, *,
     """Validate a run against its frozen spec; success requires every rank/gate."""
     spec = verify_spec(spec)
     require_object(document, RUN_KEYS, path="run")
-    if type(document["schema_version"]) is not int or document["schema_version"] != 2:
-        fail("run.schema_version must be 2")
+    if (type(document["schema_version"]) is not int
+            or document["schema_version"] != RUN_SCHEMA_VERSION):
+        fail(f"run.schema_version must be {RUN_SCHEMA_VERSION}")
     if document["kind"] != "pulsar-baseline-run":
         fail("run.kind must be pulsar-baseline-run")
     expected = {"spec_id": spec["spec_id"], "policy_digest": policy_digest,

@@ -33,7 +33,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     if command == "verify":
-        print(f"spec_id={spec['spec_id']} state={spec['state']}")
+        state = "null" if spec["state"] is None else spec["state"]
+        print(f"spec_id={spec['spec_id']} state={state}")
         return 0
     if command == "id":
         print(spec["spec_id"])

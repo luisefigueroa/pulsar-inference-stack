@@ -30,7 +30,7 @@ class ModelLibraryCLI(unittest.TestCase):
         return Fixture(self.root, nodes)
 
     def success(self, result):
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, f'stdout:\n{result.stdout}\nstderr:\n{result.stderr}')
         self.assertTrue(result.stdout.strip(), "successful storage operation returned no result")
         return json.loads(result.stdout)
 
@@ -53,12 +53,9 @@ class ModelLibraryCLI(unittest.TestCase):
                     node_request({"path": path}, f.cfg, f.cfg["nodes"][0])
 
     def catalog(self, fixture):
-        # A synthetic reviewed fixture exercises catalog-home retention rules.
+        # A synthetic catalog fixture exercises retention without metadata gates.
         # This is never published and does not claim physical qualification.
-        reference = read_json(ROOT / "release_spec/tests/fixtures/golden_released.json")
         spec = copy.deepcopy(fixture.spec)
-        for key in ("state", "review", "measurements", "baselines", "evidence"):
-            spec[key] = reference[key]
         spec = verify_spec(spec)
         (fixture.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
 
@@ -86,7 +83,7 @@ class ModelLibraryCLI(unittest.TestCase):
         self.catalog(f)
         self.success(f.run("remove", "--yes", spec=True))
         self.assertFalse(home_path.exists())
-        self.assertIsNone(Store(f.state).home(f.spec["identity"]["snapshot_manifest"]["manifest_id"]))
+        self.assertIsNone(Store(f.state).home(f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]))
         # Restoration uses only the frozen spec and archive; HF is unavailable.
         f.cfg["hub_unavailable"] = True; f.save()
         downloads = len(f.events("download"))
@@ -97,6 +94,18 @@ class ModelLibraryCLI(unittest.TestCase):
         self.success(f.run("prepare", "--yes", spec=True))
         self.success(f.run("info", "--full", spec=True))
         self.assertFalse(any("receipt" in str(p.relative_to(f.state)) for p in f.state.rglob("*")))
+
+    def test_insufficient_copy_budget_reports_blocker_without_publishing(self):
+        f=self.fixture(nodes=2)
+        self.acquire_candidate(f,nodes=2)
+        f.env['PULSAR_HOT_BUDGET_BYTES']='0'
+        result=f.run('prepare','--yes',spec=True)
+        self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+        plan=json.loads(result.stdout)
+        self.assertFalse(plan['eligible'])
+        self.assertTrue(any('insufficient copy budget' in item for item in plan['blockers']))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        self.assertEqual(f.events('transfer'),[])
 
     def test_two_nodes_with_remote_home(self):
         f = self.fixture(nodes=2)
@@ -194,6 +203,20 @@ class ModelLibraryCLI(unittest.TestCase):
         self.failure(f.run("archive", "delete", "--yes", spec=True))
         self.assertTrue(archive_file.exists())
         self.assertTrue(Path(acquired["home"]["path"]).exists())
+
+    def test_archive_verify_is_read_only(self):
+        f = self.fixture()
+        self.acquire_candidate(f)
+        self.success(f.run("archive", "create", "--yes", spec=True))
+        manifest_id = f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        store = Store(f.state)
+        store.remove("archives", manifest_id)
+        before = sorted(path.relative_to(f.state) for path in f.state.rglob("*"))
+        verified = self.success(f.run("archive", "verify", spec=True))
+        after = sorted(path.relative_to(f.state) for path in f.state.rglob("*"))
+        self.assertTrue(verified["verified"])
+        self.assertEqual(after, before)
+        self.assertIsNone(Store(f.state).get("archives", manifest_id))
 
     def test_lab_discard_requires_explicit_acknowledgement(self):
         f = self.fixture()
@@ -326,7 +349,7 @@ class ModelLibraryCLI(unittest.TestCase):
         for node in f.cfg["nodes"]:
             records = Store(Path(node["view_root"]) / ".pulsar-node").views(spec_id=f.spec["spec_id"])
             self.assertEqual(len(records), 1)
-            verify_tree(records[0]["path"], f.spec["identity"]["snapshot_manifest"])
+            verify_tree(records[0]["path"], f.spec["recipe"]["model"]["snapshot_manifest"])
         self.failure(f.run("info", spec=True))
         self.failure(f.run("remove", "--yes", "--discard-unpromoted", spec=True))
         f.cfg.pop("controller_fault"); f.save()
@@ -358,14 +381,14 @@ class ModelLibraryCLI(unittest.TestCase):
         f = self.fixture(nodes=2)
         acquired = self.acquire_candidate(f, nodes=2)
         self.success(f.run("archive", "create", "--yes", spec=True))
-        previous = Store(f.state).home(f.spec["identity"]["snapshot_manifest"]["manifest_id"])
+        previous = Store(f.state).home(f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"])
         shutil.rmtree(acquired["home"]["hub_path"])
         f.cfg["hub_unavailable"] = True; f.save()
         restored = self.success(f.run("restore", "--node", "node-1", "--yes", spec=True))
         self.assertEqual(restored["home"]["node_id"], "node-1")
-        registered = Store(f.state).home(f.spec["identity"]["snapshot_manifest"]["manifest_id"])
+        registered = Store(f.state).home(f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"])
         self.assertNotEqual(registered["path"], previous["path"])
-        verify_tree(registered["path"], f.spec["identity"]["snapshot_manifest"])
+        verify_tree(registered["path"], f.spec["recipe"]["model"]["snapshot_manifest"])
         self.assertEqual(len(f.events("download")), 1)
 
     def test_move_retry_repairs_registration_after_source_retirement(self):
@@ -374,7 +397,7 @@ class ModelLibraryCLI(unittest.TestCase):
         f.cfg["controller_fault"] = "save-home"; f.save()
         self.failure(f.run("move", "--node", "node-1", "--yes", spec=True))
         self.assertFalse(Path(acquired["home"]["hub_path"]).exists())
-        manifest = f.spec["identity"]["snapshot_manifest"]
+        manifest = f.spec["recipe"]["model"]["snapshot_manifest"]
         destination = Path(f.cfg["nodes"][1]["home_root"]) / "pulsar-homes" / manifest["manifest_id"]
         verify_tree(payload(destination, manifest), manifest)
         self.assertEqual(Store(f.state).home(manifest["manifest_id"])["node_id"], "node-0")
@@ -389,7 +412,7 @@ class ModelLibraryCLI(unittest.TestCase):
         f = self.fixture(nodes=2)
         acquired = self.acquire_candidate(f, nodes=2)
         self.success(f.run("prepare", "--yes", spec=True))
-        manifest = f.spec["identity"]["snapshot_manifest"]
+        manifest = f.spec["recipe"]["model"]["snapshot_manifest"]
         controller = Store(f.state)
         original = next(row for row in controller.views(spec_id=f.spec["spec_id"]) if row["node_id"] == "node-0")
         duplicate, stamp = copy_snapshot(Path(acquired["home"]["path"]),

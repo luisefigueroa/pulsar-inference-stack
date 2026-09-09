@@ -24,6 +24,9 @@ FIELDS = {'schema_version', 'state', 'profile', 'model_id', 'revision', 'identit
           'validation', 'backend', 'bytes_logical', 'activated_at', 'pinned', 'budget_bytes_accounted'}
 
 
+from release_spec.serving import identity_fields
+
+
 def legacy_stamp(instance, legacy_root, topology_id, manifest):
     """Validate only the known retired ownership layout, without importing it."""
     instance, legacy_root = _absolute(instance), _absolute(legacy_root)
@@ -68,9 +71,9 @@ def legacy_stamp(instance, legacy_root, topology_id, manifest):
 def preview_view(*, manifest, spec, legacy_instance, legacy_root, legacy_topology_id,
                  topology_id, node_id, rank, destination_root, state_root, legacy_home_hub=None):
     manifest, spec = verify_manifest(manifest), verify_spec(spec)
-    if spec['identity']['snapshot_manifest'] != manifest:
+    if identity_fields(spec)['snapshot_manifest'] != manifest:
         raise StorageError('current spec and supplied manifest differ')
-    if not isinstance(topology_id, str) or not topology_id or type(rank) is not int or not 0 <= rank < spec['identity']['geometry']['nodes']:
+    if not isinstance(topology_id, str) or not topology_id or type(rank) is not int or not 0 <= rank < identity_fields(spec)['geometry']['nodes']:
         raise StorageError('explicit current topology and serving rank are required')
     key = view_key(spec['spec_id'], node_id)
     instance, root = _absolute(legacy_instance), _absolute(destination_root)
@@ -86,7 +89,7 @@ def preview_view(*, manifest, spec, legacy_instance, legacy_root, legacy_topolog
     home_view = home['node_id'] == node_id
     from .filesystem import require_serving_filesystem
     require_serving_filesystem(home['path'] if home_view else root)
-    if spec['identity']['geometry']['nodes'] == 1 and not home_view:
+    if identity_fields(spec)['geometry']['nodes'] == 1 and not home_view:
         raise StorageError('one-node prepared view must reference its migrated home')
     hub = instance / 'hub' / ('models--' + manifest['model_id'].replace('/', '--'))
     if hub.is_symlink():

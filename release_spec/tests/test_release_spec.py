@@ -391,25 +391,27 @@ class ReleaseSpecTests(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseSpecError, "review"):
             verify_spec(review)
 
-    def test_measured_requires_empty_review(self) -> None:
+    def test_state_and_review_are_independent_nullable_metadata(self) -> None:
         document = _copy(self.measured)
         document["review"] = {
             "status": "stable",
             "reviewer": "example-reviewer",
             "reviewed_at": "2026-09-02T00:00:00Z",
         }
-        with self.assertRaisesRegex(ReleaseSpecError, "empty object"):
-            verify_spec(document)
-
-    def test_released_requires_full_review(self) -> None:
+        self.assertEqual(verify_spec(document)["review"]["status"], "stable")
         empty = _copy(self.released)
         empty["review"] = {}
-        with self.assertRaisesRegex(ReleaseSpecError, "review"):
-            verify_spec(empty)
-        missing = _copy(self.released)
-        del missing["review"]["reviewer"]
-        with self.assertRaisesRegex(ReleaseSpecError, "review"):
-            verify_spec(missing)
+        self.assertEqual(verify_spec(empty)["review"], {})
+        nullable = _copy(self.measured)
+        nullable["state"] = None
+        nullable["review"] = None
+        verified = verify_spec(nullable)
+        self.assertIsNone(verified["state"])
+        self.assertIsNone(verified["review"])
+        invalid = _copy(nullable)
+        invalid["review"] = "unreviewed"
+        with self.assertRaisesRegex(ReleaseSpecError, "null or an object"):
+            verify_spec(invalid)
 
     def test_passing_status_requires_passing_suite(self) -> None:
         def released(status: str, measurements: list) -> dict:

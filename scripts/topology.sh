@@ -27,11 +27,17 @@ action="${1:---help}"; [ $# = 0 ] || shift
 case "$action" in
   --help|-h|help) usage; exit 0 ;;
   setup)
-    setup_flags=()
+    setup_detect_flags=()
+    setup_configure_flags=()
     while [ $# -gt 0 ]; do
       case "$1" in
-        --candidate) [ -n "${2:-}" ] || { usage >&2; exit 2; }; setup_flags+=("$1" "$2"); shift ;;
-        --accept-new-host-keys) setup_flags+=("$1") ;;
+        --candidate)
+          [ -n "${2:-}" ] || { usage >&2; exit 2; }
+          setup_detect_flags+=("$1" "$2")
+          setup_configure_flags+=("$1" "$2")
+          shift
+          ;;
+        --accept-new-host-keys) setup_configure_flags+=("$1") ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
       esac
@@ -43,7 +49,15 @@ case "$action" in
     fi
     . "$REPO_DIR/scripts/lib.sh"
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
-      "$0" configure "${setup_flags[@]}" || exit $?
+      echo 'No saved membership. Detecting candidates without saving first.'
+      "$0" detect "${setup_detect_flags[@]}" || exit $?
+      "$0" configure "${setup_configure_flags[@]}" || exit $?
+    elif ! "$0" show >/dev/null 2>&1; then
+      "$0" show || true
+      echo 'Saved membership is invalid. Running diagnostic discovery without replacing it.'
+      "$0" detect "${setup_detect_flags[@]}" || true
+      echo 'Saved membership was not changed. Inspect it before explicit topology configure.'
+      exit 1
     fi
     # A cancelled configuration, invalid membership or failed enrollment cannot
     # fall through to a success message or trigger a model operation.
@@ -53,7 +67,13 @@ case "$action" in
       "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll || exit $?
       "$REPO_DIR/scripts/topology-ssh-trust.sh" check || exit $?
     fi
-    exec "$0" check ;;
+    if "$0" check; then
+      exit 0
+    fi
+    echo 'Saved membership is not ready. Running diagnostic discovery without saving.'
+    "$0" detect "${setup_detect_flags[@]}" || true
+    echo 'Saved membership was not changed. Review discovery before explicit topology configure.'
+    exit 1 ;;
   menu)
     [ $# = 0 ] || { usage >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"

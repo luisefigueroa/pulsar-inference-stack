@@ -30,7 +30,8 @@ browse() {
 import json,sys,shutil
 width=max(32,min(100,shutil.get_terminal_size((80,24)).columns))-6
 for row in json.load(sys.stdin)["entries"]:
- suffix=" ["+row["spec_id"][:8]+"] "+row["review"]["status"]
+ review=row.get("review") or {}
+ suffix=" ["+row["spec_id"][:8]+"] "+(review.get("status") or "not specified")
  model=row["model_id"]; available=max(4,width-len(suffix))
  if len(model)>available:model=model[:available-3]+"..."
  print(model+suffix)

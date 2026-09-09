@@ -231,6 +231,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(result, 0, output)
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
         self.assertNotIn('Enroll these SSH identities?', output)
+        self.assertFalse(any(tool == 'avahi-browse' for tool, _ in f.calls()))
 
     def test_setup_enrolls_missing_trust_only_after_confirmation(self):
         f = self.fixture
@@ -261,6 +262,24 @@ class TopologyCommands(unittest.TestCase):
         self.assertNotEqual(result, 0, output)
         self.assertNotIn('Enroll these SSH identities?', output)
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+
+    def test_setup_detects_invalid_or_unready_saved_state_without_replacing_it(self):
+        f = self.fixture
+        f.path.write_text('{broken')
+        before = f.path.read_bytes()
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertEqual(f.path.read_bytes(), before)
+        self.assertIn('diagnostic discovery', output)
+        self.assertTrue(any(tool == 'avahi-browse' for tool, _ in f.calls()))
+
+        f.path.write_text(json.dumps(f.topology))
+        f.env['TOPOLOGY_PING_RC'] = '1'
+        before = f.path.read_bytes()
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertEqual(f.path.read_bytes(), before)
+        self.assertIn('without saving', output)
 
     def test_narrow_human_observation(self):
         f = self.fixture

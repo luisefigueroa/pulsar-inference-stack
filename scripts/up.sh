@@ -12,27 +12,32 @@ up_usage() {
 usage: scripts/up.sh SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate
+  --override-file FILE   Explicit typed execution changes; report a modified recipe
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE_ID        Select a confirmed node for a one-node spec
   --accept-memory-warn  Explicitly accept a memory warning
-  --pull-image / --yes  Permit staging the pinned image when missing
+  --pull-image          Permit staging the pinned image when missing
+  --replace             Permit stopping an existing exact-name service
+  --yes                 Confirm the requested start only; never implies the above
   --skip-preflight      Use when the cluster preflight was run separately
 
-Model-file verification cannot be skipped. Recipe changes, including
-speculative decoding, require a new frozen candidate spec.
+Model-file verification cannot be skipped. Overrides create a distinct effective
+spec without changing the selected catalog entry or inheriting its measurements.
 HELP
 }
 case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 
 NAME="${1:-}"
+unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 [ -n "$NAME" ] || die "usage: $0 <model-name> [options]"
 shift
 
-SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0
-DRY=0 YES=0 VERBOSE=0 NODE_SELECTOR=""
+SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
+DRY=0 VERBOSE=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
@@ -41,6 +46,7 @@ while [ $# -gt 0 ]; do
     --skip-weights-check) die "model-file verification cannot be skipped" 2 ;;
     --accept-memory-warn) ACCEPT_MEM=1 ;;
     --pull-image) PULL_IMG=1 ;;
+    --replace) REPLACE=1 ;;
     --weight-source|--weight-mode)
       refuse_removed_weight_mode_flag
       ;;
@@ -50,7 +56,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --dry-run) DRY=1 ;;
-    --yes|-y) YES=1 ;;
+    --yes|-y) : ;;  # Compatibility acknowledgement; grants no extra action.
     --verbose|-v) VERBOSE=1 ;;
     -h|--help)
       up_usage
@@ -64,7 +70,7 @@ done
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
-  die "released spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
+  die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
 fi
 require_spec_platform_admission "$NAME"
 NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
@@ -81,8 +87,7 @@ elif [ -n "$NODE_SELECTOR" ]; then
   die "--node is only valid for one-node profiles" 2
 fi
 resolve_spec_decode "$SPEC_MODE"
-load_release_spec_projection
-SPEC_REVIEW_CELL=$(release_spec_enabled_cell "${SPEC_DECODE_ENABLED:-0}")
+SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
 [ "$VERBOSE" = 1 ] && export QUIET=0
 
@@ -96,7 +101,12 @@ echo "│  weights=model library (hot staging)"
 if [ "$NODES" -eq 1 ]; then
   echo "│  placement=$(single_node_display)  node-id=${SINGLE_NODE_ID:-standalone}"
 fi
-echo "│  recipe=exact selected spec"
+if [ "${PULSAR_EFFECTIVE_SPEC_ID:-$NAME}" != "$NAME" ]; then
+  echo "│  Modified recipe: ${PULSAR_EFFECTIVE_SPEC_ID}"
+  echo "│  Selected spec: $NAME; its measurements are reference only"
+else
+  echo "│  recipe=exact selected spec"
+fi
 echo "│  spec-review=$SPEC_REVIEW_CELL (display-only)"
 [ "$DRY" = 1 ] && echo "│  mode=DRY-RUN (checks only)"
 echo "├─ checks"
@@ -132,7 +142,7 @@ if [ "$img_rc" != 0 ]; then
       die "confirmed topology has fewer ranks than this profile requires"
       ;;
     missing-on-worker|missing-on-rank)
-      if [ "$DRY" != 1 ] && { [ "$PULL_IMG" = 1 ] || [ "$YES" = 1 ]; }; then
+      if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
         "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after rank sync"
@@ -147,7 +157,7 @@ if [ "$img_rc" != 0 ]; then
       die "Docker is unavailable on one or more required physical nodes"
       ;;
     missing-on-head|missing-on-target|missing-both|unknown|"")
-      if [ "$DRY" != 1 ] && { [ "$PULL_IMG" = 1 ] || [ "$YES" = 1 ]; }; then
+      if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
         "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after sync"
@@ -246,6 +256,9 @@ case "$SPEC_MODE" in
 esac
 
 launch_flags=()
+if [ "$REPLACE" = 1 ]; then
+  launch_flags+=(--replace)
+fi
 if [ "$NODES" -gt 1 ]; then
   # up.sh already ran (or explicitly skipped) this preflight. Always suppress
   # start-cluster.sh's duplicate run while preserving the caller's decision.
@@ -254,15 +267,16 @@ fi
 
 echo "└─"
 
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 resolve_library_hot_for_profile "$NAME"
 PLAN_FILE="${PULSAR_LAUNCH_PLAN_OUT:-$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")}"
 if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
   # shellcheck disable=SC2064
   trap 'rm -f "${PLAN_FILE:-}"' EXIT
 fi
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo start)"
-echo "PASS  plan      schema=1 ranks=$NODES classifier=inventory (not a permit)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
+echo "PASS  plan      schema=3 ranks=$NODES; prerequisites checked separately"
 
 if [ "$DRY" = 1 ]; then
   cat <<EOF

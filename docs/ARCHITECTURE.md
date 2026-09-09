@@ -13,24 +13,36 @@ flowchart TD
     storage --> prepare[Prepare local files on required ranks]
     prepare --> launch[Recheck and launch exact configuration]
     launch --> experiments[Workbench: baseline qualification]
-    experiments --> archive[Verify recovery archive]
-    archive --> export[Local compact contribution export]
+    experiments --> export[Local compact contribution export]
+    archive[Optional recorded archive observation] -.-> export
     export --> review[Explicit publication and reviewed merge]
     review --> catalog
 ```
 
 ## Contracts and ownership
 
-`release_spec/` owns the canonical spec and snapshot manifest, normalization,
-identity and independent compact-evidence verification. The workbench imports
-that module from its explicitly pinned stack checkout; it does not vendor a
-second implementation. Qualification records exact workbench and stack commits.
+`release_spec/` owns current serving specs, unchanged snapshot manifests,
+normalization, identity, and canonical evidence verification. Workbench consumes
+its behavior through the public `pulsar` CLI, never private imports or shell
+sourcing. Compatibility is based on supported contracts, not Git equality.
 
-A spec describes one exact model snapshot, image, recipe and hardware
-geometry. The launch contract freezes its runtime arguments. Deployment
-configuration can select placement, storage location, port and served name;
-it cannot silently change the recipe. Mutable prerequisites are checked again
-immediately before a serving action.
+Schema 2 freezes the exact model snapshot, image, engine arguments, container
+settings, and geometry. Site configuration selects placement, storage locations,
+ports, served names, and credentials. An explicit execution override produces a
+new effective spec ID and is reported as a modified recipe; it does not inherit
+the selected recipe's measurements or review metadata.
+
+Both maintainer and catalog launches use the same spec compiler. It creates an
+immutable private launch record and labels each container with selected/effective
+spec IDs and that record's digest. Observation checks actual image, command,
+environment, mounts, network/IPC/resource/device settings, health/restart policy,
+and boot identity against the recorded effective configuration. It never compares
+a container with the observing checkout's Git commit or mutable defaults.
+
+[The public contract](CONTRACT.md) defines field bindings and CLI operations.
+Baseline-v1 methods and thresholds remain unchanged. Measurements are separate
+immutable runs bound to the effective spec. Tool commits and observed host/runtime
+context describe the campaign; they do not define recipe identity.
 
 The `model_library/` package owns structured storage records, planning and
 node-local file verification. Thin Bash boundaries own confirmed topology,
@@ -58,7 +70,9 @@ placement records. Its configured path follows operator policy.
 
 ## Catalog observations and serving state
 
-Catalog rows come only from `releases/`. They combine frozen review information
+Catalog rows come only from schema-valid specs in `releases/`. Presence there is
+the maintainer's catalog decision; `state` and `review` are nullable metadata,
+not membership or serving gates. Rows combine any supplied review information
 with saved observations of known managed files and archives. Reading the
 catalog does not inspect arbitrary caches or contact serving nodes. Observation
 age is explicit and unobserved state stays unknown.
@@ -76,15 +90,14 @@ same-boot repeatability, pinned GSM8K accuracy, the 60-minute soak and required
 performance measurements. Every participating node is checked before and after
 measurement; missing nodes, altered contracts or restarts invalidate the run.
 
-The workbench packages measured evidence without assigning catalog review
-status. Explicitly requested publication opens a contribution PR. A released
-spec in `releases/` is in the catalog and is serveable regardless of review
-status. Claiming `stable` or `validated` still requires independently
-recomputed baseline-v1 passes, the fixed policy, and matching evidence hashes.
-These deterministic checks establish document consistency; physical execution
-claims still require maintainer review.
+The workbench packages the spec and any measured evidence without assigning
+catalog authority to the evidence. Explicitly requested publication opens a
+contribution PR. Schema and filename checks gate catalog structure; evidence
+verification and current launch compatibility are separate diagnostics. Their
+results never add or remove membership. Deterministic evidence checks establish
+document consistency only; physical execution claims still require maintainer
+judgement.
 
-The catalog starts empty, with no imported experiments or recipes. Incomplete
-private attempts stay in the workbench until released. The deeper `validated`
-suite is deferred. Review status does not authorize or block serving;
+The catalog starts empty, with no imported experiments or recipes. The deeper
+`validated` suite is deferred. State and review metadata do not authorize or block serving;
 operational prerequisites still apply.

@@ -1,0 +1,76 @@
+{
+  "kind": "pulsar-serving-spec",
+  "recipe": {
+    "container": {
+      "accelerator_access": "all",
+      "cpu_limit_nanos": 0,
+      "devices": [],
+      "healthcheck": {
+        "interval_seconds": 30,
+        "path": "/health",
+        "retries": 3,
+        "start_period_seconds": 900,
+        "timeout_seconds": 5
+      },
+      "ipc_mode": "host",
+      "memory_limit_bytes": 0,
+      "network_mode": "bridge",
+      "restart_max_retries": 0,
+      "restart_policy": "no",
+      "shm_size_bytes": null,
+      "ulimits": {
+        "memlock": {
+          "hard": -1,
+          "soft": -1
+        },
+        "stack": {
+          "hard": 67108864,
+          "soft": 67108864
+        }
+      }
+    },
+    "container_env": [
+      "HF_HUB_OFFLINE=1",
+      "VLLM_LOGGING_LEVEL=INFO"
+    ],
+    "engine_args": [
+      "--gpu-memory-utilization",
+      "0.8"
+    ],
+    "geometry": {
+      "fabric": "local",
+      "nodes": 1,
+      "platform_id": "dgx-spark-gb10",
+      "pp": 1,
+      "tp": 1
+    },
+    "image_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "model": {
+      "model_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "model_id": "example/model",
+      "snapshot_manifest": {
+        "file_count": 1,
+        "files": [
+          {
+            "path": "config.json",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "size": 2
+          }
+        ],
+        "kind": "model-library-snapshot-manifest",
+        "manifest_id": "43b47a7856106c0aa8f24a39dc3b2f88f203e31fa74617f718ce2ceac1bd672c",
+        "model_id": "example/model",
+        "schema_version": 1,
+        "snapshot_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "total_bytes": 2
+      }
+    }
+  },
+  "review": null,
+  "schema_version": 2,
+  "source": {
+    "image_repository": "vllm/vllm-openai"
+  },
+  "spec_id": "e152cf55ffd514cd0c22ef5e1dc78a3faf29b8f99ae31802e0a755671ee10a00",
+  "state": null
+}

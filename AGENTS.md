@@ -10,10 +10,14 @@ public contribution. The operator command is `./pulsar`.
 
 - Use Bash for operator commands, confirmed topology, SSH, process orchestration,
   and transport. Use Python 3 for schemas, planning, identity, state, and tests.
-- `release_spec/` owns canonical immutable specs, snapshot manifests, measurement
-  contracts, the baseline policy evaluator, and public contribution verification.
-  Preserve the exact model bytes, image, recipe arguments, and hardware geometry
-  in the selected spec. Deployment settings do not authorize recipe changes.
+- `release_spec/` owns canonical immutable specs, snapshot manifests, the public
+  JSON draft compiler, measurement contracts, the baseline policy evaluator, and
+  catalog-spec schema verification.
+  Preserve model bytes, image, engine arguments, container settings, and hardware
+  geometry in the effective spec. Explicit execution overrides create a distinct
+  effective spec and are displayed as a modified recipe. Site settings do not
+  change recipe identity. Containers name the selected/effective specs and their
+  immutable launch plan; Git commits are provenance, never runtime identity.
 - `model_library/` owns manifest verification, explicit homes, prepared copies,
   pins, archives, migration, and local records. Records locate bytes; manifests
   and actual verification establish their identity. Reuse the shared schema.
@@ -34,24 +38,54 @@ public contribution. The operator command is `./pulsar`.
 
 ## Evidence and publication
 
-A passing baseline is evaluation, not catalog admission. Released specs in
-`releases/` are catalog members and are serveable regardless of review status.
-The operator may label a release `experimental`, `stable`, `validated`, `failed`,
-or `withdrawn`. Claiming `stable` or `validated` still requires the unchanged
-baseline-v1 criteria. Failed or incomplete private attempts remain in the
-workbench until released. Withdrawal retains a spec with its reason and does
-not stop services or delete archives automatically.
+The workbench maintainer decides what is published. A schema-valid spec under
+`releases/`, with a filename equal to its complete `spec_id`, is a catalog
+member. `state` and `review` are nullable metadata and never catalog or serving
+gates. Do not infer, promote, or rewrite either value. Baseline results, archive
+proof, and current launch compatibility are independent optional assessments;
+their outcome does not add or remove catalog membership. Withdrawal metadata
+does not stop services or delete archives automatically.
+
+New operations and contributions use spec schema 2 through the public `pulsar`
+CLI contract. Schema-1 catalog records remain historical and readable; do not
+migrate their evidence or retain a legacy launch compiler. Preserve safe
+inventory/stop support for existing services. Workbench must not import this
+checkout's Python modules or source its shell libraries.
 
 Keep topology files, hostnames, addresses, SSH identity, user paths, credentials,
-and raw experiment outputs out of tracked public files. Use the existing privacy
-scanner before publication and its `--staged` mode before committing. Retain
+and raw experiment outputs out of tracked public files. Privacy remains a
+publication-safety check even though evidence is not a catalog gate. Use the
+existing privacy scanner before publication and its `--staged` mode before committing. Retain
 licenses and attribution for carried-forward code. Fresh repository history does
 not mean importing former experiment evidence or serving catalog entries.
 
 Do not perform physical downloads, launches, service replacement, destructive
 cleanup, or remote publication outside the maintainer's explicitly agreed scope.
+Starting is non-replacing by default; image staging and replacement require
+their own explicit flags and authority.
 Do not claim physical serving results from mocked tests. Resolve significant
 changes to the agreed plan with the maintainer before implementing them.
+
+## Terminology and naming
+
+Use plain, specific names that tell a reader what an object is or what an
+operation does. Use the same term for the same concept in Stack and Workbench,
+including function names, variables, CLI output, schema fields, documentation,
+tests, and diagrams. Qualify ambiguous names by their subject: `stack_commit`,
+`model_commit`, `schema_version`, `spec_id`, or `container_id`.
+
+Call a Git commit a `commit`; do not call it a release, version, or build.
+Reserve `version` for an explicitly versioned format or software release,
+`spec` for a serving specification, `recipe` for its execution configuration,
+and `publication` for adding reviewed content to the catalog. Distinguish
+intended configuration from observed state and from historical measurements.
+
+During a refactor, replace misleading internal names in the affected code and
+update explanations and tests together. Rename persisted fields, public commands,
+or container labels only through an explicit compatibility or migration plan;
+do not rewrite historical evidence merely to improve its terminology. Avoid
+unrelated rename sweeps and do not introduce multiple aliases without a defined
+compatibility purpose and retirement condition.
 
 ## Verification and operator experience
 

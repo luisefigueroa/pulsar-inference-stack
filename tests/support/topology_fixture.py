@@ -54,6 +54,7 @@ class Fixture:
             TOPOLOGY_FIXTURE=str(root), CLUSTER_TOPOLOGY_FILE=str(self.path),
             CLUSTER_SSH_CONFIG_FILE=str(self.config), PULSAR_SSH=str(binary/'ssh'),
             PULSAR_DOCKER=str(binary/'docker'), PULSAR_SELFTEST='1',
+            PULSAR_MODEL_LIBRARY_DIR=str(root/'model-library'),
             PULSAR_COLD_STORAGE_TEST_DOTENV=str(root/'absent-env'),
             PYTHONDONTWRITEBYTECODE='1', GUM='0', COLUMNS='48', TERM='dumb')
 

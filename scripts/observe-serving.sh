@@ -3,23 +3,49 @@
 set -euo pipefail
 SCRIPT_NAME=observe-serving
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-NAME="${1:?spec id required}"; shift
-NODE_SELECTOR=""
+NAME="" SERVICE_ID="" NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --service-id) SERVICE_ID="${2:?service id required}"; shift ;;
     --node) NODE_SELECTOR="${2:?node required}"; shift ;;
-    --spec-file) export PULSAR_SPEC_FILE="${2:?file required}"; shift ;;
+    --spec-file) shift ;; # historical caller argument; recorded spec is authoritative
     --json) ;;
-    *) die "unknown argument: $1" 2 ;;
+    --*) die "unknown argument: $1" 2 ;;
+    *) [ -z "$NAME" ] || die "unexpected argument: $1"; NAME="$1" ;;
   esac
   shift
 done
 acquire_model_library_lifecycle_lock shared
 acquire_model_library_hot_lock shared
+OBS=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-observe.XXXXXX")
+trap 'rm -rf "$OBS"' EXIT
+chmod 700 "$OBS"
+locator=(--selected-spec-id "$NAME")
+[ -z "$SERVICE_ID" ] || locator=(--service-id "$SERVICE_ID")
+python3 "$REPO_DIR/scripts/service_state.py" locate --state-root "$PULSAR_MODEL_LIBRARY_DIR" "${locator[@]}" >"$OBS/plan.json"
+python3 - "$OBS/plan.json" "$OBS/selected-spec.json" "$OBS/overlay.json" <<'PYCODE'
+import json,sys
+from pathlib import Path
+plan=json.loads(Path(sys.argv[1]).read_text())
+Path(sys.argv[2]).write_text(json.dumps(plan['selected_spec']))
+# The same private overlay reaches the model-file verification subprocess.
+# Today's overlay describes future launches, not this recorded service.
+Path(sys.argv[3]).write_text(json.dumps(dict(schema_version=1,kind='pulsar-deployment-overlay',
+    defaults=dict(port=plan['port'],served_name=plan['served_name'],cache_root=None,placement=None),specs={})))
+PYCODE
+NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["selected_spec_id"])' "$OBS/plan.json")
+unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
+export PULSAR_SPEC_FILE="$OBS/selected-spec.json"
+export PULSAR_OVERLAY_PATH="$OBS/overlay.json"
 load_conf "$NAME"
 require_spec_platform_admission "$NAME"
+recorded_node=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ranks"][0]["node_id"])' "$OBS/plan.json")
 if [ "$NODES" = 1 ]; then
-  NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
+  [ -z "$NODE_SELECTOR" ] || [ "$NODE_SELECTOR" = "$recorded_node" ] || die "node selector differs from recorded service"
+  NODE_SELECTOR="$recorded_node"
+fi
+PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$OBS/plan.json")
+if [ "$NODES" = 1 ]; then
   resolve_single_node_placement "$NODE_SELECTOR" || die "placement is not confirmed"
   load_cluster_topology || die "confirmed topology required"
   API_URL=$(single_node_api_base_url "$PORT")
@@ -29,28 +55,35 @@ else
   API_URL="http://${CLUSTER_NODE_CONTROL_IPS[0]}:$PORT"
 fi
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required"
-resolve_spec_decode auto
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
-# Inspect boot before and after full file verification so restarts during hashing
-# cannot create a misleading observation of one continuous serving attempt.
-OBS=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-observe.XXXXXX")
-trap 'rm -rf "$OBS"' EXIT
-chmod 700 "$OBS"
 CONTAINER=$(container_name_for "$NAME" "$NODES")
 for ((rank=0; rank<NODES; rank++)); do
   index="$rank"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
   command=$(shell_join_q docker inspect --format '{{json .}}' "$CONTAINER")
   if [ "$index" = 0 ]; then
     "$PULSAR_DOCKER" inspect --format '{{json .}}' "$CONTAINER" >"$OBS/container-$rank.json"
-    "$PULSAR_DOCKER" image inspect --format '{{json .}}' "$IMAGE" >"$OBS/image-$rank.json"
+    actual_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["Image"])' "$OBS/container-$rank.json")
+    "$PULSAR_DOCKER" image inspect --format '{{json .}}' "$actual_image" >"$OBS/image-$rank.json"
   else
     ssh_node "$index" "$command" >"$OBS/container-$rank.json"
-    command=$(shell_join_q docker image inspect --format '{{json .}}' "$IMAGE")
+    actual_image=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["Image"])' "$OBS/container-$rank.json")
+    command=$(shell_join_q docker image inspect --format '{{json .}}' "$actual_image")
     ssh_node "$index" "$command" >"$OBS/image-$rank.json"
+  fi
+  if ! runtime_context_for_rank "$index" >"$OBS/context-$rank.json"; then
+    printf '{"available":false}\n' >"$OBS/context-$rank.json"
   fi
 done
 PULSAR_OBSERVE_FULL=1 resolve_library_hot_for_profile "$NAME"
-write_launch_plan_file "$OBS/plan.json" dry-run
+python3 "$REPO_DIR/scripts/service_state.py" actual --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$OBS/plan.json" --observations "$OBS" >"$OBS/actual-plan.json"
+mv "$OBS/actual-plan.json" "$OBS/plan.json"
+printf '%s\n' "$PULSAR_PREPARED_SET_JSON" >"$OBS/prepared.json"
+PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$OBS/plan.json")
+SERVED_NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["served_name"])' "$OBS/plan.json")
+if [ "$NODES" = 1 ]; then
+  API_URL=$(single_node_api_base_url "$PORT")
+else
+  API_URL="http://${CLUSTER_NODE_CONTROL_IPS[0]}:$PORT"
+fi
 for ((rank=0; rank<NODES; rank++)); do
   index="$rank"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
   command=$(shell_join_q docker inspect --format '{{json .}}' "$CONTAINER")

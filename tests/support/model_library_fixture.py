@@ -39,12 +39,16 @@ def contained(path):
     return value
 
 
-def check_data(value):
+def check_data(value, trail=()):
     if isinstance(value, dict):
-        for item in value.values(): check_data(item)
+        for key,item in value.items(): check_data(item, (*trail,key))
     elif isinstance(value, list):
-        for item in value: check_data(item)
+        for item in value: check_data(item, trail)
     elif isinstance(value, str) and value.startswith("/"):
+        # This closed spec field is an HTTP request path, never a filesystem
+        # operand. Keep all actual model/storage paths inside the fixture root.
+        if trail[-4:] == ('recipe','container','healthcheck','path'):
+            return
         contained(value)
 
 
@@ -65,10 +69,7 @@ def node_request(value, cfg, current):
     return value
 
 
-def guarded_node_arguments(argv, cfg, current):
-    if argv[:1] != ["-c"] or len(argv) != 2:
-        raise RuntimeError("fixture expected one immutable bundled node program")
-    program = argv[1]
+def rewrite_bundled_program(program, cfg, current):
     tree = ast.parse(program)
     assignments = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
         and len(n.targets) == 1 and isinstance(n.targets[0], ast.Attribute)
@@ -84,7 +85,11 @@ def guarded_node_arguments(argv, cfg, current):
     replacement = base64.b64encode(json.dumps(value, separators=(",", ":")).encode()).decode()
     if program.count(repr(encoded)) != 1:
         raise RuntimeError("fixture node request cannot be safely replaced")
-    return ["-c", program.replace(repr(encoded), repr(replacement))], value
+    return program.replace(repr(encoded), repr(replacement)), value
+
+
+def run_bundled_node_program(program, **kwargs):
+    return subprocess.run([sys.executable, "-"], input=program.encode(), **kwargs)
 
 
 def check_shell_paths(command):
@@ -159,18 +164,20 @@ def tool(kind, argv):
         if argv == ["-m", "model_library.node"]:
             value = node_request(json.load(sys.stdin), cfg, current)
             return subprocess.run([sys.executable, *argv], input=json.dumps(value).encode()).returncode
-        guarded, request = guarded_node_arguments(argv, cfg, current)
+        if argv != ["-"]:
+            raise RuntimeError("fixture expected one immutable bundled node program on stdin")
+        rewritten, request = rewrite_bundled_program(sys.stdin.read(), cfg, current)
         event("node-operation", operation=request["operation"])
         fault = cfg.get("node_fault", {})
         if fault.get("operation") == request["operation"] and fault.get("rank") == rank():
             if fault.get("after"):
-                result = subprocess.run([sys.executable, *guarded], capture_output=True)
+                result = run_bundled_node_program(rewritten, capture_output=True)
                 if result.returncode:
                     sys.stderr.buffer.write(result.stderr)
                     return result.returncode
             print("fixture interrupted the selected node operation", file=sys.stderr)
             return 255
-        os.execv(sys.executable, [sys.executable, *guarded])
+        return run_bundled_node_program(rewritten).returncode
     if kind == "node-check":
         return 0 if cfg["nodes"][int(argv[0])]["available"] else 255
     if kind == "control":
@@ -325,6 +332,11 @@ ssh_node() {{
             "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_MODEL_LIBRARY_DIR": str(self.state),
             "PULSAR_COLD_ROOT": str(self.archive), "PULSAR_NODE_PYTHON": str(binary / "node-python"),
             "PULSAR_HOME_ROOT": self.cfg["configured_home_root"], "PULSAR_HOT_ROOT": self.cfg["configured_view_root"],
+            # Synthetic snapshots need bytes, not the production 64-GiB reserve.
+            # Explicit test policy also prevents inherited operator budgets from
+            # changing the scenario on small CI disks.
+            "PULSAR_HOT_RESERVE_BYTES": str(1024**2),
+            "PULSAR_HOT_BUDGET_BYTES": str(32 * 1024**2),
             "HF_CACHE": str(self.root / "hf-cache"), "HF_HOME": str(self.root / "hf-auth"), "TMPDIR": str(temporary),
             "PULSAR_DOCKER": str(binary / "docker"), "PULSAR_IP": str(binary / "ip"),
             "PULSAR_RSYNC": str(binary / "rsync"), "PULSAR_SSH": str(binary / "ssh"),
@@ -355,18 +367,15 @@ ssh_node() {{
                         "--node", self.cfg["nodes"][node]["node_id"], "--manifest-out", self.manifest_path, "--yes")
 
     def candidate(self, nodes=1):
-        from release_spec import load_snapshot_manifest, verify_spec, spec_id_for, pretty_json_bytes
-        from scripts.release_consumer import build_profile_identity, argv_from_identity
-        manifest = load_snapshot_manifest(self.manifest_path)
-        args = ["--tensor-parallel-size", str(nodes), "--max-model-len", "1024"]
-        if nodes > 1: args += ["--distributed-executor-backend", "mp"]
-        identity, gaps = build_profile_identity(model_id=manifest["model_id"], image="example/image@sha256:" + "b" * 64,
-            nodes=nodes, gpu_mem_util="0.8", engine_args=args, container_env=[], spec_decode_args=[], spec_decode=False,
-            platform_id="dgx-spark-gb10", snapshot_revision=manifest["snapshot_revision"], files=manifest["files"])
-        if gaps: raise AssertionError(gaps)
-        self.spec = verify_spec({"schema_version": 1, "kind": "pulsar-release-spec", "spec_id": spec_id_for(identity),
-            "state": "measured", "identity": identity, "launch_contract": {"stack_version": "e" * 40, "argv": argv_from_identity(identity)},
-            "measurements": [], "baselines": [], "evidence": [], "review": {}})
+        from release_spec import load_snapshot_manifest, pretty_json_bytes
+        from release_spec.serving import example, freeze
+        manifest=load_snapshot_manifest(self.manifest_path)
+        draft=example(nodes)
+        draft['source']['image_repository']='example/image'
+        draft['recipe']['model']={'model_id':manifest['model_id'],'model_commit':manifest['snapshot_revision']}
+        draft['recipe']['image_digest']='sha256:'+'b'*64
+        draft['recipe']['engine_args']+=['--max-model-len','1024']
+        self.spec=freeze(draft,manifest)
         self.spec_path.write_bytes(pretty_json_bytes(self.spec))
         return self.spec
 

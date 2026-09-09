@@ -72,6 +72,16 @@ class IntegrityTests(unittest.TestCase):
         self.assertEqual(stamp['snapshot_manifest_id'], self.manifest['manifest_id'])
         self.assertTrue(hub.exists())
 
+    def test_archive_fallback_publishes_complete_manifest_last_tree(self):
+        from unittest.mock import patch
+        archive = self.base / 'fallback-archive'
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            hub, _ = copy_snapshot(self.source, archive, self.manifest, archive=True)
+        self.assertEqual(read_json(hub / 'manifest.json'), self.manifest)
+        self.assertTrue(verify_archive(archive, self.manifest)['verified'])
+        self.assertFalse(any(path.name.startswith('.pending-')
+                             for path in (archive / 'pulsar-snapshots').iterdir()))
+
     def test_existing_archive_is_reverified_never_overwritten(self):
         archive = self.base/'archive'
         hub, _ = copy_snapshot(self.source, archive, self.manifest, archive=True)
@@ -128,6 +138,74 @@ class IntegrityTests(unittest.TestCase):
         (root/'homes').symlink_to(self.source)
         with self.assertRaises(StorageError):
             Store(root).put('homes','b'*64,{'unsafe':True})
+
+    def test_rename_no_replace_fallback_publishes_absent_destination(self):
+        from unittest.mock import patch
+        from model_library.integrity import rename_no_replace
+        parent = self.base / 'publish'
+        parent.mkdir()
+        stage = parent / '.pending-stage'
+        dest = parent / 'published'
+        stage.mkdir()
+        (stage / 'marker').write_bytes(b'ok')
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            rename_no_replace(stage, dest)
+        self.assertFalse(stage.exists())
+        self.assertEqual((dest / 'marker').read_bytes(), b'ok')
+
+    def test_rename_no_replace_fallback_refuses_existing_destination(self):
+        from unittest.mock import patch
+        from model_library.integrity import rename_no_replace
+        parent = self.base / 'occupied'
+        parent.mkdir()
+        stage = parent / '.pending-stage'
+        dest = parent / 'published'
+        stage.mkdir()
+        dest.mkdir()
+        (dest / 'keep').write_bytes(b'original')
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            with self.assertRaisesRegex(StorageError, 'without replacement'):
+                rename_no_replace(stage, dest)
+        self.assertTrue(stage.is_dir())
+        self.assertEqual((dest / 'keep').read_bytes(), b'original')
+
+    def test_rename_no_replace_fallback_refuses_concurrent_destination(self):
+        from unittest.mock import patch
+        from model_library import integrity
+        parent = self.base / 'racing-publish'
+        parent.mkdir()
+        stage = parent / '.pending-stage'
+        dest = parent / 'published'
+        stage.mkdir()
+        (stage / 'payload').write_bytes(b'candidate')
+        real_mkdir = os.mkdir
+        raced = False
+
+        def competing_mkdir(name, mode=0o777, *, dir_fd=None):
+            nonlocal raced
+            if name == dest.name and dir_fd is not None and not raced:
+                raced = True
+                real_mkdir(name, mode, dir_fd=dir_fd)
+                destination_fd = os.open(
+                    name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=dir_fd)
+                try:
+                    fd = os.open('keep', os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                 0o600, dir_fd=destination_fd)
+                    try:
+                        os.write(fd, b'concurrent')
+                    finally:
+                        os.close(fd)
+                finally:
+                    os.close(destination_fd)
+            return real_mkdir(name, mode, dir_fd=dir_fd)
+
+        with patch.object(integrity, '_renameat2_no_replace', return_value=False), \
+                patch.object(integrity.os, 'mkdir', side_effect=competing_mkdir):
+            with self.assertRaisesRegex(StorageError, 'without replacement'):
+                integrity.rename_no_replace(stage, dest)
+        self.assertTrue(stage.is_dir())
+        self.assertEqual((stage / 'payload').read_bytes(), b'candidate')
+        self.assertEqual((dest / 'keep').read_bytes(), b'concurrent')
 
 if __name__=='__main__':
     unittest.main()

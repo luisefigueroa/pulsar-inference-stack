@@ -43,7 +43,7 @@ SSH_FINGERPRINT_RE = re.compile(r"\bSHA256:[A-Za-z0-9+/]{24,}={0,2}\b")
 HASHED_KNOWN_HOST_RE = re.compile(r"(?m)^\|1\|[A-Za-z0-9+/=]{12,}\|[A-Za-z0-9+/=]{12,}")
 SECRET_PATTERNS = (
     ("hugging-face-token", re.compile(r"\bhf_[A-Za-z0-9]{20,}\b")),
-    ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b")),
+    ("github-token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b")),
     ("openai-token", re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b")),
     ("aws-access-key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("google-api-key", re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b")),
@@ -144,7 +144,7 @@ def _working_tree_files(repo_root: pathlib.Path) -> list[tuple[str, bytes]]:
         if not item:
             continue
         relative = item.decode("utf-8", errors="strict")
-        if relative in seen or not is_publishable_path(relative):
+        if relative in seen:
             continue
         path = repo_root / relative
         if path.is_symlink():
@@ -331,7 +331,12 @@ def _generic_identity_value(value: str) -> bool:
     return False
 
 
-def _scan_text(relative: str, text: str) -> list[Finding]:
+def _scan_text(
+    relative: str,
+    text: str,
+    *,
+    scan_all_ips_override: bool | None = None,
+) -> list[Finding]:
     findings: set[Finding] = set()
 
     pattern_rules = (
@@ -386,7 +391,11 @@ def _scan_text(relative: str, text: str) -> list[Finding]:
                 )
             )
 
-    scan_all_ips = pathlib.PurePosixPath(relative).suffix.lower() != ".json"
+    scan_all_ips = (
+        pathlib.PurePosixPath(relative).suffix.lower() != ".json"
+        if scan_all_ips_override is None
+        else scan_all_ips_override
+    )
     for line_number, line in enumerate(text.splitlines(), 1):
         has_network_context = bool(
             NETWORK_CONTEXT_RE.search(line) or NETWORK_SCHEME_RE.search(line)
@@ -453,7 +462,7 @@ def _scan_json_string_values(
     return findings
 
 
-def scan_bytes(relative: str, data: bytes) -> list[Finding]:
+def scan_bytes(relative: str, data: bytes, *, network_context_only: bool = False) -> list[Finding]:
     findings: list[Finding] = []
     for match in STABLE_DGX_HOST_RE.finditer(relative):
         findings.append(
@@ -471,7 +480,8 @@ def scan_bytes(relative: str, data: bytes) -> list[Finding]:
                 "publishable file must be UTF-8 text or receive an explicit reviewed format",
             )
         ]
-    findings.extend(_scan_text(relative, text))
+    findings.extend(_scan_text(relative, text,
+        scan_all_ips_override=False if network_context_only else None))
     if pathlib.PurePosixPath(relative).suffix.lower() == ".json":
         try:
             document = json.loads(text)
@@ -512,12 +522,17 @@ def scan_repository_bytes(relative: str, data: bytes) -> list[Finding]:
         "ssh-public-key",
         "ssh-fingerprint",
         "hashed-known-host",
+        "stable-hostname",
+        "network-address",
+        "mac-address",
+        "gpu-uuid",
+        "runtime-hostname",
         "site-home-path",
         *(rule for rule, _pattern in SECRET_PATTERNS),
     }
     return [
         finding
-        for finding in _scan_text(relative, text)
+        for finding in _scan_text(relative, text, scan_all_ips_override=False)
         if finding.rule in high_confidence
     ]
 

@@ -56,6 +56,10 @@ class Contributions(unittest.TestCase):
 
     def check(self):
         self.path.write_bytes(pretty_json_bytes(self.spec))
+        return verify_compact_evidence(self.path,self.root,self.dest/'run.json')
+
+    def check_catalog_schema(self):
+        self.path.write_bytes(pretty_json_bytes(self.spec))
         return verify_contribution(self.path,self.root,self.dest/'run.json')
 
     def update_run(self):
@@ -64,17 +68,20 @@ class Contributions(unittest.TestCase):
 
     def test_complete_compact_contribution(self):
         self.assertTrue(self.check()['verified'])
+        admission = self.check_catalog_schema()
+        self.assertTrue(admission['schema_valid'])
+        self.assertFalse(admission['evidence_verified'])
 
     def test_all_nodes_checked(self):
         with tempfile.TemporaryDirectory() as temp:
             spec,run,path,dest=make_contribution(temp,2)
-            self.assertTrue(verify_contribution(path,temp,dest/'run.json')['verified'])
+            self.assertTrue(verify_compact_evidence(path,temp,dest/'run.json')['verified'])
             run['ranks_after'][1]['boot_witness']='b'*64
             raw=pretty_json_bytes(run);(dest/'run.json').write_bytes(raw)
             next(e for e in spec['evidence'] if e['id']=='baseline-run')['sha256']=hashlib.sha256(raw).hexdigest()
             path.write_bytes(pretty_json_bytes(spec))
             with self.assertRaisesRegex(ValueError,'flags|same-boot'):
-                verify_contribution(path,temp,dest/'run.json')
+                verify_compact_evidence(path,temp,dest/'run.json')
 
     def test_missing_document(self):
         (self.dest/'validate-soak.json').unlink()
@@ -164,17 +171,33 @@ class Contributions(unittest.TestCase):
         self.spec['review']['status']='experimental'
         self.assertTrue(self.check()['verified'])
 
-    def test_measured_spec_is_not_a_catalog_contribution(self):
+    def test_measured_and_nullable_metadata_are_catalog_schema_valid(self):
         self.spec['state']='measured';self.spec['review']={}
-        self.path.write_bytes(pretty_json_bytes(self.spec))
-        with self.assertRaisesRegex(ValueError,'released spec'):
-            verify_contribution(self.path,self.root,self.dest/'run.json')
+        self.assertTrue(self.check_catalog_schema()['schema_valid'])
         self.assertTrue(verify_compact_evidence(self.path,self.root,self.dest/'run.json')['verified'])
+        self.spec['state']=None;self.spec['review']=None
+        verified=self.check_catalog_schema()
+        self.assertIsNone(verified['state']);self.assertIsNone(verified['review'])
+
+    def test_catalog_schema_does_not_gate_on_optional_evidence(self):
+        (self.dest/'validate-soak.json').unlink()
+        self.assertTrue(self.check_catalog_schema()['schema_valid'])
+        with self.assertRaises(ValueError):
+            self.check()
 
     def test_compact_evidence_ignores_review_status(self):
         self.spec['review']['status']='experimental'
         self.path.write_bytes(pretty_json_bytes(self.spec))
         self.assertTrue(verify_compact_evidence(self.path,self.root,self.dest/'run.json')['verified'])
+
+    def test_baseline_verifier_reports_but_does_not_reject_other_suites(self):
+        deep=copy.deepcopy(self.spec['measurements'][0])
+        deep.update(criterion_id='deep-example',suite='deep',policy_digest=None)
+        self.spec['measurements'].append(deep)
+        self.spec['review']['status']='validated'
+        result=self.check()
+        self.assertEqual(result['verified_suite'],'baseline-v1')
+        self.assertEqual(result['unverified_suites'],['deep'])
 
 
 if __name__=='__main__':unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start an exact N-node vLLM profile: remote headless ranks first,
+# Start an exact N-node vLLM spec: remote headless ranks first,
 # then local rank 0 with the API. Every active rank is one GB10.
 #
 #   cluster/start-cluster.sh <model-name> [--spec-decode|--no-spec-decode]
@@ -14,7 +14,7 @@ cd "$REPO_DIR"
 . "$REPO_DIR/scripts/lib.sh"
 
 case "${1:-}" in -h|--help)
-  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--dry-run] [--skip-preflight] [--skip-warmup]'
+  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
   exit 0 ;;
 esac
@@ -24,15 +24,18 @@ SPEC_MODE=auto
 SKIP_PREFLIGHT=0
 SKIP_WARMUP=0
 DRY_RUN=0
+REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
     --skip-preflight) SKIP_PREFLIGHT=1 ;;
     --skip-warmup) SKIP_WARMUP=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --replace) REPLACE=1 ;;
     --force) refuse_removed_force_flag ;;
     --weight-source|--weight-mode)
       refuse_removed_weight_mode_flag
@@ -49,7 +52,6 @@ acquire_model_library_hot_lock shared
 [ "$(model_source_kind)" = hf ] \
   || die "non-HF model profiles are not servable (ADR 0006)"
 resolve_spec_decode "$SPEC_MODE"
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 SPEC_DECODE_STATE=$([ "$SPEC_DECODE_ENABLED" = 1 ] && printf on || printf off)
 if [ "$NODES" -le 1 ]; then
   echo "$MODEL_NAME is a single-node profile; use ./serve.sh" >&2
@@ -81,7 +83,9 @@ MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[0]}"
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # shellcheck disable=SC2064
 trap 'rm -f "${PLAN_FILE:-}"' EXIT
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo start)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 
 # Load docker argv for one rank from the shared launch plan. _DOCKER_CMD is
 # the output array. Bare docker is serialized to remote ranks; local rank 0
@@ -130,7 +134,7 @@ fi
 
 require_launch_operational_checks
 # Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" start
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
 for ((rank = 1; rank < NODES; rank++)); do
   build_docker_cmd "$rank"
   REMOTE_COMMANDS["$rank"]="$(shell_join_q "${_DOCKER_CMD[@]}")"
@@ -156,20 +160,36 @@ cluster_abort() {
   done
 }
 
-echo "[cluster] removing stale stack-managed ranks (ownership required)"
-stale_rc=0
-remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
-if [ "$stale_rc" -eq 2 ]; then
-  echo "[cluster] ERROR: ownership not proven on every existing rank of $CONTAINER" >&2
-  echo "[cluster] No ambiguous rank was removed. Inspect labels or stop manually." >&2
-  exit 1
+existing=0
+for ((rank = 1; rank < NODES; rank++)); do
+  host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
+  probe_rc=0
+  container_ownership_inspect_remote "$host" "$CONTAINER" >/dev/null || probe_rc=$?
+  case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank $rank; refusing launch" ;; esac
+done
+probe_rc=0
+container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
+case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank 0; refusing launch" ;; esac
+if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
+  die "service $CONTAINER already exists; inspect every rank, then pass --replace only with explicit replacement approval"
 fi
-if [ "$stale_rc" -ne 0 ]; then
-  echo "[cluster] ERROR: failed while removing stale cluster ranks (rc=$stale_rc)" >&2
-  exit 1
+if [ "$REPLACE" = 1 ]; then
+  echo "[cluster] removing existing stack-managed ranks (ownership required)"
+  stale_rc=0
+  remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
+  if [ "$stale_rc" -eq 2 ]; then
+    echo "[cluster] ERROR: ownership not proven on every existing rank of $CONTAINER" >&2
+    echo "[cluster] No ambiguous rank was removed. Inspect labels or stop manually." >&2
+    exit 1
+  fi
+  if [ "$stale_rc" -ne 0 ]; then
+    echo "[cluster] ERROR: failed while removing existing cluster ranks (rc=$stale_rc)" >&2
+    exit 1
+  fi
 fi
 
 STARTUP_STARTED_NS=$(date +%s%N)
+persist_launch_plan_file "$PLAN_FILE"
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"

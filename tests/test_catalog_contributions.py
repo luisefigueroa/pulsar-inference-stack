@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -15,9 +16,12 @@ sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'tests'))
 from test_release_contribution import make_contribution
 from release_spec import pretty_json_bytes, spec_id_for, runtime_contract_id
 from release_spec.identity import argv_from_identity
+from release_spec.contribution import verify_compact_evidence
 from release_spec.summary import summary_document, archive_proof, verify_summary
 module_spec=importlib.util.spec_from_file_location('catalog_check',ROOT/'scripts/check-catalog.py')
 catalog=importlib.util.module_from_spec(module_spec);module_spec.loader.exec_module(catalog)
+compat_spec=importlib.util.spec_from_file_location('launch_compatibility',ROOT/'scripts/check-launch-compatibility.py')
+compat=importlib.util.module_from_spec(compat_spec);compat_spec.loader.exec_module(compat)
 
 
 def catalog_fixture(root,nodes=1):
@@ -60,17 +64,32 @@ class CatalogContributions(unittest.TestCase):
 
     def write_spec(self):self.path.write_bytes(pretty_json_bytes(self.spec))
 
-    def test_actual_compact_contribution_and_empty_checkout(self):
-        self.assertEqual(self.check()['evidence_file_count'],8)
+    def test_schema_valid_catalog_and_empty_checkout(self):
+        result=self.check()
+        self.assertEqual(result['spec_count'],1)
+        self.assertEqual(result['declared_evidence_count'],7)
         with tempfile.TemporaryDirectory() as empty:
             self.assertEqual(catalog.check_catalog(empty)['spec_count'],0)
             root=Path(empty);(root/'results').mkdir();(root/'results/README.md').write_text('# Qualification evidence\n')
             self.assertEqual(catalog.check_catalog(root)['spec_count'],0)
 
-    def test_two_node_current_projection(self):
+    def test_launch_compatibility_is_separate_from_catalog_membership(self):
         with tempfile.TemporaryDirectory() as temp:
-            catalog_fixture(temp,2)
+            spec,run,summary,path,directory=catalog_fixture(temp,2)
             self.assertTrue(catalog.check_catalog(temp)['verified'])
+            with self.assertRaisesRegex(compat.CompatibilityError,'schema 2'):
+                compat.check_launch_compatibility(spec)
+
+    def test_schema_valid_but_unsupported_platform_remains_catalogable(self):
+        from release_spec import serving
+        spec=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+        spec['recipe']['geometry']['platform_id']='future-platform'
+        spec['spec_id']=serving.spec_id(spec['recipe'])
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'releases').mkdir()
+            (root/'releases'/(spec['spec_id']+'.json')).write_bytes(pretty_json_bytes(spec))
+            self.assertTrue(catalog.check_catalog(root)['verified'])
+            with self.assertRaises(compat.CompatibilityError): compat.check_launch_compatibility(spec)
 
     def test_withdrawn_recipe_retains_same_baseline_provenance(self):
         self.spec['review'].update(status='withdrawn',reason='A later observation requires caution.')
@@ -80,28 +99,12 @@ class CatalogContributions(unittest.TestCase):
         self.spec['review']['status']='experimental'
         self.write_spec();self.assertTrue(self.check()['verified'])
 
-    def test_changed_hash_missing_gate_and_weakened_threshold(self):
-        for mode in ('hash','gate','threshold'):
-            with tempfile.TemporaryDirectory() as temp:
-                spec,run,summary,path,directory=catalog_fixture(temp)
-                if mode=='hash':(directory/'serve-smoke.json').write_text('{}')
-                elif mode=='gate':spec['measurements'].pop();path.write_bytes(pretty_json_bytes(spec))
-                else:spec['measurements'][0]['thresholds'][0]['value']='0';path.write_bytes(pretty_json_bytes(spec))
-                with self.subTest(mode=mode),self.assertRaises(ValueError):catalog.check_catalog(temp)
-
-    def test_extra_raw_or_foreign_files_anywhere_in_results_are_rejected(self):
-        for relative in ('raw/captures.jsonl','baseline-v1/unrelated.txt','baseline-v1/'+self.spec['spec_id']+'/raw.json'):
-            path=self.root/'results'/relative;path.parent.mkdir(parents=True,exist_ok=True);path.write_text('private raw capture')
-            with self.subTest(path=relative),self.assertRaisesRegex(ValueError,'unreferenced'):self.check()
-            path.unlink()
-            while path.parent!=self.directory and path.parent!=self.root/'results' and not any(path.parent.iterdir()):
-                path=path.parent;path.rmdir()
-
-    def test_noncanonical_evidence_layout_rejected_even_if_all_hashes_match(self):
-        target=self.directory/'serve-smoke-renamed.json';(self.directory/'serve-smoke.json').rename(target)
-        next(r for r in self.spec['evidence'] if r['id']=='serve-smoke')['path']=target.relative_to(self.root).as_posix()
-        self.write_spec()
-        with self.assertRaisesRegex(ValueError,'canonical compact layout'):self.check()
+    def test_catalog_does_not_gate_on_evidence_or_extra_results(self):
+        (self.directory/'serve-smoke.json').write_text('{}')
+        extra=self.root/'results/raw/captures.jsonl';extra.parent.mkdir();extra.write_text('synthetic output')
+        self.assertTrue(self.check()['verified'])
+        with self.assertRaises(ValueError):
+            verify_compact_evidence(self.path,self.root,self.directory/'run.json')
 
     def test_summary_is_closed_and_exactly_bound(self):
         for change in ('private','criterion','archive','version','evidence'):
@@ -112,7 +115,15 @@ class CatalogContributions(unittest.TestCase):
             elif change=='version':summary['schema_version']=True
             else:summary['evidence_sha256']['serve-smoke']='e'*64
             (self.directory/'summary.json').write_bytes(pretty_json_bytes(summary))
-            with self.subTest(change=change),self.assertRaises(ValueError):self.check()
+            with self.subTest(change=change),self.assertRaises(ValueError):
+                verify_summary(summary,self.spec,self.run)
+
+    def test_summary_cannot_report_pass_for_failed_baseline(self):
+        self.spec['measurements'][0]['outcome']='fail'
+        self.run['proposed_status']='failed'
+        proof=self.summary['archive_verification']
+        with self.assertRaisesRegex(ValueError,'six passing'):
+            summary_document(self.spec,self.run,proof,'2026-09-04T00:00:00Z')
 
     def test_malformed_spec_and_wrong_filename_are_rejected(self):
         self.path.write_text('{}')
@@ -120,32 +131,47 @@ class CatalogContributions(unittest.TestCase):
         self.write_spec();self.path.rename(self.root/'releases'/('d'*64+'.json'))
         with self.assertRaisesRegex(ValueError,'filename'):self.check()
 
-    def test_unreleased_and_validated_without_deep_suite_are_rejected(self):
-        measured=copy.deepcopy(self.spec);measured['state']='measured';measured['review']={}
-        self.path.write_bytes(pretty_json_bytes(measured))
-        with self.assertRaises(ValueError):self.check()
-        self.spec['review']['status']='failed'
-        self.write_spec();self.assertTrue(self.check()['verified'])
-        self.spec['review']['status']='validated'
-        self.write_spec()
-        with self.assertRaises(ValueError):self.check()
+    def test_state_and_review_do_not_gate_catalog_membership(self):
+        for state,review in ((None,None),('measured',{}),('released',None)):
+            with self.subTest(state=state,review=review):
+                self.spec['state']=state;self.spec['review']=review
+                self.write_spec();self.assertTrue(self.check()['verified'])
 
     def test_symlink_and_special_file_do_not_hide_private_content(self):
-        extra=self.directory/'extra';extra.symlink_to('/dev/null')
+        outside=self.root/'outside.json';outside.write_bytes(self.path.read_bytes())
+        self.path.unlink();self.path.symlink_to(outside)
         with self.assertRaisesRegex(ValueError,'regular file'):self.check()
-        extra.unlink();os.mkfifo(extra)
+        self.path.unlink();os.mkfifo(self.path)
         with self.assertRaisesRegex(ValueError,'regular file'):self.check()
-
-    def test_current_consumer_drift_is_detected(self):
-        original=catalog.consumer.spec_profile_variables
-        def changed(*args,**kwargs):
-            result=original(*args,**kwargs);result['ENGINE_ARGS'] += ['--max-model-len','1'];return result
-        with patch.object(catalog.consumer,'spec_profile_variables',changed):
-            with self.assertRaisesRegex(ValueError,'reproduce'):self.check()
 
     def test_operator_overlay_and_platform_environment_do_not_change_ci_projection(self):
         with patch.dict(os.environ,{'PULSAR_OVERLAY_PATH':'/nonexistent/operator-overlay','PULSAR_PLATFORM_FILE':'/nonexistent/operator-platform','PULSAR_RELEASES_ROOT':'/nonexistent/operator-catalog','VLLM_IMAGE_MAINLINE':'other/image'}):
-            self.assertTrue(self.check()['verified'])
+            from release_spec import serving
+            current=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+            self.assertTrue(compat.check_launch_compatibility(current)['compatible'])
+
+    def test_schema_and_evidence_clis_are_independent(self):
+        schema=subprocess.run([
+            sys.executable,str(ROOT/'scripts/verify-contribution.py'),
+            '--spec',str(self.path),'--evidence-root',str(self.root),
+            '--run',str(self.directory/'run.json'),
+        ],text=True,capture_output=True)
+        self.assertEqual(schema.returncode,0,schema.stderr)
+        self.assertIn('were not used as catalog gates',schema.stdout)
+        evidence=subprocess.run([
+            sys.executable,str(ROOT/'scripts/verify-evidence.py'),
+            '--spec',str(self.path),'--evidence-root',str(self.root),
+            '--run',str(self.directory/'run.json'),
+            '--summary',str(self.directory/'summary.json'),'--require-pass',
+        ],text=True,capture_output=True)
+        self.assertEqual(evidence.returncode,0,evidence.stderr)
+        (self.directory/'serve-smoke.json').write_text('{}')
+        broken=subprocess.run([
+            sys.executable,str(ROOT/'scripts/verify-evidence.py'),
+            '--spec',str(self.path),'--evidence-root',str(self.root),
+            '--run',str(self.directory/'run.json'),
+        ],text=True,capture_output=True)
+        self.assertNotEqual(broken.returncode,0)
 
 
 if __name__=='__main__':unittest.main()

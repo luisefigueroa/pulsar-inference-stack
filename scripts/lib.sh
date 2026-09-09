@@ -311,19 +311,21 @@ spec_overlay_node_selector() {
   printf '%s\n' "$selector"
 }
 
-# Launch admission for a released spec: refuse to start outside the spec's
+# Launch admission for a catalog or explicitly selected spec: refuse to start outside the spec's
 # frozen platform. Called by every launcher (up.sh, serve.sh,
 # cluster/start-cluster.sh) right after load_conf; never by status or stop,
 # which must still load a spec after the platform setting changed.
 require_spec_platform_admission() {
   local name="${1:-${CONF_NAME:-}}" active="${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
+  python3 -c 'from release_spec.serving import load_spec; import sys; load_spec(sys.argv[1])' "$CONF_PATH" \
+    || die "new serving operations require spec schema 2; historical services remain inspectable and stoppable" 2
   [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
-    || die "released spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
+    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
 }
 
 _finalize_loaded_profile() {
-  local name="${1:?profile name required}"
+  local name="${1:?profile name required}" item recipe_nccl_qps=""
   [ -n "$MODEL" ] || die "$name: MODEL unset in conf"
   SERVED_NAME="${SERVED_NAME:-$name}"
   IMAGE="${IMAGE:-$VLLM_IMAGE_MAINLINE}"
@@ -347,11 +349,24 @@ _finalize_loaded_profile() {
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
   fi
   CONF_NAME="$name"
+  if [ "$NODES" -gt 1 ]; then
+    for item in ${CONTAINER_ENV[@]+"${CONTAINER_ENV[@]}"}; do
+      case "$item" in
+        NCCL_IB_QPS_PER_CONNECTION=*)
+          recipe_nccl_qps="${item#*=}"
+          ;;
+      esac
+    done
+    NCCL_IB_QPS_PER_CONNECTION="${recipe_nccl_qps:-4}"
+    [[ "$NCCL_IB_QPS_PER_CONNECTION" =~ ^[1-9][0-9]*$ ]] \
+      || die "$name: NCCL_IB_QPS_PER_CONNECTION must be a positive integer"
+    export NCCL_IB_QPS_PER_CONNECTION
+  fi
   [[ "$NODES" =~ ^[1-9][0-9]*$ ]] || die "$name: NODES must be a positive integer"
   validate_profile_contract
 }
 
-# Load a released spec plus the site overlay into caller shell (no conf).
+# Load a catalog spec plus the site overlay into caller shell (no conf).
 load_spec_profile() {
   local spec_id="${1:?load_spec_profile: spec_id required}"
   local releases_root="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}"
@@ -366,7 +381,7 @@ load_spec_profile() {
   esac
   [ -n "$image_repo" ] || image_repo=vllm/vllm-openai
   export_args=(
-    export-profile "$spec_id"
+    shell-values "$spec_id"
     --repo-root "$REPO_DIR"
     --overlay "$overlay"
     --image-repo "$image_repo"
@@ -375,11 +390,11 @@ load_spec_profile() {
     export_args+=(--releases-root "$PULSAR_RELEASES_ROOT")
   fi
   # Lab path: a measured spec file (validate/baseline-v1.sh --spec) is the
-  # profile before promotion; the file's spec_id must equal the profile.
+  # profile before catalog publication; the file's spec_id must equal the profile.
   if [ -n "${PULSAR_SPEC_FILE:-}" ]; then
     export_args+=(--spec-file "$PULSAR_SPEC_FILE")
   fi
-  err=$(mktemp "${TMPDIR:-/tmp}/pulsar-export-profile.XXXXXX")
+  err=$(mktemp "${TMPDIR:-/tmp}/pulsar-shell-values.XXXXXX")
   if ! output=$(python3 "$REPO_DIR/scripts/release_consumer.py" \
       "${export_args[@]}" 2>"$err"); then
     output=$(tr -d '\r' <"$err" | sed 's/^error: //')
@@ -389,6 +404,7 @@ load_spec_profile() {
   rm -f "$err"
   # shellcheck disable=SC1090
   eval "$output"
+  export PULSAR_EFFECTIVE_SPEC_ID
   CONF_SOURCE=spec
   CONF_PATH="${PULSAR_SPEC_FILE:-$releases_root/${spec_id}.json}"
   _finalize_loaded_profile "$spec_id"
@@ -488,28 +504,6 @@ append_loaded_profile_contract_args() {
   done
 }
 
-loaded_launch_contract_id() {
-  [ -z "${VLLM_EXTRA_ARGS:-}" ] && [ -z "${EXTRA_ENV:-}" ] \
-    || die "recipe overrides are refused; create a new candidate spec"
-  python3 - "$REPO_DIR" "$CONF_PATH" <<'PYCODE'
-import sys
-sys.path.insert(0,sys.argv[1])
-from release_spec import load_spec,runtime_contract_id
-print(runtime_contract_id(load_spec(sys.argv[2])))
-PYCODE
-}
-
-launch_contract_id_for_profile() {
-  local profile="${1:?profile required}"
-  (
-    set -euo pipefail
-    # shellcheck disable=SC1091
-    . "$REPO_DIR/scripts/lib.sh"
-    load_conf "$profile"
-    loaded_launch_contract_id
-  )
-}
-
 model_source_kind() {
   # hf | nfs
   case "${MODEL:-}" in
@@ -587,76 +581,6 @@ status_is_launchable() {
 
 status_requires_force() {
   return 1
-}
-
-print_release_spec_projection_args() {
-  local item
-  local -a args=() extra_split=()
-  args+=(
-    --repo-root "$REPO_DIR"
-    --platform-id "${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
-    --profile "${CONF_NAME:-}"
-  )
-  if [ -n "${PULSAR_RELEASES_ROOT:-}" ]; then
-    args+=(--releases-root "$PULSAR_RELEASES_ROOT")
-  fi
-  # A spec start knows its exact commit; pass it so a library holding several
-  # revisions of one model still compares the selected manifest.
-  if [ "${CONF_SOURCE:-conf}" = spec ] && [ -n "${SNAPSHOT_REVISION:-}" ]; then
-    args+=(--snapshot-revision "$SNAPSHOT_REVISION")
-  fi
-  append_loaded_profile_contract_args args
-  append_vllm_extra_args extra_split
-  for item in ${extra_split[@]+"${extra_split[@]}"}; do
-    args+=("--extra-arg=$item")
-  done
-  # shellcheck disable=SC2086
-  for item in ${EXTRA_ENV:+$EXTRA_ENV}; do
-    args+=("--extra-env=$item")
-  done
-  printf '%s\n' "${args[@]}"
-}
-
-# Display-only ADR 0017 spec-review projection for the loaded profile. Never a
-# serving gate; always returns 0. Compact JSON is one line with no tabs.
-# list-models batches all profiles through `project-batch` instead.
-load_release_spec_projection() {
-  local tool output rc
-  local -a args=(project)
-  RELEASE_SPEC_JSON='{"identities":[],"manifest":"unreadable"}'
-  tool="${PULSAR_RELEASE_CONSUMER_PY:-$REPO_DIR/scripts/release_consumer.py}"
-  [ -f "$tool" ] || return 0
-  mapfile -t -O 1 args < <(print_release_spec_projection_args)
-  set +e
-  output=$(python3 "$tool" "${args[@]}" 2>/dev/null)
-  rc=$?
-  set -e
-  if [ "$rc" -eq 0 ] && [ -n "$output" ]; then
-    RELEASE_SPEC_JSON=$(printf '%s' "$output" | tr -d '\n\t')
-  fi
-  [ -n "$RELEASE_SPEC_JSON" ] || \
-    RELEASE_SPEC_JSON='{"identities":[],"manifest":"unreadable"}'
-  return 0
-}
-
-release_spec_enabled_cell() {
-  local enabled="${1:-0}"
-  python3 - "$REPO_DIR" "$enabled" "${RELEASE_SPEC_JSON:-}" <<'PY'
-import json
-import sys
-
-sys.path.insert(0, sys.argv[1])
-from scripts.release_consumer import enabled_identity_cell
-
-try:
-    payload = json.loads(sys.argv[3])
-except Exception:
-    payload = None
-if not isinstance(payload, dict):
-    print("-")
-    raise SystemExit(0)
-print(enabled_identity_cell(payload, spec_decode=sys.argv[2] == "1"))
-PY
 }
 
 mem_available_gib_local() {
@@ -967,7 +891,7 @@ refuse_removed_weight_mode_flag() {
 # get a generic "unknown arg".
 REMOVED_FORCE_MESSAGE='--force was removed (ADR 0008): status labels never block serving. Drop the flag.'
 REMOVED_ALLOW_UNVALIDATED_MESSAGE='--allow-unvalidated was removed (ADR 0008): drop the flag. Lab expected-identity files are not a live product (ADR 0012).'
-REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are released specs whose review.status is display-only (scripts/release.sh list). It does not mean ADR 0004 Validated.'
+REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are catalog specs whose review.status is display-only (scripts/release.sh list). It does not mean ADR 0004 Validated.'
 REMOVED_CATALOG_VALIDATED_MESSAGE='--validated was removed (ADR 0008): drop the flag. --reviewed-identity is retired (ADR 0012). It does not mean ADR 0004 Validated.'
 REMOVED_ACTIVATE_MESSAGE='activate was removed (ADR 0008): use prepare.'
 refuse_removed_force_flag() {
@@ -1300,19 +1224,11 @@ load_docker_argv_from_plan() {
 # Build a validated launch-plan JSON file from the currently loaded profile,
 # confirmed topology, and resolved model-library instance. Not a permit.
 write_launch_plan_file() {
-  local dest="${1:?destination required}"
-  local action="${2:-start}"
-  local ranks_json engine_json container_json extra_json spec_json vllm_json
-  local contract
-  [ -n "${CONF_NAME:-}" ] || die "write_launch_plan_file requires load_conf"
-  [ -n "${CLUSTER_TOPOLOGY_ID:-}" ] || die "write_launch_plan_file requires confirmed topology"
-  [ -n "${LIBRARY_VIEW_HUB_PATH:-}" ] || die "write_launch_plan_file requires resolve_library_hot_for_profile"
-  contract="${LAUNCH_CONTRACT_ID:-}"
-  [ -n "$contract" ] || contract=$(loaded_launch_contract_id)
-  if [ "$NODES" -gt 1 ]; then
-    require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
-      || die "write_launch_plan_file: profile topology is not confirmed"
-  fi
+  local dest="${1:?destination required}" action="${2:-start}" ranks_json
+  [ -n "${CONF_PATH:-}" ] || die "launch plan requires a selected spec"
+  [ -n "${CLUSTER_TOPOLOGY_ID:-}" ] || die "launch plan requires confirmed topology"
+  [ -z "${VLLM_EXTRA_ARGS:-}" ] && [ -z "${EXTRA_ENV:-}" ] \
+    || die "use an explicit --override-file for execution changes"
   ranks_json=$(
     if [ "$NODES" -eq 1 ]; then
       python3 -c 'import json,sys; print(json.dumps([{
@@ -1358,105 +1274,59 @@ print(json.dumps(ranks))
 '
     fi
   )
-  engine_json=$(json_encode_strings ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"})
-  container_json=$(json_encode_strings ${CONTAINER_ENV[@]+"${CONTAINER_ENV[@]}"})
-  extra_json=$(json_encode_strings ${EXTRA_ENV:+$EXTRA_ENV})
-  spec_json=$(json_encode_strings ${SPEC_DECODE_ARGS[@]+"${SPEC_DECODE_ARGS[@]}"})
-  vllm_json=$(
-    if [ -n "${VLLM_EXTRA_ARGS:-}" ]; then
-      VLLM_EXTRA_ARGS="$VLLM_EXTRA_ARGS" python3 -c \
-        'import json,os,shlex; print(json.dumps(shlex.split(os.environ["VLLM_EXTRA_ARGS"])))'
-    else
-      echo '[]'
-    fi
-  )
-  LAUNCH_CONTRACT_ID="$contract" \
-  PULSAR_PLAN_ACTION="$action" \
-  PULSAR_PLAN_RANKS_JSON="$ranks_json" \
-  PULSAR_PLAN_ENGINE_ARGS_JSON="$engine_json" \
-  PULSAR_PLAN_CONTAINER_ENV_JSON="$container_json" \
-  PULSAR_PLAN_EXTRA_ENV_JSON="$extra_json" \
-  PULSAR_PLAN_SPEC_ARGS_JSON="$spec_json" \
-  PULSAR_PLAN_VLLM_EXTRA_JSON="$vllm_json" \
-  CONF_NAME="$CONF_NAME" \
-  SERVED_NAME="$SERVED_NAME" \
-  MODEL="$MODEL" \
-  IMAGE="$IMAGE" \
-  NODES="$NODES" \
-  PORT="$PORT" \
-  GPU_MEM_UTIL="$GPU_MEM_UTIL" \
-  CLUSTER_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID" \
-  SPEC_DECODE_ENABLED="${SPEC_DECODE_ENABLED:-0}" \
-  SPEC_DECODE_SOURCE="${SPEC_DECODE_SOURCE:-profile-default}" \
-  LIBRARY_VIEW_IDENTITY_STATUS="$LIBRARY_VIEW_IDENTITY_STATUS" \
-  LIBRARY_VIEW_REVISION="$LIBRARY_VIEW_REVISION" \
-  LIBRARY_VIEW_HOME_NODE_ID="$LIBRARY_VIEW_HOME_NODE_ID" \
-  LIBRARY_VIEW_CONTENT_ID="$LIBRARY_VIEW_CONTENT_ID" \
-  LIBRARY_VIEW_HUB_PATH="$LIBRARY_VIEW_HUB_PATH" \
-  LIBRARY_VIEW_CONTAINER_MODEL_PATH="$LIBRARY_VIEW_CONTAINER_MODEL_PATH" \
-  LIBRARY_VIEW_TRANSPORT="$LIBRARY_VIEW_TRANSPORT" \
-  REPO_DIR="$REPO_DIR" \
-  CONF_PATH="$CONF_PATH" \
-  PULSAR_PREPARED_SET_JSON="$PULSAR_PREPARED_SET_JSON" \
-  python3 - "$dest" <<'PY'
-import json
-import os
-import pathlib
-import sys
-
-sys.path.insert(0, str(pathlib.Path(os.environ["REPO_DIR"]) / "scripts"))
-import launch_plan as plan
-
-def load_list(name):
-    return json.loads(os.environ.get(name) or "[]")
-
-facts = {
-    "platform_id": os.environ.get("PULSAR_PLATFORM_ID", "dgx-spark-gb10"),
-    "lifecycle_action": os.environ.get("PULSAR_PLAN_ACTION") or "start",
-    "profile": os.environ["CONF_NAME"],
-    "served_name": os.environ["SERVED_NAME"],
-    "model_id": os.environ["MODEL"],
-    "image": os.environ["IMAGE"],
-    "nodes": int(os.environ["NODES"]),
-    "port": int(os.environ["PORT"]),
-    "gpu_mem_util": float(os.environ["GPU_MEM_UTIL"]),
-    "topology_id": os.environ["CLUSTER_TOPOLOGY_ID"],
-    "launch_contract_id": os.environ["LAUNCH_CONTRACT_ID"],
-    "spec_decode": {
-        "enabled": os.environ.get("SPEC_DECODE_ENABLED") == "1",
-        "source": os.environ.get("SPEC_DECODE_SOURCE") or "profile-default",
-    },
-    "storage": {
-        "mechanism": "local-files",
-        "identity_status": os.environ["LIBRARY_VIEW_IDENTITY_STATUS"],
-        "revision": os.environ["LIBRARY_VIEW_REVISION"],
-        "home_node_id": os.environ["LIBRARY_VIEW_HOME_NODE_ID"],
-        "content_id": os.environ["LIBRARY_VIEW_CONTENT_ID"],
-        "hub_path": os.environ["LIBRARY_VIEW_HUB_PATH"],
-        "container_model_path": os.environ["LIBRARY_VIEW_CONTAINER_MODEL_PATH"],
-        "transport": os.environ["LIBRARY_VIEW_TRANSPORT"],
-    },
-    "ranks": json.loads(os.environ["PULSAR_PLAN_RANKS_JSON"]),
-    "runtime": {
-        "engine_args": load_list("PULSAR_PLAN_ENGINE_ARGS_JSON"),
-        "container_env": load_list("PULSAR_PLAN_CONTAINER_ENV_JSON"),
-        "extra_env": load_list("PULSAR_PLAN_EXTRA_ENV_JSON"),
-        "spec_decode_args": load_list("PULSAR_PLAN_SPEC_ARGS_JSON"),
-        "vllm_extra_args": load_list("PULSAR_PLAN_VLLM_EXTRA_JSON"),
-        "hf_hub_offline": os.environ.get("HF_HUB_OFFLINE") or "1",
-        "vllm_logging_level": os.environ.get("VLLM_LOGGING_LEVEL") or "INFO",
-        "restart_policy": os.environ.get("RESTART_POLICY") or "no",
-        "health_start_period": os.environ.get("HEALTH_START_PERIOD") or "900s",
-        "nccl_ib_qps": os.environ.get("NCCL_IB_QPS_PER_CONNECTION") or "4",
-        "nccl_debug": os.environ.get("NCCL_DEBUG") or "WARN",
-        "master_port": int(os.environ.get("MASTER_PORT") or "29500"),
-    },
-    "memory": {"advisory": True, "result": os.environ.get("PULSAR_PLAN_MEMORY_RESULT") or "unchecked"},
+  PULSAR_PLAN_ACTION="$action" PULSAR_PLAN_RANKS_JSON="$ranks_json" \
+  CONF_PATH="$CONF_PATH" CONF_NAME="$CONF_NAME" PORT="$PORT" SERVED_NAME="$SERVED_NAME" \
+  CLUSTER_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID" PULSAR_PREPARED_SET_JSON="$PULSAR_PREPARED_SET_JSON" \
+  python3 - "$dest" <<'PYCODE'
+import json, os, pathlib, sys
+from release_spec.serving import load_spec, load_json, apply_overrides
+from scripts.container_runtime import build_plan
+spec=load_spec(os.environ['CONF_PATH'])
+selected_document=spec
+selected=spec['spec_id']
+override=os.environ.get('PULSAR_OVERRIDE_FILE')
+if override:
+    spec=apply_overrides(spec,load_json(override))
+expected=os.environ.get('PULSAR_EFFECTIVE_SPEC_ID')
+if expected and expected != spec['spec_id']:
+    raise SystemExit('effective recipe changed after selection; review the override again')
+facts=dict(lifecycle_action=os.environ['PULSAR_PLAN_ACTION'],port=int(os.environ['PORT']),
+           master_port=int(os.environ.get('MASTER_PORT') or '29500'),served_name=os.environ['SERVED_NAME'],
+           topology_id=os.environ['CLUSTER_TOPOLOGY_ID'],ranks=json.loads(os.environ['PULSAR_PLAN_RANKS_JSON']))
+plan=build_plan(spec,selected,facts,json.loads(os.environ['PULSAR_PREPARED_SET_JSON']),selected_spec=selected_document)
+pathlib.Path(sys.argv[1]).write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
+result_path=os.environ.get('PULSAR_LAUNCH_RESULT_FILE')
+if result_path:
+    pathlib.Path(result_path).write_text(json.dumps(dict(service_id=plan['service_id'],
+        selected_spec_id=selected,spec_id=plan['spec_id'],matches_selected_spec=plan['matches_selected_spec'],
+        effective_spec=plan['spec'],lifecycle_action=plan['lifecycle_action'])))
+PYCODE
 }
-from runtime_binding import bind_plan
-document = bind_plan(facts, os.environ["CONF_PATH"], json.loads(os.environ["PULSAR_PREPARED_SET_JSON"]))
-pathlib.Path(sys.argv[1]).write_text(plan.pretty_json(document), encoding="utf-8")
-PY
+
+persist_launch_plan_file() {
+  python3 "$REPO_DIR/scripts/service_state.py" save --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$1"
+}
+
+retire_stopped_service_indexes() {
+  local target="${1:?stopped spec or --all required}" selector="${2:-}" node
+  local -a args=(retire --state-root "$PULSAR_MODEL_LIBRARY_DIR" --topology-id "$CLUSTER_TOPOLOGY_ID")
+  [ "$target" = --all ] || args+=(--selected-spec-id "$target")
+  if [ -n "$selector" ]; then
+    resolve_single_node_placement "$selector" || return 1
+    args+=(--node-id "$SINGLE_NODE_ID")
+  else
+    for node in "${CLUSTER_NODE_IDS[@]}"; do args+=(--node-id "$node"); done
+  fi
+  python3 "$REPO_DIR/scripts/service_state.py" "${args[@]}" >/dev/null
+}
+
+runtime_context_for_rank() {
+  local index="${1:?physical rank required}"
+  if [ "$index" = 0 ]; then
+    python3 "$REPO_DIR/scripts/runtime-context.py"
+  else
+    ssh_node "$index" python3 - <"$REPO_DIR/scripts/runtime-context.py"
+  fi
 }
 
 
@@ -1529,7 +1399,7 @@ expected_rank_for_nodes() {
   fi
 }
 
-# Node count of a profile, read from the released spec's geometry without
+# Node count of a profile, read from the catalog spec's geometry without
 # loading it (a profile is a spec id, ADR 0017 Stage 4). Fails for anything
 # else, including a conf name.
 profile_nodes_for_conf() {
@@ -1544,7 +1414,7 @@ import sys
 
 try:
     document = json.load(open(sys.argv[1], encoding="utf-8"))
-    nodes = int(document["identity"]["geometry"]["nodes"])
+    nodes = int((document["recipe"] if document.get("schema_version") == 2 else document["identity"])["geometry"]["nodes"])
 except (OSError, ValueError, KeyError, TypeError):
     raise SystemExit(1)
 if nodes < 1:
@@ -1773,7 +1643,7 @@ container_all_candidate_is_safe() {
   [ -n "$rank" ] || return 1
   local nodes
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
-    # Retired profile (no released spec under releases/, or a conf name from
+    # Retired profile (no catalog spec under releases/, or a conf name from
     # before ADR 0017 Stage 4): ownership is still proven by labels, so the
     # container must remain stoppable. Geometry comes from its own labels.
     if [ "$rank" = single ]; then

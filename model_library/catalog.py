@@ -1,4 +1,4 @@
-"""Catalog projection from released specs and saved managed-file observations.
+"""Catalog projection from published specs and saved managed-file observations.
 
 Reading this module never probes hardware, scans cache directories or mutates
 controller state. Only an explicit Check now refreshes operational observations.
@@ -18,6 +18,9 @@ from .state import Store, checked_id
 from scripts.terminal_format import TerminalWriter
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+from release_spec.serving import identity_fields
 
 
 def age_seconds(value, now=None):
@@ -51,7 +54,7 @@ def age_text(age):
 
 def project(spec, store, *, now=None):
     spec_id = spec["spec_id"]
-    manifest_id = spec["identity"]["snapshot_manifest"]["manifest_id"]
+    manifest_id = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
     home = store.home(manifest_id)
     views = store.views(spec_id=spec_id)
     archive = store.get("archives", manifest_id)
@@ -75,10 +78,11 @@ def project(spec, store, *, now=None):
     if not isinstance(blockers, list) or any(not isinstance(x, str) for x in blockers):
         raise StorageError("saved blockers must be a list of explanations")
     checked_at = observed.get("checked_at")
-    return {"spec_id": spec_id, "model_id": spec["identity"]["model_id"],
-        "snapshot_revision": spec["identity"]["snapshot_revision"], "snapshot_manifest_id": manifest_id,
-        "geometry": spec["identity"]["geometry"], "image": spec["identity"]["image"],
-        "engine_args": spec["identity"]["engine_args"], "review": spec["review"],
+    return {"historical": spec.get("schema_version") != 2, "spec_id": spec_id, "model_id": identity_fields(spec)["model_id"],
+        "snapshot_revision": identity_fields(spec)["snapshot_revision"], "snapshot_manifest_id": manifest_id,
+        "geometry": identity_fields(spec)["geometry"], "image": identity_fields(spec)["image"],
+        "engine_args": identity_fields(spec)["engine_args"], "state": spec["state"],
+        "review": spec["review"],
         "local_state": local_state, "archive_state": archive_state,
         "checked_at": checked_at, "observation_age_seconds": age_seconds(checked_at, now),
         "blockers": blockers, "home": home, "prepared_copies": views,
@@ -94,10 +98,13 @@ def entries(repo, store, *, spec_id=None, now=None):
     result = []
     for path in paths:
         spec = load_spec(path)
-        if spec["state"] != "released" or path.name != f"{spec['spec_id']}.json":
-            raise StorageError("catalog contains a candidate or incorrectly named spec")
+        if path.name != f"{spec['spec_id']}.json":
+            raise StorageError("catalog contains an incorrectly named spec")
         result.append(project(spec, store, now=now))
-    return sorted(result, key=lambda row: (row["review"]["status"] == "withdrawn", row["model_id"], row["spec_id"]))
+    return sorted(result, key=lambda row: (
+        (row.get("review") or {}).get("status") == "withdrawn",
+        row["model_id"], row["spec_id"],
+    ))
 
 
 LOCAL_LABELS = {"unknown": "unknown; choose Check now", "missing": "required files missing at last check",
@@ -120,11 +127,15 @@ def render(rows, *, details=False, writer=None):
         out.blank()
         out.emit(row["model_id"])
         out.field("Spec", row["spec_id"] if details else row["spec_id"][:12])
+        if row.get("historical"):
+            out.emit("Historical spec: create a schema-2 spec for future operations.")
         geometry = row["geometry"]
         out.field("Recipe", f"{geometry['nodes']} node(s); tensor parallel {geometry['tp']}; pipeline parallel {geometry['pp']}")
-        out.field("Review", row["review"]["status"])
-        if row["review"]["status"] == "withdrawn":
-            out.field("Reason", row["review"].get("reason", "No reason recorded"))
+        review = row.get("review") or {}
+        out.field("State", row.get("state") or "not specified")
+        out.field("Review", review.get("status") or "not specified")
+        if review.get("status") == "withdrawn":
+            out.field("Reason", review.get("reason", "No reason recorded"))
             out.emit("Withdrawn recipes are not recommended. Exact serving remains possible when operational checks pass.")
         out.field("Files", LOCAL_LABELS[row["local_state"]])
         out.field("Archive", ARCHIVE_LABELS[row["archive_state"]])

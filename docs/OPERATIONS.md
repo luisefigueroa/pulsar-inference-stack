@@ -2,8 +2,9 @@
 
 An operator selects a **spec**: an exact model snapshot, serving recipe,
 container image and hardware geometry frozen together. Its complete spec ID
-is the argument to serving and model-storage commands. Released specs in
-`releases/` are catalog members and are serveable regardless of review status.
+is the argument to serving and model-storage commands. A schema-valid spec in
+`releases/` is a catalog member; nullable state and review metadata do not gate
+membership or serving.
 
 ## Browse and check
 
@@ -84,12 +85,16 @@ stops services for you. Saving a discovery establishes membership, not enrolled
 SSH trust; use the menu's separate SSH-trust enrollment action or
 `./pulsar ssh-trust enroll` afterward. Explicit `--accept-new-host-keys` is
 available only on configuration through this CLI, not on read-only detection.
+Before the prompt, configuration reports homes, prepared views, and pins affected
+by the proposed topology. The report is advisory and read-only; saving membership
+does not silently move, purge, unpin, or rewrite model-library records.
 
 Show, check and detection support `--json`. `./pulsar topology menu` opens just
 this menu; opening either menu performs no probes. Gum and plain terminal modes
 use the same commands. Low-level manifest utilities remain available under
-`pulsar topology` with their existing arguments. The private workbench delegates
-its `workbench topology` commands to this stack and creates no second topology.
+`pulsar topology` with their existing arguments. From the private workbench,
+invoke the configured public Stack executable by absolute path; Workbench creates no
+second topology implementation.
 
 Topology and SSH files stay private in the selected stack checkout. Host and
 fabric diagnostics are also available through `./pulsar doctor`. Catalog
@@ -146,6 +151,20 @@ placement, capacity and ownership. Recipe or image changes require another
 spec. Deployment settings such as API port, served name and placement remain
 separately configurable through the deployment overlay.
 
+Schema-2 recipes explicitly freeze container parameters and literal environment,
+including multi-node `NCCL_IB_QPS_PER_CONNECTION`. Supported execution changes
+use `--override-file` and produce a new effective spec ID, displayed as a modified
+recipe. The selected catalog entry and its historical measurements are unchanged.
+The immutable private launch plan records site bindings. Observation verifies
+actual configuration against that plan; a Stack commit change does not require
+restarting a container. See [the public contract](CONTRACT.md) for exact fields.
+
+Start does not replace an existing exact-name service and does not pull a
+missing image by implication. After inspecting the current service, pass
+`--replace` only with explicit replacement approval. Pass `--pull-image` only
+when staging the selected digest-pinned image is also approved. Generic `--yes`
+does not grant either permission.
+
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks
 for confirmation before mutations and never chains restoration into preparation
@@ -172,7 +191,9 @@ rebuilt. Prepare and start are subsequent explicit operations. Restoration
 requires neither the private workbench nor access to Hugging Face.
 
 The catalog's last archive-verification time is saved information, not current
-archive health. Use **Verify archive** to perform a fresh integrity check.
+archive health. Use **Verify archive** to perform a fresh, read-only integrity
+check. Use **Check now** with full verification when the resulting observation
+should also be recorded in local catalog state.
 
 ## Stop and reclaim storage
 
@@ -199,9 +220,10 @@ delete archives; permanent removal belongs to deliberate storage administration.
 The private workbench may pass an explicit `--spec-file` candidate to the
 same storage and serving boundaries without adding a catalog entry. The
 maintainer approves each variant before launch. Candidates that fail or leave
-baseline criteria incomplete stay private until released. Publication proposes
-a released spec and compact evidence through a reviewed PR; review status is
-an operator label and does not authorize or block serving.
+baseline criteria incomplete remain available to the maintainer. Publication
+adds the maintainer-selected schema-valid spec and any packaged compact evidence
+through a reviewed PR. State, review, and evidence do not authorize or block
+catalog membership or serving.
 
 Existing bytes may be brought forward with the explicit verified-reuse
 migration tool, `scripts/migrate-model-storage.sh --help`. Preview first.
@@ -233,3 +255,18 @@ checks reject known network filesystems such as NFS for those paths. Recovery
 archives may use the operator's mounted storage; archive configuration never
 prescribes mount options or claims failure-domain independence. Archive locations
 must not overlap directories managed as removable homes or working copies.
+
+## Historical specs and current observations
+
+Old catalog specs remain readable. New preparation/start operations require
+schema 2; reauthoring does not relabel old measurements. Existing containers
+remain running through code updates and retain ownership-based inventory and
+stop support. Status reports inventory only when complete new-contract
+observation is unavailable, rather than claiming recipe verification.
+
+`pulsar observe --service-id ID --json` performs full all-rank verification.
+`pulsar resources --service-id ID --jsonl` samples private node/container metrics.
+To begin before launch, use `--spec-file FILE` and, for a one-node recipe,
+optional `--node NODE`; it never starts the model. Container metrics remain
+unavailable until the matching owned recipe appears. Stop the stream to end
+sampling; model services are unaffected.
