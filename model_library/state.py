@@ -67,7 +67,7 @@ class Store:
                 os.close(fd)
 
     def _path(self, namespace: str, key: str) -> Path:
-        if namespace not in {'manifests', 'homes', 'views', 'observations', 'archives', 'transactions'}:
+        if namespace not in {'manifests', 'homes', 'views', 'observations', 'archives', 'transactions', 'service-plans', 'services'}:
             raise StorageError('unknown record namespace')
         return self.root / namespace / f'{checked_id(key)}.json'
 

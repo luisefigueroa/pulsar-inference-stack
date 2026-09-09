@@ -10,20 +10,28 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from release_spec import SCHEMA_VERSION
+from release_spec.serving import SPEC_SCHEMA_VERSION, DRAFT_SCHEMA_VERSION
 from release_spec.contribution import APPROVED_POLICY_DIGEST
-from release_spec.run_record import RUN_SCHEMA_VERSION
-from scripts.launch_plan import PLAN_SCHEMA_VERSION
 from scripts.terminal_format import TerminalWriter
 
 
 def contract() -> dict:
     return {
-        'schema_version': 1,
+        'schema_version': 2,
         'kind': 'pulsar-stack-integration-contract',
-        'release_spec_versions': [SCHEMA_VERSION],
-        'run_record_versions': [RUN_SCHEMA_VERSION],
-        'launch_plan_versions': [PLAN_SCHEMA_VERSION],
+        'cli_contract_versions': [1],
+        'draft_schema_versions': [DRAFT_SCHEMA_VERSION],
+        'spec_schema_versions': [SPEC_SCHEMA_VERSION],
+        'historical_spec_schema_versions': [1],
+        'observation_schema_versions': [2],
+        'measurement_schema_versions': [1],
+        'run_record_schema_versions': [3],
+        # Only completed, tested operations are advertised during the rollout.
+        'operations': ['contract', 'spec.example', 'spec.freeze', 'spec.verify', 'spec.show', 'spec.compare',
+                       'policy.show', 'evidence.measurement', 'evidence.evaluate', 'evidence.verify',
+                       'evidence.summary', 'contribution.verify', 'privacy.check', 'privacy.commits',
+                       'selftest', 'start', 'observe', 'resources', 'status', 'stop',
+                       'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify'],
         'baseline_policy_digest': APPROVED_POLICY_DIGEST,
         'catalog': {
             'authority': 'workbench-maintainer',
@@ -35,7 +43,6 @@ def contract() -> dict:
             'nullable_state': True,
             'nullable_review': True,
         },
-        'recipe_projector': 'release_spec.build_profile_identity',
         'diagnostics': ['verify-evidence', 'check-launch-compatibility'],
     }
 
@@ -46,13 +53,12 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     document = contract()
     if args.json:
-        print(json.dumps(document, sort_keys=True))
+        print(json.dumps({'schema_version': 1, 'ok': True, 'result': document}, sort_keys=True))
         return 0
     out = TerminalWriter()
     out.emit('Stack integration contract')
-    out.field('Release spec', str(document['release_spec_versions'][0]), indent=2)
-    out.field('Run record', str(document['run_record_versions'][0]), indent=2)
-    out.field('Launch plan', str(document['launch_plan_versions'][0]), indent=2)
+    out.field('Spec schema', str(document['spec_schema_versions'][0]), indent=2)
+    out.field('CLI contract', str(document['cli_contract_versions'][0]), indent=2)
     out.field('Catalog authority', document['catalog']['authority'], indent=2)
     out.emit('State, review, evidence, and launch compatibility do not gate catalog membership.',
              initial_indent='  ', subsequent_indent='  ')

@@ -20,6 +20,9 @@ from scripts.terminal_format import TerminalWriter
 ROOT = Path(__file__).resolve().parents[1]
 
 
+from release_spec.serving import identity_fields
+
+
 def age_seconds(value, now=None):
     if value is None:
         return None
@@ -51,7 +54,7 @@ def age_text(age):
 
 def project(spec, store, *, now=None):
     spec_id = spec["spec_id"]
-    manifest_id = spec["identity"]["snapshot_manifest"]["manifest_id"]
+    manifest_id = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
     home = store.home(manifest_id)
     views = store.views(spec_id=spec_id)
     archive = store.get("archives", manifest_id)
@@ -75,10 +78,10 @@ def project(spec, store, *, now=None):
     if not isinstance(blockers, list) or any(not isinstance(x, str) for x in blockers):
         raise StorageError("saved blockers must be a list of explanations")
     checked_at = observed.get("checked_at")
-    return {"spec_id": spec_id, "model_id": spec["identity"]["model_id"],
-        "snapshot_revision": spec["identity"]["snapshot_revision"], "snapshot_manifest_id": manifest_id,
-        "geometry": spec["identity"]["geometry"], "image": spec["identity"]["image"],
-        "engine_args": spec["identity"]["engine_args"], "state": spec["state"],
+    return {"historical": spec.get("schema_version") != 2, "spec_id": spec_id, "model_id": identity_fields(spec)["model_id"],
+        "snapshot_revision": identity_fields(spec)["snapshot_revision"], "snapshot_manifest_id": manifest_id,
+        "geometry": identity_fields(spec)["geometry"], "image": identity_fields(spec)["image"],
+        "engine_args": identity_fields(spec)["engine_args"], "state": spec["state"],
         "review": spec["review"],
         "local_state": local_state, "archive_state": archive_state,
         "checked_at": checked_at, "observation_age_seconds": age_seconds(checked_at, now),
@@ -124,6 +127,8 @@ def render(rows, *, details=False, writer=None):
         out.blank()
         out.emit(row["model_id"])
         out.field("Spec", row["spec_id"] if details else row["spec_id"][:12])
+        if row.get("historical"):
+            out.emit("Historical spec: create a schema-2 spec for future operations.")
         geometry = row["geometry"]
         out.field("Recipe", f"{geometry['nodes']} node(s); tensor parallel {geometry['tp']}; pipeline parallel {geometry['pp']}")
         review = row.get("review") or {}

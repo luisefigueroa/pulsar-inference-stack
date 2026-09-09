@@ -9,7 +9,8 @@ from .run_record import _time
 
 
 def archive_proof(proof: Any, spec: dict) -> dict:
-    manifest = spec['identity']['snapshot_manifest']
+    from .serving import identity_fields
+    manifest = identity_fields(spec)['snapshot_manifest']
     expected = {'schema_version': 1, 'kind': 'pulsar-archive-verification',
                 'snapshot_manifest_id': manifest['manifest_id'], 'verified': True,
                 'file_count': manifest['file_count'], 'total_bytes': manifest['total_bytes']}

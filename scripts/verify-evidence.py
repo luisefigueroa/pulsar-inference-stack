@@ -40,7 +40,13 @@ def main(argv=None) -> int:
                 read_stable_bytes(args.summary, label='qualification summary'),
                 label='qualification summary',
             )
-            verify_summary(summary, spec, run)
+            if spec['schema_version'] == 2:
+                from release_spec.evidence_v2 import evidence_summary
+                expected = evidence_summary(result, spec, summary.get('archive_observation'))
+                if summary != expected:
+                    raise ValueError('summary differs from independently verified evidence')
+            else:
+                verify_summary(summary, spec, run)
             result['summary_verified'] = True
     except (ValueError, OSError, KeyError, TypeError) as exc:
         print(f'evidence verification: {exc}', file=sys.stderr)

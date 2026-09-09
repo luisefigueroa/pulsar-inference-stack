@@ -18,14 +18,14 @@ from .identity import argv_from_identity,  canonical_identity, spec_id_for
 from .schema import (
     BASELINE_KEYS,
     EVIDENCE_KEYS,
-    KIND,
+    HISTORICAL_SPEC_KIND as KIND,
     LAUNCH_CONTRACT_KEYS,
     MEASUREMENT_KEYS,
     MEASUREMENT_OUTCOMES,
     MEASUREMENT_SUITES,
     REVIEW_KEYS,
     REVIEW_STATUSES,
-    SCHEMA_VERSION,
+    HISTORICAL_SPEC_SCHEMA_VERSION as SCHEMA_VERSION,
     THRESHOLD_KEYS,
     THRESHOLD_OPERATORS,
     TOP_LEVEL_KEYS,
@@ -298,6 +298,9 @@ def _require_status_evidence(
 
 def verify_spec(document: Any) -> dict[str, Any]:
     """Return the canonical document or raise ``ReleaseSpecError``."""
+    if isinstance(document, dict) and document.get("schema_version") == 2:
+        from .serving import verify_spec as verify_current_spec
+        return verify_current_spec(document)
     if not isinstance(document, dict):
         fail("document must be an object")
     _reject_floats(document, path="")

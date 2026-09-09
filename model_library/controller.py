@@ -12,15 +12,22 @@ from .planning import preparation_plan, purge_plan, removal_plan
 from .state import Store, checked_id, now, validate_home, validate_view, view_key
 
 
+from release_spec.serving import identity_fields
+
+
 def resolve(repo: Path, query: dict) -> dict:
     if query.get('spec_file'):
         spec=load_spec(query['spec_file'])
+        from release_spec.serving import verify_spec as require_current
+        require_current(spec)
         if query.get('spec_id') and query['spec_id']!=spec['spec_id']:
             raise StorageError('selected spec id differs from supplied spec file')
-        return {'spec':spec,'manifest':spec['identity']['snapshot_manifest']}
+        return {'spec':spec,'manifest':identity_fields(spec)['snapshot_manifest']}
     if query.get('spec_id'):
         spec=load_spec(repo/'releases'/f"{checked_id(query['spec_id'])}.json")
-        return {'spec':spec,'manifest':spec['identity']['snapshot_manifest']}
+        from release_spec.serving import verify_spec as require_current
+        require_current(spec)
+        return {'spec':spec,'manifest':identity_fields(spec)['snapshot_manifest']}
     if query.get('manifest_file'):
         return {'spec':None,'manifest':verify_manifest(read_json(query['manifest_file']))}
     raise StorageError('select a spec id, --spec-file, or an explicit source --manifest')
@@ -30,7 +37,7 @@ def published(repo: Path, manifest_id: str) -> bool:
     # Invalid release files abort rather than making deletion look unpromoted.
     for path in sorted((repo/'releases').glob('*.json')):
         spec=load_spec(path)
-        if spec['identity']['snapshot_manifest']['manifest_id']==manifest_id:
+        if identity_fields(spec)['snapshot_manifest']['manifest_id']==manifest_id:
             return True
     return False
 

@@ -16,6 +16,18 @@ jobs:
         with:
           python-version: '3.12'
       - run: scripts/selftest.sh
+      - name: Require current specs for changed catalog entries
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/check-new-specs.py --base "$BASE_SHA" --head "$HEAD_SHA"
+      - name: Require current specs for pushed catalog changes
+        if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
+        env:
+          BASE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.event.after }}
+        run: python3 scripts/check-new-specs.py --base "$BASE_SHA" --head "$HEAD_SHA"
       - name: Check pull-request commit metadata privacy
         if: github.event_name == 'pull_request'
         env:

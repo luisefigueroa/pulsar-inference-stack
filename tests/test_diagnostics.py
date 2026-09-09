@@ -46,7 +46,7 @@ ss() {{ :; }}
 curl() {{ return 1; }}
 load_cluster_topology() {{
  [ "$DIAG_MODE" != no-topology ] || return 1
- CLUSTER_TOPOLOGY_LOADED=1; CLUSTER_TOPOLOGY_ID={'a'*64}; CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_SSH_TRUSTED=1
+ CLUSTER_TOPOLOGY_LOADED=1; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_SSH_TRUSTED=1
  CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2)
  CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2); CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
 }}
@@ -134,7 +134,7 @@ ssh_node() {{
         containers=[]
         for i,c in enumerate(self.containers):
             containers.append(dict(node=names[i],id=c['Id'],name='vllm-cluster-'+self.spec['spec_id'],image=c['Config']['Image'],labels=c['Config']['Labels'],cmd=c['Config']['Cmd'],running=True,status='running',pids=[]))
-        return dict(profiles={},containers=containers,nodes=nodes,topology_id='a'*64,worker_status='ok',gpu_processes=[])
+        return dict(profiles={},containers=containers,nodes=nodes,topology_id=self.plan['topology_id'],worker_status='ok',gpu_processes=[])
 
     def inventory(self,raw):
         path=self.root/'inventory-raw.json';path.write_text(json.dumps(raw))

@@ -33,7 +33,7 @@ Options:
   --spec-file FILE       Explicit lab candidate spec
   --node NODE_ID         Confirmed destination or one-node placement
   --manifest FILE       Retained source manifest for lab storage
-  --model-id ORG/NAME --revision COMMIT   First acquisition before a spec
+  --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
   --manifest-out FILE   Save the resulting verified source manifest
   --plan                Preview; do not change model files or records
   --yes                 Confirm a model-byte or retention mutation
@@ -53,13 +53,13 @@ SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISI
 NODE="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --spec-file|--manifest|--model-id|--revision|--node|--manifest-out)
+    --spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --spec-file) SPEC_FILE="$2" ;;
         --manifest) MANIFEST_FILE="$2" ;;
         --model-id) MODEL_ID="$2" ;;
-        --revision) REVISION="$2" ;;
+        --model-commit|--revision) REVISION="$2" ;;
         --node) NODE="$2" ;;
         --manifest-out) MANIFEST_OUT="$2" ;;
       esac; shift ;;

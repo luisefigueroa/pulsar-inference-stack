@@ -39,12 +39,16 @@ def contained(path):
     return value
 
 
-def check_data(value):
+def check_data(value, trail=()):
     if isinstance(value, dict):
-        for item in value.values(): check_data(item)
+        for key,item in value.items(): check_data(item, (*trail,key))
     elif isinstance(value, list):
-        for item in value: check_data(item)
+        for item in value: check_data(item, trail)
     elif isinstance(value, str) and value.startswith("/"):
+        # This closed spec field is an HTTP request path, never a filesystem
+        # operand. Keep all actual model/storage paths inside the fixture root.
+        if trail[-4:] == ('recipe','container','healthcheck','path'):
+            return
         contained(value)
 
 
@@ -358,18 +362,15 @@ ssh_node() {{
                         "--node", self.cfg["nodes"][node]["node_id"], "--manifest-out", self.manifest_path, "--yes")
 
     def candidate(self, nodes=1):
-        from release_spec import load_snapshot_manifest, verify_spec, spec_id_for, pretty_json_bytes
-        from scripts.release_consumer import build_profile_identity, argv_from_identity
-        manifest = load_snapshot_manifest(self.manifest_path)
-        args = ["--tensor-parallel-size", str(nodes), "--max-model-len", "1024"]
-        if nodes > 1: args += ["--distributed-executor-backend", "mp"]
-        identity, gaps = build_profile_identity(model_id=manifest["model_id"], image="example/image@sha256:" + "b" * 64,
-            nodes=nodes, gpu_mem_util="0.8", engine_args=args, container_env=[], spec_decode_args=[], spec_decode=False,
-            platform_id="dgx-spark-gb10", snapshot_revision=manifest["snapshot_revision"], files=manifest["files"])
-        if gaps: raise AssertionError(gaps)
-        self.spec = verify_spec({"schema_version": 1, "kind": "pulsar-release-spec", "spec_id": spec_id_for(identity),
-            "state": "measured", "identity": identity, "launch_contract": {"stack_version": "e" * 40, "argv": argv_from_identity(identity)},
-            "measurements": [], "baselines": [], "evidence": [], "review": {}})
+        from release_spec import load_snapshot_manifest, pretty_json_bytes
+        from release_spec.serving import example, freeze
+        manifest=load_snapshot_manifest(self.manifest_path)
+        draft=example(nodes)
+        draft['source']['image_repository']='example/image'
+        draft['recipe']['model']={'model_id':manifest['model_id'],'model_commit':manifest['snapshot_revision']}
+        draft['recipe']['image_digest']='sha256:'+'b'*64
+        draft['recipe']['engine_args']+=['--max-model-len','1024']
+        self.spec=freeze(draft,manifest)
         self.spec_path.write_bytes(pretty_json_bytes(self.spec))
         return self.spec
 

@@ -12,6 +12,7 @@ up_usage() {
 usage: scripts/up.sh SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate
+  --override-file FILE   Explicit typed execution changes; report a modified recipe
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE_ID        Select a confirmed node for a one-node spec
@@ -21,13 +22,14 @@ usage: scripts/up.sh SPEC_ID [options]
   --yes                 Confirm the requested start only; never implies the above
   --skip-preflight      Use when the cluster preflight was run separately
 
-Model-file verification cannot be skipped. Recipe changes, including
-speculative decoding, require a new frozen candidate spec.
+Model-file verification cannot be skipped. Overrides create a distinct effective
+spec without changing the selected catalog entry or inheriting its measurements.
 HELP
 }
 case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 
 NAME="${1:-}"
+unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 [ -n "$NAME" ] || die "usage: $0 <model-name> [options]"
 shift
 
@@ -35,6 +37,7 @@ SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
 DRY=0 VERBOSE=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
@@ -84,8 +87,7 @@ elif [ -n "$NODE_SELECTOR" ]; then
   die "--node is only valid for one-node profiles" 2
 fi
 resolve_spec_decode "$SPEC_MODE"
-load_release_spec_projection
-SPEC_REVIEW_CELL=$(release_spec_enabled_cell "${SPEC_DECODE_ENABLED:-0}")
+SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
 [ "$VERBOSE" = 1 ] && export QUIET=0
 
@@ -99,7 +101,12 @@ echo "│  weights=model library (hot staging)"
 if [ "$NODES" -eq 1 ]; then
   echo "│  placement=$(single_node_display)  node-id=${SINGLE_NODE_ID:-standalone}"
 fi
-echo "│  recipe=exact selected spec"
+if [ "${PULSAR_EFFECTIVE_SPEC_ID:-$NAME}" != "$NAME" ]; then
+  echo "│  Modified recipe: ${PULSAR_EFFECTIVE_SPEC_ID}"
+  echo "│  Selected spec: $NAME; its measurements are reference only"
+else
+  echo "│  recipe=exact selected spec"
+fi
 echo "│  spec-review=$SPEC_REVIEW_CELL (display-only)"
 [ "$DRY" = 1 ] && echo "│  mode=DRY-RUN (checks only)"
 echo "├─ checks"
@@ -260,7 +267,6 @@ fi
 
 echo "└─"
 
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 resolve_library_hot_for_profile "$NAME"
 PLAN_FILE="${PULSAR_LAUNCH_PLAN_OUT:-$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")}"
 if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
@@ -268,7 +274,7 @@ if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
   trap 'rm -f "${PLAN_FILE:-}"' EXIT
 fi
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo start)"
-echo "PASS  plan      schema=2 ranks=$NODES classifier=inventory (not a permit)"
+echo "PASS  plan      schema=3 ranks=$NODES; prerequisites checked separately"
 
 if [ "$DRY" = 1 ]; then
   cat <<EOF

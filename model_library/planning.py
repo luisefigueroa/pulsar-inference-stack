@@ -9,6 +9,9 @@ from .integrity import StorageError
 from .state import checked_id, validate_home, validate_view
 
 
+from release_spec.serving import identity_fields
+
+
 def require_observations(node_ids: list[str], observations: list[dict]) -> dict[str, dict]:
     if len(node_ids) != len(set(node_ids)) or not node_ids:
         raise StorageError('operation requires unique confirmed nodes')
@@ -79,10 +82,10 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
     from release_spec import verify_spec
     spec = verify_spec(spec)
     validate_home(home)
-    manifest = spec['identity']['snapshot_manifest']
+    manifest = identity_fields(spec)['snapshot_manifest']
     if home['snapshot_manifest_id'] != manifest['manifest_id']:
         raise StorageError('home and spec manifests differ')
-    if len(node_ids) != spec['identity']['geometry']['nodes'] or home['node_id'] not in node_ids:
+    if len(node_ids) != identity_fields(spec)['geometry']['nodes'] or home['node_id'] not in node_ids:
         raise StorageError('home must be on one of the exact serving nodes')
     checked = require_observations(node_ids, observations)
     blockers = []

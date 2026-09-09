@@ -14,8 +14,8 @@ import re
 from typing import Any
 
 
-SCHEMA_VERSION = 1
-KIND = "pulsar-release-spec"
+HISTORICAL_SPEC_SCHEMA_VERSION = 1
+HISTORICAL_SPEC_KIND = "pulsar-release-spec"
 SNAPSHOT_MANIFEST_SCHEMA_VERSION = 1
 SNAPSHOT_MANIFEST_KIND = "model-library-snapshot-manifest"
 

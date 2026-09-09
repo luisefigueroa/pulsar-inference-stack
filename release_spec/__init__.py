@@ -1,11 +1,7 @@
-"""ADR 0017 release spec schema, spec_id, and verifier.
+"""Current serving specs and unchanged model manifests.
 
-This package is standard-library-only and importable from the repository
-root. It imports nothing from ``scripts/``. ``spec_id`` hashes the identity
-block with ``json.dumps(..., sort_keys=True, separators=(",", ":"),
-ensure_ascii=False)``. Nested snapshot ``manifest_id`` copies the model-library
-algorithm and omits ``ensure_ascii=False``. ASCII snapshot paths make the
-two encodings agree.
+Current recipes are defined in serving; schema-1 identity helpers remain for
+historical reading only. Cross-repository consumers use the public pulsar CLI.
 """
 
 from .identity import identity_block, snapshot_file_lists_equal, spec_id_for
@@ -19,9 +15,9 @@ from .normalize import (
     snapshot_manifest_id,
 )
 from .schema import (
-    KIND,
+    HISTORICAL_SPEC_KIND,
     REVIEW_STATUSES,
-    SCHEMA_VERSION,
+    HISTORICAL_SPEC_SCHEMA_VERSION,
     SNAPSHOT_MANIFEST_KIND,
     STATES,
     ReleaseSpecError,
@@ -30,8 +26,10 @@ from .verify import load_spec, verify_spec
 
 __all__ = [
     "KIND",
+    "HISTORICAL_SPEC_KIND",
     "REVIEW_STATUSES",
     "SCHEMA_VERSION",
+    "HISTORICAL_SPEC_SCHEMA_VERSION",
     "SNAPSHOT_MANIFEST_KIND",
     "STATES",
     "ReleaseSpecError",
@@ -52,20 +50,6 @@ __all__ = [
 from .manifest import load_snapshot_manifest, verify_snapshot_manifest
 __all__ += ["load_snapshot_manifest", "verify_snapshot_manifest"]
 
-from .recipe import (
-    DEFAULT_NCCL_IB_QPS,
-    NCCL_QPS_ENV,
-    build_profile_identity,
-    nccl_qps_from_identity,
-    profile_image_digest,
-)
-__all__ += [
-    "DEFAULT_NCCL_IB_QPS",
-    "NCCL_QPS_ENV",
-    "build_profile_identity",
-    "nccl_qps_from_identity",
-    "profile_image_digest",
-]
 
 
 def runtime_contract_id(spec):
@@ -75,9 +59,13 @@ def runtime_contract_id(spec):
     nested ``spec_id`` binds that recipe-affecting value.
     """
     document = verify_spec(spec)
+    if document['schema_version'] == 2:
+        return document['spec_id']
     return canonical_json_digest({"kind": "pulsar-launch-contract",
                                   "spec_id": document["spec_id"],
                                   "argv": document["launch_contract"]["argv"]})
 
 
 __all__ += ["runtime_contract_id"]
+
+from .serving import SPEC_KIND as KIND, SPEC_SCHEMA_VERSION as SCHEMA_VERSION

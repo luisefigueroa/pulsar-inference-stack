@@ -18,14 +18,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from release_spec import (  # noqa: E402
     ReleaseSpecError,
-    build_profile_identity,
     build_snapshot_manifest,
     identity_block,
     load_spec,
     normalize_container_env,
     normalize_engine_args,
     normalize_snapshot_files,
-    nccl_qps_from_identity,
     pretty_json_bytes,
     snapshot_file_lists_equal,
     snapshot_manifest_id,
@@ -122,42 +120,6 @@ class ReleaseSpecTests(unittest.TestCase):
         self.assertEqual(measured["spec_id"], GOLDEN_SPEC_ID)
         self.assertEqual(released["spec_id"], GOLDEN_SPEC_ID)
         self.assertEqual(measured["identity"], released["identity"])
-
-    def test_public_recipe_projector_freezes_multinode_nccl_qps(self) -> None:
-        manifest = self.measured["identity"]["snapshot_manifest"]
-        identity, gaps = build_profile_identity(
-            model_id=manifest["model_id"],
-            image="example/image@" + self.measured["identity"]["image"]["digest"],
-            nodes=2,
-            gpu_mem_util="0.8",
-            engine_args=["--tensor-parallel-size", "2",
-                         "--distributed-executor-backend", "mp"],
-            container_env=[],
-            spec_decode_args=[],
-            spec_decode=False,
-            platform_id="dgx-spark-gb10",
-            snapshot_revision=manifest["snapshot_revision"],
-            files=manifest["files"],
-        )
-        self.assertEqual(gaps, [])
-        self.assertIn("NCCL_IB_QPS_PER_CONNECTION=4", identity["container_env"])
-        self.assertEqual(nccl_qps_from_identity(identity), "4")
-        custom, gaps = build_profile_identity(
-            model_id=manifest["model_id"],
-            image="example/image@" + self.measured["identity"]["image"]["digest"],
-            nodes=2,
-            gpu_mem_util="0.8",
-            engine_args=["--tensor-parallel-size", "2",
-                         "--distributed-executor-backend", "mp"],
-            container_env=["NCCL_IB_QPS_PER_CONNECTION=8"],
-            spec_decode_args=[],
-            spec_decode=False,
-            platform_id="dgx-spark-gb10",
-            snapshot_revision=manifest["snapshot_revision"],
-            files=manifest["files"],
-        )
-        self.assertEqual(gaps, [])
-        self.assertEqual(nccl_qps_from_identity(custom), "8")
 
     def test_non_identity_sections_do_not_change_spec_id(self) -> None:
         mutations = []

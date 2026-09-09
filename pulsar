@@ -6,16 +6,21 @@ export PYTHONDONTWRITEBYTECODE=1
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
+  start|stop|status|model)
+    exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
+    ;;
+  observe|resources|policy|evidence|privacy|selftest|contribution)
+    exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
+    ;;
+esac
+case "$command" in
   ""|gum) exec "$REPO_DIR/scripts/home.sh" ;;
   wizard) exec "$REPO_DIR/wizard.sh" "$@" ;;
   models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
-  model) exec "$REPO_DIR/scripts/model-library.sh" "$@" ;;
-  start) exec "$REPO_DIR/scripts/up.sh" "$@" ;;
-  stop) exec "$REPO_DIR/scripts/down.sh" "$@" ;;
-  status) exec "$REPO_DIR/scripts/status.sh" "$@" ;;
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
   contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
+  spec) exec python3 "$REPO_DIR/scripts/document_cli.py" "$@" ;;
   release) exec "$REPO_DIR/scripts/release.sh" "$@" ;;
   topology) exec "$REPO_DIR/scripts/topology.sh" "$@" ;;
   ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
@@ -41,10 +46,13 @@ for command,description in [
  ('pulsar start SPEC','Recheck prerequisites and start the exact selected spec.'),
  ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
  ('pulsar status SPEC','Observe the live service on all participating nodes.'),
- ('pulsar release list','Read the schema-valid catalog specs.'),
+ ('pulsar release list','Read catalog specs; deprecated human alias retained through CLI contract 1.'),
  ('pulsar inventory','Inspect service ownership and current resource use.'),
  ('pulsar doctor','Run explicit host and topology diagnostics.'),
  ('pulsar contract','Show the versioned stack/workbench integration contract.'),
+ ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving recipe.'),
+ ('pulsar observe --service-id ID --json','Verify the effective recipe and actual configuration on every rank.'),
+ ('pulsar resources --spec-file FILE --jsonl','Sample confirmed nodes before launch; wait for the matching owned container.'),
  ('pulsar gum','Open the interactive Gum/plain workflow menu.'),
  ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
  ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),

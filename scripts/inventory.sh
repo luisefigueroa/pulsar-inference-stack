@@ -230,6 +230,9 @@ owned_keys = (
     "io.pulsar.gb10.model-identity-status",
     "io.pulsar.gb10.launch-contract",
     "io.pulsar.gb10.spec-decode",
+    "io.pulsar.gb10.spec-id",
+    "io.pulsar.gb10.selected-spec-id",
+    "io.pulsar.gb10.launch-plan",
 )
 labels = {k: labels_all[k] for k in owned_keys if k in labels_all and labels_all[k] is not None}
 
@@ -558,6 +561,9 @@ WORLD_SIZE_KEY = "io.pulsar.gb10.world-size"
 MODEL_IDENTITY_STATUS_KEY = "io.pulsar.gb10.model-identity-status"
 LAUNCH_CONTRACT_KEY = "io.pulsar.gb10.launch-contract"
 SPEC_DECODE_KEY = "io.pulsar.gb10.spec-decode"
+SPEC_KEY = "io.pulsar.gb10.spec-id"
+SELECTED_SPEC_KEY = "io.pulsar.gb10.selected-spec-id"
+PLAN_KEY = "io.pulsar.gb10.launch-plan"
 
 with open(os.environ["SNAP_PATH"], encoding="utf-8") as _sf:
     snap = json.load(_sf)
@@ -611,6 +617,7 @@ def filter_labels(labels):
         MODEL_IDENTITY_STATUS_KEY,
         LAUNCH_CONTRACT_KEY,
         SPEC_DECODE_KEY,
+        SPEC_KEY, SELECTED_SPEC_KEY, PLAN_KEY,
     ):
         if k in labels and labels[k] is not None:
             out[k] = str(labels[k])
@@ -1082,12 +1089,18 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
     model_identity_status, identity_states, identity_missing = uniform_label(
         MODEL_IDENTITY_STATUS_KEY
     )
+    spec_id, spec_ids, spec_missing = uniform_label(SPEC_KEY)
+    selected_id, selected_ids, selected_missing = uniform_label(SELECTED_SPEC_KEY)
     contract_fields = (
         ("launch contract", launch_contracts, launch_contract_missing, True),
         ("speculative-decode state", spec_decode_states, spec_decode_missing, True),
         ("model revision", model_revisions, model_revision_missing, False),
         ("model identity status", identity_states, identity_missing, False),
     )
+    if spec_ids:
+        contract_fields = (("effective spec", spec_ids, spec_missing, True),
+                           ("selected spec", selected_ids, selected_missing, True),
+                           *contract_fields[2:])
     if len(weight_sources) > 1:
         weight_source = "mixed"
     elif weight_source_missing and weight_sources:
@@ -1274,6 +1287,9 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
         "weight_owner_node_id": weight_owner,
         "weight_configuration_id": weight_config,
         "launch_contract_id": launch_contract_id,
+        "selected_spec_id": selected_id,
+        "spec_id": spec_id,
+        "matches_selected_spec": spec_id == selected_id if spec_id and selected_id else None,
         "spec_decode": spec_decode,
         "model_revision": model_revision,
         "recipe_verified": False,

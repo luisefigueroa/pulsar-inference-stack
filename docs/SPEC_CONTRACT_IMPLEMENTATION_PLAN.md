@@ -121,6 +121,11 @@ Measurements become separate documents under the results layout in section 8,
 not mutable additions to the recipe. Existing embedded measurements remain
 available in the historical reader.
 
+Implementation clarification: a run binds the recipe through `spec_id`, and
+hashes the dataset and policy separately. Do not bind measurements to the raw
+spec-file bytes: source locators and catalog review metadata are deliberately
+outside recipe identity and may change without invalidating past measurements.
+
 ### Container fields and normalization
 
 Use a closed structure, not arbitrary Docker argv or shell fragments:
@@ -247,6 +252,7 @@ include secrets. No human-text parsing is part of the contract.
 | `pulsar start SPEC [--spec-file FILE] [--override-file FILE] --json` | Use the shared execution path and return selected/effective IDs, service ID, and actual launch outcome; preserve existing explicit flags |
 | `pulsar observe --service-id ID --json` | Full current-spec observation, including verified model bytes and effective container configuration on every rank; no mutation |
 | `pulsar resources --service-id ID --interval SECONDS --jsonl` | Explicit private telemetry stream using Stack-owned placement and transport; no full model hashing on every sample |
+| `pulsar resources --spec-file FILE [--node NODE] [--override-file FILE] --interval SECONDS --jsonl` | Approved cold-start mode: sample confirmed nodes before launch, then attach only to the matching owned container; no preparation or launch |
 | `pulsar stop SPEC --json`, `pulsar status SPEC --json` | Retain operator selectors, ownership checks, and structured outputs; status includes selected/effective IDs |
 | `pulsar policy show baseline-v1 --json` | Return the canonical policy, digest, and existing measurement parameters without reading private state |
 | `pulsar evidence measurement --operation OP --input FILE --out FILE --json` | Build and validate the canonical compact measurement from one producer payload using existing normalizers; one call per completed producer, not per request |

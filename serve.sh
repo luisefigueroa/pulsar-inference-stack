@@ -25,8 +25,8 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 case "${1:-}" in -h|--help)
-  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--node NODE_ID] [--port N] [--replace] [--dry-run]'
-  echo 'Use --list to inspect catalog specs. Recipe changes require a new candidate.'
+  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--override-file FILE] [--node NODE_ID] [--port N] [--replace] [--dry-run]'
+  echo 'Use --list to inspect catalog specs. Explicit overrides produce a modified recipe.'
   exit 0 ;;
 esac
 MODEL_NAME="${1:?usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--node NODE_ID] [--dry-run]}"
@@ -36,6 +36,7 @@ DETACH="" SPEC_MODE=auto DRY_RUN=0 PORT_OVERRIDE="" NODE_SELECTOR="" REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     -d) DETACH="-d" ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
@@ -74,7 +75,6 @@ if [ -n "$PORT_OVERRIDE" ]; then
   PORT="$PORT_OVERRIDE"
 fi
 resolve_spec_decode "$SPEC_MODE"
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 SPEC_DECODE_STATE=$([ "$SPEC_DECODE_ENABLED" = 1 ] && printf on || printf off)
 
 
@@ -177,8 +177,10 @@ else
 fi
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   remote_cmd=$(shell_join_q "${CMD[@]}")
+  persist_launch_plan_file "$PLAN_FILE"
   exec "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- \
     "$SINGLE_NODE_SSH_HOST" "$remote_cmd"
 fi
 CMD[0]="$PULSAR_DOCKER"
+persist_launch_plan_file "$PLAN_FILE"
 exec "${CMD[@]}"

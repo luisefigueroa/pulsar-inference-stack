@@ -77,27 +77,19 @@ class CatalogContributions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             spec,run,summary,path,directory=catalog_fixture(temp,2)
             self.assertTrue(catalog.check_catalog(temp)['verified'])
-            self.assertTrue(compat.check_launch_compatibility(spec)['compatible'])
+            with self.assertRaisesRegex(compat.CompatibilityError,'schema 2'):
+                compat.check_launch_compatibility(spec)
 
-    def test_schema_valid_but_launch_incompatible_specs_remain_catalogable(self):
-        for mode in ('gpu-memory','distributed-backend'):
-            with tempfile.TemporaryDirectory() as temp:
-                spec,run,summary,path,directory=catalog_fixture(
-                    temp,2 if mode=='distributed-backend' else 1)
-                args=spec['identity']['engine_args']
-                if mode=='gpu-memory':
-                    index=args.index('--gpu-memory-utilization')
-                    args[index+1]='not-a-number'
-                else:
-                    index=args.index('--distributed-executor-backend')
-                    del args[index:index+2]
-                spec['spec_id']=spec_id_for(spec['identity'])
-                spec['launch_contract']['argv']=argv_from_identity(spec['identity'])
-                old=path;path=old.with_name(spec['spec_id']+'.json');old.unlink()
-                path.write_bytes(pretty_json_bytes(spec))
-                self.assertTrue(catalog.check_catalog(temp)['verified'])
-                with self.assertRaises(compat.CompatibilityError):
-                    compat.check_launch_compatibility(spec)
+    def test_schema_valid_but_unsupported_platform_remains_catalogable(self):
+        from release_spec import serving
+        spec=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+        spec['recipe']['geometry']['platform_id']='future-platform'
+        spec['spec_id']=serving.spec_id(spec['recipe'])
+        with tempfile.TemporaryDirectory() as temp:
+            root=Path(temp);(root/'releases').mkdir()
+            (root/'releases'/(spec['spec_id']+'.json')).write_bytes(pretty_json_bytes(spec))
+            self.assertTrue(catalog.check_catalog(root)['verified'])
+            with self.assertRaises(compat.CompatibilityError): compat.check_launch_compatibility(spec)
 
     def test_withdrawn_recipe_retains_same_baseline_provenance(self):
         self.spec['review'].update(status='withdrawn',reason='A later observation requires caution.')
@@ -152,18 +144,11 @@ class CatalogContributions(unittest.TestCase):
         self.path.unlink();os.mkfifo(self.path)
         with self.assertRaisesRegex(ValueError,'regular file'):self.check()
 
-    def test_current_consumer_drift_is_detected(self):
-        original=compat.consumer.spec_profile_variables
-        def changed(*args,**kwargs):
-            result=original(*args,**kwargs);result['ENGINE_ARGS'] += ['--max-model-len','1'];return result
-        with patch.object(compat.consumer,'spec_profile_variables',changed):
-            self.assertTrue(self.check()['verified'])
-            with self.assertRaisesRegex(ValueError,'reproduce'):
-                compat.check_launch_compatibility(self.spec)
-
     def test_operator_overlay_and_platform_environment_do_not_change_ci_projection(self):
         with patch.dict(os.environ,{'PULSAR_OVERLAY_PATH':'/nonexistent/operator-overlay','PULSAR_PLATFORM_FILE':'/nonexistent/operator-platform','PULSAR_RELEASES_ROOT':'/nonexistent/operator-catalog','VLLM_IMAGE_MAINLINE':'other/image'}):
-            self.assertTrue(compat.check_launch_compatibility(self.spec)['compatible'])
+            from release_spec import serving
+            current=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+            self.assertTrue(compat.check_launch_compatibility(current)['compatible'])
 
     def test_schema_and_evidence_clis_are_independent(self):
         schema=subprocess.run([

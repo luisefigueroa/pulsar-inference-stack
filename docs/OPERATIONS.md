@@ -93,7 +93,7 @@ Show, check and detection support `--json`. `./pulsar topology menu` opens just
 this menu; opening either menu performs no probes. Gum and plain terminal modes
 use the same commands. Low-level manifest utilities remain available under
 `pulsar topology` with their existing arguments. From the private workbench,
-invoke this pinned stack's commands by absolute path; the workbench creates no
+invoke the configured public Stack executable by absolute path; Workbench creates no
 second topology implementation.
 
 Topology and SSH files stay private in the selected stack checkout. Host and
@@ -151,11 +151,13 @@ placement, capacity and ownership. Recipe or image changes require another
 spec. Deployment settings such as API port, served name and placement remain
 separately configurable through the deployment overlay.
 
-New multi-node recipe identities explicitly freeze
-`NCCL_IB_QPS_PER_CONNECTION`; changing it requires a new spec. Other operational
-launcher settings are recorded in the schema-2 launch plan without changing
-catalog identity. Each container carries the actual stack-build label so later
-qualification can reject a service launched by a different build.
+Schema-2 recipes explicitly freeze container parameters and literal environment,
+including multi-node `NCCL_IB_QPS_PER_CONNECTION`. Supported execution changes
+use `--override-file` and produce a new effective spec ID, displayed as a modified
+recipe. The selected catalog entry and its historical measurements are unchanged.
+The immutable private launch plan records site bindings. Observation verifies
+actual configuration against that plan; a Stack commit change does not require
+restarting a container. See [the public contract](CONTRACT.md) for exact fields.
 
 Start does not replace an existing exact-name service and does not pull a
 missing image by implication. After inspecting the current service, pass
@@ -253,3 +255,18 @@ checks reject known network filesystems such as NFS for those paths. Recovery
 archives may use the operator's mounted storage; archive configuration never
 prescribes mount options or claims failure-domain independence. Archive locations
 must not overlap directories managed as removable homes or working copies.
+
+## Historical specs and current observations
+
+Old catalog specs remain readable. New preparation/start operations require
+schema 2; reauthoring does not relabel old measurements. Existing containers
+remain running through code updates and retain ownership-based inventory and
+stop support. Status reports inventory only when complete new-contract
+observation is unavailable, rather than claiming recipe verification.
+
+`pulsar observe --service-id ID --json` performs full all-rank verification.
+`pulsar resources --service-id ID --jsonl` samples private node/container metrics.
+To begin before launch, use `--spec-file FILE` and, for a one-node recipe,
+optional `--node NODE`; it never starts the model. Container metrics remain
+unavailable until the matching owned recipe appears. Stop the stream to end
+sampling; model services are unaffected.

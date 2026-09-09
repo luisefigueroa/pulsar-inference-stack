@@ -11,12 +11,13 @@ public contribution. The operator command is `./pulsar`.
 - Use Bash for operator commands, confirmed topology, SSH, process orchestration,
   and transport. Use Python 3 for schemas, planning, identity, state, and tests.
 - `release_spec/` owns canonical immutable specs, snapshot manifests, the public
-  recipe projector, measurement contracts, the baseline policy evaluator, and
+  JSON draft compiler, measurement contracts, the baseline policy evaluator, and
   catalog-spec schema verification.
-  Preserve the exact model bytes, image, recipe arguments, and hardware geometry
-  in the selected spec. Deployment settings do not authorize recipe changes.
-  Multi-node NCCL QPs are recipe identity; other launcher defaults are recorded
-  deployment provenance. Every launched container identifies the actual stack build.
+  Preserve model bytes, image, engine arguments, container settings, and hardware
+  geometry in the effective spec. Explicit execution overrides create a distinct
+  effective spec and are displayed as a modified recipe. Site settings do not
+  change recipe identity. Containers name the selected/effective specs and their
+  immutable launch plan; Git commits are provenance, never runtime identity.
 - `model_library/` owns manifest verification, explicit homes, prepared copies,
   pins, archives, migration, and local records. Records locate bytes; manifests
   and actual verification establish their identity. Reuse the shared schema.
@@ -44,6 +45,12 @@ gates. Do not infer, promote, or rewrite either value. Baseline results, archive
 proof, and current launch compatibility are independent optional assessments;
 their outcome does not add or remove catalog membership. Withdrawal metadata
 does not stop services or delete archives automatically.
+
+New operations and contributions use spec schema 2 through the public `pulsar`
+CLI contract. Schema-1 catalog records remain historical and readable; do not
+migrate their evidence or retain a legacy launch compiler. Preserve safe
+inventory/stop support for existing services. Workbench must not import this
+checkout's Python modules or source its shell libraries.
 
 Keep topology files, hostnames, addresses, SSH identity, user paths, credentials,
 and raw experiment outputs out of tracked public files. Privacy remains a

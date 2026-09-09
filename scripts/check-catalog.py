@@ -61,7 +61,7 @@ def check_catalog(repo_root: str | Path) -> dict:
         spec_id = spec['spec_id']
         if name != f'{spec_id}.json':
             raise CatalogError(f'releases/{name}: filename differs from catalog identity')
-        declared_evidence_count += len(spec['evidence'])
+        declared_evidence_count += len(spec.get('evidence', []))
         specs.append(spec)
     return {'schema_version': 1, 'kind': 'pulsar-catalog-verification', 'verified': True,
             'spec_count': len(specs), 'declared_evidence_count': declared_evidence_count}

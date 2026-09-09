@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start an exact N-node vLLM profile: remote headless ranks first,
+# Start an exact N-node vLLM spec: remote headless ranks first,
 # then local rank 0 with the API. Every active rank is one GB10.
 #
 #   cluster/start-cluster.sh <model-name> [--spec-decode|--no-spec-decode]
@@ -14,7 +14,7 @@ cd "$REPO_DIR"
 . "$REPO_DIR/scripts/lib.sh"
 
 case "${1:-}" in -h|--help)
-  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
+  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
   exit 0 ;;
 esac
@@ -28,6 +28,7 @@ REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
+    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
@@ -51,7 +52,6 @@ acquire_model_library_hot_lock shared
 [ "$(model_source_kind)" = hf ] \
   || die "non-HF model profiles are not servable (ADR 0006)"
 resolve_spec_decode "$SPEC_MODE"
-LAUNCH_CONTRACT_ID=$(loaded_launch_contract_id)
 SPEC_DECODE_STATE=$([ "$SPEC_DECODE_ENABLED" = 1 ] && printf on || printf off)
 if [ "$NODES" -le 1 ]; then
   echo "$MODEL_NAME is a single-node profile; use ./serve.sh" >&2
@@ -187,6 +187,7 @@ if [ "$REPLACE" = 1 ]; then
 fi
 
 STARTUP_STARTED_NS=$(date +%s%N)
+persist_launch_plan_file "$PLAN_FILE"
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"

@@ -31,12 +31,12 @@ Use `./pulsar gum` or bare `./pulsar` for the interactive menu. **Cluster
 topology** offers saved membership, live checks, discovery, explicit
 configuration and SSH trust. `./pulsar topology detect` discovers candidates
 without saving; `./pulsar topology configure` asks before saving membership.
-The workbench invokes these actions from its pinned stack checkout.
+Workbench invokes the same public commands through its configured Stack executable.
 
 For first use, choose **First-use setup** or run `./pulsar topology setup`.
 It guides membership and SSH identity enrollment with separate confirmations,
 then checks readiness. From the workbench, run these stack commands by the
-absolute pinned-stack path printed by `./workbench check`.
+configured absolute Stack executable path shown by `./workbench check`.
 
 Use [Operations](docs/OPERATIONS.md) for the complete operator workflow,
 storage configuration and recovery. [Architecture](docs/ARCHITECTURE.md)
@@ -46,8 +46,14 @@ checks and the limits of compact evidence.
 [Decision references](docs/DECISIONS.md) explains legacy ADR identifiers still
 present in source comments without requiring the predecessor repository.
 `./pulsar contract --json` exposes the schema versions, policy digest, catalog
-authority, public recipe projector, and optional diagnostic capabilities that a
-pinned workbench can check without importing private implementation details.
+authority, and supported public commands. Clients check capabilities instead of
+matching repository commits. See the [public contract](docs/CONTRACT.md).
+
+New specs freeze container settings as well as model/image/engine identity.
+Operators may explicitly override supported execution settings; Stack reports
+the resulting effective recipe separately from the selected catalog recipe.
+Historical specs remain readable, and existing services are not restarted by
+code updates. New operations use spec schema 2.
 
 Run `scripts/selftest.sh` for deterministic tests without starting models.
 Hardware, Docker, confirmed topology and SSH trust are required for actual

@@ -29,3 +29,10 @@ branch or worktree, run schema and privacy checks, and open a PR only within the
 maintainer's publication scope. Merge remains separate. This skill never
 downloads weights, operates hardware, changes archives, or starts or stops a
 service.
+
+New or changed catalog specs must use schema 2. Historical schema-1 files remain
+readable and must not be silently rewritten. New evidence is per immutable run,
+with no Stack-commit equality gate. Use `pulsar contribution verify` and the public
+privacy/evidence commands; do not require private Workbench code or live cluster
+access. Preserve existing catalog metadata when adding another run for the same
+recipe. Raw site context and credentials never belong in the package.

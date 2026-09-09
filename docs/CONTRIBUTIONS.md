@@ -25,24 +25,30 @@ publication safeguard.
 
 ## Optional assessments
 
-A contribution may also contain compact measurements, `run.json`, and a
-qualification summary. These files do not grant or remove catalog membership.
-Assess complete compact evidence explicitly with:
+New publications use schema-2 specs. Historical files already in the catalog
+remain readable; CI rejects adding or editing schema-1 specs for new operations.
+Use the public package verifier for an exported contribution:
 
 ```sh
-python3 scripts/verify-evidence.py \
-  --spec releases/<spec-id>.json \
-  --evidence-root . \
-  --run results/baseline-v1/<spec-id>/run.json \
-  --summary results/baseline-v1/<spec-id>/summary.json
+./pulsar contribution verify --package PACKAGE_DIRECTORY --json
 ```
 
-Assess whether the current stack can statically reproduce the recipe with:
+Compact evidence is separate from the spec at
+`results/baseline-v1/<spec-id>/<run-id>/`. Verify an existing run explicitly:
 
 ```sh
-python3 scripts/check-launch-compatibility.py \
-  --spec releases/<spec-id>.json
+./pulsar evidence verify --spec-file releases/SPEC_ID.json \
+  --evidence-root . --run results/baseline-v1/SPEC_ID/RUN_ID/run.json --json
 ```
+
+The result distinguishes document consistency from the baseline outcome. Failed
+or incomplete outcomes do not remove catalog membership. A new run can be added
+for an existing recipe without replacing old evidence or catalog metadata.
+Optional timestamped archive observations belong to evidence summaries and do
+not establish present archive availability.
+
+Assess static launch support separately with
+`python3 scripts/check-launch-compatibility.py --spec releases/SPEC_ID.json`.
 
 These diagnostics report only what they checked. Evidence consistency does not
 prove that physical measurements occurred, and static launch compatibility does

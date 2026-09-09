@@ -21,10 +21,21 @@ are summarized here so operators do not need the predecessor repository.
   verification establish model identity.
 - **ADR 0017 — exact spec identity.** Model snapshot, image digest, recipe
   arguments, container environment, and hardware geometry form immutable recipe
-  identity. Deployment-only settings remain separate. The workbench imports the
-  stack's canonical schema and recipe projector.
+  identity. Deployment-only settings remain separate. The current public CLI contract replaces private schema/projector imports.
 
 The operative contracts are the current code, [architecture](ARCHITECTURE.md),
 and [operations guide](OPERATIONS.md). These summaries preserve terminology;
 they are not evidence that predecessor implementation or physical validation was
 imported.
+
+## Spec-contract refactor
+
+Schema 2 extends immutable recipe identity to supported container settings.
+Explicit operator overrides produce effective specs without changing catalog
+entries. The public CLI replaces private Workbench imports and runtime Git pins.
+Git commits remain campaign provenance; observations compare actual execution
+with the stored effective spec. New measurements live in separate run directories.
+
+Old specs/evidence are historical only for future operations. Inventory and safe
+stop still recognize existing services. No service is restarted or evidence
+rewritten merely because Stack code changes. See [CONTRACT.md](CONTRACT.md).

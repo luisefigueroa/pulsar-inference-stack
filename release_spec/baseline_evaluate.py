@@ -143,7 +143,8 @@ def _identity_observed(
         + payload["missing_file_count"]
         + payload["extra_file_count"]
     )
-    manifest = spec["identity"]["snapshot_manifest"]
+    from .serving import identity_fields
+    manifest = identity_fields(spec)["snapshot_manifest"]
     bound = (
         payload["spec_id"] == spec["spec_id"]
         and payload["manifest_id"] == manifest["manifest_id"]
