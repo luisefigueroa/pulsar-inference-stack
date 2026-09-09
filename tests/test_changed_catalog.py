@@ -97,6 +97,21 @@ class ChangedCatalog(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'regular file'):
             checker.check(self.root, staged=True)
 
+    def test_pr_ignores_base_only_additions_but_rejects_topic_deletions(self):
+        self.git('checkout','-qb','advanced-base')
+        self.stage_current();self.git('commit','-qm','Base-only catalog addition')
+        base=self.git('rev-parse','HEAD').strip()
+        self.git('checkout','-qb','topic',self.base)
+        (self.root/'topic.txt').write_text('Unrelated topic change\n')
+        self.git('add','.');self.git('commit','-qm','Topic change')
+        self.assertEqual(checker.check(self.root,base=base,merge_base=True),0)
+        # Pushes compare actual before/after trees, including rewritten history.
+        with self.assertRaisesRegex(ValueError,'deletion or renaming'):
+            checker.check(self.root,base=base)
+        self.old.unlink();self.git('add','-A');self.git('commit','-qm','Topic deletion')
+        with self.assertRaisesRegex(ValueError,'deletion or renaming'):
+            checker.check(self.root,base=base,merge_base=True)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -21,7 +21,7 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/check-new-specs.py --base "$BASE_SHA" --head "$HEAD_SHA"
+        run: python3 scripts/check-new-specs.py --base "$BASE_SHA" --head "$HEAD_SHA" --merge-base
       - name: Require current specs for pushed catalog changes
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         env:

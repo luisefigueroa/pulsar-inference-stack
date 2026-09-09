@@ -83,7 +83,9 @@ MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[0]}"
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # shellcheck disable=SC2064
 trap 'rm -f "${PLAN_FILE:-}"' EXIT
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo start)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 
 # Load docker argv for one rank from the shared launch plan. _DOCKER_CMD is
 # the output array. Bare docker is serialized to remote ranks; local rank 0
@@ -132,7 +134,7 @@ fi
 
 require_launch_operational_checks
 # Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" start
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
 for ((rank = 1; rank < NODES; rank++)); do
   build_docker_cmd "$rank"
   REMOTE_COMMANDS["$rank"]="$(shell_join_q "${_DOCKER_CMD[@]}")"

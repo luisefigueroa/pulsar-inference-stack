@@ -117,6 +117,15 @@ records. Unavailable workload measurements are null, never zero. Stopping a
 stream terminates only diagnostic processes, not model services. Resource
 sampling does not acquire, prepare, launch, or enroll nodes.
 
+Docker's inspect configuration and OCI process configuration are distinct.
+The environment comparison reads `Config.Env`; Docker-generated `HOSTNAME` and
+GPU environment additions are applied to the OCI process environment. Do not
+ignore arbitrary extra `Config.Env` values to accommodate those additions.
+Docker also expands a device-directory mapping into its child device nodes.
+See Moby's [environment construction](https://github.com/moby/moby/blob/master/daemon/container/container.go),
+[GPU process configuration](https://github.com/moby/moby/blob/master/daemon/devices_nvidia_linux.go),
+and [device-directory expansion](https://github.com/moby/moby/blob/master/daemon/pkg/oci/devices_linux.go).
+
 ## Measurements and history
 
 New run schema 3 binds the effective spec ID, fixed policy digest, dataset and

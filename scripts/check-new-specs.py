@@ -24,13 +24,16 @@ def commit(root,ref):
     return value
 
 
-def check(root,*,base=None,head='HEAD',staged=False):
+def check(root,*,base=None,head='HEAD',staged=False,merge_base=False):
     root=Path(root).absolute()
     if staged:
+        if merge_base: raise ValueError('--merge-base requires a commit range')
         changes=git(root,'diff','--cached','--name-status','--no-renames','-z','--','releases/').split(b'\0')[:-1]
     else:
         if base is None: raise ValueError('select --base or --staged')
         base_commit,head_commit=commit(root,base),commit(root,head)
+        if merge_base:
+            base_commit=git(root,'merge-base',base_commit,head_commit).decode().strip()
         changes=git(root,'diff','--name-status','--no-renames','-z',base_commit,head_commit,'--','releases/').split(b'\0')[:-1]
     checked=0
     for status,raw_name in zip(changes[::2],changes[1::2]):
@@ -59,9 +62,10 @@ def main():
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--staged',action='store_true');group.add_argument('--base')
     parser.add_argument('--head',default='HEAD')
+    parser.add_argument('--merge-base',action='store_true',help='check only topic-branch changes for a pull request')
     args=parser.parse_args()
     try:
-        count=check(args.repo_root,base=args.base,head=args.head,staged=args.staged)
+        count=check(args.repo_root,base=args.base,head=args.head,staged=args.staged,merge_base=args.merge_base)
         print(f'Current spec format checked: {count} changed catalog file(s).')
         return 0
     except (ValueError,OSError) as exc:

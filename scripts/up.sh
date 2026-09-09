@@ -273,7 +273,9 @@ if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
   # shellcheck disable=SC2064
   trap 'rm -f "${PLAN_FILE:-}"' EXIT
 fi
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo start)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 echo "PASS  plan      schema=3 ranks=$NODES; prerequisites checked separately"
 
 if [ "$DRY" = 1 ]; then

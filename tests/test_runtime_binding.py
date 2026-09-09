@@ -25,7 +25,7 @@ def fixture(root,nodes=2):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes)
             for rank in range(nodes):
@@ -65,8 +65,28 @@ library_hot_info_for_profile() {{ [ "$FIXTURE_MODE" != corrupt-files ] || return
 ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROOT/docker.py" $([ "${{1#docker image}}" != "$1" ] && echo image || echo inspect); }}
 ''')
             env={**os.environ,'BASH_ENV':str(envfile),'FIXTURE_ROOT':str(root),'FIXTURE_MODE':mode,'PULSAR_DOCKER':str(tool),'PULSAR_MODEL_LIBRARY_DIR':str(root/'library'),'PULSAR_SPEC_FILE':str(path),'PULSAR_OVERLAY_PATH':str(root/'overlay.json'),'VLLM_IMAGE_MAINLINE':'example/image','VLLM_EXTRA_ARGS':'','EXTRA_ENV':''}
+            if replacing:
+                env['PULSAR_LAUNCH_RESULT_FILE']=str(root/'launch-result.json')
+                with envfile.open('a') as stream:
+                    stream.write('''
+require_launch_operational_checks() { :; }
+container_ownership_inspect_local() { return 0; }
+container_ownership_inspect_remote() { return 0; }
+verify_replacement_plan() {
+  python3 - "$PLAN_FILE" "$PULSAR_LAUNCH_RESULT_FILE" <<'PY'
+import json,sys
+plan,result=[json.load(open(path)) for path in sys.argv[1:]]
+assert plan['lifecycle_action']==result['lifecycle_action']=='replace'
+assert plan['service_id']==result['service_id']
+print('replacement-plan-verified')
+PY
+  exit 78
+}
+remove_stack_owned_single_at_resolved_node() { verify_replacement_plan; }
+remove_stack_owned_cluster() { verify_replacement_plan; }
+''')
             script=ROOT/('serve.sh' if nodes==1 else 'cluster/start-cluster.sh') if launcher else ROOT/'scripts/observe-serving.sh'
-            flags=['--dry-run'] if launcher else ['--json']
+            flags=['--replace'] if replacing else ['--dry-run'] if launcher else ['--json']
             if launcher and nodes>1:flags += ['--skip-preflight']
             command=['bash',str(script),spec['spec_id'],*flags]
             if public: command=[str(ROOT/'pulsar'),'observe','--service-id',plan['service_id'],'--json']
@@ -92,6 +112,13 @@ ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROO
             self.assertEqual(result.returncode,0,result.stderr)
             self.assertIn('fixture-rank-0',result.stdout)
             if nodes==2:self.assertIn('fixture-rank-1',result.stdout)
+
+    def test_replacement_is_recorded_before_any_service_removal(self):
+        for nodes in (1,2):
+            with self.subTest(nodes=nodes):
+                result=self.run_scenario(nodes,launcher=True,replacing=True)
+                self.assertEqual(result.returncode,78,result.stderr+result.stdout)
+                self.assertIn('replacement-plan-verified',result.stdout)
 
     def test_refusals(self):
         for mode in ('rank-loss','restart','unowned','corrupt-files','missing-files','no-topology'):

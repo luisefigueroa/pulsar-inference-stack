@@ -103,7 +103,9 @@ CONTAINER=$(container_name_for "$MODEL_NAME" 1)
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # shellcheck disable=SC2064
 trap 'rm -f "${PLAN_FILE:-}"' EXIT
-write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo start)"
+LAUNCH_ACTION=start
+[ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
+write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 CMD=()
 load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
 _api_key="${VLLM_API_KEY:-${API_KEY:-}}"
@@ -122,7 +124,7 @@ fi
 
 require_launch_operational_checks
 # Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" start
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
 load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
 
 # Starting is non-replacing by default. Inspect the exact target first; only an
