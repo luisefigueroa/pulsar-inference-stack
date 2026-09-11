@@ -43,6 +43,90 @@ class ModelLibraryCLI(unittest.TestCase):
         fixture.candidate(nodes)
         return result
 
+    def speculative_fixture(self, nodes=2, draft_home=0):
+        from release_spec.serving import freeze
+        f=self.fixture(nodes)
+        self.acquire_candidate(f,nodes=nodes)
+        target=copy.deepcopy(f.spec)
+        target_manifest=target['recipe']['model']['snapshot_manifest']
+        f.cfg['revision']='e'*40;f.save()
+        f.manifest_path=f.root/'draft-manifest.json'
+        second=self.success(f.acquire(draft_home))['manifest']
+        draft={'schema_version':2,'kind':'pulsar-recipe-draft','source':target['source'],'recipe':copy.deepcopy(target['recipe'])}
+        draft['recipe']['model'].pop('snapshot_manifest')
+        draft['recipe']['required_snapshots']={'draft':{'model_id':second['model_id'],'model_commit':second['snapshot_revision']}}
+        draft['recipe']['engine_args'] += ['--speculative_config.model','pulsar-snapshot:draft']
+        f.spec=freeze(draft,{'target':target_manifest,'draft':second})
+        f.spec_path.write_bytes(pretty_json_bytes(f.spec))
+        return f
+
+    def test_speculative_combined_budget_and_interrupted_preparation(self):
+        f=self.speculative_fixture(draft_home=0)
+        limit=max(m['snapshot_manifest']['total_bytes'] for m in
+                  [f.spec['recipe']['model'],*f.spec['recipe']['required_snapshots'].values()])
+        f.env['PULSAR_HOT_BUDGET_BYTES']=str(limit)
+        before=len([e for e in f.events('node-operation') if e['operation']=='begin-view'])
+        self.failure(f.run('prepare','--yes',spec=True),'combined')
+        self.assertEqual(len([e for e in f.events('node-operation') if e['operation']=='begin-view']),before)
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        f.env['PULSAR_HOT_BUDGET_BYTES']=str(32*1024**2)
+        f.cfg['node_fault']={'operation':'begin-view','rank':1,'after':True,
+            'manifest_id':f.spec['recipe']['required_snapshots']['draft']['snapshot_manifest']['manifest_id']};f.save()
+        self.failure(f.run('prepare','--yes',spec=True))
+        self.assertEqual(len(Store(f.state).views(spec_id=f.spec['spec_id'])),2)
+        target_transfers=f.events('transfer')
+        self.assertTrue(target_transfers)
+        target_sources={event['source'] for event in target_transfers}
+        node_state=Store(Path(f.cfg['nodes'][1]['view_root'])/'.pulsar-node')
+        pending=node_state.records('transactions')
+        self.assertEqual(len(pending),1)
+        stage=pending[0]['stage']
+        self.failure(f.run('info',spec=True),'snapshot')
+        f.cfg.pop('node_fault');f.save()
+        self.success(f.run('prepare','--yes',spec=True))
+        self.assertEqual(node_state.records('transactions'),[])
+        self.assertFalse(Path(stage).exists())
+        self.assertEqual([event for event in f.events('transfer') if event['source'] in target_sources],target_transfers)
+        self.assertGreater(len(f.events('transfer')),len(target_transfers))
+        self.assertEqual(len(Store(f.state).views(spec_id=f.spec['spec_id'])),4)
+
+    def test_speculative_preparation_retention_and_archive_coverage(self):
+        f=self.speculative_fixture(draft_home=1)
+        self.failure(f.run('archive','create','--yes',spec=True),'--snapshot')
+        self.success(f.run('prepare','--yes',spec=True))
+        prepared=self.success(f.run('info','--full',spec=True))
+        self.assertEqual(set(prepared['snapshots']),{'target','draft'})
+        from scripts.container_runtime import prepared_snapshots
+        prepared_snapshots(f.spec,prepared,f.topology['topology_id'])
+        views=Store(f.state).views(spec_id=f.spec['spec_id'])
+        self.assertEqual(len(views),4)
+        self.assertEqual(len({(v['node_id'],v['path']) for v in views}),4)
+        self.success(f.run('pin','--yes',spec=True))
+        self.assertTrue(all(v['pinned'] for v in Store(f.state).views(spec_id=f.spec['spec_id'])))
+        self.failure(f.run('purge','--yes',spec=True),'pinned')
+        self.success(f.run('unpin','--yes',spec=True))
+        draft_view=next(v for v in views if v['snapshot_manifest_id']==f.spec['recipe']['required_snapshots']['draft']['snapshot_manifest']['manifest_id'])
+        rank=next(n for n in f.cfg['nodes'] if n['node_id']==draft_view['node_id'])
+        rank['containers']=[{'Id':'stopped-draft','State':{'Running':False},'Config':{'Labels':{}},'Mounts':[{'Source':draft_view['path']}]}];f.save()
+        self.failure(f.run('purge','--yes',spec=True),'container')
+        rank['containers']=[];f.save()
+        self.success(f.run('archive','create','--snapshot','target','--yes',spec=True))
+        self.failure(f.run('archive','verify',spec=True),'draft')
+        self.success(f.run('archive','create','--snapshot','draft','--yes',spec=True))
+        proof=self.success(f.run('archive','verify',spec=True))
+        self.assertEqual(set(proof['snapshots']),{'target','draft'})
+        observed=self.success(f.run('check','--full',spec=True))['observation']
+        self.assertEqual(set(observed['snapshots']),{'target','draft'})
+        self.assertEqual(observed['local_state'],'ready')
+        self.assertEqual(observed['archive_state'],'verified')
+        self.success(f.run('purge','--yes',spec=True))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        self.assertEqual(len(Store(f.state).records('homes')),2)
+        self.success(f.run('remove','--snapshot','draft','--yes',spec=True))
+        self.assertIsNotNone(Store(f.state).home(f.spec['recipe']['model']['snapshot_manifest']['manifest_id']))
+        self.success(f.run('restore','--snapshot','draft','--node','1','--yes',spec=True))
+        self.assertEqual(len(Store(f.state).records('homes')),2)
+
     def test_fixture_refuses_external_data_before_node_execution(self):
         f = self.fixture()
         with patch.dict("os.environ", f.env):

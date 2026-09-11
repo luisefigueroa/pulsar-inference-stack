@@ -10,7 +10,7 @@ from .integrity import StorageError, atomic_json, read_json, verify_manifest, ve
 from .local import (begin_staging, copy_snapshot, finish_staging, home_record,
                     location, payload, remove_managed_hub, restore, verify_archive)
 from .filesystem import require_serving_filesystem
-from .state import Store, checked_id, ensure_directory, validate_view, view_key
+from .state import Store, checked_id, ensure_directory, validate_view, view_record_key, view_destination
 
 
 def run(request: dict) -> dict:
@@ -41,7 +41,7 @@ def run(request: dict) -> dict:
                     and (not request.get('snapshot_manifest_id') or v.get('snapshot_manifest_id')==request['snapshot_manifest_id'])]}
     if op == 'refresh-view':
         record=validate_view(request['view'])
-        key=view_key(record['spec_id'],record['node_id'])
+        key=view_record_key(record)
         previous=node_store.get('views',key)
         if previous is None: return {'refreshed':False}
         if any(previous[f]!=record[f] for f in ('spec_id','node_id','path','hub_path','snapshot_manifest_id')):
@@ -52,7 +52,7 @@ def run(request: dict) -> dict:
         return {'refreshed':True}
     if op in {'save-view', 'pin-view', 'forget-view'}:
         record=validate_view(request['view'])
-        key=view_key(record['spec_id'],record['node_id'])
+        key=view_record_key(record)
         previous=node_store.get('views',key)
         if op=='forget-view':
             fields=('spec_id','node_id','rank','topology_id','hub_path','path','snapshot_manifest_id','pinned','is_home_view')
@@ -69,13 +69,13 @@ def run(request: dict) -> dict:
         import re
         from .integrity import directory
         transaction=request['transaction']
-        key=view_key(transaction['spec_id'],transaction['node_id'])
+        key=view_record_key(transaction)
         if node_store.get('transactions',key)!=transaction or transaction.get('pinned') is not False:
             raise StorageError('incomplete preparation ownership is not proven')
         if transaction['snapshot_manifest_id']!=request['manifest']['manifest_id']:
             raise StorageError('incomplete preparation identity differs')
         stage=Path(transaction['stage']); destination=Path(transaction['destination'])
-        if stage.parent!=view_root or not re.fullmatch(r'\.pending-[0-9a-f]{32}',stage.name) or destination!=view_root/transaction['spec_id']:
+        if stage.parent!=view_root or not re.fullmatch(r'\.pending-[0-9a-f]{32}',stage.name) or destination!=view_destination(view_root,transaction):
             raise StorageError('incomplete preparation path escapes managed view root')
         if not shutil.rmtree.avoids_symlink_attacks:
             raise StorageError('platform cannot safely remove staging')
@@ -142,6 +142,8 @@ def run(request: dict) -> dict:
         ensure_directory(path)
         return {'stage': str(stage), 'path': str(path)}
     manifest = verify_manifest(request['manifest'])
+    view_identity = {'schema_version':request.get('view_schema',1), 'spec_id':request.get('spec_id'),
+                     'node_id':request.get('node_id'), 'snapshot_manifest_id':manifest['manifest_id']}
     if op == 'exists':
         require_serving_filesystem(home_root)
         hub = location(home_root, manifest)
@@ -169,27 +171,47 @@ def run(request: dict) -> dict:
         return {'home': home_record(manifest, request['node_id'], destination, checked)}
     if op == 'begin-view':
         require_serving_filesystem(view_root)
-        dest = view_root/checked_id(request['spec_id'])
+        dest = view_destination(view_root,view_identity)
         if dest.exists() or dest.is_symlink():
             raise StorageError('prepared-view destination exists; inspect and explicitly purge first')
+        previous = node_store.get('transactions',view_record_key(view_identity))
+        if previous is not None:
+            from .integrity import directory
+            import re
+            if (any(previous.get(k)!=v for k,v in view_identity.items() if k!='schema_version')
+                    or previous.get('schema_version',1)!=view_identity['schema_version']
+                    or previous.get('rank')!=request['rank'] or previous.get('topology_id')!=request['topology_id']
+                    or previous.get('pinned') is not False or previous.get('destination')!=str(dest)):
+                raise StorageError('incomplete preparation differs; inspect before retrying')
+            stage=Path(previous['stage'])
+            if stage.parent!=view_root or not re.fullmatch(r'\.pending-[0-9a-f]{32}',stage.name):
+                raise StorageError('incomplete preparation escapes managed storage')
+            with directory(stage) as fd:
+                observed=os.fstat(fd)
+                if [observed.st_dev,observed.st_ino]!=previous['hub_identity']:
+                    raise StorageError('incomplete preparation directory was replaced')
+            if previous['path']!=str(payload(stage,manifest)):
+                raise StorageError('incomplete preparation snapshot path differs')
+            return previous
         stage=begin_staging(dest.parent)
         ensure_directory(payload(stage,manifest))
-        result={'stage':str(stage),'destination':str(dest),'path':str(payload(stage,manifest)),
+        result={**({'schema_version':2} if request.get('view_schema')==2 else {}),
+                'stage':str(stage),'destination':str(dest),'path':str(payload(stage,manifest)),
                 'spec_id':request['spec_id'],'snapshot_manifest_id':manifest['manifest_id'],
                 'node_id':request['node_id'],'rank':request['rank'],'topology_id':request['topology_id'],
                 'pinned':False,'kind':'pulsar-preparation-staging',
                 'hub_identity':[stage.stat().st_dev,stage.stat().st_ino]}
-        node_store.put('transactions',view_key(request['spec_id'],request['node_id']),result)
+        node_store.put('transactions',view_record_key(view_identity),result)
         return result
     if op == 'publish-view':
         require_serving_filesystem(view_root)
-        dest=view_root/checked_id(request['spec_id'])
+        dest=view_destination(view_root,view_identity)
         checked=finish_staging(Path(request['stage']),dest,manifest)
         from .local import prepared_record
         home=home_record(manifest,request['node_id'],dest,checked)
-        record=prepared_record(home,spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'])
-        node_store.put('views',view_key(record['spec_id'],record['node_id']),record)
-        node_store.remove('transactions',view_key(record['spec_id'],record['node_id']))
+        record=prepared_record(home,spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'],schema_version=request.get('view_schema',1))
+        node_store.put('views',view_record_key(record),record)
+        node_store.remove('transactions',view_record_key(record))
         return {'home':home,'view':record}
     if op in {'begin-archive', 'archive'}:
         from .local import _overlap

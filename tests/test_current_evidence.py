@@ -17,8 +17,8 @@ from scripts.container_runtime import observe_rank
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def make_run(root):
-    spec,_,_,plan,containers,images=fixture()
+def make_run(root, speculative=False):
+    spec,_,_,plan,containers,images=fixture(speculative=speculative)
     root.mkdir(parents=True,exist_ok=True)
     (root/'measurements').mkdir()
     (root/'spec.json').write_bytes(pretty_json_bytes(spec))
@@ -29,14 +29,23 @@ def make_run(root):
             payload=value['verify-snapshot-manifest'];manifest=spec['recipe']['model']['snapshot_manifest']
             payload.update(spec_id=spec['spec_id'],manifest_id=manifest['manifest_id'],
                            expected_file_count=manifest['file_count'],matched_file_count=manifest['file_count'])
+            if speculative:
+                from release_spec import serving
+                value['schema_version']=2
+                value['verify-snapshot-manifest']={'spec_id':spec['spec_id'],'snapshots':{
+                    name:{'manifest_id':m['snapshot_manifest']['manifest_id'],
+                        'expected_file_count':m['snapshot_manifest']['file_count'],'matched_file_count':m['snapshot_manifest']['file_count'],
+                        'mismatched_file_count':0,'missing_file_count':0,'extra_file_count':0}
+                    for name,m in serving.required_snapshots(spec).items()}}
         (root/'measurements'/path.name).write_bytes(pretty_json_bytes(value))
     evaluation,_=evaluate_measurements(spec,root/'policy.json',root/'measurements')
     observed=observe_rank(plan,0,containers[0],images[0])
-    rank={key:observed[key] for key in ('rank','running','owned','spec_id','image_digest','snapshot_manifest_id','boot_witness')}
+    rank={key:observed[key] for key in ('rank','running','owned','spec_id','image_digest','snapshots' if speculative else 'snapshot_manifest_id','boot_witness')}
+    for member in rank.get('snapshots',{}).values(): member['files_verified']=True
     rank.update(files_verified=True,container_configuration=observed['public_container_configuration'])
     soak=json.loads((root/'measurements/validate-soak.json').read_text())['validate-soak']
     start=soak['started_at'];finish=soak['ended_at']
-    record={'schema_version':3,'kind':'pulsar-baseline-run','run_id':'campaign-1','spec_id':spec['spec_id'],
+    record={'schema_version':4 if speculative else 3,'kind':'pulsar-baseline-run','run_id':'campaign-1','spec_id':spec['spec_id'],
         'policy_digest':evaluation['policy_digest'],'workbench_commit':'a'*40,
         'stack_observers':[{'stack_commit':None,'working_tree_dirty':None}]*2,
         'ranks_before':[rank],'ranks_after':[copy.deepcopy(rank)],
@@ -58,6 +67,53 @@ class CurrentEvidence(unittest.TestCase):
 
     def check(self):
         return verify_evidence(self.root/'spec.json',self.root/'run.json',self.root)
+
+    def test_complete_snapshot_evidence_and_missing_draft_rejection(self):
+        root=self.root/'speculative'
+        spec,record=make_run(root,speculative=True)
+        self.assertEqual(verify_evidence(root/'spec.json',root/'run.json',root)['outcome'],'pass')
+        for change in ('missing','wrong','unverified'):
+            bad=copy.deepcopy(record)
+            snapshots=bad['ranks_after'][0]['snapshots']
+            if change=='missing': del snapshots['draft']
+            elif change=='wrong': snapshots['draft']['snapshot_manifest_id']='f'*64
+            else: snapshots['draft']['files_verified']=False
+            with self.subTest(change=change),self.assertRaises(ValueError): verify_run(bad,spec)
+        path=root/'measurements/verify-snapshot-manifest.json'
+        value=json.loads(path.read_text());del value['verify-snapshot-manifest']['snapshots']['draft']
+        path.write_bytes(pretty_json_bytes(value))
+        result,_=evaluate_measurements(spec,root/'policy.json',root/'measurements')
+        self.assertNotEqual(result['outcome'],'pass')
+
+    def test_speculative_evidence_package_verifies_without_workbench(self):
+        from release_spec import serving
+        root=self.root/'speculative-package-run'
+        spec,record=make_run(root,speculative=True)
+        verified=verify_evidence(root/'spec.json',root/'run.json',root)
+        proof={'schema_version':2,'kind':'pulsar-archive-verification','spec_id':spec['spec_id'],'verified':True,
+            'snapshots':{name:{'schema_version':1,'kind':'pulsar-archive-verification','verified':True,
+                'snapshot_manifest_id':m['snapshot_manifest']['manifest_id'],'file_count':m['snapshot_manifest']['file_count'],
+                'total_bytes':m['snapshot_manifest']['total_bytes']} for name,m in serving.required_snapshots(spec).items()}}
+        archive={'schema_version':2,'kind':'pulsar-archive-observation','observed_at':'2026-09-09T00:00:00Z','verification':proof}
+        summary=evidence_summary(verified,spec,archive)
+        path=root/'summary.json';path.write_bytes(pretty_json_bytes(summary))
+        result=subprocess.run([sys.executable,str(ROOT/'scripts/verify-evidence.py'),
+            '--spec',str(root/'spec.json'),'--run',str(root/'run.json'),'--evidence-root',str(root),
+            '--summary',str(path),'--json'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        package=self.root/'package'
+        artifacts={f"releases/{spec['spec_id']}.json":(root/'spec.json').read_bytes()}
+        prefix=f"results/baseline-v1/{spec['spec_id']}/{record['run_id']}"
+        for source in [root/'run.json',root/'policy.json',root/'summary.json',*(root/'measurements').glob('*.json')]:
+            artifacts[prefix+'/'+source.name]=source.read_bytes()
+        for name,data in artifacts.items():
+            output=package/name;output.parent.mkdir(parents=True,exist_ok=True);output.write_bytes(data)
+        (package/'package.json').write_bytes(pretty_json_bytes({'schema_version':2,'kind':'pulsar-contribution-package',
+            'spec_id':spec['spec_id'],'files':{name:hashlib.sha256(data).hexdigest() for name,data in artifacts.items()}}))
+        result=subprocess.run([str(ROOT/'pulsar'),'contribution','verify','--package',str(package),'--json'],capture_output=True,text=True)
+        self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+        del proof['snapshots']['draft']
+        with self.assertRaises(ValueError): evidence_summary(verified,spec,archive)
 
     def test_complete_evidence_with_unknown_observer_commit(self):
         self.assertEqual(self.check()['outcome'],'pass')

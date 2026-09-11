@@ -12,24 +12,25 @@ sys.path.insert(0,str(ROOT))
 from release_spec import pretty_json_bytes
 
 
-def fixture(root,nodes=2):
+def fixture(root,nodes=2,speculative=False):
     # Shared current-contract fixture. Legacy profile/commit-label unit checks
     # are replaced by test_serving_spec and test_container_runtime.
     from tests.test_container_runtime import fixture as current_fixture
     from scripts.service_state import save
     from model_library.state import Store
-    spec,facts,doc,plan,containers,images=current_fixture(nodes)
+    spec,facts,doc,plan,containers,images=current_fixture(nodes,speculative=speculative)
     path=root/'spec.json';path.write_bytes(pretty_json_bytes(spec))
     save(Store(root/'library'),plan)
     return spec,path,doc,facts,plan,containers,images
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False):
         with tempfile.TemporaryDirectory() as temp:
-            root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes)
+            root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             for rank in range(nodes):
                 (root/f'container-{rank}.json').write_text(json.dumps(containers[rank]));(root/f'image-{rank}.json').write_text(json.dumps(images[rank]))
+            if mode=='missing-draft': del prepared['snapshots']['draft']
             (root/'prepared.json').write_text(json.dumps(prepared))
             (root/'overlay.json').write_text(json.dumps(dict(schema_version=1,kind='pulsar-deployment-overlay',defaults=dict(port=8000,served_name='example',cache_root=None,placement=None),specs={})))
             if mode=='changed-overlay':
@@ -104,6 +105,21 @@ library_hot_info_for_profile() {
             command=['bash',str(script),spec['spec_id'],*flags]
             if public: command=[str(ROOT/'pulsar'),'observe','--service-id',plan['service_id'],'--json']
             return subprocess.run(command,cwd=root if public else ROOT,env=env,text=True,capture_output=True)
+
+    def test_required_snapshots_through_public_observation_and_launcher(self):
+        for nodes in (1,2):
+            result=self.run_scenario(nodes,public=True,speculative=True)
+            self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+            observed=json.loads(result.stdout)['result']
+            self.assertEqual(observed['schema_version'],3)
+            for rank in observed['ranks']:
+                self.assertEqual(set(rank['snapshots']),{'target','draft'})
+                self.assertTrue(all(m['files_verified'] is True for m in rank['snapshots'].values()))
+            result=self.run_scenario(nodes,launcher=True,speculative=True)
+            self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+            self.assertIn('/pulsar/snapshots/',result.stdout)
+            result=self.run_scenario(nodes,mode='missing-draft',launcher=True,speculative=True)
+            self.assertNotEqual(result.returncode,0,result.stdout)
 
     def test_one_and_two_nodes(self):
         for nodes in (1,2):

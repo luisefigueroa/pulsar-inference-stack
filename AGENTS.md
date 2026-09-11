@@ -46,8 +46,8 @@ proof, and current launch compatibility are independent optional assessments;
 their outcome does not add or remove catalog membership. Withdrawal metadata
 does not stop services or delete archives automatically.
 
-New operations and contributions use spec schema 2 through the public `pulsar`
-CLI contract. Schema-1 catalog records remain historical and readable; do not
+New operations and contributions use spec schemas 2 and 3 through the public
+`pulsar` CLI contract. Schema-1 catalog records remain historical and readable; do not
 migrate their evidence or retain a legacy launch compiler. Preserve safe
 inventory/stop support for existing services. Workbench must not import this
 checkout's Python modules or source its shell libraries.

@@ -21,7 +21,8 @@ select_node() {
 browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
-  local result index spec action node selected nodes
+  local result index spec action node selected nodes snapshot
+  local -a snapshot_names=()
   local -a ids=() labels=() args=()
   result=$(catalog list --json) || return $?
   mapfile -t ids < <(printf '%s' "$result" | python3 -c 'import json,sys;print("\n".join(r["spec_id"] for r in json.load(sys.stdin)["entries"]))')
@@ -62,6 +63,14 @@ for row in json.load(sys.stdin)["entries"]:
     12) action=stop ;;
   esac
   case "$action" in
+    acquire|restore|move|remove|archive)
+      mapfile -t snapshot_names < <(printf '%s' "$result" | python3 -c 'import json,sys; row=json.load(sys.stdin)["entries"][int(sys.argv[1])]; print("\n".join(row.get("snapshots",{})))' "$index")
+      if [ "${#snapshot_names[@]}" -gt 0 ] && [ -n "${snapshot_names[0]}" ]; then
+        snapshot=$(choose_index "Select a required snapshot" "${snapshot_names[@]}") || return 0
+        args+=(--snapshot "${snapshot_names[$snapshot]}")
+      fi ;;
+  esac
+  case "$action" in
     acquire|restore|move)
       node=$(select_node) || return 0
       args+=(--node "$node") ;;
@@ -79,7 +88,7 @@ for row in json.load(sys.stdin)["entries"]:
   case "$action" in
     start) "$REPO_DIR/scripts/up.sh" "$spec" "${args[@]}" ;;
     stop) "$REPO_DIR/scripts/down.sh" "$spec" "${args[@]}" ;;
-    archive) "$REPO_DIR/scripts/model-library.sh" archive create "$spec" --yes ;;
+    archive) "$REPO_DIR/scripts/model-library.sh" archive create "$spec" "${args[@]}" --yes ;;
     *) "$REPO_DIR/scripts/model-library.sh" "$action" "$spec" "${args[@]}" --yes ;;
   esac
 }

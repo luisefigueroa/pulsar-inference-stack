@@ -40,7 +40,7 @@ def main(argv=None) -> int:
                 read_stable_bytes(args.summary, label='qualification summary'),
                 label='qualification summary',
             )
-            if spec['schema_version'] == 2:
+            if spec['schema_version'] in (2,3):
                 from release_spec.evidence_v2 import evidence_summary
                 expected = evidence_summary(result, spec, summary.get('archive_observation'))
                 if summary != expected:

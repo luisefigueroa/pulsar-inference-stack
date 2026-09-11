@@ -20,7 +20,7 @@ from scripts.terminal_format import TerminalWriter
 ROOT = Path(__file__).resolve().parents[1]
 
 
-from release_spec.serving import identity_fields
+from release_spec.serving import identity_fields, required_snapshots
 
 
 def age_seconds(value, now=None):
@@ -52,13 +52,28 @@ def age_text(age):
     return f"{age // 86400} days ago"
 
 
+def combined_observation(members):
+    """Aggregate complete per-snapshot checks without turning unknown into absent."""
+    def state(field, precedence):
+        values={m.get(field,'unknown') for m in members.values()}
+        return next(v for v in precedence if v in values)
+    return {'snapshots':members,
+        'local_state':state('local_state',('unknown','changed','missing','ready')),
+        'archive_state':state('archive_state',('unknown','unavailable','not-configured','missing','present','verified')),
+        'prepared':{'verified':sum(m.get('prepared',{}).get('verified',0) for m in members.values()),
+                    'required':sum(m.get('prepared',{}).get('required',0) for m in members.values())},
+        'blockers':[name+': '+b for name,m in members.items() for b in m.get('blockers',[])]}
+
+
 def project(spec, store, *, now=None):
     spec_id = spec["spec_id"]
     manifest_id = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
     home = store.home(manifest_id)
     views = store.views(spec_id=spec_id)
     archive = store.get("archives", manifest_id)
-    if any(view["snapshot_manifest_id"] != manifest_id for view in views):
+    snapshots=required_snapshots(spec)
+    manifest_ids={m["snapshot_manifest"]["manifest_id"] for m in snapshots.values()}
+    if any(view["snapshot_manifest_id"] not in manifest_ids for view in views):
         raise StorageError("prepared-copy record differs from the selected snapshot")
     if archive is not None and (archive.get("snapshot_manifest_id") != manifest_id or archive.get("verified") is not True):
         raise StorageError("archive record differs from the selected snapshot")
@@ -68,6 +83,24 @@ def project(spec, store, *, now=None):
                 or observation.get("spec_id") != spec_id):
             raise StorageError("saved observation does not name the selected spec")
     observed = observation or {}
+    members = {}
+    if spec.get('schema_version') == 3:
+        saved = observed.get('snapshots', {})
+        if observation is not None and set(saved) != set(snapshots):
+            raise StorageError('saved observation does not cover the required snapshot set')
+        for name,model in snapshots.items():
+            mid=model['snapshot_manifest']['manifest_id']
+            recovery=store.get('archives',mid)
+            if recovery is not None and (recovery.get('snapshot_manifest_id')!=mid or recovery.get('verified') is not True):
+                raise StorageError('archive record differs from required snapshot')
+            members[name]={'snapshot_manifest_id':mid,'model_id':model['model_id'],'model_commit':model['model_commit'],
+                'home':store.home(mid),'archive':recovery,'observation':saved.get(name,{}),
+                'prepared_copies':[v for v in views if v['snapshot_manifest_id']==mid]}
+        # Only complete saved checks establish aggregate readiness.
+        if observation is not None:
+            combined=combined_observation(saved)
+            if any(observed.get(k)!=combined[k] for k in ('local_state','archive_state','prepared','blockers')):
+                raise StorageError('saved aggregate disagrees with snapshot observations')
     local_state = observed.get("local_state", "unknown")
     archive_state = observed.get("archive_state", "unknown")
     if local_state not in {"unknown", "missing", "ready", "changed"}:
@@ -78,7 +111,7 @@ def project(spec, store, *, now=None):
     if not isinstance(blockers, list) or any(not isinstance(x, str) for x in blockers):
         raise StorageError("saved blockers must be a list of explanations")
     checked_at = observed.get("checked_at")
-    return {"historical": spec.get("schema_version") != 2, "spec_id": spec_id, "model_id": identity_fields(spec)["model_id"],
+    return {"historical": spec.get("schema_version") not in (2,3), "spec_id": spec_id, "model_id": identity_fields(spec)["model_id"],
         "snapshot_revision": identity_fields(spec)["snapshot_revision"], "snapshot_manifest_id": manifest_id,
         "geometry": identity_fields(spec)["geometry"], "image": identity_fields(spec)["image"],
         "engine_args": identity_fields(spec)["engine_args"], "state": spec["state"],
@@ -86,6 +119,7 @@ def project(spec, store, *, now=None):
         "local_state": local_state, "archive_state": archive_state,
         "checked_at": checked_at, "observation_age_seconds": age_seconds(checked_at, now),
         "blockers": blockers, "home": home, "prepared_copies": views,
+        **({"snapshots":members} if spec.get("schema_version")==3 else {}),
         "archive": archive, "archive_age_seconds": age_seconds((archive or {}).get("verified_at"), now)}
 
 
@@ -142,6 +176,10 @@ def render(rows, *, details=False, writer=None):
         out.field("Checked", f"{row['checked_at']} ({age_text(row['observation_age_seconds'])})" if row["checked_at"] else "not observed")
         if row["archive"]:
             out.field("Last archive verification", f"{row['archive'].get('verified_at', 'unknown')} ({age_text(row['archive_age_seconds'])})")
+        for name, member in row.get('snapshots',{}).items():
+            status=member.get('observation',{})
+            out.field('Snapshot '+name, member['model_id']+' @ '+member['model_commit'][:12])
+            out.field('Files / archive',status.get('local_state','unknown')+' / '+status.get('archive_state','unknown'),indent=2)
         if details:
             out.field("Commit", row["snapshot_revision"])
             out.field("Snapshot", row["snapshot_manifest_id"])

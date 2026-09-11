@@ -14,7 +14,7 @@ import re
 from release_spec import serving
 from release_spec.normalize import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 3
+PLAN_SCHEMA_VERSION = 4
 SELECTED_SPEC_LABEL = "io.pulsar.gb10.selected-spec-id"
 SPEC_LABEL = "io.pulsar.gb10.spec-id"
 PLAN_LABEL = "io.pulsar.gb10.launch-plan"
@@ -42,6 +42,45 @@ def service_identifier(selected_spec_id, topology_id, node_ids):
                                   'topology_id':topology_id,'node_ids':node_ids})
 
 
+def prepared_snapshots(spec, prepared, topology_id):
+    """Check the complete named snapshot/rank matrix before binding local paths."""
+    expected = serving.required_snapshots(spec)
+    if spec['schema_version'] == 2:
+        members = {'target': prepared}
+    else:
+        serving.closed(prepared, {'schema_version','kind','spec_id','topology_id','snapshots'}, 'prepared set')
+        if type(prepared['schema_version']) is not int or prepared['schema_version'] != 2 or prepared['kind'] != 'pulsar-prepared-set':
+            fail('unsupported prepared-set schema')
+        if prepared['spec_id'] != spec['spec_id'] or prepared['topology_id'] != topology_id:
+            fail('prepared set identity differs')
+        members = serving.closed(prepared['snapshots'], set(expected), 'prepared snapshots')
+    nodes = None
+    for name, model in expected.items():
+        member = members[name]
+        if not isinstance(member, dict) or type(member.get('schema_version')) is not int or member['schema_version'] != 1 or member.get('kind') != 'pulsar-prepared-set':
+            fail('invalid prepared snapshot: ' + name)
+        for key, value in [('spec_id',spec['spec_id']),('topology_id',topology_id),
+                           ('snapshot_manifest_id',model['snapshot_manifest']['manifest_id']),('revision',model['model_commit'])]:
+            if member.get(key) != value: fail('prepared snapshot ' + name + ' differs: ' + key)
+        ranks = member.get('ranks')
+        if not isinstance(ranks,list) or len(ranks) != spec['recipe']['geometry']['nodes']:
+            fail('prepared snapshot must cover every rank: ' + name)
+        ids = []
+        for index, row in enumerate(ranks):
+            if type(row.get('rank')) is not int or row['rank'] != index: fail('invalid prepared rank order')
+            ids.append(text(row.get('node_id'), 'node_id'))
+            hub = PurePosixPath(text(row.get('hub_path'), 'hub_path'))
+            if not hub.is_absolute() or '..' in hub.parts or row.get('path') != str(hub/'snapshots'/model['model_commit']):
+                fail('prepared rank paths do not select the verified snapshot')
+            if spec['schema_version'] == 3 and row.get('snapshot_manifest_id') != model['snapshot_manifest']['manifest_id']:
+                fail('prepared rank manifest differs: ' + name)
+        if len(set(ids)) != len(ids) or member.get('home_node_id') not in ids:
+            fail('snapshot home must belong to the exact serving nodes')
+        if nodes is not None and nodes != ids: fail('required snapshots have different rank placement')
+        nodes = ids
+    return members
+
+
 def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
     spec = serving.verify_spec(spec)
     selected_spec_id = digest(selected_spec_id, "selected_spec_id")
@@ -49,13 +88,16 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
     if selected_spec['spec_id'] != selected_spec_id:
         fail('selected spec document differs from selected identity')
     # Overrides cannot change model bytes, image or placement geometry.
-    for key in ('model', 'image_digest', 'geometry'):
+    for key in ('model', 'image_digest', 'geometry', *(['required_snapshots'] if spec['schema_version']==3 else [])):
         if spec['recipe'][key] != selected_spec['recipe'][key]:
             fail(f'effective recipe cannot override {key}')
     recipe = spec["recipe"]
     model = recipe["model"]
     count = recipe["geometry"]["nodes"]
     topology = digest(facts.get("topology_id"), "topology_id")
+    members = prepared_snapshots(selected_spec, prepared, topology)
+    prepared = members["target"]
+    serving.snapshot_engine_args(recipe)
     if (not isinstance(prepared, dict) or prepared.get("kind") != "pulsar-prepared-set"
             or type(prepared.get("schema_version")) is not int or prepared["schema_version"] != 1):
         fail("invalid prepared-set document")
@@ -82,6 +124,9 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
         hub = PurePosixPath(rank["hub_path"])
         if not hub.is_absolute() or ".." in hub.parts or files.get("path") != str(hub / "snapshots" / model["model_commit"]):
             fail("prepared rank paths do not select the verified snapshot")
+        if spec["schema_version"] == 3:
+            rank["snapshots"] = {name: {"hub_path": member["ranks"][index]["hub_path"],
+                "home_node_id": member["home_node_id"]} for name, member in members.items()}
         ranks.append(rank)
     if len({rank["node_id"] for rank in ranks}) != count:
         fail("placement repeats a physical node")
@@ -89,7 +134,7 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
     master_port = serving.integer(facts.get("master_port", 29500), "master_port", 1)
     if port > 65535 or master_port > 65535:
         fail("ports must be in 1..65535")
-    plan = {"schema_version": PLAN_SCHEMA_VERSION, "kind": "pulsar-launch-plan",
+    plan = {"schema_version": 4 if spec["schema_version"] == 3 else 3, "kind": "pulsar-launch-plan",
             "selected_spec_id": selected_spec_id, "spec_id": spec["spec_id"], "spec": spec,
             "selected_spec": selected_spec,
             "matches_selected_spec": selected_spec_id == spec["spec_id"],
@@ -107,9 +152,11 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
 
 
 def validate_plan(plan):
-    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] != PLAN_SCHEMA_VERSION:
+    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] not in (3, 4):
         fail("unsupported launch-plan schema")
     spec = serving.verify_spec(plan["spec"])
+    if plan["schema_version"] != spec["schema_version"] + 1:
+        fail("launch-plan schema differs from spec schema")
     if plan.get("spec_id") != spec["spec_id"]:
         fail("launch plan spec identity differs")
     body = {key: value for key, value in plan.items() if key != "plan_id"}
@@ -123,6 +170,20 @@ def validate_plan(plan):
         "revision": model["model_commit"], "home_node_id": plan["home_node_id"],
         "ranks": [{**rank, "path": str(PurePosixPath(rank["hub_path"]) / "snapshots" / model["model_commit"])}
                   for rank in plan["ranks"]]}
+    if spec['schema_version'] == 3:
+        snapshots = {}
+        for name, item in serving.required_snapshots(spec).items():
+            snapshots[name] = {'schema_version':1,'kind':'pulsar-prepared-set',
+                'spec_id':plan['selected_spec_id'],'topology_id':plan['topology_id'],
+                'snapshot_manifest_id':item['snapshot_manifest']['manifest_id'],'revision':item['model_commit'],
+                'home_node_id':plan['ranks'][0]['snapshots'][name]['home_node_id'],
+                'ranks':[{'rank':row['rank'],'node_id':row['node_id'],
+                          'snapshot_manifest_id':item['snapshot_manifest']['manifest_id'],
+                          'hub_path':row['snapshots'][name]['hub_path'],
+                          'path':str(PurePosixPath(row['snapshots'][name]['hub_path'])/'snapshots'/item['model_commit'])}
+                         for row in plan['ranks']]}
+        prepared = {'schema_version':2,'kind':'pulsar-prepared-set','spec_id':plan['selected_spec_id'],
+                    'topology_id':plan['topology_id'],'snapshots':snapshots}
     rebuilt = build_plan(spec, plan["selected_spec_id"], plan, prepared, selected_spec=plan['selected_spec'])
     # Authentication is a recorded site choice; validation never depends on the
     # current shell's secret. The value is applied only at actual launch.
@@ -151,8 +212,15 @@ def rank_spec(plan, rank):
               PREFIX + "weight-owner": plan["home_node_id"], PREFIX + "weight-config": manifest["manifest_id"][:12],
               PREFIX + "model-revision": model["model_commit"], PREFIX + "model-identity-status": "manifest-verified",
               SELECTED_SPEC_LABEL: plan["selected_spec_id"], SPEC_LABEL: plan["spec_id"], PLAN_LABEL: plan["plan_id"]}
-    return {"labels": labels, "mounts": [{"source": row["hub_path"], "target": target, "mode": "ro"}],
-            "model_path": target + "/snapshots/" + model["model_commit"]}
+    mounts = [{"source": row["hub_path"], "target": target, "mode": "ro"}]
+    paths = {'target':target + '/snapshots/' + model['model_commit']}
+    for name, item in recipe.get('required_snapshots', {}).items():
+        destination = '/pulsar/snapshots/' + item['snapshot_manifest']['manifest_id']
+        mount = {'source':row['snapshots'][name]['hub_path'],'target':destination,'mode':'ro'}
+        if mount not in mounts: mounts.append(mount)
+        paths[name] = destination + '/snapshots/' + item['model_commit']
+    return {'labels':labels,'mounts':mounts,'model_path':paths['target'],
+            'engine_args':serving.snapshot_engine_args(recipe,paths)}
 
 
 def environment(plan, rank):
@@ -190,8 +258,8 @@ def docker_argv(plan, rank, *, detach=False, include_secrets=True):
         args += ["--cpus", format(Decimal(c["cpu_limit_nanos"]) / 1000000000, "f")]
     for device in c["devices"]:
         args += ["--device", "/dev/" + device]
-    mount = spec["mounts"][0]
-    args += ["-v", f"{mount['source']}:{mount['target']}:ro"]
+    for mount in spec["mounts"]:
+        args += ["-v", f"{mount['source']}:{mount['target']}:ro"]
     for name, value in sorted(environment(plan, rank).items()):
         args += ["-e", f"{name}={value}"]
     if len(plan['ranks']) == 1:
@@ -211,7 +279,7 @@ def docker_argv(plan, rank, *, detach=False, include_secrets=True):
         args.append("--no-healthcheck")
     args += [plan["spec"]["source"]["image_repository"] + "@" + recipe["image_digest"],
              "--model", spec["model_path"], "--served-model-name", plan["served_name"],
-             "--host", "0.0.0.0", "--port", str(plan["port"]), *recipe["engine_args"],
+             "--host", "0.0.0.0", "--port", str(plan["port"]), *spec["engine_args"],
              "--tensor-parallel-size", str(recipe["geometry"]["tp"]),
              "--pipeline-parallel-size", str(recipe["geometry"]["pp"])]
     if len(plan["ranks"]) > 1:
@@ -287,18 +355,23 @@ def observe_rank(plan, rank, container, image):
             actual['HF_TOKEN'] = '<credential>'
     if len(actual) != len(actual_items) or actual != env:
         fail(f"rank {rank}: environment differs")
-    mount = expected["mounts"][0]
     mounts = container.get("Mounts") or []
-    matching = [m for m in mounts if m.get("Destination") == mount["target"]]
-    if len(matching) != 1 or matching[0].get("Source") != mount["source"] or matching[0].get("RW") is not False:
-        fail(f"rank {rank}: model mount differs")
-    if any(m.get("Destination", "").startswith(mount["target"] + "/") for m in mounts):
-        fail(f"rank {rank}: nested mount shadows verified files")
+    matching = []
+    targets = {mount['target'] for mount in expected['mounts']}
+    for mount in expected['mounts']:
+        found = [m for m in mounts if m.get('Destination') == mount['target']]
+        if len(found) != 1 or found[0].get('Source') != mount['source'] or found[0].get('RW') is not False:
+            fail(f'rank {rank}: model mount differs')
+        if any(m.get('Destination','').startswith(mount['target'] + '/') for m in mounts):
+            fail(f'rank {rank}: nested mount shadows verified files')
+        matching.extend(found)
     image_volumes=(image.get('Config') or {}).get('Volumes') or {}
     for item in mounts:
-        if item.get('Destination')!=mount['target'] and (
+        if item.get('Destination') not in targets and (
                 item.get('Destination') not in image_volumes or item.get('Type')!='volume'):
             fail(f'rank {rank}: mount is not part of the recipe or pinned image')
+        if item.get('Destination') not in targets and any(target.startswith(item.get('Destination','').rstrip('/') + '/') for target in targets):
+            fail(f'rank {rank}: ancestor mount shadows verified files')
     observed = container_configuration(container, image)
     c = recipe["container"]
     host=container.get('HostConfig') or {}
@@ -375,6 +448,8 @@ def observe_rank(plan, rank, container, image):
     else:
         portable['healthcheck']=None
     return {"rank": rank, "running": True, "owned": True, "spec_id": plan["spec_id"],
-            "image_digest": recipe["image_digest"], "snapshot_manifest_id": recipe["model"]["snapshot_manifest"]["manifest_id"],
+            "image_digest": recipe["image_digest"], **({'snapshots':{name:{'snapshot_manifest_id':item['snapshot_manifest']['manifest_id']}
+                for name,item in serving.required_snapshots(plan['spec']).items()}} if plan['spec']['schema_version']==3
+                else {'snapshot_manifest_id':recipe['model']['snapshot_manifest']['manifest_id']}),
             "boot_witness": witness, "container_configuration": observed,
             'public_container_configuration': portable}

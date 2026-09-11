@@ -59,7 +59,7 @@ def runtime_contract_id(spec):
     nested ``spec_id`` binds that recipe-affecting value.
     """
     document = verify_spec(spec)
-    if document['schema_version'] == 2:
+    if document['schema_version'] in (2, 3):
         return document['spec_id']
     return canonical_json_digest({"kind": "pulsar-launch-contract",
                                   "spec_id": document["spec_id"],

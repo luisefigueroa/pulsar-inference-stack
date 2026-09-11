@@ -7,11 +7,11 @@ merged_views() {
   node_records=$(collect_node_views) || return $?
   printf '%s' "$node_records" | python3 -c '
 import json,sys
-from model_library.state import validate_view,view_key
+from model_library.state import validate_view,view_record_key
 node=json.load(sys.stdin); records={}
 fields=("spec_id","node_id","rank","topology_id","hub_path","path","snapshot_manifest_id","is_home_view")
 for record in json.loads(sys.argv[1])+node["views"]:
- validate_view(record); key=view_key(record["spec_id"],record["node_id"])
+ validate_view(record); key=view_record_key(record)
  if key in records and any(records[key][f]!=record[f] for f in fields): raise SystemExit("controller and node view records disagree; inspect before mutation")
  if key in records: record["pinned"]=records[key]["pinned"] or record["pinned"]
  records[key]=record
@@ -31,10 +31,15 @@ retention_model() {
     [ "$views" != '[]' ] || die "no known prepared copies"
     local changed temporary flag
     flag=false; [ "$OP" != pin ] || flag=true
+    if [ "$OP" = pin ]; then
+      while IFS= read -r row; do
+        verify_record "$row" 1 >/dev/null || die "cannot pin unverified copies"
+      done < <(printf '%s' "$views" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
+    fi
     temporary=$(mktemp)
     while IFS= read -r row; do
+      select_record_manifest "$row" || die "record references an undeclared snapshot"
       rank=$(model_physical_rank "$(json_fields "$row" node_id)")
-      if [ "$OP" = pin ]; then verify_record "$row" 1 >/dev/null || die "cannot pin unverified copies"; fi
       changed=$(printf '%s' "$row" | python3 -c 'import json,sys; r=json.load(sys.stdin); r["pinned"]=json.loads(sys.argv[1]); print(json.dumps(r))' "$flag")
       model_node "$rank" "$(model_node_request pin-view view: "$changed")" >/dev/null || die "pin operation incomplete; inspect remaining node records"
       printf '%s\n' "$changed" >>"$temporary"
@@ -42,10 +47,10 @@ retention_model() {
     # Controller mirrors every node, including previous placements, not only current ready set.
     python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$temporary" <<'PY'
 import json,sys
-from model_library.state import Store,view_key
+from model_library.state import Store,view_record_key
 s=Store(sys.argv[1])
 for line in open(sys.argv[2]):
- r=json.loads(line); s.put('views',view_key(r['spec_id'],r['node_id']),r)
+ r=json.loads(line); s.put('views',view_record_key(r),r)
 PY
     rm -f "$temporary"
     emit_result "$(model_json spec_id "$SPEC_ID" pinned: "$flag")"
@@ -55,11 +60,17 @@ PY
   if [ "$PLAN" -eq 1 ]; then emit_result "$(model_json plan: "$plan" incomplete_preparations: "$transactions")"; return; fi
   [ "$YES" -eq 1 ] || die "purge requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
+  # Include every pending destination in preflight before deleting any completed view.
+  while IFS= read -r row; do
+    select_record_manifest "$row" || die "staging references an undeclared snapshot"
+    "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$row" node_id)" --path "$(json_fields "$row" stage)" --path "$(json_fields "$row" destination)" --json >/dev/null || die "incomplete preparation has a container reference"
+  done < <(printf '%s' "$transactions" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
   # Repeat all-node observations before deleting anything; each target guard repeats locally.
   observations=$(all_observations) || die "could not recheck all nodes before purge"
   plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" views: "$views" node_ids: "$(all_node_ids)" observations: "$observations")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   while IFS= read -r row; do
+    select_record_manifest "$row" || die "record references an undeclared snapshot"
     rank=$(model_physical_rank "$(json_fields "$row" node_id)")
     "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$row" node_id)" --path "$(json_fields "$row" hub_path)" --json >/dev/null || die "prepared copy acquired a container reference"
     if [ "$(json_fields "$row" is_home_view)" != true ]; then
@@ -69,6 +80,7 @@ PY
     model_ctl "$(model_json operation forget-view view: "$row")" >/dev/null || die "controller record removal incomplete"
   done < <(printf '%s' "$views" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
   while IFS= read -r row; do
+    select_record_manifest "$row" || die "record references an undeclared snapshot"
     rank=$(model_physical_rank "$(json_fields "$row" node_id)")
     "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$row" node_id)" --path "$(json_fields "$row" stage)" --path "$(json_fields "$row" destination)" --json >/dev/null || die "incomplete preparation has a container reference"
     model_node "$rank" "$(model_node_request remove-staging transaction: "$row")" >/dev/null || die "incomplete preparation could not be safely removed"
@@ -88,11 +100,11 @@ snapshot_dependencies() {
   done
   python3 -c '
 import json,sys
-from model_library.state import validate_view,view_key
+from model_library.state import validate_view,view_record_key
 sets=[json.loads(x) for x in open(sys.argv[1])]; rows={}
 fields=("spec_id","node_id","rank","topology_id","hub_path","path","snapshot_manifest_id","is_home_view")
 for r in json.loads(sys.argv[2])+[v for s in sets for v in s["views"]]:
- validate_view(r); key=view_key(r["spec_id"],r["node_id"])
+ validate_view(r); key=view_record_key(r)
  if key in rows and any(rows[key][f]!=r[f] for f in fields): raise SystemExit("controller and node dependency records disagree")
  if key in rows: r["pinned"]=r["pinned"] or rows[key]["pinned"]
  rows[key]=r

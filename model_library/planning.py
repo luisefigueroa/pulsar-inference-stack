@@ -9,7 +9,7 @@ from .integrity import StorageError
 from .state import checked_id, validate_home, validate_view
 
 
-from release_spec.serving import identity_fields
+from release_spec.serving import identity_fields, required_snapshots
 
 
 def require_observations(node_ids: list[str], observations: list[dict]) -> dict[str, dict]:
@@ -78,18 +78,19 @@ def purge_plan(*, views: list[dict], node_ids: list[str], observations: list[dic
 
 
 def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id: str,
-                     observations: list[dict], views: list[dict], budgets: dict[str, dict]) -> dict:
+                     observations: list[dict], views: list[dict], budgets: dict[str, dict], snapshot: str = "target") -> dict:
     from release_spec import verify_spec
     spec = verify_spec(spec)
     validate_home(home)
-    manifest = identity_fields(spec)['snapshot_manifest']
+    manifest = required_snapshots(spec)[snapshot]['snapshot_manifest']
     if home['snapshot_manifest_id'] != manifest['manifest_id']:
         raise StorageError('home and spec manifests differ')
     if len(node_ids) != identity_fields(spec)['geometry']['nodes'] or home['node_id'] not in node_ids:
         raise StorageError('home must be on one of the exact serving nodes')
     checked = require_observations(node_ids, observations)
     blockers = []
-    previous = {v['node_id']: validate_view(v) for v in views if v['spec_id'] == spec['spec_id']}
+    previous = {v['node_id']: validate_view(v) for v in views if v['spec_id'] == spec['spec_id'] and
+                (spec['schema_version'] == 2 or v['snapshot_manifest_id'] == manifest['manifest_id'])}
     actions = []
     for rank, node_id in enumerate(node_ids):
         old = previous.get(node_id)
@@ -120,4 +121,40 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
         actions.append({'rank': rank, 'node_id': node_id, 'action': action})
     return {'kind': 'pulsar-preparation-plan', 'spec_id': spec['spec_id'],
             'snapshot_manifest_id': manifest['manifest_id'], 'topology_id': topology_id,
-            'eligible': not blockers, 'blockers': blockers, 'actions': actions}
+            'eligible': not blockers, 'blockers': blockers, 'actions': actions,
+            **({'snapshot':snapshot,'total_bytes':manifest['total_bytes'],'budgets':budgets} if spec['schema_version']==3 else {})}
+
+
+def preparation_set_plan(spec: dict, plans: list[dict]) -> dict:
+    expected = required_snapshots(spec)
+    if len(plans) != len(expected) or {p['snapshot'] for p in plans} != set(expected):
+        raise StorageError('preparation plan must cover every required snapshot')
+    placement = None
+    for plan in plans:
+        manifest = expected[plan['snapshot']]['snapshot_manifest']
+        ranks = [(a['rank'], a['node_id']) for a in plan['actions']]
+        if (plan['spec_id'] != spec['spec_id'] or plan['snapshot_manifest_id'] != manifest['manifest_id']
+                or plan['total_bytes'] != manifest['total_bytes']
+                or [rank for rank, _ in ranks] != list(range(spec['recipe']['geometry']['nodes']))):
+            raise StorageError('snapshot preparation plan differs from the selected recipe')
+        binding = (plan['topology_id'], ranks)
+        if placement is not None and placement != binding:
+            raise StorageError('snapshot preparation plans select different ranks')
+        placement = binding
+    blockers = [f"{p['snapshot']}: {b}" for p in plans for b in p['blockers']]
+    totals = {}
+    counted = set()
+    for plan in plans:
+        for action in plan['actions']:
+            node = action['node_id']
+            key = (node, plan['snapshot_manifest_id'])
+            if action['action'] == 'copy' and key not in counted:
+                counted.add(key)
+                totals[node] = totals.get(node, 0) + plan['total_bytes']
+    for plan in plans:
+        for node, needed in totals.items():
+            budget = plan['budgets'][node]
+            if budget['available'] - budget['reserve'] < needed or budget['used'] + needed > budget['limit']:
+                blockers.append(f'{node}: insufficient combined snapshot copy budget or disk space')
+    return {'kind':'pulsar-preparation-set-plan','spec_id':spec['spec_id'],
+            'eligible':not blockers,'blockers':sorted(set(blockers)),'snapshots':plans}

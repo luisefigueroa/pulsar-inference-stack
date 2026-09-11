@@ -53,7 +53,8 @@ New specs freeze container settings as well as model/image/engine identity.
 Operators may explicitly override supported execution settings; Stack reports
 the resulting effective recipe separately from the selected catalog recipe.
 Historical specs remain readable, and existing services are not restarted by
-code updates. New operations use spec schema 2.
+code updates. New operations support spec schemas 2 and 3; schema 3 binds required
+draft checkpoints.
 
 Run `scripts/selftest.sh` for deterministic tests without starting models.
 Hardware, Docker, confirmed topology and SSH trust are required for actual

@@ -5,11 +5,13 @@ local_node() { printf '%s' "$1" | "${PULSAR_NODE_PYTHON:-python3}" -m model_libr
 
 resolve_selected() {
   local request result
-  request=$(model_json operation resolve spec_id "$SPEC_ID" spec_file "$SPEC_FILE" manifest_file "$MANIFEST_FILE")
+  request=$(model_json operation resolve spec_id "$SPEC_ID" spec_file "$SPEC_FILE" manifest_file "$MANIFEST_FILE" snapshot "$SNAPSHOT")
   result=$(model_ctl "$request") || return 2
   MANIFEST_JSON=$(json_fields "$result" manifest)
   MANIFEST_ID=$(json_fields "$MANIFEST_JSON" manifest_id)
   SPEC_JSON=$(json_fields "$result" spec)
+  SNAPSHOTS_JSON=$(json_fields "$result" snapshots)
+  if [ "$SPEC_JSON" != null ] && [ -n "$SPEC_JSON" ] && [ "$(json_fields "$SPEC_JSON" schema_version)" = 3 ]; then VIEW_SCHEMA=2; fi
   MODEL_ID=$(json_fields "$MANIFEST_JSON" model_id)
   REVISION=$(json_fields "$MANIFEST_JSON" snapshot_revision)
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ]; then
@@ -62,6 +64,7 @@ all_node_ids() {
 
 verify_record() {
   local record="$1" full="${2:-$FULL}" rank result
+  select_record_manifest "$record" || return 2
   rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255
   result=$(model_node "$rank" "$(model_node_request verify for_runtime: true path "$(json_fields "$record" path)" stamp: "$(json_fields "$record" verification)" full: "$([ "$full" = 1 ] && echo true || echo false)")") || return $?
   local refreshed
@@ -75,7 +78,7 @@ verify_record() {
   printf '%s\n' "$refreshed"
 }
 
-prepared_info() {
+prepared_snapshot_info() {
   local views rank node row verified temp home_node found=0
   require_home
   selected_nodes
@@ -117,7 +120,7 @@ require_archive_root() {
   [ -d "$PULSAR_COLD_ROOT" ] || die "configured archive directory must already exist"
 }
 
-archive_verify() {
+archive_snapshot_verify() {
   require_archive_root
   local_node "$(model_node_request archive-verify archive_root "$PULSAR_COLD_ROOT")"
 }
@@ -134,4 +137,67 @@ emit_result() {
   else
     printf '%s' "$1" | python3 -m model_library.render --operation "$OP" --archive-action "$ARCHIVE_ACTION"
   fi
+}
+
+
+select_snapshot() {
+  local name="$1"
+  MANIFEST_JSON=$(printf '%s' "$SNAPSHOTS_JSON" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[sys.argv[1]]["snapshot_manifest"]))' "$name") || return 2
+  MANIFEST_ID=$(json_fields "$MANIFEST_JSON" manifest_id)
+  MODEL_ID=$(json_fields "$MANIFEST_JSON" model_id)
+  REVISION=$(json_fields "$MANIFEST_JSON" snapshot_revision)
+}
+
+snapshot_names() {
+  printf '%s' "$SNAPSHOTS_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print("\n".join(["target"]+sorted(k for k in d if k!="target")))'
+}
+
+select_record_manifest() {
+  local record="$1" selected
+  # During per-manifest recovery a complete recipe need not have been selected.
+  [ -n "$SNAPSHOTS_JSON" ] && [ "$SNAPSHOTS_JSON" != null ] || return 0
+  selected=$(printf '%s' "$SNAPSHOTS_JSON" | python3 -c 'import json,sys; r=json.loads(sys.argv[1]); print(next(k for k,v in json.load(sys.stdin).items() if v["snapshot_manifest"]["manifest_id"]==r["snapshot_manifest_id"]))' "$record") || return 2
+  select_snapshot "$selected"
+}
+
+prepared_info() {
+  if [ "$VIEW_SCHEMA" != 2 ]; then prepared_snapshot_info; return; fi
+  selected_nodes || return 2
+  local name value tmp
+  tmp=$(mktemp)
+  while IFS= read -r name <&3; do
+    select_snapshot "$name" || { rm -f "$tmp"; return 2; }
+    value=$(prepared_snapshot_info) || { local rc=$?; rm -f "$tmp"; echo "required snapshot $name is not ready" >&2; return "$rc"; }
+    printf '%s\n' "$(model_json name "$name" prepared: "$value")" >>"$tmp"
+  done 3< <(snapshot_names)
+  python3 - "$tmp" "$SPEC_ID" "$CLUSTER_TOPOLOGY_ID" <<'PYCODE'
+import json,sys
+rows=[json.loads(line) for line in open(sys.argv[1])]
+print(json.dumps({'schema_version':2,'kind':'pulsar-prepared-set','spec_id':sys.argv[2],
+                  'topology_id':sys.argv[3],'snapshots':{r['name']:r['prepared'] for r in rows}}))
+PYCODE
+  local rc=$?
+  rm -f "$tmp"
+  select_snapshot "${SNAPSHOT:-target}"
+  return "$rc"
+}
+
+archive_verify() {
+  if [ "$VIEW_SCHEMA" != 2 ] || [ -n "$SNAPSHOT" ]; then archive_snapshot_verify; return; fi
+  local name result tmp
+  tmp=$(mktemp)
+  while IFS= read -r name <&3; do
+    select_snapshot "$name" || { rm -f "$tmp"; return 2; }
+    result=$(archive_snapshot_verify) || { rm -f "$tmp"; echo "archive for required snapshot $name did not verify" >&2; return 1; }
+    printf '%s\n' "$(model_json name "$name" verification: "$result")" >>"$tmp"
+  done 3< <(snapshot_names)
+  python3 - "$tmp" "$SPEC_ID" <<'PYCODE'
+import json,sys
+print(json.dumps({'schema_version':2,'kind':'pulsar-archive-verification','spec_id':sys.argv[2],
+ 'snapshots':{r['name']:r['verification'] for r in map(json.loads,open(sys.argv[1]))},'verified':True}))
+PYCODE
+  local rc=$?
+  rm -f "$tmp"
+  select_snapshot target
+  return "$rc"
 }

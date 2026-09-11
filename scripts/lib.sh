@@ -319,7 +319,7 @@ require_spec_platform_admission() {
   local name="${1:-${CONF_NAME:-}}" active="${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   python3 -c 'from release_spec.serving import load_spec; import sys; load_spec(sys.argv[1])' "$CONF_PATH" \
-    || die "new serving operations require spec schema 2; historical services remain inspectable and stoppable" 2
+    || die "new serving operations require a valid spec using schema 2 or 3; historical services remain inspectable and stoppable" 2
   [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
     || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
 }
@@ -1414,7 +1414,7 @@ import sys
 
 try:
     document = json.load(open(sys.argv[1], encoding="utf-8"))
-    nodes = int((document["recipe"] if document.get("schema_version") == 2 else document["identity"])["geometry"]["nodes"])
+    nodes = int((document["recipe"] if document.get("schema_version") in (2, 3) else document["identity"])["geometry"]["nodes"])
 except (OSError, ValueError, KeyError, TypeError):
     raise SystemExit(1)
 if nodes < 1:

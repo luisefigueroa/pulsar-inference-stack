@@ -55,9 +55,10 @@ def main(argv=None):
     subs = parser.add_subparsers(dest="command", required=True, parser_class=CommandParser)
     sample = subs.add_parser("example", help="JSON draft with explicit execution defaults")
     sample.add_argument("--nodes", type=int, default=1)
+    sample.add_argument("--schema-version", type=int, choices=(1, 2), default=1)
     freeze = subs.add_parser("freeze", help="freeze a JSON draft and verified source manifest")
     freeze.add_argument("--draft", required=True)
-    freeze.add_argument("--manifest", required=True)
+    freeze.add_argument("--manifest", required=True, action="append", help="FILE for draft 1; repeated NAME=FILE for draft 2")
     for name in ("verify", "show"):
         show = subs.add_parser(name)
         show.add_argument("--file", required=True)
@@ -69,9 +70,21 @@ def main(argv=None):
     try:
         args = parser.parse_args(argv)
         if args.command == "example":
-            result = serving.example(args.nodes)
+            result = serving.example(args.nodes, args.schema_version)
         elif args.command == "freeze":
-            result = serving.freeze(serving.load_json(args.draft), serving.load_json(args.manifest))
+            draft = serving.load_json(args.draft)
+            if draft.get("schema_version") == 1:
+                if len(args.manifest) != 1:
+                    serving.invalid("manifests", "draft 1 requires one manifest file")
+                manifests = serving.load_json(args.manifest[0])
+            else:
+                manifests = {}
+                for item in args.manifest:
+                    name, separator, path = item.partition("=")
+                    if not separator or not name or not path or name in manifests:
+                        serving.invalid("manifests", "use unique NAME=FILE inputs")
+                    manifests[name] = serving.load_json(path)
+            result = serving.freeze(draft, manifests)
         elif args.command == "compare":
             result = serving.compare(serving.load_spec(args.before), serving.load_spec(args.after))
         else:

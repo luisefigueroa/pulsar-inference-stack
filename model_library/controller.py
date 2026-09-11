@@ -9,10 +9,10 @@ from release_spec import load_spec
 from .integrity import StorageError, read_json, verify_manifest
 from .local import prepared_record
 from .planning import preparation_plan, purge_plan, removal_plan
-from .state import Store, checked_id, now, validate_home, validate_view, view_key
+from .state import Store, checked_id, now, validate_home, validate_view, view_record_key
 
 
-from release_spec.serving import identity_fields
+from release_spec.serving import identity_fields, required_snapshots
 
 
 def resolve(repo: Path, query: dict) -> dict:
@@ -22,13 +22,20 @@ def resolve(repo: Path, query: dict) -> dict:
         require_current(spec)
         if query.get('spec_id') and query['spec_id']!=spec['spec_id']:
             raise StorageError('selected spec id differs from supplied spec file')
-        return {'spec':spec,'manifest':identity_fields(spec)['snapshot_manifest']}
+        snapshots = required_snapshots(spec)
+        name = query.get('snapshot') or 'target'
+        if name not in snapshots: raise StorageError('unknown required snapshot: ' + name)
+        return {'spec':spec,'manifest':snapshots[name]['snapshot_manifest'],'snapshots':snapshots}
     if query.get('spec_id'):
         spec=load_spec(repo/'releases'/f"{checked_id(query['spec_id'])}.json")
         from release_spec.serving import verify_spec as require_current
         require_current(spec)
-        return {'spec':spec,'manifest':identity_fields(spec)['snapshot_manifest']}
+        snapshots = required_snapshots(spec)
+        name = query.get('snapshot') or 'target'
+        if name not in snapshots: raise StorageError('unknown required snapshot: ' + name)
+        return {'spec':spec,'manifest':snapshots[name]['snapshot_manifest'],'snapshots':snapshots}
     if query.get('manifest_file'):
+        if query.get('snapshot'): raise StorageError('--snapshot requires a frozen spec')
         return {'spec':None,'manifest':verify_manifest(read_json(query['manifest_file']))}
     raise StorageError('select a spec id, --spec-file, or an explicit source --manifest')
 
@@ -37,7 +44,7 @@ def published(repo: Path, manifest_id: str) -> bool:
     # Invalid release files abort rather than making deletion look unpromoted.
     for path in sorted((repo/'releases').glob('*.json')):
         spec=load_spec(path)
-        if identity_fields(spec)['snapshot_manifest']['manifest_id']==manifest_id:
+        if any(v['snapshot_manifest']['manifest_id']==manifest_id for v in required_snapshots(spec).values()):
             return True
     return False
 
@@ -57,7 +64,7 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         if record.get('kind')=='pulsar-home':
             validate_home(record); namespace='homes'; key=record['snapshot_manifest_id']
         else:
-            validate_view(record); namespace='views'; key=view_key(record['spec_id'],record['node_id'])
+            validate_view(record); namespace='views'; key=view_record_key(record)
         previous=store.get(namespace,key)
         if previous is None: return {'refreshed':False}
         fields=('snapshot_manifest_id','node_id','path','hub_path')
@@ -92,21 +99,21 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
             raise StorageError('prepared publication identity differs')
         store.save_manifest(manifest)
         for record in records:
-            store.put('views',view_key(record['spec_id'],record['node_id']),record)
+            store.put('views',view_record_key(record),record)
         return {'prepared':len(records),'spec_id':request['spec_id']}
     if op=='record-view':
-        return prepared_record(request['home'],spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'],is_home_view=request.get('is_home_view',False),pinned=request.get('pinned',False))
+        return prepared_record(request['home'],spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'],is_home_view=request.get('is_home_view',False),pinned=request.get('pinned',False),schema_version=request.get('view_schema',1))
     if op=='pin':
         records=store.views(spec_id=request['spec_id'])
         if not records:
             raise StorageError('no prepared copies to pin or unpin')
         for record in records:
             record['pinned']=request['pinned']
-            store.put('views',view_key(record['spec_id'],record['node_id']),record)
+            store.put('views',view_record_key(record),record)
         return {'spec_id':request['spec_id'],'pinned':request['pinned'],'copies':len(records)}
     if op=='forget-view':
         record=validate_view(request['view'])
-        key=view_key(record['spec_id'],record['node_id'])
+        key=view_record_key(record)
         previous=store.get('views',key)
         fields=('spec_id','node_id','rank','topology_id','hub_path','path','snapshot_manifest_id','pinned','is_home_view')
         if previous is not None and any(previous[f]!=record[f] for f in fields):
@@ -120,7 +127,7 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         store.remove('homes',home['snapshot_manifest_id'])
         return {'removed_record':True}
     if op=='plan-prepare':
-        return preparation_plan(spec=request['spec'],home=request['home'],node_ids=request['node_ids'],topology_id=request['topology_id'],observations=request['observations'],views=request.get('views',store.views(spec_id=request['spec']['spec_id'])),budgets=request['budgets'])
+        return preparation_plan(spec=request['spec'],home=request['home'],node_ids=request['node_ids'],topology_id=request['topology_id'],observations=request['observations'],views=request.get('views',store.views(spec_id=request['spec']['spec_id'])),budgets=request['budgets'],snapshot=request.get('snapshot','target'))
     if op=='plan-purge':
         return purge_plan(views=request.get('views',store.views(spec_id=request['spec_id'])),node_ids=request['node_ids'],observations=request['observations'])
     if op=='plan-remove':

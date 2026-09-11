@@ -1,7 +1,7 @@
 # Operate the inference stack
 
-An operator selects a **spec**: an exact model snapshot, serving recipe,
-container image and hardware geometry frozen together. Its complete spec ID
+An operator selects a **spec**: an exact serving target and its required snapshots,
+serving recipe, container image and hardware geometry frozen together. Its complete spec ID
 is the argument to serving and model-storage commands. A schema-valid spec in
 `releases/` is a catalog member; nullable state and review metadata do not gate
 membership or serving.
@@ -259,10 +259,16 @@ must not overlap directories managed as removable homes or working copies.
 ## Historical specs and current observations
 
 Old catalog specs remain readable. New preparation/start operations require
-schema 2; reauthoring does not relabel old measurements. Existing containers
+schema 2 or 3; reauthoring does not relabel old measurements. Existing containers
 remain running through code updates and retain ownership-based inventory and
 stop support. Status reports inventory only when complete new-contract
 observation is unavailable, rather than claiming recipe verification.
+
+Schema-2 recipes with a bare speculative checkpoint ID or path can no longer
+freeze or start. Reauthor them with draft schema 2, declare the checkpoint and
+its exact model commit in `required_snapshots`, and freeze with every named
+manifest to produce a schema-3 spec. Keep earlier specs and measurements intact.
+See the [compatibility boundary and reauthoring steps](CONTRACT.md#required-snapshots-and-speculative-decoding).
 
 `pulsar observe --service-id ID --json` performs full all-rank verification.
 `pulsar resources --service-id ID --jsonl` samples private node/container metrics.
@@ -270,3 +276,39 @@ To begin before launch, use `--spec-file FILE` and, for a one-node recipe,
 optional `--node NODE`; it never starts the model. Container metrics remain
 unavailable until the matching owned recipe appears. Stop the stream to end
 sampling; model services are unaffected.
+
+
+## Recipes requiring a draft checkpoint
+
+The target and draft are snapshots used by one serving recipe. Acquire each
+exact commit through the existing acquisition command and retain separate source
+manifests. After freeze, schema-3 home operations select a named snapshot:
+
+```sh
+./pulsar model acquire <spec-id> --snapshot draft --node <confirmed-node> --yes
+./pulsar model archive create <spec-id> --snapshot target --yes
+./pulsar model archive create <spec-id> --snapshot draft --yes
+./pulsar model archive verify <spec-id>
+./pulsar model restore <spec-id> --snapshot draft --node <confirmed-node> --yes
+```
+
+For private specs, add `--spec-file <file>` to the same commands. `move` and
+`remove` also require `--snapshot` for schema 3. The model-storage menu provides
+the same snapshot choice. No command silently selects only the target for these
+operations. Archive creation, acquisition, and restoration remain individual
+operations; sequence them as required. Verification without `--snapshot` covers
+all declared archives, is read-only, and fails if any member does not verify.
+
+`prepare`, `info`, `check`, `pin`, `unpin`, and `purge` cover the complete recipe.
+Preparation checks combined storage capacity before mutation. Each snapshot's
+home must be on a selected serving node; different snapshots may have different
+homes. Every selected rank receives every required snapshot. A failed transfer
+retains its owned staging record; retry can reuse that staging and completed
+copies. Inconsistent or replaced staging requires explicit inspection.
+
+Pinning remains explicit and covers the recipe's known prepared copies. Neither
+freeze nor launch silently changes retention policy. Purge preserves homes and
+archives and respects references to either target or draft, including stopped
+containers. `check` records per-snapshot preparation and archive observations;
+aggregate readiness requires every member. These observations are separate from
+catalog membership and from a running service.
