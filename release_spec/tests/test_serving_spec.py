@@ -17,6 +17,48 @@ class ServingSpec(unittest.TestCase):
         self.draft = json.loads((FIXTURES / "draft.json").read_text())
         self.manifest = json.loads((FIXTURES / "manifest.json").read_text())
 
+    def test_named_manifests_and_engine_references_are_bound(self):
+        from release_spec.normalize import snapshot_manifest_id
+        self.draft['schema_version']=2
+        second=copy.deepcopy(self.manifest);second['snapshot_revision']='e'*40
+        second['manifest_id']=snapshot_manifest_id(second)
+        self.draft['recipe']['required_snapshots']={'draft':{'model_id':second['model_id'],'model_commit':second['snapshot_revision']}}
+        self.draft['recipe']['engine_args'] += ['--speculative-config',json.dumps({'model':'pulsar-snapshot:draft','num_speculative_tokens':3})]
+        spec=serving.freeze(self.draft,{'target':self.manifest,'draft':second})
+        self.assertEqual(spec['schema_version'],3)
+        self.assertEqual(serving.verify_spec(spec),spec)
+        for manifests in ({'target':self.manifest},{'target':self.manifest,'draft':self.manifest},
+                          {'target':self.manifest,'draft':second,'extra':second}):
+            with self.assertRaises(ValueError): serving.freeze(self.draft,manifests)
+        bad_args=[['--speculative_config.model','example/unbound'],
+                  ['--speculative_config.model','pulsar-snapshot:missing'],
+                  ['--speculative_config.model','pulsar-snapshot:draft','--speculative-config.model','pulsar-snapshot:draft'],
+                  ['--speculative-config','{"model":"pulsar-snapshot:draft","model":"example/unbound"}'],
+                  ['--speculative-config','{"model":"pulsar-snapshot:draft"}','--speculative_config.num_speculative_tokens','3'],
+                  ['--other','pulsar-snapshot:draft']]
+        for args in bad_args:
+            with self.subTest(args=args),self.assertRaises(ValueError):
+                serving.apply_overrides(spec,{'engine_args':['--gpu-memory-utilization','0.8',*args]})
+        changed=copy.deepcopy(spec['recipe']);changed['required_snapshots']['draft']['model_commit']='f'*40
+        changed['required_snapshots']['draft']['snapshot_manifest']['snapshot_revision']='f'*40
+        changed['required_snapshots']['draft']['snapshot_manifest']['manifest_id']=snapshot_manifest_id(changed['required_snapshots']['draft']['snapshot_manifest'])
+        self.assertNotEqual(serving.spec_id(changed),spec['spec_id'])
+        self.assertEqual(changed['model'],spec['recipe']['model'])
+
+    def test_existing_non_checkpoint_speculation_keeps_exact_argument_tokens(self):
+        for method in ('ngram', 'mtp'):
+            with self.subTest(method=method):
+                args=['--gpu-memory-utilization','0.8','--speculative-config',
+                      '{ "num_speculative_tokens": 3, "method": "'+method+'" }']
+                self.draft['recipe']['engine_args']=args
+                spec=serving.freeze(self.draft,self.manifest)
+                self.assertEqual(spec['schema_version'],2)
+                self.assertEqual(serving.snapshot_engine_args(spec['recipe'],{'target':'/pulsar-test/target'}),args)
+                recipe=copy.deepcopy(self.spec['recipe']);recipe['engine_args']=args
+                payload=json.dumps({'schema_version':2,'recipe':recipe},sort_keys=True,
+                                   separators=(',',':'),ensure_ascii=False).encode()
+                self.assertEqual(spec['spec_id'],hashlib.sha256(payload).hexdigest())
+
     def test_golden_identity_binds_only_schema_and_complete_recipe(self):
         payload = json.dumps({"schema_version": 2, "recipe": self.spec["recipe"]},
                              sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()

@@ -18,8 +18,8 @@ ERRORS={'observation_failed','producer_failed','interrupted','tooling_changed','
 def verify_run(record, spec, *, policy_digest=None):
     spec=serving.verify_spec(spec)
     serving.closed(record,FIELDS,'run')
-    if type(record['schema_version']) is not int or record['schema_version']!=3 or record['kind']!='pulsar-baseline-run':
-        serving.invalid('run','new runs require schema 3')
+    if type(record['schema_version']) is not int or record['schema_version']!=spec['schema_version']+1 or record['kind']!='pulsar-baseline-run':
+        serving.invalid('run','run schema differs from effective spec')
     if not isinstance(record['run_id'],str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}',record['run_id']):
         serving.invalid('run.run_id','invalid run identifier')
     if record['spec_id']!=spec['spec_id']:
@@ -52,7 +52,7 @@ def verify_run(record, spec, *, policy_digest=None):
         if not isinstance(ranks,list) or (ranks and len(ranks)!=count):
             serving.invalid('run.'+side,'must be empty or cover every required rank')
         for index,rank in enumerate(ranks):
-            serving.closed(rank,RANK_FIELDS,'rank')
+            serving.closed(rank,(RANK_FIELDS-{'snapshot_manifest_id'}|{'snapshots'}) if spec['schema_version']==3 else RANK_FIELDS,'rank')
             if type(rank['rank']) is not int or rank['rank']!=index:
                 serving.invalid('rank.rank','rank order or coverage differs')
             for flag in ('running','owned','files_verified'):
@@ -60,6 +60,13 @@ def verify_run(record, spec, *, policy_digest=None):
                     serving.invalid('rank.'+flag,'rank was not fully observed')
             expected={'spec_id':spec['spec_id'],'image_digest':spec['recipe']['image_digest'],
                 'snapshot_manifest_id':spec['recipe']['model']['snapshot_manifest']['manifest_id']}
+            if spec['schema_version']==3:
+                snapshots=rank.get('snapshots')
+                if not isinstance(snapshots,dict) or any(not isinstance(v,dict) or v.get('files_verified') is not True for v in snapshots.values()):
+                    serving.invalid('rank.snapshots','every snapshot must be fully verified')
+                expected.pop('snapshot_manifest_id')
+                expected['snapshots'] = {name:{'snapshot_manifest_id':model['snapshot_manifest']['manifest_id'],'files_verified':True}
+                    for name,model in serving.required_snapshots(spec).items()}
             for key,value in expected.items():
                 if rank[key]!=value:
                     serving.invalid('rank.'+key,'differs from effective spec')

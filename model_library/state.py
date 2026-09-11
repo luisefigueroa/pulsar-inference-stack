@@ -146,11 +146,28 @@ class Store:
         return result
 
 
-def view_key(spec_id: str, node_id: str) -> str:
+def view_key(spec_id: str, node_id: str, manifest_id: str | None = None) -> str:
     checked_id(spec_id)
     if not node_id or any(c in node_id for c in '\x00\r\n'):
         raise StorageError('view requires an explicit node identity')
-    return hashlib.sha256(f'{spec_id}\0{node_id}'.encode()).hexdigest()
+    value = f'{spec_id}\0{node_id}'
+    if manifest_id is not None:
+        value = 'view-2\0' + value + '\0' + checked_id(manifest_id)
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def view_record_key(record: dict) -> str:
+    version = record.get('schema_version', 1)
+    if type(version) is not int or version not in (1, 2):
+        raise StorageError('unsupported prepared record schema')
+    return view_key(record['spec_id'], record['node_id'],
+                    record['snapshot_manifest_id'] if version == 2 else None)
+
+
+def view_destination(root: Path, record: dict) -> Path:
+    key = view_record_key(record)
+    return root / (key if record.get('schema_version', 1) == 2
+                   else checked_id(record['spec_id']))
 
 
 def validate_home(record: dict) -> dict:
@@ -173,6 +190,9 @@ def validate_home(record: dict) -> dict:
 def validate_view(record: dict) -> dict:
     extra = {'spec_id', 'topology_id', 'rank', 'pinned', 'is_home_view'}
     base = {k: v for k, v in record.items() if k not in extra}
+    if type(record.get('schema_version')) is not int or record['schema_version'] not in (1, 2):
+        raise StorageError('invalid prepared-view schema')
+    base['schema_version'] = 1
     base['kind'] = 'pulsar-home'
     validate_home(base)
     if set(record) != set(base) | extra or record.get('kind') != 'pulsar-prepared-view':

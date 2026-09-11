@@ -6,6 +6,7 @@ manifests retain their original schema and digest so storage remains reusable.
 from __future__ import annotations
 
 import copy
+import json
 import re
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -18,9 +19,12 @@ from .normalize import canonical_json_digest, normalize_container_env, normalize
 from .schema import ReleaseSpecError, IMAGE_DIGEST_RE, require_commit, require_model_id, require_public_string
 from .verify import _verify_review, verify_spec as verify_historical_spec
 
-SPEC_SCHEMA_VERSION = 2
+SUPPORTED_SPEC_SCHEMAS = (2, 3)
+# Latest supported schema, not the only accepted schema or the default output.
+SPEC_SCHEMA_VERSION = max(SUPPORTED_SPEC_SCHEMAS)
 SPEC_KIND = "pulsar-serving-spec"
-DRAFT_SCHEMA_VERSION = 1
+# Latest draft format; the default schema-1 draft still freezes to spec schema 2.
+DRAFT_SCHEMA_VERSION = 2
 DRAFT_KIND = "pulsar-recipe-draft"
 SPEC_FIELDS = {"schema_version", "kind", "spec_id", "recipe", "source", "state", "review"}
 RECIPE_FIELDS = {"model", "image_digest", "engine_args", "container_env", "geometry", "container"}
@@ -113,7 +117,8 @@ def canonical_container(value: Any) -> dict:
 
 
 def canonical_recipe(value: Any) -> dict:
-    r = copy.deepcopy(closed(value, RECIPE_FIELDS, "recipe"))
+    fields = RECIPE_FIELDS | ({"required_snapshots"} if isinstance(value, dict) and "required_snapshots" in value else set())
+    r = copy.deepcopy(closed(value, fields, "recipe"))
     model = closed(r["model"], {"model_id", "model_commit", "snapshot_manifest"}, "recipe.model")
     require_public_string(require_model_id(model["model_id"], path="recipe.model.model_id"),
                           path="recipe.model.model_id")
@@ -157,11 +162,88 @@ def canonical_recipe(value: Any) -> dict:
             invalid("recipe.container", "multi-node serving requires host networking and infiniband access")
         if not re.fullmatch(r"[1-9][0-9]*", env.get("NCCL_IB_QPS_PER_CONNECTION", "")):
             invalid("recipe.container_env", "multi-node NCCL_IB_QPS_PER_CONNECTION must be explicit and positive")
+    if "required_snapshots" in r:
+        extra = r["required_snapshots"]
+        if not isinstance(extra, dict):
+            invalid("recipe.required_snapshots", "expected a named snapshot map")
+        for name, snapshot in extra.items():
+            if not isinstance(name, str) or name == "target" or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", name):
+                invalid("recipe.required_snapshots", "invalid or reserved snapshot name")
+            closed(snapshot, {"model_id", "model_commit", "snapshot_manifest"}, "recipe.required_snapshots." + name)
+            require_public_string(require_model_id(snapshot["model_id"], path="snapshot.model_id"), path="snapshot.model_id")
+            require_commit(snapshot["model_commit"], path="snapshot.model_commit")
+            checked = verify_snapshot_manifest(snapshot["snapshot_manifest"])
+            if checked["model_id"] != snapshot["model_id"] or checked["snapshot_revision"] != snapshot["model_commit"]:
+                invalid("recipe.required_snapshots." + name, "manifest differs from selected model commit")
+            snapshot["snapshot_manifest"] = checked
+        r["required_snapshots"] = dict(sorted(extra.items()))
+        snapshot_engine_args(r)
     return r
 
 
+def required_snapshots(spec: dict) -> dict:
+    """Complete named file dependencies; the target remains the serving model."""
+    if spec.get("schema_version") == 1:
+        model = spec["identity"]
+        return {"target": {"model_id": model["model_id"], "model_commit": model["snapshot_revision"],
+                           "snapshot_manifest": model["snapshot_manifest"]}}
+    return {"target": spec["recipe"]["model"], **spec["recipe"].get("required_snapshots", {})}
+
+
+def snapshot_engine_args(recipe: dict, paths: dict | None = None) -> list[str]:
+    """Resolve only the supported speculative model slot; never template arbitrary argv."""
+    declared = {"target": recipe["model"], **recipe.get("required_snapshots", {})}
+    args = list(recipe["engine_args"])
+    seen = set()
+    forms = set()
+    consumed = set()
+
+    def resolve(value):
+        if not isinstance(value, str) or not value.startswith("pulsar-snapshot:"):
+            invalid("recipe.engine_args", "speculative model must reference a declared pulsar-snapshot:NAME")
+        name = value.removeprefix("pulsar-snapshot:")
+        if name not in declared:
+            invalid("recipe.engine_args", "unknown required snapshot: " + name)
+        consumed.add(name)
+        return paths[name] if paths is not None else value
+
+    for i, token in enumerate(args):
+        flag = token.replace("--speculative_config", "--speculative-config", 1)
+        if flag != "--speculative-config" and not flag.startswith("--speculative-config."):
+            continue
+        if flag in seen:
+            invalid("recipe.engine_args", "duplicate speculative configuration field")
+        seen.add(flag)
+        forms.add("json" if flag == "--speculative-config" else "dotted")
+        if len(forms) > 1 or i + 1 == len(args) or args[i + 1].startswith("--"):
+            invalid("recipe.engine_args", "conflicting or incomplete speculative configuration")
+        if flag == "--speculative-config":
+            value = parse_strict_json(args[i + 1].encode(), label="speculative configuration")
+            if not isinstance(value, dict):
+                invalid("recipe.engine_args", "speculative configuration must be an object")
+            if {"revision", "model_revision"}.intersection(value):
+                invalid("recipe.engine_args", "speculative revision belongs in the snapshot declaration")
+            if "model" in value:
+                value["model"] = resolve(value["model"])
+            if paths is not None and "model" in value:
+                args[i + 1] = json.dumps(value, sort_keys=True, separators=(",", ":"))
+        elif flag == "--speculative-config.model":
+            args[i + 1] = resolve(args[i + 1])
+        # The pinned local path is the checkpoint authority, not a second revision selector.
+        if flag in ("--speculative-config.revision", "--speculative-config.model_revision"):
+            invalid("recipe.engine_args", "speculative revision belongs in the snapshot declaration")
+    for name in recipe.get("required_snapshots", {}):
+        if name not in consumed:
+            invalid("recipe.required_snapshots." + name, "snapshot has no supported engine reference")
+    if paths is not None and any("pulsar-snapshot:" in token for token in args):
+        invalid("recipe.engine_args", "snapshot reference outside a supported model field")
+    if paths is None:
+        snapshot_engine_args(recipe, {name: "/pulsar-check/" + name for name in declared})
+    return args
+
+
 def spec_id(recipe: dict) -> str:
-    return canonical_json_digest({"schema_version": SPEC_SCHEMA_VERSION,
+    return canonical_json_digest({"schema_version": 3 if "required_snapshots" in recipe else 2,
                                   "recipe": canonical_recipe(recipe)})
 
 
@@ -190,12 +272,14 @@ def source_location(value: Any) -> dict:
 
 
 def verify_spec(document: Any) -> dict:
-    if not isinstance(document, dict) or type(document.get("schema_version")) is not int or document.get("schema_version") != SPEC_SCHEMA_VERSION:
-        invalid("schema_version", "unsupported spec; new operations require schema 2 (use historical show for old records)")
+    if not isinstance(document, dict) or type(document.get("schema_version")) is not int or document.get("schema_version") not in SUPPORTED_SPEC_SCHEMAS:
+        invalid("schema_version", "unsupported spec; supported specs use schema 2 or 3 (use historical show for old records)")
     closed(document, SPEC_FIELDS, "spec")
     if document["kind"] != SPEC_KIND:
         invalid("kind", f"expected {SPEC_KIND}")
     recipe = canonical_recipe(document["recipe"])
+    if (document["schema_version"] == 3) != ("required_snapshots" in recipe):
+        invalid("recipe.required_snapshots", "field is required only in spec schema 3")
     if recipe != document["recipe"]:
         invalid("recipe", "must use canonical ordering and token spelling; freeze the draft first")
     if document["spec_id"] != spec_id(recipe):
@@ -222,15 +306,25 @@ def load_spec(path: str | Path, *, historical: bool = False) -> dict:
 
 def freeze(draft: Any, manifest: Any) -> dict:
     closed(draft, {"schema_version", "kind", "recipe", "source"}, "draft")
-    if type(draft["schema_version"]) is not int or draft["schema_version"] != DRAFT_SCHEMA_VERSION or draft["kind"] != DRAFT_KIND:
+    version = draft["schema_version"]
+    if type(version) is not int or version not in (1, 2) or draft["kind"] != DRAFT_KIND:
         invalid("draft", "unsupported draft format")
     recipe = copy.deepcopy(draft["recipe"])
     if not isinstance(recipe, dict):
         invalid("draft.recipe", "expected an object")
-    model = closed(recipe.get("model"), {"model_id", "model_commit"}, "draft.recipe.model")
-    recipe["model"] = {**model, "snapshot_manifest": verify_snapshot_manifest(manifest)}
+    closed(recipe, RECIPE_FIELDS | ({"required_snapshots"} if version == 2 else set()), "draft.recipe")
+    extra = recipe.get("required_snapshots", {})
+    if not isinstance(extra, dict) or "target" in extra:
+        invalid("draft.recipe.required_snapshots", "expected named snapshots; target is reserved")
+    models = {"target": recipe["model"], **extra}
+    manifests = {"target": manifest} if version == 1 else manifest
+    closed(manifests, set(models), "manifests")
+    for name, model in models.items():
+        closed(model, {"model_id", "model_commit"}, "draft snapshot " + name)
+        model["snapshot_manifest"] = verify_snapshot_manifest(manifests[name])
     recipe = canonical_recipe(recipe)
-    return verify_spec({"schema_version": SPEC_SCHEMA_VERSION, "kind": SPEC_KIND,
+    snapshot_engine_args(recipe)
+    return verify_spec({"schema_version": version + 1, "kind": SPEC_KIND,
                         "spec_id": spec_id(recipe), "recipe": recipe,
                         "source": source_location(draft["source"]), "state": None, "review": None})
 
@@ -272,14 +366,14 @@ def compare(before: dict, after: dict) -> dict:
             "recipe_changed": before["spec_id"] != after["spec_id"], "changes": changes}
 
 
-def example(nodes: int = 1) -> dict:
+def example(nodes: int = 1, schema_version: int = 1) -> dict:
     integer(nodes, "nodes", 1)
     env = ["HF_HUB_OFFLINE=1"]
     if nodes == 1:
         env.append("VLLM_LOGGING_LEVEL=INFO")
     else:
         env += ["NCCL_DEBUG=WARN", "NCCL_IB_DISABLE=0", "NCCL_IB_QPS_PER_CONNECTION=4", "NCCL_NET=IB"]
-    return {"schema_version": DRAFT_SCHEMA_VERSION, "kind": DRAFT_KIND,
+    result = {"schema_version": schema_version, "kind": DRAFT_KIND,
             "source": {"image_repository": "vllm/vllm-openai"},
             "recipe": {"model": {"model_id": None, "model_commit": None},
                        "image_digest": None, "engine_args": ["--gpu-memory-utilization", "0.80"] +
@@ -295,6 +389,12 @@ def example(nodes: int = 1) -> dict:
                                      "restart_max_retries": 0,
                                      "healthcheck": {"path": "/health", "interval_seconds": 30, "timeout_seconds": 5,
                                                      "retries": 3, "start_period_seconds": 900} if nodes == 1 else None}}}
+
+    if type(schema_version) is not int or schema_version not in (1, 2):
+        invalid("schema_version", "unsupported draft schema")
+    if schema_version == 2:
+        result["recipe"]["required_snapshots"] = {}
+    return result
 
 
 def identity_fields(spec: dict) -> dict:

@@ -1,4 +1,5 @@
 """The stack advertises public commands instead of private Python imports."""
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -16,7 +17,7 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(document['kind'],'pulsar-stack-integration-contract')
         self.assertNotIn('recipe_projector',document)
         self.assertEqual(document['cli_contract_versions'],[1])
-        self.assertEqual(document['spec_schema_versions'],[2])
+        self.assertEqual(document['spec_schema_versions'],[2,3])
         self.assertIn('spec.freeze',document['operations'])
         self.assertFalse(document['catalog']['state_gate'])
         self.assertFalse(document['catalog']['review_gate'])
@@ -38,6 +39,60 @@ class IntegrationContract(unittest.TestCase):
                 '--manifest',str(fixtures/'manifest.json'),'--json'],cwd=cwd,text=True,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout)['result'],json.loads((fixtures/'spec.json').read_text()))
+
+    def test_schema_two_bare_speculative_models_remain_readable_but_cannot_freeze_or_launch(self):
+        import tempfile
+        from release_spec.normalize import snapshot_manifest_id
+        fixtures=ROOT/'tests/fixtures/contracts'
+        for arguments in (['--speculative_config.model','example/draft'],
+                          ['--speculative-config','{"model":"example/draft","num_speculative_tokens":3}']):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temp:
+                root=Path(temp)
+                draft=json.loads((fixtures/'draft.json').read_text())
+                draft['recipe']['engine_args'] += arguments
+                draft_path=root/'draft.json';draft_path.write_text(json.dumps(draft))
+                frozen=subprocess.run([str(ROOT/'pulsar'),'spec','freeze','--draft',str(draft_path),
+                    '--manifest',str(fixtures/'manifest.json'),'--json'],cwd=root,text=True,capture_output=True)
+                self.assertEqual(frozen.returncode,2,frozen.stderr+frozen.stdout)
+                error=json.loads(frozen.stdout)['error']
+                self.assertEqual(error['code'],'invalid_spec')
+                self.assertIn('speculative model must reference',error['message'])
+
+                # Reconstruct the old schema-2 identity without the tightened freezer.
+                spec=json.loads((fixtures/'spec.json').read_text())
+                spec['recipe']['engine_args'] += arguments
+                payload=json.dumps({'schema_version':2,'recipe':spec['recipe']},sort_keys=True,
+                                   separators=(',',':'),ensure_ascii=False).encode()
+                spec['spec_id']=hashlib.sha256(payload).hexdigest()
+                path=root/'spec.json';path.write_text(json.dumps(spec))
+                verified=subprocess.run([str(ROOT/'pulsar'),'spec','verify','--file',str(path),'--json'],
+                    cwd=root,text=True,capture_output=True)
+                self.assertEqual(verified.returncode,0,verified.stderr+verified.stdout)
+                self.assertEqual(json.loads(verified.stdout)['result'],spec)
+                compatible=subprocess.run([sys.executable,str(ROOT/'scripts/check-launch-compatibility.py'),
+                    '--spec',str(path),'--json'],cwd=root,text=True,capture_output=True)
+                self.assertEqual(compatible.returncode,1,compatible.stderr+compatible.stdout)
+                self.assertIn('speculative model must reference',compatible.stderr)
+
+                draft['schema_version']=2
+                manifest=json.loads((fixtures/'manifest.json').read_text())
+                manifest['model_id']='example/draft'
+                manifest['manifest_id']=snapshot_manifest_id(manifest)
+                manifest_path=root/'draft-manifest.json';manifest_path.write_text(json.dumps(manifest))
+                draft['recipe']['required_snapshots']={'draft':{
+                    'model_id':manifest['model_id'],'model_commit':manifest['snapshot_revision']}}
+                draft['recipe']['engine_args']=draft['recipe']['engine_args'][:-2]+[
+                    arguments[0],arguments[1].replace('example/draft','pulsar-snapshot:draft')]
+                draft_path.write_text(json.dumps(draft))
+                reauthored=subprocess.run([str(ROOT/'pulsar'),'spec','freeze','--draft',str(draft_path),
+                    '--manifest','target='+str(fixtures/'manifest.json'),
+                    '--manifest','draft='+str(manifest_path),'--json'],
+                    cwd=root,text=True,capture_output=True)
+                self.assertEqual(reauthored.returncode,0,reauthored.stderr+reauthored.stdout)
+                current=json.loads(reauthored.stdout)['result']
+                self.assertEqual(current['schema_version'],3)
+                self.assertNotEqual(current['spec_id'],spec['spec_id'])
+                self.assertEqual(json.loads(path.read_text()),spec)
 
     def test_structured_argument_failure(self):
         result=subprocess.run([str(ROOT/'pulsar'),'spec','freeze','--json'],text=True,capture_output=True)

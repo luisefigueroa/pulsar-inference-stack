@@ -13,7 +13,7 @@ collect_node_views() {
   rm -f "$temp"
 }
 
-prepare_model() {
+prepare_snapshot() {
   [ -n "$SPEC_ID" ] && [ -n "$SPEC_JSON" ] || die "prepare requires a frozen spec"
   require_home
   selected_nodes
@@ -25,6 +25,9 @@ prepare_model() {
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
   existing=$(merged_views) || die "node and controller preparation records cannot be reconciled"
   existing=$(json_fields "$existing" views)
+  if [ "$VIEW_SCHEMA" = 2 ]; then
+    existing=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(json.dumps([r for r in json.load(sys.stdin) if r["snapshot_manifest_id"]==sys.argv[1]]))' "$MANIFEST_ID")
+  fi
   ranks_tmp=$(mktemp); budgets_tmp=$(mktemp); views_tmp=$(mktemp)
   for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
     rank="${SELECTED_RANKS[$slot]}"; node="${CLUSTER_NODE_IDS[$rank]}"
@@ -45,7 +48,7 @@ prepare_model() {
   done
   observations=$(printf '%s' "$observations" | python3 -c 'import json,sys; all=json.load(sys.stdin); selected=[json.loads(x) for x in open(sys.argv[1])]; print(json.dumps([{**next(o for o in all if o["node_id"]==v["node_id"]),"view_verified":v["view_verified"]} for v in selected]))' "$ranks_tmp")
   budget=$(python3 -c 'import json,sys; print(json.dumps({r["node_id"]:r["budget"] for r in map(json.loads,open(sys.argv[1]))}))' "$budgets_tmp")
-  plan=$(model_ctl "$(model_json operation plan-prepare views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget")") || die "could not build preparation plan"
+  plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget")") || die "could not build preparation plan"
   rm -f "$ranks_tmp" "$budgets_tmp"
   if [ "$PLAN" -eq 1 ]; then rm -f "$views_tmp"; emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"
@@ -65,7 +68,7 @@ prepare_model() {
       continue
     fi
     if [ "$action" = home-view ]; then
-      row=$(model_ctl "$(model_json operation record-view home: "$HOME_JSON" spec_id "$SPEC_ID" topology_id "$CLUSTER_TOPOLOGY_ID" rank: "$slot" is_home_view: true)") || die "home view could not be recorded"
+      row=$(model_ctl "$(model_json operation record-view view_schema: "$VIEW_SCHEMA" home: "$HOME_JSON" spec_id "$SPEC_ID" topology_id "$CLUSTER_TOPOLOGY_ID" rank: "$slot" is_home_view: true)") || die "home view could not be recorded"
       model_node "$rank" "$(model_node_request save-view view: "$row")" >/dev/null || die "home view node record failed"
     else
       stage=$(model_node "$rank" "$(model_node_request begin-view spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") || die "prepared-copy staging failed"
@@ -87,5 +90,40 @@ prepare_model() {
   done < <(printf '%s' "$existing" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
   existing=$(python3 -c 'import json,sys; print(json.dumps([json.loads(x) for x in open(sys.argv[1])]))' "$verified_tmp"); rm -f "$verified_tmp"
   result=$(model_ctl "$(model_json operation save-views manifest: "$MANIFEST_JSON" spec_id "$SPEC_ID" expected_node_ids: "$NODE_IDS_JSON" views: "$existing")") || die "node copies verified but all-rank record publication failed; inspect before retrying"
+  emit_result "$result"
+}
+
+
+prepare_model() {
+  if [ "$VIEW_SCHEMA" != 2 ]; then prepare_snapshot; return; fi
+  local name tmp result plan saved_plan="$PLAN" saved_json="$JSON" saved_full="$FULL"
+  tmp=$(mktemp)
+  # Review every snapshot and the combined storage budget before any mutation.
+  PLAN=1 JSON=1
+  while IFS= read -r name <&3; do
+    select_snapshot "$name" || { rm -f "$tmp"; return 2; }
+    PREPARE_SNAPSHOT="$name"
+    result=$(prepare_snapshot) || { local rc=$?; rm -f "$tmp"; return "$rc"; }
+    printf '%s\n' "$result" >>"$tmp"
+  done 3< <(snapshot_names)
+  plan=$(python3 - "$tmp" "$SPEC_JSON" <<'PYCODE'
+import json,sys
+from model_library.planning import preparation_set_plan
+print(json.dumps(preparation_set_plan(json.loads(sys.argv[2]),[json.loads(x) for x in open(sys.argv[1])])) )
+PYCODE
+  ) || { rm -f "$tmp"; return 2; }
+  rm -f "$tmp"
+  PLAN="$saved_plan" JSON="$saved_json"
+  if [ "$PLAN" = 1 ]; then emit_result "$plan"; return; fi
+  [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
+  [ "$YES" = 1 ] || die "preparation requires --yes after reviewing the complete snapshot set"
+  while IFS= read -r name <&3; do
+    select_snapshot "$name"
+    PREPARE_SNAPSHOT="$name"
+    prepare_snapshot >/dev/null || return $?
+  done 3< <(snapshot_names)
+  FULL=1
+  result=$(prepared_info) || die "preparation incomplete; required snapshot verification failed"
+  FULL="$saved_full"
   emit_result "$result"
 }

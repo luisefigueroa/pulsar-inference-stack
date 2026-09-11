@@ -1072,6 +1072,23 @@ def _validate_serve_smoke_payload(value: Any, *, completion: str) -> dict[str, A
     }
 
 
+def _validate_snapshot_set_payload(value, *, completion):
+    payload = _require_fields(value, {'spec_id','snapshots'}, label='snapshot identity set')
+    snapshots = payload['snapshots']
+    if not isinstance(snapshots,dict) or not snapshots or 'target' not in snapshots:
+        fail('snapshot identity set requires target and named snapshots')
+    checked = {}
+    for name, item in snapshots.items():
+        if not isinstance(name,str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,63}',name):
+            fail('invalid snapshot identity name')
+        if not isinstance(item,dict) or 'spec_id' in item:
+            fail('invalid snapshot identity entry')
+        row = _validate_identity_payload({'spec_id':payload['spec_id'],**item},completion=completion)
+        row.pop('spec_id')
+        checked[name] = row
+    return {'spec_id':payload['spec_id'],'snapshots':dict(sorted(checked.items()))}
+
+
 def validate_measurement(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         fail("validator measurement must be an object")
@@ -1091,7 +1108,7 @@ def validate_measurement(value: Any) -> dict[str, Any]:
     document = _require_fields(
         value, field_sets[operation], label="validator measurement"
     )
-    if type(document.get("schema_version")) is not int or document.get("schema_version") != MEASUREMENT_SCHEMA_VERSION:
+    if type(document.get("schema_version")) is not int or document.get("schema_version") not in ((1,2) if operation=="verify-snapshot-manifest" else (1,)):
         fail("validator measurement schema_version is unsupported")
     if document.get("kind") != MEASUREMENT_KIND:
         fail("validator measurement kind is invalid")
@@ -1128,11 +1145,13 @@ def validate_measurement(value: Any) -> dict[str, Any]:
         "verify-snapshot-manifest": _validate_identity_payload,
         "serve-smoke": _validate_serve_smoke_payload,
     }
+    if document["schema_version"] == 2:
+        payload_validators[operation] = _validate_snapshot_set_payload
     payload = payload_validators[operation](
         document.get(operation), completion=completion
     )
     validated = {
-        "schema_version": MEASUREMENT_SCHEMA_VERSION,
+        "schema_version": document["schema_version"],
         "kind": MEASUREMENT_KIND,
         "program": program,
         "operation": operation,
@@ -1389,7 +1408,7 @@ def build_identity_measurement(
 ) -> dict[str, Any]:
     return validate_measurement(
         {
-            "schema_version": MEASUREMENT_SCHEMA_VERSION,
+            "schema_version": 2 if "snapshots" in payload else 1,
             "kind": MEASUREMENT_KIND,
             "program": "validate/verify_snapshot_manifest.py",
             "operation": "verify-snapshot-manifest",

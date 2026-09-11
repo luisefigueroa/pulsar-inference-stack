@@ -29,3 +29,17 @@ Physical acceptance remains separate: launch a new spec with explicit authority,
 inspect its actual configuration, observe the unchanged service through another
 compatible checkout, and exercise explicit overrides. Run each needed geometry;
 passing synthetic one-node and multi-node tests is not physical qualification.
+
+
+Required-snapshot cases extend the existing spec, container-runtime, model-library
+CLI, current-evidence, and integration-contract suites. Synthetic two-rank cases
+cover different homes, combined storage budgets, interrupted preparation, exact
+mounts, retention, and complete archive/evidence coverage. Schema-2 golden
+fixtures remain compatibility checks; these tests do not qualify a physical
+speculative-decoding engine or image.
+
+Compatibility regressions cover schema-2 recipes with bare speculative model
+locators: freezing, launch compatibility, and launch planning reject them while
+existing frozen specs remain readable. N-gram and MTP configurations without a
+model field retain their exact argument tokens through freezing and launch
+planning. Reauthoring with named manifests produces a distinct schema-3 spec.

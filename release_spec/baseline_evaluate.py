@@ -138,6 +138,21 @@ def _all_thresholds_hold(
 def _identity_observed(
     payload: dict[str, Any], spec: dict[str, Any]
 ) -> tuple[dict[str, Any], bool]:
+    if spec.get('schema_version') == 3:
+        from .serving import required_snapshots
+        expected = required_snapshots(spec)
+        rows = payload.get('snapshots')
+        if not isinstance(rows,dict) or set(rows) != set(expected):
+            return {'unmatched_file_count':0}, False
+        bound = payload.get('spec_id') == spec['spec_id']
+        unmatched = 0
+        for name, model in expected.items():
+            row = rows[name]; manifest = model['snapshot_manifest']
+            bound = bound and row['manifest_id'] == manifest['manifest_id'] and row['expected_file_count'] == manifest['file_count']
+            unmatched += row['mismatched_file_count'] + row['missing_file_count'] + row['extra_file_count']
+        return {'unmatched_file_count':unmatched}, bound
+    if 'snapshots' in payload:
+        return {'unmatched_file_count':0}, False
     unmatched = (
         payload["mismatched_file_count"]
         + payload["missing_file_count"]

@@ -169,7 +169,8 @@ def tool(kind, argv):
         rewritten, request = rewrite_bundled_program(sys.stdin.read(), cfg, current)
         event("node-operation", operation=request["operation"])
         fault = cfg.get("node_fault", {})
-        if fault.get("operation") == request["operation"] and fault.get("rank") == rank():
+        if (fault.get("operation") == request["operation"] and fault.get("rank") == rank()
+                and (not fault.get("manifest_id") or fault["manifest_id"] == request.get("manifest",{}).get("manifest_id"))):
             if fault.get("after"):
                 result = run_bundled_node_program(rewritten, capture_output=True)
                 if result.returncode:

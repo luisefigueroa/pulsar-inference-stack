@@ -43,7 +43,7 @@ model_container_observation() {
     fi
   else
     require_topology_ssh_trust >/dev/null || return 2
-    raw=$(ssh_node "$rank" "$command") || return $?
+    raw=$(ssh_node "$rank" "$command" </dev/null) || return $?
   fi
   printf '%s' "$raw" | python3 -c '
 import json,sys
@@ -85,7 +85,7 @@ model_ctl() {
 
 model_node_request() {
   local operation="${1:?}"; shift
-  local -a fields=(operation "$operation")
+  local -a fields=(operation "$operation" view_schema: "${VIEW_SCHEMA:-1}")
   [ -z "${MANIFEST_JSON:-}" ] || fields+=(manifest: "$MANIFEST_JSON")
   if [ -n "${OVERLAY_CACHE_ROOT:-}" ]; then fields+=(home_root "$OVERLAY_CACHE_ROOT")
   elif [ -n "${PULSAR_HOME_ROOT:-}" ]; then fields+=(home_root "$PULSAR_HOME_ROOT"); fi

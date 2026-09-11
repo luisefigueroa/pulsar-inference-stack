@@ -8,7 +8,7 @@ workbench checkout.
 ```mermaid
 flowchart TD
     lab[Private workbench: draft and approve variant] --> candidate[Exact candidate spec]
-    catalog[Reviewed catalog spec] --> storage[Acquire or restore verified snapshot]
+    catalog[Reviewed catalog spec] --> storage[Acquire or restore required snapshots]
     candidate --> storage
     storage --> prepare[Prepare local files on required ranks]
     prepare --> launch[Recheck and launch exact configuration]
@@ -101,3 +101,14 @@ judgement.
 The catalog starts empty, with no imported experiments or recipes. The deeper
 `validated` suite is deferred. State and review metadata do not authorize or block serving;
 operational prerequisites still apply.
+
+
+Schema 3 extends the same lifecycle with named required snapshots while retaining
+`recipe.model` as the target. A shared projection enumerates the complete set;
+prepared-view keys include the snapshot manifest in their new record format.
+Homes, transfers, verification, and archives continue operating per manifest.
+Preparation plans and runtime checks cover the complete snapshot/rank matrix.
+Speculative model references resolve through the existing container compiler.
+The public CLI supports selecting an individual snapshot for acquisition,
+archive creation, restoration, or home movement; complete-set integrity does
+not depend on agent orchestration. See [the contract](CONTRACT.md#required-snapshots-and-speculative-decoding).

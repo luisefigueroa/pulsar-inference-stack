@@ -25,8 +25,8 @@ publication safeguard.
 
 ## Optional assessments
 
-New publications use schema-2 specs. Historical files already in the catalog
-remain readable; CI rejects adding or editing schema-1 specs for new operations.
+New publications support schema-2 and schema-3 specs. Historical files already in
+the catalog remain readable; CI rejects adding or editing schema-1 specs for new operations.
 Use the public package verifier for an exported contribution:
 
 ```sh

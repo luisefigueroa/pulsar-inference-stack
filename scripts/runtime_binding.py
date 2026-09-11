@@ -21,6 +21,10 @@ def fail(message):raise ValueError(message)
 
 
 def prepared_set(document,spec,topology_id):
+    if spec.get('schema_version') == 3:
+        from scripts.container_runtime import prepared_snapshots
+        prepared_snapshots(spec, document, topology_id)
+        return document
     if not isinstance(document,dict) or type(document.get('schema_version')) is not int or document.get('schema_version') != 1 or document.get('kind')!='pulsar-prepared-set':
         fail('invalid prepared-set document')
     identity=identity_fields(spec);manifest=identity['snapshot_manifest']
@@ -40,7 +44,9 @@ def prepared_set(document,spec,topology_id):
 
 
 def prepared_shell(document,spec,topology_id):
-    doc=prepared_set(document,spec,topology_id);identity=identity_fields(spec);manifest=identity['snapshot_manifest'];first=doc['ranks'][0]
+    doc=prepared_set(document,spec,topology_id)
+    if spec.get('schema_version') == 3: doc=doc['snapshots']['target']
+    identity=identity_fields(spec);manifest=identity['snapshot_manifest'];first=doc['ranks'][0]
     hub_name='models--'+identity['model_id'].replace('/','--')
     return format_shell_assignments(dict(LIBRARY_VIEW_INSTANCE_DIR=str(Path(first['hub_path']).parent),LIBRARY_VIEW_HUB_PATH=first['hub_path'],LIBRARY_VIEW_HOME_NODE_ID=doc['home_node_id'],LIBRARY_VIEW_CONTENT_ID=manifest['manifest_id'][:12],LIBRARY_VIEW_CONTENT_DIGEST=manifest['manifest_id'],LIBRARY_VIEW_TRANSPORT='ssh-control' if identity['geometry']['nodes']==1 else 'ssh-roce',LIBRARY_VIEW_INTEGRITY_SCHEME='sha256',LIBRARY_VIEW_MODEL_ID=identity['model_id'],LIBRARY_VIEW_REVISION=identity['snapshot_revision'],LIBRARY_VIEW_CONTAINER_MODEL_PATH=f'/root/.cache/huggingface/hub/{hub_name}/snapshots/{identity["snapshot_revision"]}',LIBRARY_VIEW_IDENTITY_STATUS='manifest-verified',LIBRARY_VIEW_VALIDATION_JSON='{}',LIBRARY_VIEW_PINNED='1' if first.get('pinned') else '0'))
 
@@ -55,13 +61,19 @@ def main():
         spec=load_spec(args.spec)
         if args.command=='prepared-shell':print(prepared_shell(json.load(sys.stdin),spec,args.topology_id));return 0
         plan=launch_plan.validate_launch_plan(json.loads(Path(args.plan).read_text()))
-        if plan.get('schema_version') == 3:
+        if plan.get('schema_version') in (3, 4):
             from datetime import datetime, timezone
             from scripts.container_runtime import observe_rank as observe_current_rank
             if spec['spec_id'] != plan['selected_spec_id']:
                 fail('observation selects another spec')
             base=Path(args.observations)
             prepared=prepared_set(json.loads((base/'prepared.json').read_text()),spec,plan['topology_id'])
+            if spec['schema_version'] == 3:
+                for name, member in prepared['snapshots'].items():
+                    for expected, actual in zip(plan['ranks'], member['ranks']):
+                        if expected['snapshots'][name]['hub_path'] != actual['hub_path'] or expected['snapshots'][name]['home_node_id'] != member['home_node_id']:
+                            fail('recorded snapshot location differs from verified prepared set')
+                prepared=prepared['snapshots']['target']
             for expected,actual in zip(plan['ranks'],prepared['ranks']):
                 if expected['node_id'] != actual['node_id'] or expected['hub_path'] != actual['hub_path']:
                     fail('recorded service files or placement differ from verified prepared set')
@@ -70,10 +82,11 @@ def main():
                 item=observe_current_rank(plan,rank,json.loads((base/f'container-{rank}.json').read_text()),
                                           json.loads((base/f'image-{rank}.json').read_text()))
                 item['files_verified']=True
+                for snapshot in item.get('snapshots',{}).values(): snapshot['files_verified']=True
                 context_file=base/f'context-{rank}.json'
                 item['host_context']=json.loads(context_file.read_text()) if context_file.exists() else {'available':False}
                 ranks.append(item)
-            print(json.dumps(dict(schema_version=2,kind='pulsar-serving-observation',
+            print(json.dumps(dict(schema_version=3 if spec["schema_version"]==3 else 2,kind='pulsar-serving-observation',
                 observed_at=datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),
                 service_id=plan['service_id'],selected_spec_id=plan['selected_spec_id'],spec_id=plan['spec_id'],
                 matches_selected_spec=plan['matches_selected_spec'],effective_spec=plan['spec'],

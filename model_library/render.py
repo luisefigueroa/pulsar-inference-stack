@@ -152,7 +152,8 @@ def _observation(out: TerminalWriter, document: dict) -> None:
     out.field('Archive', archive_states.get(observation.get('archive_state'), 'not established'))
     prepared = observation.get('prepared') or {}
     if 'verified' in prepared and 'required' in prepared:
-        out.field('Prepared', f'{prepared["verified"]} of {prepared["required"]} required ranks')
+        unit="snapshot/rank checks" if "snapshots" in observation else "required ranks"
+        out.field('Prepared', f'{prepared["verified"]} of {prepared["required"]} {unit}')
     if observation.get('checked_at'):
         out.field('Checked', observation['checked_at'])
     _blockers(out, observation)
@@ -169,6 +170,21 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         raise ValueError('unsupported archive action')
     out = writer or TerminalWriter()
     kind = str(document.get('kind') or '')
+    members=document.get('snapshots')
+    if isinstance(members,dict):
+        out.emit('Complete required snapshot set')
+        _identity(out,document)
+        for name,member in members.items():
+            out.field('Snapshot',name)
+            render(member,operation=operation,archive_action=archive_action,writer=out)
+        return
+    if kind == 'pulsar-preparation-set-plan':
+        _plan(out,document,operation)
+        for member in document['snapshots']:
+            out.field('Snapshot',member['snapshot'])
+            _plan(out,member,operation)
+        return
+
     if isinstance(document.get('plan'), dict):
         _plan(out, document['plan'], operation)
         pending = document.get('incomplete_preparations')

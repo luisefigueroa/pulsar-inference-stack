@@ -7,8 +7,8 @@ versions. Check the operations needed for an action before performing it.
 
 ## Documents and identity
 
-A schema-2 `pulsar-serving-spec` contains `schema_version`, `kind`, `spec_id`,
-`recipe`, `source`, `state`, and `review`. The spec ID is SHA-256 over canonical
+A schema-2 or schema-3 `pulsar-serving-spec` contains `schema_version`, `kind`,
+`spec_id`, `recipe`, `source`, `state`, and `review`. The spec ID is SHA-256 over canonical
 JSON containing the schema version and complete recipe. The source image
 repository locator and nullable catalog metadata do not affect identity.
 
@@ -40,9 +40,84 @@ Geometry owns TP/PP flags; site bindings own model paths, ports, addresses,
 served names, and credentials. Literal recipe environment cannot override those
 reserved bindings. No draft is executable Bash.
 
+## Required snapshots and speculative decoding
+
+Schema 3 retains `recipe.model` as the serving target and adds the required
+`recipe.required_snapshots` object. Its keys are names matching
+`[a-z][a-z0-9_-]{0,63}`; `target` is reserved for `recipe.model`. Each value has
+the same `model_id`, `model_commit`, and complete `snapshot_manifest` fields as
+the target. Every entry is required on every serving rank and contributes to
+`spec_id`. Source manifests, homes, and archives retain their existing digests.
+
+Start with `pulsar spec example --schema-version 2`. Draft schema 2 declares the
+same names and model commits, without embedding manifests. Freeze with exactly
+one named manifest for each declaration, including the target:
+
+```sh
+./pulsar spec freeze --draft draft.json \
+  --manifest target=target.json --manifest draft=draft.json --json
+```
+
+Use `pulsar-snapshot:draft` as the speculative configuration's model value:
+
+```json
+["--speculative_config.model", "pulsar-snapshot:draft",
+ "--speculative_config.num_speculative_tokens", "3"]
+```
+
+The JSON `--speculative-config` form is also supported, with the reference in
+its `model` field. Underscore/hyphen spellings of the flag prefix are accepted.
+Do not mix JSON and dotted forms, repeat fields, or supply a separate checkpoint
+revision. Every additional declaration must have a supported engine reference.
+References in unrelated arguments and bare speculative checkpoint locators are
+rejected. Other model-loading argument families are not implemented by this
+binding rule. Non-checkpoint speculation can still use ordinary engine args.
+
+Stack resolves each reference to the exact local snapshot path. The target
+keeps its existing mount convention; additional Hub directories mount read-only
+under `/pulsar/snapshots/<manifest-id>`, and the engine receives the child
+`snapshots/<model-commit>` path. Different commits from one Hub repository do
+not collide. Actual mounts, resolved arguments, and files must agree on every
+rank. Execution overrides cannot introduce undeclared checkpoints.
+
+Freeze validates identity and references without contacting hardware. Complete
+preparation and launch require all members. A passing target-only baseline
+cannot qualify a speculative variant; the target still determines the served
+model name and baseline accuracy policy.
+
+Draft schema 1 and spec schema 2 remain supported with their existing identity
+algorithm. Freezing and launch now reject bare Hub IDs or local paths in a
+speculative configuration's `model` field, including schema-2 recipes. An
+already-frozen schema-2 spec with such a locator remains readable and
+schema-valid, but fails launch compatibility and cannot start. This restriction
+also applies to explicit execution overrides. N-gram and MTP configurations
+without a `model` field retain their exact argument tokens and schema-2 identity.
+
+To reauthor an affected recipe:
+
+1. Change the draft's `schema_version` from 1 to 2 and add
+   `recipe.required_snapshots.draft` with the checkpoint's `model_id` and exact
+   `model_commit`.
+2. Replace the speculative `model` value with `pulsar-snapshot:draft`. Remove any
+   separate speculative revision selector; the declared model commit owns it.
+3. Freeze with both `--manifest target=target.json` and
+   `--manifest draft=draft.json`, plus any other declared members. The result is
+   a new schema-3 spec with a distinct `spec_id`.
+
+Retain the earlier spec and evidence unchanged. Prepare and launch the new spec
+only within the maintainer's approved scope, and collect new measurements for
+that recipe; earlier measurements do not qualify the new spec.
+
+Schema-3 execution uses prepared-set 2, launch-plan 4, observation 3,
+identity measurement 2, and baseline run 4. Other measurements remain schema 1.
+Existing launch-plan 3/observation 2/run 3 records keep their meaning. Named
+snapshot archive verification uses schema 2 with a `snapshots` map of existing
+schema-1 per-snapshot proofs. The timestamped archive observation and contribution
+package envelopes keep their current formats. No historical evidence is upgraded.
+
 ## Container binding inventory
 
-This is the schema-2 binding rule, not a set of mutable launcher defaults.
+These are the base container binding rules, not a set of mutable launcher defaults.
 Changing its meaning requires a contract change and new conformance vectors.
 
 | Input | Docker/engine binding |
@@ -58,7 +133,7 @@ Changing its meaning requires a contract change and new conformance vectors.
 | `container.devices` | The `infiniband` identifier exposes the existing device directory for multi-node recipes |
 | `container.restart_policy`, `restart_max_retries` | Explicit restart policy; retry counts apply only to `on-failure` |
 | `container.healthcheck` | Explicit HTTP path and timing; null explicitly disables inherited image healthchecks |
-| Model manifest and prepared set | Read-only mount of the exact verified model snapshot |
+| Required manifests and prepared set | Read-only mounts selecting every exact verified snapshot |
 | `engine_args` and geometry | Frozen engine tokens plus exactly one TP/PP binding and required rank arguments |
 | `container_env` | Frozen literal values, including offline/logging/NCCL settings |
 | Confirmed rank placement | Rank addresses, fabric devices, and control-interface environment bindings |
@@ -144,11 +219,12 @@ and [device-directory expansion](https://github.com/moby/moby/blob/master/daemon
 
 ## Measurements and history
 
-New run schema 3 binds the effective spec ID, fixed policy digest, dataset and
-policy input hashes, measurement hashes, ordered producers, and before/after
-rank configuration and boot witnesses. Commits identify measurement producers
-and observers, not recipes. Missing Stack commit metadata is reported as a
-provenance limitation rather than a new runtime gate.
+Run schema 3 for spec schema 2 binds the effective spec ID, fixed policy digest,
+dataset and policy input hashes, measurement hashes, ordered producers, and
+before/after rank configuration and boot witnesses. Run schema 4 for spec schema 3 also
+requires complete named snapshot coverage on every rank. Commits identify
+measurement producers and observers, not recipes. Missing Stack commit metadata
+is reported as a provenance limitation rather than a new runtime gate.
 
 Evidence is stored separately at `results/baseline-v1/<spec_id>/<run_id>/`.
 A later run does not replace an earlier one. Catalog metadata edits do not
@@ -159,6 +235,6 @@ implicitly or manufacture an observation time.
 Historical schema-1 specs and schema-2 runs retain their original IDs and claims.
 `spec show --historical` reads old specs. Existing services remain inspectable
 and stoppable, but a new-contract observation can be unavailable for them.
-New operations and changed catalog contributions require schema 2; unchanged
-historical catalog files are retained. No automatic migration or qualification
-of old evidence occurs.
+New operations and changed catalog contributions require spec schema 2 or 3;
+unchanged historical catalog files are retained. No automatic migration or
+qualification of old evidence occurs.

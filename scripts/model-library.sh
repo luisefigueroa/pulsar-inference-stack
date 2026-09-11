@@ -31,6 +31,7 @@ Usage: model-library.sh OPERATION [SPEC_ID] [options]
 
 Options:
   --spec-file FILE       Explicit lab candidate spec
+  --snapshot NAME       Select one declared snapshot for home/archive operations
   --node NODE_ID         Confirmed destination or one-node placement
   --manifest FILE       Retained source manifest for lab storage
   --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
@@ -50,13 +51,15 @@ OP="${1:-help}"; [ $# -eq 0 ] || shift
 ARCHIVE_ACTION=""
 if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
+SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
 NODE="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out)
+    --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --spec-file) SPEC_FILE="$2" ;;
+        --snapshot) SNAPSHOT="$2" ;;
         --manifest) MANIFEST_FILE="$2" ;;
         --model-id) MODEL_ID="$2" ;;
         --model-commit|--revision) REVISION="$2" ;;
@@ -110,6 +113,11 @@ if [ "$OP" != budget ]; then
   if [ "$OP" != acquire ] || [ -n "$SPEC_ID$SPEC_FILE$MANIFEST_FILE" ]; then
     resolve_selected || die "selected spec or manifest is invalid"
   fi
+fi
+if [ -n "$SNAPSHOT" ]; then
+  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:*) ;; *) die "$OP always covers the complete recipe; omit --snapshot" ;; esac
+elif [ "$VIEW_SCHEMA" = 2 ]; then
+  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:create) die "$OP requires --snapshot NAME for a schema-3 recipe" ;; esac
 fi
 case "$OP" in
   prepare|info|check|pin|unpin|purge) [ -n "$SPEC_ID" ] || die "$OP requires a spec id" ;;

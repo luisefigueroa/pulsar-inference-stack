@@ -9,6 +9,21 @@ from .run_record import _time
 
 
 def archive_proof(proof: Any, spec: dict) -> dict:
+    if spec.get('schema_version') == 3:
+        from .serving import required_snapshots
+        expected = {'schema_version':2,'kind':'pulsar-archive-verification','spec_id':spec['spec_id'],
+                    'verified':True,'snapshots':{}}
+        for name,model in required_snapshots(spec).items():
+            m=model['snapshot_manifest']
+            expected['snapshots'][name]={'schema_version':1,'kind':'pulsar-archive-verification',
+                'snapshot_manifest_id':m['manifest_id'],'verified':True,'file_count':m['file_count'],'total_bytes':m['total_bytes']}
+        if proof != expected or type(proof.get('schema_version')) is not int or proof.get('verified') is not True:
+            fail('archive verification did not prove every required snapshot')
+        for item in proof['snapshots'].values():
+            if (type(item['schema_version']) is not int or item['verified'] is not True
+                    or type(item['file_count']) is not int or type(item['total_bytes']) is not int):
+                fail('invalid snapshot archive proof')
+        return expected
     from .serving import identity_fields
     manifest = identity_fields(spec)['snapshot_manifest']
     expected = {'schema_version': 1, 'kind': 'pulsar-archive-verification',

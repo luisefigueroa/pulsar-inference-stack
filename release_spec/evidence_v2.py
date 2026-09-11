@@ -1,4 +1,4 @@
-"""Independent evidence checks for schema-2 specs and immutable measurement runs."""
+"""Independent evidence checks for schema-2/3 specs and immutable measurement runs."""
 from __future__ import annotations
 import hashlib
 from pathlib import Path

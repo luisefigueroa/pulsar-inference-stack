@@ -48,7 +48,7 @@ def verify_compact_evidence(spec_path: str | Path, evidence_root: str | Path,
     six-gate success check used when a spec claims ``stable`` or ``validated``.
     """
     spec = load_spec(spec_path)
-    if spec['schema_version'] == 2:
+    if spec['schema_version'] in (2, 3):
         from .evidence_v2 import verify_evidence
         result=verify_evidence(spec_path,run_path,evidence_root)
         if require_pass and result['outcome']!='pass':

@@ -298,7 +298,7 @@ def _require_status_evidence(
 
 def verify_spec(document: Any) -> dict[str, Any]:
     """Return the canonical document or raise ``ReleaseSpecError``."""
-    if isinstance(document, dict) and document.get("schema_version") == 2:
+    if isinstance(document, dict) and document.get("schema_version") in (2, 3):
         from .serving import verify_spec as verify_current_spec
         return verify_current_spec(document)
     if not isinstance(document, dict):

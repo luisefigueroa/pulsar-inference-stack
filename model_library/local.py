@@ -120,8 +120,8 @@ def home_record(manifest: dict, node_id: str, hub: Path, stamp: dict) -> dict:
 
 
 def prepared_record(home: dict, *, spec_id: str, topology_id: str, rank: int,
-                    is_home_view: bool = False, pinned: bool = False) -> dict:
-    record = {**validate_home(home), 'kind': 'pulsar-prepared-view', 'spec_id': spec_id,
+                    is_home_view: bool = False, pinned: bool = False, schema_version: int = 1) -> dict:
+    record = {**validate_home(home), 'schema_version': schema_version, 'kind': 'pulsar-prepared-view', 'spec_id': spec_id,
               'topology_id': topology_id, 'rank': rank, 'pinned': pinned,
               'is_home_view': is_home_view}
     return validate_view(record)

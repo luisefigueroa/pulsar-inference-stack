@@ -272,6 +272,10 @@ def spec_shell_values(
     total_bytes = manifest.get("total_bytes")
     if isinstance(total_bytes, bool) or not isinstance(total_bytes, int) or total_bytes < 0:
         fail("spec identity.snapshot_manifest.total_bytes is missing")
+    if spec.get('schema_version') == 3:
+        from release_spec.serving import required_snapshots
+        manifests={m['snapshot_manifest']['manifest_id']:m['snapshot_manifest'] for m in required_snapshots(spec).values()}
+        total_bytes=sum(m['total_bytes'] for m in manifests.values())
     # Disk footprint for the memory gate: whole GiB, rounded up, never below 1.
     weights_gib = str(max(1, -(-total_bytes // (1024 ** 3))))
     variables: dict[str, Any] = {
@@ -573,7 +577,7 @@ def cmd_shell_values(
         spec = load_release(repo_root, spec_id, releases_root=releases_root)
     selected_spec_id = spec['spec_id']
     selected_document = spec
-    if spec['schema_version'] == 2:
+    if spec['schema_version'] in (2, 3):
         from release_spec.serving import apply_overrides, load_json as load_contract_json
         override = os.environ.get('PULSAR_OVERRIDE_FILE')
         if override:
@@ -596,8 +600,8 @@ def cmd_shell_values(
     )
     variables['CONF_NAME'] = selected_spec_id
     variables['SPEC_REVIEW_STATUS'] = (selected_document.get('review') or {}).get('status') or 'not specified'
-    variables['PULSAR_EFFECTIVE_SPEC_ID'] = spec['spec_id'] if spec['schema_version'] == 2 else ''
-    if spec['schema_version'] == 2:
+    variables['PULSAR_EFFECTIVE_SPEC_ID'] = spec['spec_id'] if spec['schema_version'] in (2, 3) else ''
+    if spec['schema_version'] in (2, 3):
         variables['IMAGE'] = spec['source']['image_repository'] + '@' + spec['recipe']['image_digest']
     variables["OVERLAY_SOURCE"] = (
         str(overlay_file) if overlay_file.is_file() else f"defaults (no {overlay_file})"

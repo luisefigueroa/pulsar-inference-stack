@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from release_spec.serving import SPEC_SCHEMA_VERSION, DRAFT_SCHEMA_VERSION
+from release_spec.serving import SUPPORTED_SPEC_SCHEMAS
 from release_spec.contribution import APPROVED_POLICY_DIGEST
 from scripts.terminal_format import TerminalWriter
 
@@ -20,12 +20,12 @@ def contract() -> dict:
         'schema_version': 2,
         'kind': 'pulsar-stack-integration-contract',
         'cli_contract_versions': [1],
-        'draft_schema_versions': [DRAFT_SCHEMA_VERSION],
-        'spec_schema_versions': [SPEC_SCHEMA_VERSION],
+        'draft_schema_versions': [1, 2],
+        'spec_schema_versions': list(SUPPORTED_SPEC_SCHEMAS),
         'historical_spec_schema_versions': [1],
-        'observation_schema_versions': [2],
-        'measurement_schema_versions': [1],
-        'run_record_schema_versions': [3],
+        'observation_schema_versions': [2, 3],
+        'measurement_schema_versions': [1, 2],
+        'run_record_schema_versions': [3, 4],
         # Only completed, tested operations are advertised during the rollout.
         'operations': ['contract', 'spec.example', 'spec.freeze', 'spec.verify', 'spec.show', 'spec.compare',
                        'policy.show', 'evidence.measurement', 'evidence.evaluate', 'evidence.verify',
@@ -57,7 +57,7 @@ def main(argv=None) -> int:
         return 0
     out = TerminalWriter()
     out.emit('Stack integration contract')
-    out.field('Spec schema', str(document['spec_schema_versions'][0]), indent=2)
+    out.field('Spec schema', ', '.join(map(str, document['spec_schema_versions'])), indent=2)
     out.field('CLI contract', str(document['cli_contract_versions'][0]), indent=2)
     out.field('Catalog authority', document['catalog']['authority'], indent=2)
     out.emit('State, review, evidence, and launch compatibility do not gate catalog membership.',

@@ -11,7 +11,7 @@ from scripts import container_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def fixture(nodes=1):
+def fixture(nodes=1, speculative=False):
     draft = serving.example(nodes)
     draft['recipe']['model'] = {'model_id': 'example/model', 'model_commit': 'a'*40}
     draft['recipe']['image_digest'] = 'sha256:'+'b'*64
@@ -23,6 +23,24 @@ def fixture(nodes=1):
         topology_id='c'*64, snapshot_manifest_id=manifest['manifest_id'], revision='a'*40,
         home_node_id='node-0', ranks=[dict(rank=i,node_id=f'node-{i}',hub_path=f'/var/tmp/fixture-rank-{i}',
             path=f'/var/tmp/fixture-rank-{i}/snapshots/'+('a'*40)) for i in range(nodes)])
+    if speculative:
+        from release_spec.normalize import snapshot_manifest_id
+        draft['schema_version']=2
+        second=copy.deepcopy(manifest);second['snapshot_revision']='e'*40
+        second['manifest_id']=snapshot_manifest_id(second)
+        draft['recipe']['required_snapshots']={'draft':{'model_id':second['model_id'],'model_commit':second['snapshot_revision']}}
+        draft['recipe']['engine_args'] += ['--speculative_config.model','pulsar-snapshot:draft']
+        spec=serving.freeze(draft,{'target':manifest,'draft':second})
+        members={}
+        for name,model in serving.required_snapshots(spec).items():
+            member=copy.deepcopy(prepared);member.update(spec_id=spec['spec_id'],snapshot_manifest_id=model['snapshot_manifest']['manifest_id'],revision=model['model_commit'])
+            for row in member['ranks']:
+                row['hub_path'] += '/'+name
+                row['path']=row['hub_path']+'/snapshots/'+model['model_commit']
+                row['snapshot_manifest_id']=model['snapshot_manifest']['manifest_id']
+            members[name]=member
+        prepared={'schema_version':2,'kind':'pulsar-prepared-set','spec_id':spec['spec_id'],
+                  'topology_id':prepared['topology_id'],'snapshots':members}
     facts = dict(port=8000,served_name='example',topology_id='c'*64,ranks=ranks)
     with patch.dict('os.environ', {'API_KEY':'','VLLM_API_KEY':''}):
         plan = runtime.build_plan(spec, spec['spec_id'], facts, prepared)
@@ -45,12 +63,61 @@ def fixture(nodes=1):
                 'DeviceRequests':[{'Driver':'','Count':-1,'DeviceIDs':None,'Capabilities':[['gpu']]}],
                 'Devices':[] if nodes==1 else [{'PathOnHost':'/dev/infiniband/uverbs0','PathInContainer':'/dev/infiniband/uverbs0','CgroupPermissions':'rwm'}],
                 'PortBindings':{'8000/tcp':[{'HostIp':'','HostPort':'8000'}]} if nodes==1 else {}},
-            'Mounts':[{'Source':expected['mounts'][0]['source'],'Destination':expected['mounts'][0]['target'],'RW':False}]}
+            'Mounts':[{'Source':mount['source'],'Destination':mount['target'],'RW':False} for mount in expected['mounts']]}
         images.append(image);containers.append(container)
     return spec, facts, prepared, plan, containers, images
 
 
 class ContainerRuntime(unittest.TestCase):
+    def test_required_snapshots_mount_exact_commits_on_all_ranks(self):
+        for nodes in (1,2):
+            spec,facts,prepared,plan,containers,images=fixture(nodes,speculative=True)
+            self.assertEqual(plan['schema_version'],4)
+            for rank in range(nodes):
+                expected=runtime.rank_spec(plan,rank)
+                self.assertEqual(len(expected['mounts']),2)
+                self.assertIn('/snapshots/'+'e'*40, ' '.join(expected['engine_args']))
+                self.assertNotIn('pulsar-snapshot:', ' '.join(runtime.docker_argv(plan,rank)))
+                observed=runtime.observe_rank(plan,rank,containers[rank],images[rank])
+                self.assertEqual(set(observed['snapshots']),{'target','draft'})
+                for mutation in ('missing','source','writable','shadow'):
+                    changed=copy.deepcopy(containers[rank])
+                    if mutation=='missing': changed['Mounts'].pop()
+                    elif mutation=='source': changed['Mounts'][-1]['Source']='/var/tmp/wrong'
+                    elif mutation=='writable': changed['Mounts'][-1]['RW']=True
+                    else: changed['Mounts'].append({**changed['Mounts'][-1],'Destination':changed['Mounts'][-1]['Destination']+'/snapshots'})
+                    with self.subTest(nodes=nodes,rank=rank,mutation=mutation),self.assertRaisesRegex(ValueError,'mount'):
+                        runtime.observe_rank(plan,rank,changed,images[rank])
+            del prepared['snapshots']['draft']['ranks'][-1]
+            with self.assertRaises(ValueError): runtime.build_plan(spec,spec['spec_id'],facts,prepared)
+
+    def test_schema_two_bare_speculative_models_cannot_enter_a_launch_plan(self):
+        for nodes in (1,2):
+            for arguments in (['--speculative_config.model','example/draft'],
+                              ['--speculative-config','{"model":"example/draft"}']):
+                with self.subTest(nodes=nodes,arguments=arguments):
+                    spec,facts,prepared,_,_,_=fixture(nodes)
+                    # An existing schema-2 spec remains valid independently of launch support.
+                    spec=serving.apply_overrides(spec,{'engine_args':spec['recipe']['engine_args']+arguments})
+                    prepared['spec_id']=spec['spec_id']
+                    with self.assertRaisesRegex(ValueError,'speculative model must reference'):
+                        runtime.build_plan(spec,spec['spec_id'],facts,prepared)
+
+    def test_schema_two_non_checkpoint_speculation_keeps_launch_argument_tokens(self):
+        for nodes in (1,2):
+            for method in ('ngram','mtp'):
+                with self.subTest(nodes=nodes,method=method):
+                    spec,facts,prepared,_,_,_=fixture(nodes)
+                    arguments=spec['recipe']['engine_args']+['--speculative-config',
+                        '{ "method": "'+method+'", "num_speculative_tokens": 3 }']
+                    spec=serving.apply_overrides(spec,{'engine_args':arguments})
+                    prepared['spec_id']=spec['spec_id']
+                    plan=runtime.build_plan(spec,spec['spec_id'],facts,prepared)
+                    self.assertEqual(spec['schema_version'],2)
+                    self.assertEqual(plan['schema_version'],3)
+                    for rank in range(nodes):
+                        self.assertEqual(runtime.rank_spec(plan,rank)['engine_args'],arguments)
+
     def test_all_ranks_observable_without_stack_commit(self):
         for count in (1,2):
             spec,facts,prepared,plan,containers,images=fixture(count)

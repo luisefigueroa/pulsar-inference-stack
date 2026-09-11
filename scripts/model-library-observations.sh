@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Internal operation helpers; sourced by model-library.sh only.
 
-check_model() {
+check_snapshot() {
   local result rc=0 details local_state=unknown home_state=unknown archive_state=unknown prepared=0 required="${NODES:-1}" observation error_file
   error_file=$(mktemp)
-  result=$(prepared_info 2>"$error_file") || rc=$?
+  result=$(prepared_snapshot_info 2>"$error_file") || rc=$?
   if [ "$rc" -eq 0 ]; then
     local_state=ready; home_state=verified; prepared="$required"
   else
@@ -24,7 +24,7 @@ check_model() {
   if [ -z "${PULSAR_COLD_ROOT:-}" ]; then
     archive_state=not-configured
   elif [ "$FULL" -eq 1 ]; then
-    if result=$(archive_verify 2>/dev/null); then
+    if result=$(archive_snapshot_verify 2>/dev/null); then
       archive_state=verified
       model_ctl "$(model_json operation archive-record snapshot_manifest_id "$MANIFEST_ID" root "$PULSAR_COLD_ROOT" result: "$result")" >/dev/null
     else archive_state=unavailable; fi
@@ -46,7 +46,9 @@ except (ValueError,OSError): print("unavailable")
 ' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   fi
   observation=$(model_json local_state "$local_state" home "$home_state" prepared: "$(model_json verified: "$prepared" required: "$required")" blockers: "$details" archive_state "$archive_state")
-  model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || die "could not save catalog observation"
+  if [ "${CHECK_MEMBER:-0}" != 1 ]; then
+    model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || die "could not save catalog observation"
+  fi
   emit_result "$(model_json spec_id "$SPEC_ID" observation: "$observation")"
   return "$rc"
 }
@@ -60,4 +62,32 @@ show_budget() {
     result=$(printf '%s' "$result" | python3 -c 'import json,sys; a=json.load(sys.stdin); a.append({"node_id":sys.argv[1],**json.loads(sys.argv[2])}); print(json.dumps(a))' "${CLUSTER_NODE_IDS[$rank]}" "$space")
   done
   emit_result "$(model_json kind pulsar-storage-budget nodes: "$result")"
+}
+
+
+check_model() {
+  if [ "$VIEW_SCHEMA" != 2 ]; then check_snapshot; return; fi
+  local name result tmp observation rc=0 member_rc saved_json="$JSON"
+  tmp=$(mktemp)
+  JSON=1
+  while IFS= read -r name <&3; do
+    select_snapshot "$name"
+    member_rc=0
+    result=$(CHECK_MEMBER=1 check_snapshot) || member_rc=$?
+    if [ "$member_rc" -ne 0 ]; then rc=1; fi
+    [ -n "$result" ] || { rm -f "$tmp"; return 2; }
+    printf '%s\n' "$(model_json name "$name" result: "$result")" >>"$tmp"
+  done 3< <(snapshot_names)
+  observation=$(python3 - "$tmp" <<'PYCODE'
+import json,sys
+from model_library.catalog import combined_observation
+members={r['name']:r['result']['observation'] for r in map(json.loads,open(sys.argv[1]))}
+print(json.dumps(combined_observation(members)))
+PYCODE
+  ) || { rm -f "$tmp"; return 2; }
+  rm -f "$tmp"
+  JSON="$saved_json"
+  model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || return 2
+  emit_result "$(model_json spec_id "$SPEC_ID" observation: "$observation")"
+  return "$rc"
 }

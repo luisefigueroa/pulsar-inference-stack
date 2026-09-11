@@ -14,6 +14,7 @@ class CompatibilityError(ValueError): pass
 def check_launch_compatibility(spec):
     try: spec=serving.verify_spec(spec)
     except ValueError as exc: raise CompatibilityError(str(exc)) from exc
+    serving.snapshot_engine_args(spec['recipe'])
     geometry=spec['recipe']['geometry']
     path=ROOT/'platforms'/(geometry['platform_id']+'.json')
     if path.is_symlink() or not path.is_file():
