@@ -5,7 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONDONTWRITEBYTECODE=1
 python3 -m unittest discover -s release_spec/tests -p 'test_*.py'
-python3 -m unittest discover -s tests -p 'test_*.py'
+# Resolve this repository's tests package before imports expose release_spec/tests.
+python3 -m unittest discover -s tests -t . -p 'test_*.py'
 python3 - "$ROOT" <<'PY'
 import ast
 from pathlib import Path

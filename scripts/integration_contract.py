@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 from release_spec.serving import SUPPORTED_SPEC_SCHEMAS
 from release_spec.contribution import APPROVED_POLICY_DIGEST
+from release_spec.baseline_policy import SUPPORTED_POLICY_DIGESTS
 from scripts.terminal_format import TerminalWriter
 
 
@@ -32,7 +33,8 @@ def contract() -> dict:
                        'evidence.summary', 'contribution.verify', 'privacy.check', 'privacy.commits',
                        'selftest', 'start', 'observe', 'resources', 'status', 'stop',
                        'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify'],
-        'baseline_policy_digest': APPROVED_POLICY_DIGEST,
+        'baseline_policy_digest': APPROVED_POLICY_DIGEST,  # Legacy baseline-v1 field.
+        'baseline_policies': dict(SUPPORTED_POLICY_DIGESTS),
         'catalog': {
             'authority': 'workbench-maintainer',
             'required_checks': ['spec-schema', 'filename-spec-id', 'privacy'],

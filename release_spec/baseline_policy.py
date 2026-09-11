@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Closed lab-wide baseline-v1 policy schema.
+"""Closed fixed baseline-v1 and baseline-v2 policy schema.
 
-This module owns ``policy/baseline-v1.json``. It verifies the document,
+This module owns ``policy/baseline-v1.json`` and ``policy/baseline-v2.json``.
+It verifies the document,
 requires on-disk bytes to match ``release_spec.pretty_json_bytes``, and
 returns the SHA-256 of those canonical bytes as ``policy_digest``. It does
 not judge measurements, write a spec, or assign review status.
@@ -36,7 +37,11 @@ from .schema import (  # noqa: E402
 
 KIND = "pulsar-baseline-policy"
 SCHEMA_VERSION = 1
-SUITE = "baseline-v1"
+SUITE = "baseline-v1"  # Historical schema-1 evidence.
+SUPPORTED_POLICY_DIGESTS = {
+    "baseline-v1": "0b79190daf6e03b81c4b847adf0895b6102daec575ac8d6b0fac712381085539",
+    "baseline-v2": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+}
 POLICY_KEYS = frozenset(
     {
         "schema_version",
@@ -388,23 +393,26 @@ def verify_policy(document: Any) -> dict[str, Any]:
         fail("document.schema_version must be 1")
     if document.get("kind") != KIND:
         fail(f"document.kind must be {KIND!r}")
-    if document.get("suite") != SUITE:
-        fail(f"document.suite must be {SUITE!r}")
+    suite = document.get("suite")
+    if not isinstance(suite, str) or suite not in SUPPORTED_POLICY_DIGESTS:
+        fail("document.suite must be baseline-v1 or baseline-v2")
+    expected_gates = tuple(gate for gate in EXPECTED_GATES
+                           if suite == "baseline-v1" or gate[1] != "compare-captures")
     overrides = _verify_overrides(
         document.get("accuracy_floor_overrides"),
         path="accuracy_floor_overrides",
     )
     raw_gates = document.get("gates")
-    if not isinstance(raw_gates, list) or len(raw_gates) != len(EXPECTED_GATES):
-        fail(f"gates must list the {len(EXPECTED_GATES)} baseline-v1 gates in order")
+    if not isinstance(raw_gates, list) or len(raw_gates) != len(expected_gates):
+        fail(f"gates must list the {len(expected_gates)} {suite} gates in order")
     gates = [
         _verify_gate(item, index=index, expected=expected)
-        for index, (item, expected) in enumerate(zip(raw_gates, EXPECTED_GATES))
+        for index, (item, expected) in enumerate(zip(raw_gates, expected_gates))
     ]
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
-        "suite": SUITE,
+        "suite": suite,
         "accuracy_floor_overrides": overrides,
         "gates": gates,
     }
@@ -412,6 +420,14 @@ def verify_policy(document: Any) -> dict[str, Any]:
 
 def canonical_policy_bytes(policy: dict[str, Any]) -> bytes:
     return pretty_json_bytes(verify_policy(policy))
+
+
+def load_supported_policy(path: str | Path) -> tuple[dict[str, Any], str]:
+    """Accept only the exact published policy for the recorded suite."""
+    policy, digest = load_policy(path)
+    if digest != SUPPORTED_POLICY_DIGESTS[policy['suite']]:
+        fail(f"{policy['suite']} policy differs from the supported fixed policy")
+    return policy, digest
 
 
 def policy_digest_for(policy: dict[str, Any]) -> str:

@@ -1,0 +1,134 @@
+{
+  "accuracy_floor_overrides": {},
+  "gates": [
+    {
+      "criterion_id": "identity-snapshot-manifest",
+      "operation": "verify-snapshot-manifest",
+      "thresholds": [
+        {
+          "metric": "unmatched_file_count",
+          "operator": "==",
+          "unit": "count",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "criterion_id": "serving-integration-smoke",
+      "operation": "serve-smoke",
+      "thresholds": [
+        {
+          "metric": "health_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        },
+        {
+          "metric": "warmup_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        },
+        {
+          "metric": "completion_smoke_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "criterion_id": "gsm8k-subset",
+      "operation": "evaluate-gsm8k",
+      "pins": {
+        "answer_normalization": "gsm8k-final-number-v1",
+        "dataset_file_sha256": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+        "dataset_id": "openai/gsm8k",
+        "dataset_revision": "740312add88f781978c0658806c59bc2815b9866",
+        "max_completion_tokens": 4096,
+        "reasoning_mode": "enabled",
+        "selection": "sha256-order-first-100",
+        "split": "test",
+        "subset": "main",
+        "temperature": "0"
+      },
+      "thresholds": [
+        {
+          "metric": "accuracy",
+          "operator": ">=",
+          "unit": "ratio",
+          "value": "0.5"
+        },
+        {
+          "metric": "measured_sample_count",
+          "operator": ">=",
+          "unit": "count",
+          "value": "100"
+        },
+        {
+          "metric": "dataset_id",
+          "operator": "==",
+          "unit": "id",
+          "value": "openai/gsm8k"
+        },
+        {
+          "metric": "dataset_revision",
+          "operator": "==",
+          "unit": "commit",
+          "value": "740312add88f781978c0658806c59bc2815b9866"
+        },
+        {
+          "metric": "dataset_file_sha256",
+          "operator": "==",
+          "unit": "digest",
+          "value": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59"
+        }
+      ]
+    },
+    {
+      "criterion_id": "soak-60",
+      "operation": "validate-soak",
+      "thresholds": [
+        {
+          "metric": "duration_seconds",
+          "operator": ">=",
+          "unit": "seconds",
+          "value": "3600"
+        },
+        {
+          "metric": "request_error_count",
+          "operator": "==",
+          "unit": "count",
+          "value": "0"
+        },
+        {
+          "metric": "completed_requests",
+          "operator": ">",
+          "unit": "count",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "criterion_id": "perf-snapshot",
+      "operation": "benchmark-serving",
+      "required_concurrencies": [
+        1,
+        2,
+        4,
+        8
+      ],
+      "thresholds": [
+        {
+          "metric": "required_levels_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        }
+      ]
+    }
+  ],
+  "kind": "pulsar-baseline-policy",
+  "schema_version": 1,
+  "suite": "baseline-v2"
+}

@@ -34,11 +34,14 @@ Use the public package verifier for an exported contribution:
 ```
 
 Compact evidence is separate from the spec at
-`results/baseline-v1/<spec-id>/<run-id>/`. Verify an existing run explicitly:
+`results/<suite>/<spec-id>/<run-id>/`, with `baseline-v2` for new campaigns
+and `baseline-v1` for retained historical campaigns. The directory must match
+the saved policy. Baseline-v2 packages retain the greedy comparison as an
+ungraded diagnostic alongside the five graded criteria. Verify a run explicitly:
 
 ```sh
 ./pulsar evidence verify --spec-file releases/SPEC_ID.json \
-  --evidence-root . --run results/baseline-v1/SPEC_ID/RUN_ID/run.json --json
+  --evidence-root . --run results/baseline-v2/SPEC_ID/RUN_ID/run.json --json
 ```
 
 The result distinguishes document consistency from the baseline outcome. Failed

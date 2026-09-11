@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 
 from . import serving
-from .baseline_policy import load_policy, applied_accuracy_floor, copied_thresholds
+from .baseline_policy import load_supported_policy, applied_accuracy_floor, copied_thresholds
 from .baseline_evaluate import _judge_gate, OPERATION_FILES
 from .measurement import load_measurement_bytes, read_stable_bytes
 from .run_v3 import verify_run
@@ -13,15 +13,12 @@ from .run_record import _time
 
 def evaluate_measurements(spec, policy_path, measurements_dir):
     spec=serving.verify_spec(spec)
-    policy,digest=load_policy(policy_path)
-    from .contribution import APPROVED_POLICY_DIGEST
-    if digest != APPROVED_POLICY_DIGEST:
-        raise ValueError('baseline-v1 policy differs from the supported fixed policy')
+    policy,digest=load_supported_policy(policy_path)
     floor=applied_accuracy_floor(policy,spec['recipe']['model']['model_id'])
     outcomes={};measurements=[];hashes={};documents={}
-    for gate in policy['gates']:
-        operation=gate['operation']
-        path=Path(measurements_dir)/OPERATION_FILES[operation]
+    # Retain all six measurements, including the non-gating v2 diagnostic.
+    for operation, filename in OPERATION_FILES.items():
+        path=Path(measurements_dir)/filename
         if path.exists() or path.is_symlink():
             raw=read_stable_bytes(path,label='compact measurement')
             value=load_measurement_bytes(raw)
@@ -31,13 +28,24 @@ def evaluate_measurements(spec, policy_path, measurements_dir):
         else:
             value=None
         documents[operation]=value
+    for gate in policy['gates']:
+        operation=gate['operation']
+        value=documents[operation]
         outcome=_judge_gate(gate,value,spec=spec,accuracy_floor=floor)
         outcomes[gate['criterion_id']]=outcome
         measurements.append(dict(criterion_id=gate['criterion_id'],outcome=outcome,
             thresholds=copied_thresholds(gate,accuracy_floor=floor if operation=='evaluate-gsm8k' else None)))
-    return dict(schema_version=1,kind='pulsar-baseline-evaluation',spec_id=spec['spec_id'],
+    result=dict(schema_version=1,kind='pulsar-baseline-evaluation',spec_id=spec['spec_id'],
         policy_digest=digest,outcomes=outcomes,measurements=measurements,measurement_sha256=hashes,
-        outcome='pass' if all(v=='pass' for v in outcomes.values()) else 'fail' if 'fail' in outcomes.values() else 'incomplete'),documents
+        outcome='pass' if all(v=='pass' for v in outcomes.values()) else 'fail' if 'fail' in outcomes.values() else 'incomplete')
+    if policy['suite']=='baseline-v2':
+        diagnostic=documents['compare-captures']
+        result.update(schema_version=2,suite='baseline-v2',diagnostics={'compare-captures':diagnostic})
+        # Differences never grade the recipe; missing/unusable captures cannot
+        # establish completion of the prescribed measurement campaign.
+        if (diagnostic is None or diagnostic['completion']!='complete') and result['outcome']=='pass':
+            result['outcome']='incomplete'
+    return result,documents
 
 
 def verify_evidence(spec_path, run_path, evidence_root):
@@ -72,7 +80,7 @@ def verify_evidence(spec_path, run_path, evidence_root):
     if not run['error_codes'] and run['outcome']!=evaluation['outcome']:
         raise ValueError('run outcome differs from independent policy evaluation')
     if run['outcome']=='pass' and evaluation['outcome']!='pass':
-        raise ValueError('run claims passing evidence without all six criteria')
+        raise ValueError('run claims passing evidence without the recorded policy criteria and complete measurements')
     return {'schema_version':1,'kind':'pulsar-evidence-verification','spec_id':spec['spec_id'],
             'run_id':run['run_id'],'verified':True,'outcome':run['outcome'],'evaluation':evaluation}
 

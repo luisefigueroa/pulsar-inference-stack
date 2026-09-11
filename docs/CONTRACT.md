@@ -192,7 +192,7 @@ Execution operations independently check their live prerequisites.
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
 | `resources --service-id ID --jsonl` | Stream private diagnostics for a recorded service |
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
-| `policy show baseline-v1` | Read the unchanged policy and digest |
+| `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
 | `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
@@ -226,7 +226,26 @@ requires complete named snapshot coverage on every rank. Commits identify
 measurement producers and observers, not recipes. Missing Stack commit metadata
 is reported as a provenance limitation rather than a new runtime gate.
 
-Evidence is stored separately at `results/baseline-v1/<spec_id>/<run_id>/`.
+Baseline-v2 grades five criteria: snapshot identity, serving smoke, GSM8K,
+one-hour soak, and performance completeness. Their thresholds and measurement
+parameters are unchanged from baseline-v1. Greedy repeatability is retained as
+a diagnostic, including text differences, logprob differences, and source
+capture hashes. Differences never affect the grade. Missing or unusable
+captures prevent a complete passing campaign; malformed evidence is rejected.
+All six measurement documents remain hash-bound to the run, and unchanged
+before/after rank and snapshot coverage is still required.
+
+`contract` advertises `baseline_policies`, a map from supported suite names to
+fixed policy digests. The legacy `baseline_policy_digest` field continues to
+identify baseline-v1. Policy document schema 1 supports either suite; spec and
+run schemas are unchanged. Baseline-v1 evaluation remains schema 1 with its
+original six outcomes. Baseline-v2 evaluation uses schema 2 and adds `suite`
+and `diagnostics`; `diagnostics.compare-captures` contains the validated compact
+measurement, or null when missing, without a pass/fail outcome.
+
+Evidence is stored separately at `results/<suite>/<spec_id>/<run_id>/`, where
+`suite` is `baseline-v1` or `baseline-v2` and must match the saved `policy.json`.
+Only the exact fixed policy digest for that suite is supported.
 A later run does not replace an earlier one. Catalog metadata edits do not
 invalidate runs for the unchanged recipe. Optional timestamped archive
 observations can be attached to summaries; export does not verify archives

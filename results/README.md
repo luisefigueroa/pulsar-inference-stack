@@ -1,6 +1,7 @@
 # Compact measurement evidence
 
-New optional evidence lives at `baseline-v1/<spec_id>/<run_id>/`, with a run
+New optional evidence lives at `baseline-v2/<spec_id>/<run_id>/`; retained
+baseline-v1 campaigns keep their original directories. Each campaign has a run
 record, the recorded policy, compact measurements, and optional summaries.
 The run binds the effective recipe ID and dataset/policy/measurement hashes;
 measurements are not embedded in a mutable spec. Later runs do not replace

@@ -52,7 +52,7 @@ def verify_compact_evidence(spec_path: str | Path, evidence_root: str | Path,
         from .evidence_v2 import verify_evidence
         result=verify_evidence(spec_path,run_path,evidence_root)
         if require_pass and result['outcome']!='pass':
-            fail('all six baseline-v1 criteria and unchanged observations must pass')
+            fail('the recorded policy criteria and unchanged observations must pass')
         return result
     policy, policy_digest = _policy()
     required_ids = set(OPERATION_FILES) | {"baseline-run"}
