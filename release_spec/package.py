@@ -7,6 +7,7 @@ import stat
 
 from . import serving
 from .baseline_evaluate import OPERATION_FILES
+from .baseline_policy import SUPPORTED_POLICY_DIGESTS, load_supported_policy
 from .evidence_v2 import verify_evidence, evidence_summary
 from .measurement import read_stable_bytes
 
@@ -15,7 +16,7 @@ def allowed_path(spec_id, name):
     if name == f'releases/{spec_id}.json':
         return True
     parts=PurePosixPath(name).parts
-    return (len(parts)==5 and parts[:3]==('results','baseline-v1',spec_id)
+    return (len(parts)==5 and parts[0]=='results' and parts[1] in SUPPORTED_POLICY_DIGESTS and parts[2]==spec_id
             and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,99}',parts[3]) is not None
             and parts[4] in set(OPERATION_FILES.values())|{'run.json','policy.json','evaluation.json','summary.json'})
 
@@ -50,9 +51,13 @@ def verify_package(root):
             raise ValueError('package may contain only regular files and directories')
     if actual!=set(package['files'])|{'package.json'}:
         raise ValueError('package contains missing or undeclared artifacts')
-    runs={PurePosixPath(name).parts[3] for name in package['files'] if name.startswith('results/')}
-    for run_id in sorted(runs):
-        directory=root/'results'/'baseline-v1'/spec['spec_id']/run_id
+    runs={(PurePosixPath(name).parts[1],PurePosixPath(name).parts[3])
+          for name in package['files'] if name.startswith('results/')}
+    for suite,run_id in sorted(runs):
+        directory=root/'results'/suite/spec['spec_id']/run_id
+        policy,_=load_supported_policy(directory/'policy.json')
+        if policy['suite']!=suite:
+            raise ValueError('evidence directory differs from recorded policy suite')
         verified=verify_evidence(spec_path,directory/'run.json',root)
         if verified['run_id']!=run_id:
             raise ValueError('run directory differs from recorded run identifier')

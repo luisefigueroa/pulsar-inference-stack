@@ -280,6 +280,8 @@ def evaluate(
     evidence_rows: list[dict[str, str]],
     accuracy_floor: str,
 ) -> tuple[dict[str, Any], dict[str, str], str]:
+    if policy['suite'] != 'baseline-v1':
+        raise ValueError('historical schema-1 evidence requires baseline-v1')
     measurements: list[dict[str, Any]] = []
     outcomes: dict[str, str] = {}
     for gate in policy["gates"]:

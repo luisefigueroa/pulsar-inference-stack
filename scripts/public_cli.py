@@ -81,10 +81,10 @@ def measurement(args):
 
 
 def policy(args):
-    from release_spec.baseline_policy import load_policy
-    if args != ['show', 'baseline-v1']:
-        raise ValueError('usage: pulsar policy show baseline-v1 --json')
-    document, digest = load_policy(ROOT / 'policy/baseline-v1.json')
+    from release_spec.baseline_policy import load_supported_policy, SUPPORTED_POLICY_DIGESTS
+    if len(args) != 2 or args[0] != 'show' or args[1] not in SUPPORTED_POLICY_DIGESTS:
+        raise ValueError('usage: pulsar policy show baseline-v1|baseline-v2 --json')
+    document, digest = load_supported_policy(ROOT / 'policy' / (args[1] + '.json'))
     return {'policy': document, 'policy_digest': digest}
 
 

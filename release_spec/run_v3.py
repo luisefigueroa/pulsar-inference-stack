@@ -97,7 +97,7 @@ def verify_run(record, spec, *, policy_digest=None):
         serving.integer(gate['rc'],'gate.rc')
     expected_names=['verify-snapshot-manifest','serve-smoke','run-gates','evaluate-gsm8k','validate-soak']
     if names!=expected_names[:len(names)]:
-        serving.invalid('run.gates','producer order differs from baseline-v1')
+        serving.invalid('run.gates','producer order differs from the baseline campaign')
     if record['outcome']=='pass' and (not same or record['error_codes'] or names!=expected_names
             or any(gate['rc'] for gate in gates) or set(record['measurement_sha256'])!=OPERATIONS
             or set(record['input_sha256'])!={'dataset','policy'}):
