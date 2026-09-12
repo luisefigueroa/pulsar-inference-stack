@@ -1,0 +1,22 @@
+{
+  "compare-captures": {
+    "diagnostic_verdict": "identical",
+    "exact_text_count": 30,
+    "hard_disagreement_count": 0,
+    "identical_record_count": 30,
+    "max_matched_prefix_logprob_delta": "0",
+    "mean_prefix_match": "1",
+    "min_prefix_match": "1",
+    "sample_count": 30,
+    "source_digests": {
+      "a": "ce9c67368c30e0bc6cbe57de2039837f43a3f41a2f5e4392004a6d450e9dcf1f",
+      "b": "ce9c67368c30e0bc6cbe57de2039837f43a3f41a2f5e4392004a6d450e9dcf1f"
+    }
+  },
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "compare-captures",
+  "program": "validate/compare_captures.py",
+  "reason": "completed",
+  "schema_version": 1
+}
