@@ -64,18 +64,33 @@ all_node_ids() {
 
 verify_record() {
   local record="$1" full="${2:-$FULL}" rank result
+  if [ -n "${PREPARE_VERIFICATION_DIR:-}" ]; then
+    local cached
+    cached=$(printf '%s' "$record" | python3 -m model_library.preparation_verification lookup "$PREPARE_VERIFICATION_DIR") || return 2
+    # Every physical copy is hashed once in this invocation. Later callers
+    # reuse only that result, after the node checks identity and metadata.
+    if [ "$cached" = null ]; then full=1; else record="$cached"; full=0; fi
+  fi
   select_record_manifest "$record" || return 2
   rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255
   result=$(model_node "$rank" "$(model_node_request verify for_runtime: true path "$(json_fields "$record" path)" stamp: "$(json_fields "$record" verification)" full: "$([ "$full" = 1 ] && echo true || echo false)")") || return $?
   local refreshed
   refreshed=$(printf '%s' "$record" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["verification"]=json.loads(sys.argv[1])["verification"]; from model_library.state import now; d["verified_at"]=now() if d["verification"]["method"]=="sha256" else d["verified_at"]; print(json.dumps(d))' "$result") || return 2
-  if [ "${PLAN:-0}" -eq 0 ] && [ "$(json_fields "$refreshed" verification.method)" = sha256 ]; then
+  # A hash performed during planning is persisted only once execution begins,
+  # even when its subsequent filesystem check used matching metadata.
+  if [ "${PLAN:-0}" -eq 0 ] && { [ "$(json_fields "$refreshed" verification.method)" = sha256 ] || [ "$(json_fields "$refreshed" verified_at)" != "$(json_fields "$1" verified_at)" ]; }; then
     model_ctl "$(model_json operation refresh-verification record: "$refreshed")" >/dev/null || return 2
     if [ "$(json_fields "$refreshed" kind)" = pulsar-prepared-view ]; then
       model_node "$rank" "$(model_node_request refresh-view view: "$refreshed")" >/dev/null || return $?
     fi
   fi
+  remember_preparation_verification "$refreshed" || return 2
   printf '%s\n' "$refreshed"
+}
+
+remember_preparation_verification() {
+  [ -n "${PREPARE_VERIFICATION_DIR:-}" ] || return 0
+  printf '%s' "$1" | python3 -m model_library.preparation_verification remember "$PREPARE_VERIFICATION_DIR"
 }
 
 prepared_snapshot_info() {

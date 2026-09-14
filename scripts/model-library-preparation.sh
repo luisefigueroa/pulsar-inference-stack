@@ -17,7 +17,7 @@ prepare_snapshot() {
   [ -n "$SPEC_ID" ] && [ -n "$SPEC_JSON" ] || die "prepare requires a frozen spec"
   require_home
   selected_nodes
-  local home_node home_rank observations existing ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path
+  local home_node home_rank observations existing ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp
   home_node=$(json_fields "$HOME_JSON" node_id)
   home_rank=$(model_physical_rank "$home_node")
   case " ${SELECTED_IDS[*]} " in *" $home_node "*) ;; *) die "home is outside the selected serving nodes; move it explicitly first" ;; esac
@@ -54,7 +54,7 @@ prepare_snapshot() {
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; rm -f "$views_tmp"; return 1; }
   . "$REPO_DIR/scripts/model-transfer.sh"
-  source_rank="$home_rank"; source_path=$(json_fields "$HOME_JSON" path)
+  source_rank="$home_rank"; source_path=$(json_fields "$HOME_JSON" path); source_stamp=$(json_fields "$HOME_JSON" verification)
   # Rank 0 is prepared first when a remote home serves multiple ranks. Its
   # required verified working copy supplies later transfers; no extra home.
   for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
@@ -64,6 +64,7 @@ prepare_snapshot() {
       if [ "$rank" -eq 0 ] && [ "$home_rank" -ne 0 ]; then
         source_rank=0
         source_path=$(python3 -c 'import json,sys; print(next(json.loads(x)["path"] for x in open(sys.argv[1]) if json.loads(x)["node_id"]==sys.argv[2]))' "$views_tmp" "$node")
+        source_stamp=$(python3 -c 'import json,sys; print(json.dumps(next(json.loads(x)["verification"] for x in open(sys.argv[1]) if json.loads(x)["node_id"]==sys.argv[2])))' "$views_tmp" "$node")
       fi
       continue
     fi
@@ -72,16 +73,17 @@ prepare_snapshot() {
       model_node "$rank" "$(model_node_request save-view view: "$row")" >/dev/null || die "home view node record failed"
     else
       stage=$(model_node "$rank" "$(model_node_request begin-view spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") || die "prepared-copy staging failed"
-      model_transfer "$source_rank" "$source_path" "$rank" "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "preparation is incomplete; no all-rank readiness was published"
+      model_transfer "$source_rank" "$source_path" "$rank" "$(json_fields "$stage" path)" "$MANIFEST_JSON" "$source_stamp" publication || die "preparation is incomplete; no all-rank readiness was published"
       result=$(model_node "$rank" "$(model_node_request publish-view stage "$(json_fields "$stage" stage)" spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") || die "prepared-copy publication failed"
       row=$(json_fields "$result" view)
-      if [ "$rank" -eq 0 ]; then source_rank=0; source_path=$(json_fields "$row" path); fi
+      if [ "$rank" -eq 0 ]; then source_rank=0; source_path=$(json_fields "$row" path); source_stamp=$(json_fields "$row" verification); fi
     fi
+    remember_preparation_verification "$row" || die "could not retain preparation verification"
     printf '%s\n' "$row" >>"$views_tmp"
   done
   existing=$(python3 -c 'import json,sys; print(json.dumps(sorted([json.loads(x) for x in open(sys.argv[1])],key=lambda r:r["rank"])))' "$views_tmp")
   rm -f "$views_tmp"
-  # Full all-rank barrier includes reused copies, immediately before record publication.
+  # All-rank barrier checks current identity/metadata, rehashing changed copies.
   local verified_tmp
   verified_tmp=$(mktemp)
   while IFS= read -r row; do
@@ -94,7 +96,10 @@ prepare_snapshot() {
 }
 
 
-prepare_model() {
+prepare_model() (
+  # Subshells used to capture JSON share this private, invocation-only cache.
+  PREPARE_VERIFICATION_DIR=$(mktemp -d) || return 2
+  trap 'rm -rf -- "$PREPARE_VERIFICATION_DIR"' EXIT
   if [ "$VIEW_SCHEMA" != 2 ]; then prepare_snapshot; return; fi
   local name tmp result plan saved_plan="$PLAN" saved_json="$JSON" saved_full="$FULL"
   tmp=$(mktemp)
@@ -122,8 +127,8 @@ PYCODE
     PREPARE_SNAPSHOT="$name"
     prepare_snapshot >/dev/null || return $?
   done 3< <(snapshot_names)
-  FULL=1
+  FULL=0
   result=$(prepared_info) || die "preparation incomplete; required snapshot verification failed"
   FULL="$saved_full"
   emit_result "$result"
-}
+)

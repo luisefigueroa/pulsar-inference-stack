@@ -53,6 +53,7 @@ if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
 SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
 NODE="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
+PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out)

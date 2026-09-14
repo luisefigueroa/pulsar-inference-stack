@@ -142,6 +142,15 @@ an alternate download path.
 **Prepare** copies or links verified files to the required ranks; it does not
 start the server. Prepared files retain metadata stamps so unchanged files
 can avoid unnecessary full rehashing. A changed tree requires verification.
+Each preparation invocation fully hashes the home and every reused working
+copy once, and each new working copy once before accepting staging. Planning,
+source checks, the final rename, and all-rank readiness reuse those results only
+while the complete file set, directory identity, and file metadata still match.
+Changed metadata triggers full hashing; corruption fails verification. The
+temporary preparation cache is removed on exit. A publication fallback that
+changes directory identity also requires another full scan. Metadata reuse
+does not detect silent corruption that leaves metadata unchanged; use
+`./pulsar model info <spec-id> --full` for a full content audit.
 Control SSH, inference traffic and model transfer use distinct configured
 paths. Multi-node preparation preserves the selected transfer contract and
 does not silently change networks.

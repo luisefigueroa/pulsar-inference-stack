@@ -90,6 +90,49 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertGreater(len(f.events('transfer')),len(target_transfers))
         self.assertEqual(len(Store(f.state).views(spec_id=f.spec['spec_id'])),4)
 
+    def test_prepare_hashes_each_physical_copy_once_per_invocation(self):
+        for home in (0, 2):
+            with self.subTest(home=home), tempfile.TemporaryDirectory(dir=self.root) as temp:
+                f = Fixture(Path(temp), 3)
+                self.acquire_candidate(f, nodes=3, home=home)
+                f.cfg['trace_verification'] = True; f.save()
+                size = f.spec['recipe']['model']['snapshot_manifest']['total_bytes']
+                for attempt in range(2):
+                    before = len(f.events('verification-read'))
+                    self.success(f.run('prepare', '--yes', spec=True))
+                    reads = f.events('verification-read')[before:]
+                    self.assertEqual({rank: sum(r['bytes'] for r in reads if r['rank'] == rank)
+                                      for rank in range(3)}, dict.fromkeys(range(3), size))
+                    self.assertEqual(list((f.root / 'tmp').iterdir()), [])
+                before = len(f.events('verification-read'))
+                self.success(f.run('info', '--full', spec=True))
+                self.assertEqual(sum(r['bytes'] for r in f.events('verification-read')[before:]), 3 * size)
+
+    def test_speculative_prepare_reuses_planning_and_final_set_verification(self):
+        f = self.speculative_fixture(nodes=3, draft_home=2)
+        f.cfg['trace_verification'] = True; f.save()
+        store = Store(f.state)
+        for home in store.records('homes'):
+            home['verified_at'] = '2000-01-01T00:00:00Z'
+            store.put('homes', home['snapshot_manifest_id'], home)
+        self.success(f.run('prepare', '--yes', spec=True))
+        size = sum(model['snapshot_manifest']['total_bytes'] for model in
+                   [f.spec['recipe']['model'], *f.spec['recipe']['required_snapshots'].values()])
+        reads = f.events('verification-read')
+        self.assertEqual({rank: sum(r['bytes'] for r in reads if r['rank'] == rank)
+                          for rank in range(3)}, dict.fromkeys(range(3), size))
+        self.assertEqual(list((f.root / 'tmp').iterdir()), [])
+        self.assertTrue(all(home['verified_at'] != '2000-01-01T00:00:00Z'
+                            for home in store.records('homes')))
+
+    def test_prepare_final_barrier_rejects_changed_published_copy(self):
+        f = self.fixture(3)
+        self.acquire_candidate(f, nodes=3)
+        f.cfg['node_mutation'] = {'operation': 'publish-view', 'rank': 1}; f.save()
+        self.failure(f.run('prepare', '--yes', spec=True), 'SHA-256')
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']), [])
+        self.assertEqual(list((f.root / 'tmp').iterdir()), [])
+
     def test_speculative_preparation_retention_and_archive_coverage(self):
         f=self.speculative_fixture(draft_home=1)
         self.failure(f.run('archive','create','--yes',spec=True),'--snapshot')

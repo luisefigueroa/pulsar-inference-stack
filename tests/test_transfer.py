@@ -102,6 +102,14 @@ class TransferShell(unittest.TestCase):
             for name,data in contents.items():
                 path=source/name;path.parent.mkdir(exist_ok=True);path.write_bytes(data)
             manifest=manifest_for(contents);(root/'manifest.json').write_text(json.dumps(manifest))
+            source_arguments = ''
+            if mode == 'source-change':
+                from model_library.integrity import verify_tree
+                source_arguments = shlex.quote(json.dumps(verify_tree(source, manifest)))
+                changed = source / 'part-0.bin'
+                before = changed.stat()
+                changed.write_bytes(b'x' * before.st_size)
+                os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
             dest=root/('.pending-'+'b'*32)/'snapshots'/('a'*40);dest.mkdir(parents=True)
             mock=root/'rsync.py';mock.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,shutil,sys,time
@@ -115,6 +123,7 @@ if not dest.startswith('/'):dest=dest.split(':',1)[1]
 for name in listfile.read_bytes().split(b'\\0'):
  if not name:continue
  target=pathlib.Path(dest)/name.decode();target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(pathlib.Path(source)/name.decode(),target)
+ if os.environ['TRANSFER_MODE']=='destination-change' and name==b'part-0.bin':target.write_bytes(b'x'*target.stat().st_size)
 ''');mock.chmod(0o755)
             ip=root/'ip.py';ip.write_text('''#!/usr/bin/env python3
 import json,os
@@ -138,7 +147,7 @@ ssh_node() {{
     if [ "$TRANSFER_MODE" = remote-route ]; then printf '[{{"dev":"mgmt0","prefsrc":"198.51.100.%s"}}]\\n' "$((10+$1))"; else printf '[{{"dev":"fabric0","prefsrc":"198.51.100.%s"}}]\\n' "$((10+$1))"; fi
   else bash -c "$2"; fi
 }}
-model_transfer {1 if relay else remote if pull else 0} {shlex.quote(str(source))} {0 if pull else remote} {shlex.quote(str(dest))} "$(cat {shlex.quote(str(root/'manifest.json'))})"
+model_transfer {1 if relay else remote if pull else 0} {shlex.quote(str(source))} {0 if pull else remote} {shlex.quote(str(dest))} "$(cat {shlex.quote(str(root/'manifest.json'))})" {source_arguments}
 '''
             env={**os.environ,'TRANSFER_FIXTURE':str(root),'TRANSFER_MODE':mode,'PULSAR_RSYNC':str(mock),'PULSAR_IP':str(ip),'PULSAR_SSH':str(ssh) if relay else 'ssh'}
             result=subprocess.run(['bash','-c',body],env=env,cwd=ROOT,text=True,capture_output=True)
@@ -155,6 +164,20 @@ model_transfer {1 if relay else remote if pull else 0} {shlex.quote(str(source))
                 self.assertIn(f'HostKeyAlias=alias-{nodes-1}',shell)
                 self.assertIn('BindAddress=198.51.100.10',shell)
                 self.assertNotIn('--delete',args)
+
+    def test_changed_source_stamp_rejects_before_transfer(self):
+        for relay in (False, True):
+            with self.subTest(relay=relay):
+                result, argv, actual, _ = self.scenario(3, mode='source-change', relay=relay)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('SHA-256', result.stderr)
+                self.assertEqual(argv, [])
+                self.assertEqual(actual, [])
+
+    def test_standalone_transfer_still_verifies_destination(self):
+        result, _, _, _ = self.scenario(mode='destination-change')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('SHA-256', result.stderr)
 
     def test_two_remote_relay_uses_pipes_and_both_confirmed_identities(self):
         result,argv,actual,expected=self.scenario(3,relay=True)

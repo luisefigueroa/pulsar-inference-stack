@@ -7,12 +7,16 @@ model_transfer() (
   local source_rank="${1:?source physical rank}" source_path="${2:?source snapshot}"
   local destination_rank="${3:?destination physical rank}" destination_path="${4:?destination staging snapshot}"
   local manifest="${5:?canonical manifest JSON}" transfer_map remote_rank alias expected_alias
+  # Preparation supplies a stamp from this invocation and immediately publishes
+  # the stage; publication owns its destination hash. Other callers stay full.
+  local source_stamp="${6:-null}" destination_verification="${7:-transfer}"
+  case "$destination_verification" in transfer|publication) ;; *) die "invalid destination verification owner" ;; esac
   local local_ip local_dev remote_ip remote_dev route shell command revision temp effective pid rc=0
   local -a children=() ssh_argv=() fields=()
   [[ "$source_rank" =~ ^[0-9]+$ ]] && [[ "$destination_rank" =~ ^[0-9]+$ ]] || die "physical ranks must be nonnegative integers"
   [ "$source_rank" != "$destination_rank" ] || die "same-node copies use the local storage copy operation"
   if [ "$source_rank" != 0 ] && [ "$destination_rank" != 0 ]; then
-    model_transfer_relay "$source_rank" "$source_path" "$destination_rank" "$destination_path" "$manifest"
+    model_transfer_relay "$source_rank" "$source_path" "$destination_rank" "$destination_path" "$manifest" "$source_stamp" "$destination_verification"
     return
   fi
   require_topology_ssh_trust >/dev/null || die "transfer requires enrolled confirmed SSH identities"
@@ -45,7 +49,7 @@ model_transfer() (
   route=$(ssh_node "$remote_rank" "$command") || die "remote RoCE route is unavailable"
   printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$local_ip" --netdev "$remote_dev" --source-ip "$remote_ip" || die "remote route differs from confirmed rail"
   # Verify source bytes through the existing node service; no parallel schema.
-  model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" full: true)" >/dev/null || die "transfer source does not match manifest"
+  model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" stamp: "$source_stamp" full: false)" >/dev/null || die "transfer source does not match manifest"
   command=$(python3 -m model_library.transfer staging-code)
   if [ "$destination_rank" = 0 ]; then
     python3 -c "$command" "$destination_path" "$revision" || die "destination staging is unsafe"
@@ -71,8 +75,12 @@ model_transfer() (
     children=("${children[@]:1}")
     [ "$rc" = 0 ] || die "snapshot stream failed (exit=$rc); pending staging retained" "$rc"
   done
-  model_node "$destination_rank" "$(model_json operation verify manifest: "$manifest" path "$destination_path" full: true)" >/dev/null || die "transferred snapshot differs from manifest"
-  log "Snapshot transferred and verified across $effective streams on the confirmed rail." >&2
+  if [ "$destination_verification" = transfer ]; then
+    model_node "$destination_rank" "$(model_json operation verify manifest: "$manifest" path "$destination_path" full: true)" >/dev/null || die "transferred snapshot differs from manifest"
+    log "Snapshot transferred and verified across $effective streams on the confirmed rail." >&2
+  else
+    log "Snapshot transferred across $effective streams; staging publication will verify received bytes." >&2
+  fi
 )
 
 # Selected explicitly for a move between two remote nodes. The controller holds
@@ -81,6 +89,8 @@ model_transfer_relay() (
   set -euo pipefail
   set +m
   local source_rank="${1:?}" source_path="${2:?}" destination_rank="${3:?}" destination_path="${4:?}" manifest="${5:?}"
+  local source_stamp="${6:-null}" destination_verification="${7:-transfer}"
+  case "$destination_verification" in transfer|publication) ;; *) die "invalid destination verification owner" ;; esac
   local temp effective revision role rank mapped route command local_ip local_dev remote_ip remote_dev alias rshell stream send receive pipeline pid rc=0
   local -a children=() fields=()
   local -A shells=() aliases=()
@@ -114,7 +124,7 @@ model_transfer_relay() (
     aliases[$role]="$alias"
   done
   log "Move transfer route: physical node $source_rank → controller pipe → physical node $destination_rank; verified RoCE rail on each leg, no controller model copy." >&2
-  model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" full: true)" >/dev/null || die "relay source does not match manifest"
+  model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" stamp: "$source_stamp" full: false)" >/dev/null || die "relay source does not match manifest"
   command=$(python3 -m model_library.transfer staging-code)
   ssh_node "$destination_rank" "$(shell_join_q python3 -c "$command" "$destination_path" "$revision")" || die "relay destination staging is unsafe"
   for ((stream=0; stream<effective; stream++)); do
@@ -129,8 +139,12 @@ model_transfer_relay() (
     children=("${children[@]:1}")
     [ "$rc" = 0 ] || die "relay stream failed (exit=$rc); pending staging retained" "$rc"
   done
-  model_node "$destination_rank" "$(model_json operation verify manifest: "$manifest" path "$destination_path" full: true)" >/dev/null || die "relayed snapshot differs from manifest"
-  log "Snapshot relayed and verified across $effective streams; controller stored no model files." >&2
+  if [ "$destination_verification" = transfer ]; then
+    model_node "$destination_rank" "$(model_json operation verify manifest: "$manifest" path "$destination_path" full: true)" >/dev/null || die "relayed snapshot differs from manifest"
+    log "Snapshot relayed and verified across $effective streams; controller stored no model files." >&2
+  else
+    log "Snapshot relayed across $effective streams; staging publication will verify received bytes." >&2
+  fi
 )
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
