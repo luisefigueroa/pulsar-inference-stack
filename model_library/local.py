@@ -79,15 +79,26 @@ def begin_staging(parent: Path, *, archive: bool = False) -> Path:
     return stage
 
 
-def finish_staging(stage: Path, destination: Path, manifest: dict, *, archive: bool = False) -> dict:
+def finish_staging(stage: Path, destination: Path, manifest: dict, *, archive: bool = False,
+                   reuse_verification: bool = False) -> dict:
     manifest = verify_manifest(manifest)
     if stage.parent != destination.parent or not stage.name.startswith('.pending-'):
         raise StorageError('publication requires owned same-filesystem staging')
-    checked = verify_tree(payload(stage, manifest), manifest, full=True)
-    atomic_json(stage / 'manifest.json', manifest, replace=False, private=not archive)
-    rename_no_replace(stage, destination)
-    # Saved metadata names the final directory; its root may have changed on rename.
-    return verify_tree(payload(destination, manifest), manifest, full=True)
+    # Keep the verified directory open through publication, preventing inode
+    # recycling. Only its controlled pathname changes in the candidate stamp;
+    # the verifier must still match all original directory/file fingerprints.
+    with directory(payload(stage, manifest)) as snapshot:
+        checked = verify_tree(payload(stage, manifest), manifest, full=True)
+        if metadata(os.fstat(snapshot)) != checked['root']:
+            raise StorageError('staging snapshot was replaced during verification')
+        atomic_json(stage / 'manifest.json', manifest, replace=False, private=not archive)
+        rename_no_replace(stage, destination)
+        final_path = payload(destination, manifest)
+        # The no-renameat2 fallback changes directory identities and therefore
+        # automatically performs a full scan, as does any other metadata drift.
+        return verify_tree(final_path, manifest,
+                           stamp={**checked, 'path': str(final_path)},
+                           full=not reuse_verification)
 
 
 def copy_snapshot(source: Path, root: str | Path, manifest: dict, *, archive: bool = False) -> tuple[Path, dict]:

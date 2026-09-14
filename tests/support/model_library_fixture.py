@@ -89,7 +89,28 @@ def rewrite_bundled_program(program, cfg, current):
 
 
 def run_bundled_node_program(program, **kwargs):
+    if read().get('trace_verification'):
+        hook = (' import runpy\n'
+                f' runpy.run_path({str(Path(__file__).resolve())!r})["trace_verification"]()\n')
+        program = program.replace(' from model_library.node import main\n',
+                                  hook + ' from model_library.node import main\n')
     return subprocess.run([sys.executable, "-"], input=program.encode(), **kwargs)
+
+
+def trace_verification():
+    """Count actual bytes read by the real bundled SHA-256 verifier."""
+    from model_library import integrity
+    original = integrity.os.read
+
+    def tracked_read(fd, size):
+        data = original(fd, size)
+        caller = sys._getframe(1)
+        if (data and caller.f_code.co_name == 'verify_tree'
+                and caller.f_globals.get('__name__') == 'model_library.integrity'):
+            event('verification-read', bytes=len(data), path=str(caller.f_locals['path']))
+        return data
+
+    integrity.os.read = tracked_read
 
 
 def check_shell_paths(command):
@@ -178,6 +199,21 @@ def tool(kind, argv):
                     return result.returncode
             print("fixture interrupted the selected node operation", file=sys.stderr)
             return 255
+        mutation = cfg.get('node_mutation', {})
+        if mutation.get('operation') == request['operation'] and mutation.get('rank') == rank():
+            result = run_bundled_node_program(rewritten, capture_output=True)
+            if result.returncode == 0:
+                view = json.loads(result.stdout)['view']
+                tree = contained(view['path'])
+                name = request['manifest']['files'][0]['path']
+                target = contained(tree / name)
+                before = target.stat()
+                data = target.read_bytes()
+                target.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+                os.utime(target, ns=(before.st_atime_ns, before.st_mtime_ns))
+            sys.stdout.buffer.write(result.stdout)
+            sys.stderr.buffer.write(result.stderr)
+            return result.returncode
         return run_bundled_node_program(rewritten).returncode
     if kind == "node-check":
         return 0 if cfg["nodes"][int(argv[0])]["available"] else 255

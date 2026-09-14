@@ -4,10 +4,12 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from release_spec import build_snapshot_manifest
 from model_library.integrity import StorageError, atomic_json, read_json, verify_tree
-from model_library.local import copy_snapshot, location, payload, restore, verify_archive
+from model_library.local import (begin_staging, copy_files, copy_snapshot, finish_staging,
+                                 location, payload, restore, verify_archive)
 from model_library.state import Store, ensure_directory
 
 
@@ -28,6 +30,60 @@ class IntegrityTests(unittest.TestCase):
         stamp = verify_tree(self.source, self.manifest)
         self.assertEqual(stamp['method'], 'sha256')
         self.assertEqual(verify_tree(self.source, self.manifest, stamp=stamp, full=False)['method'], 'metadata')
+
+    def staging(self):
+        stage = begin_staging(self.base / 'views')
+        copy_files(self.source, payload(stage, self.manifest), self.manifest)
+        return stage, stage.parent / 'accepted'
+
+    def test_staging_rename_reuses_one_hash_and_binds_final_path(self):
+        stage, destination = self.staging()
+        from model_library import integrity
+        with patch.object(integrity.os, 'read', wraps=os.read) as reads:
+            checked = finish_staging(stage, destination, self.manifest, reuse_verification=True)
+        # Each small file is read once for bytes and once for EOF.
+        self.assertEqual(reads.call_count, 2 * self.manifest['file_count'])
+        self.assertEqual(checked['method'], 'metadata')
+        self.assertEqual(checked['path'], str(payload(destination, self.manifest)))
+        self.assertEqual(verify_tree(checked['path'], self.manifest, stamp=checked,
+                                     full=False)['method'], 'metadata')
+
+    def test_staging_mutation_or_replacement_during_rename_is_rejected(self):
+        from model_library.integrity import rename_no_replace
+        import shutil
+        for replace in (False, True):
+            with self.subTest(replace=replace):
+                stage, destination = self.staging()
+                destination = destination.with_name('replace' if replace else 'modify')
+
+                def changed_rename(source, target):
+                    rename_no_replace(source, target)
+                    tree = payload(target, self.manifest)
+                    if replace:
+                        tree.rename(tree.with_name('displaced'))
+                        shutil.copytree(tree.with_name('displaced'), tree)
+                    weights = tree / 'weights.bin'
+                    original = weights.stat()
+                    weights.write_bytes(b'Fixture weights')
+                    os.utime(weights, ns=(original.st_atime_ns, original.st_mtime_ns))
+
+                with patch('model_library.local.rename_no_replace', side_effect=changed_rename):
+                    with self.assertRaisesRegex(StorageError, 'SHA-256'):
+                        finish_staging(stage, destination, self.manifest, reuse_verification=True)
+
+    def test_staging_fallback_rehashes_changed_directory_identity(self):
+        stage, destination = self.staging()
+        with patch('model_library.integrity._renameat2_no_replace', return_value=False):
+            checked = finish_staging(stage, destination, self.manifest, reuse_verification=True)
+        self.assertEqual(checked['method'], 'sha256')
+
+    def test_full_audit_reads_again_despite_valid_stamp(self):
+        stamp = verify_tree(self.source, self.manifest)
+        from model_library import integrity
+        with patch.object(integrity.os, 'read', wraps=os.read) as reads:
+            checked = verify_tree(self.source, self.manifest, stamp=stamp, full=True)
+        self.assertEqual(reads.call_count, 2 * self.manifest['file_count'])
+        self.assertEqual(checked['method'], 'sha256')
 
     def test_same_size_corruption_refuses_even_with_previous_stamp(self):
         stamp = verify_tree(self.source, self.manifest)

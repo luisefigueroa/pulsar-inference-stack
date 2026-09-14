@@ -206,7 +206,7 @@ def run(request: dict) -> dict:
     if op == 'publish-view':
         require_serving_filesystem(view_root)
         dest=view_destination(view_root,view_identity)
-        checked=finish_staging(Path(request['stage']),dest,manifest)
+        checked=finish_staging(Path(request['stage']),dest,manifest,reuse_verification=True)
         from .local import prepared_record
         home=home_record(manifest,request['node_id'],dest,checked)
         record=prepared_record(home,spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'],schema_version=request.get('view_schema',1))
