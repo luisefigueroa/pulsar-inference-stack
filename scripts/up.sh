@@ -13,6 +13,8 @@ usage: scripts/up.sh SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate
   --override-file FILE   Explicit typed execution changes; report a modified recipe
+  --memory-estimate-file FILE  Explicit estimate of resident weights for this spec
+  --memory-estimate-id ID      Require the previously reviewed estimate digest
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE_ID        Select a confirmed node for a one-node spec
@@ -24,21 +26,26 @@ usage: scripts/up.sh SPEC_ID [options]
 
 Model-file verification cannot be skipped. Overrides create a distinct effective
 spec without changing the selected catalog entry or inheriting its measurements.
+Explicit memory estimates are admission guidance; see docs/MEMORY_ESTIMATES.md.
 HELP
 }
 case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 
 NAME="${1:-}"
 unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
+unset PULSAR_MEMORY_ESTIMATE_JSON
 [ -n "$NAME" ] || die "usage: $0 <model-name> [options]"
 shift
 
 SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
 DRY=0 VERBOSE=0 NODE_SELECTOR=""
+MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-file requires a file" 2; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
     --force) refuse_removed_force_flag ;;
@@ -69,6 +76,9 @@ done
 
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
+if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_ID" ]; then
+  select_memory_estimate "$MEMORY_ESTIMATE_FILE" "" "$MEMORY_ESTIMATE_ID"
+fi
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
   die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
 fi
@@ -190,12 +200,16 @@ else
 fi
 
 # --- memory ---
+MEMORY_ARGS=()
+if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+  MEMORY_ARGS=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
+fi
 set +e
 if [ "$VERBOSE" = 1 ]; then
-  "$REPO_DIR/scripts/check-memory.sh" "$NAME" "${PLACEMENT_ARGS[@]}"
+  "$REPO_DIR/scripts/check-memory.sh" "$NAME" "${PLACEMENT_ARGS[@]}" "${MEMORY_ARGS[@]}"
   mem_rc=$?
 else
-  QUIET=1 "$REPO_DIR/scripts/check-memory.sh" "$NAME" "${PLACEMENT_ARGS[@]}"
+  QUIET=1 "$REPO_DIR/scripts/check-memory.sh" "$NAME" "${PLACEMENT_ARGS[@]}" "${MEMORY_ARGS[@]}"
   mem_rc=$?
 fi
 set -e
@@ -276,7 +290,8 @@ fi
 LAUNCH_ACTION=start
 [ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
-echo "PASS  plan      schema=3 ranks=$NODES; prerequisites checked separately"
+plan_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema_version"])' "$PLAN_FILE")
+echo "PASS  plan      schema=$plan_schema ranks=$NODES; prerequisites checked separately"
 
 if [ "$DRY" = 1 ]; then
   cat <<EOF
@@ -293,6 +308,9 @@ EOF
 fi
 
 # --- launch ---
+if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+  launch_flags+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
+fi
 export PULSAR_ACCEPT_MEMORY_WARN="$ACCEPT_MEM"
 if [ "$NODES" -gt 1 ]; then
   log "starting exact $NODES-node cluster…"

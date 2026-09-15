@@ -108,6 +108,14 @@ def evaluate(args):
 
 
 def dispatch(command, args):
+    if command == 'memory' and args[:1] == ['verify']:
+        from release_spec.memory_estimate import load
+        parser=CommandParser()
+        parser.add_argument('--file',required=True)
+        parser.add_argument('--spec-file',required=True)
+        parser.add_argument('--estimate-id')
+        options=parser.parse_args(args[1:])
+        return load(options.file,serving.load_spec(options.spec_file),expected_id=options.estimate_id)
     if command == 'observe':
         result = execute('scripts/observe-serving.sh', args, json_result=True)
         result['producer'] = producer_provenance()
@@ -214,7 +222,7 @@ def main(argv=None):
             raise ValueError('a public command is required')
         # Interpret artifact paths at the user's working directory before
         # entering Stack's implementation directory.
-        path_flags={'--spec-file','--manifest','--manifest-out','--override-file','--overlay'}
+        path_flags={'--spec-file','--manifest','--manifest-out','--override-file','--overlay','--memory-estimate-file'}
         for index in range(1,len(argv)):
             if argv[index-1] in path_flags:
                 argv[index]=str(Path(argv[index]).absolute())

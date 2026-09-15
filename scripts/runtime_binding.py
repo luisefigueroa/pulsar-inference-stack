@@ -61,7 +61,7 @@ def main():
         spec=load_spec(args.spec)
         if args.command=='prepared-shell':print(prepared_shell(json.load(sys.stdin),spec,args.topology_id));return 0
         plan=launch_plan.validate_launch_plan(json.loads(Path(args.plan).read_text()))
-        if plan.get('schema_version') in (3, 4):
+        if plan.get('schema_version') in (3, 4, 5):
             from datetime import datetime, timezone
             from scripts.container_runtime import observe_rank as observe_current_rank
             if spec['spec_id'] != plan['selected_spec_id']:

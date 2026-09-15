@@ -25,16 +25,21 @@ if [ "${1:-}" = "--list" ]; then
 fi
 
 case "${1:-}" in -h|--help)
-  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--override-file FILE] [--node NODE_ID] [--port N] [--replace] [--dry-run]'
+  echo 'usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--override-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--node NODE_ID] [--port N] [--replace] [--dry-run]'
   echo 'Use --list to inspect catalog specs. Explicit overrides produce a modified recipe.'
   exit 0 ;;
 esac
 MODEL_NAME="${1:?usage: serve.sh SPEC_ID [-d] [--spec-file FILE] [--node NODE_ID] [--dry-run]}"
 shift
+unset PULSAR_MEMORY_ESTIMATE_JSON
+MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 
 DETACH="" SPEC_MODE=auto DRY_RUN=0 PORT_OVERRIDE="" NODE_SELECTOR="" REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-file requires a file" 2; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
+    --memory-estimate-frozen) [ "$#" -ge 2 ] && [ -n "$2" ] || die "internal memory estimate is missing" 2; MEMORY_ESTIMATE_FROZEN="$2"; shift ;;
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
     --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
@@ -64,6 +69,9 @@ done
 
 acquire_model_library_lifecycle_lock shared
 load_conf "$MODEL_NAME"
+if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
+  select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID"
+fi
 require_spec_platform_admission "$MODEL_NAME"
 acquire_model_library_hot_lock shared
 if [ -n "$PORT_OVERRIDE" ]; then

@@ -8,7 +8,7 @@
 # are already resident — free RAM is OS headroom, not cold capacity).
 set -euo pipefail
 # shellcheck disable=SC2034  # read by lib.sh log/warn/die
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-memory.sh SPEC [--spec-file FILE] [--node NODE] [--cold-start] [--json]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-memory.sh SPEC [--spec-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--node NODE] [--cold-start] [--json]"; exit 0; fi
 SCRIPT_NAME=check-memory
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -17,12 +17,17 @@ JSON=0
 OVERRIDE_LEN=""
 NODE_SELECTOR=""
 FORCE_COLD_START=0
+unset PULSAR_MEMORY_ESTIMATE_JSON
+MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 NAME="${1:-}"
 [ -n "$NAME" ] || die "usage: $0 <model-name> [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]"
 shift || true
 while [ $# -gt 0 ]; do
   case "$1" in
     --spec-file) [ $# -ge 2 ] || die "--spec-file needs a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate file" 3; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate ID" 3; MEMORY_ESTIMATE_ID="$2"; shift ;;
+    --memory-estimate-frozen) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing frozen memory estimate" 3; MEMORY_ESTIMATE_FROZEN="$2"; shift ;;
     --json) JSON=1 ;;
     --node)
       [ "$#" -ge 2 ] || die "--node requires a topology node id or hostname" 2
@@ -37,6 +42,9 @@ while [ $# -gt 0 ]; do
 done
 
 load_conf "$NAME"
+if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
+  select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID" 3
+fi
 require_cluster_nodes "$NODES" >/dev/null || die "confirmed topology lacks required serving nodes"
 if [ "$NODES" -eq 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
@@ -62,6 +70,35 @@ fi
 need_footprint=$(awk -v w="$w_rank" -v k="$kv" -v o="$overhead" \
   'BEGIN{printf "%.2f", w+k+o}')
 need_start=$(awk -v f="$need_footprint" -v s="$spike" 'BEGIN{printf "%.2f", f+s}')
+
+declare -a rank_weights=() rank_footprints=() rank_start_needs=()
+if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+  estimate_rows=$(python3 - <<'PY'
+import json,os
+from release_spec.memory_estimate import weights_gib
+v=json.loads(os.environ['PULSAR_MEMORY_ESTIMATE_JSON'])
+w=weights_gib(v)
+print(f'{sum(w):.2f}')
+for value in w: print(f'{value:.2f}')
+PY
+  ) || die "cannot read frozen memory estimate" 3
+  mapfile -t estimate_values <<<"$estimate_rows"
+  weights="${estimate_values[0]}"
+  rank_weights=("${estimate_values[@]:1}")
+  [ "${#rank_weights[@]}" -eq "$NODES" ] || die "memory estimate rank coverage differs" 3
+else
+  for ((rank = 0; rank < NODES; rank++)); do rank_weights[$rank]="$w_rank"; done
+fi
+for ((rank = 0; rank < NODES; rank++)); do
+  rank_footprints[$rank]=$(awk -v w="${rank_weights[$rank]}" -v k="$kv" -v o="$overhead" 'BEGIN{printf "%.2f", w+k+o}')
+  rank_start_needs[$rank]=$(awk -v f="${rank_footprints[$rank]}" -v s="$spike" 'BEGIN{printf "%.2f", f+s}')
+done
+if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+  # Preserve scalar summary fields as maxima; decisions use each rank's value.
+  w_rank=$(printf '%s\n' "${rank_weights[@]}" | sort -n | tail -n 1)
+  need_footprint=$(printf '%s\n' "${rank_footprints[@]}" | sort -n | tail -n 1)
+  need_start=$(printf '%s\n' "${rank_start_needs[@]}" | sort -n | tail -n 1)
+fi
 
 mml=$(parse_max_model_len)
 [ -n "$OVERRIDE_LEN" ] && mml="$OVERRIDE_LEN"
@@ -112,7 +149,7 @@ for ((rank = 0; rank < NODES; rank++)); do
 done
 
 check_node_cold() {
-  local label="$1" avail="$2"
+  local label="$1" avail="$2" need_footprint="$3" need_start="$4"
   if awk -v a="$avail" -v f="$floor" 'BEGIN{exit !(a+0 < f)}'; then
     result=fail
     reason="${reason}${label}: available ${avail} GiB < hard floor ${floor} GiB; "
@@ -165,7 +202,7 @@ if [ "$topology_ready" = 1 ]; then
     for ((rank = 0; rank < NODES; rank++)); do
       check_label="rank $rank"
       [ "$NODES" -eq 1 ] && check_label="$SINGLE_NODE_HOSTNAME"
-      check_node_cold "$check_label" "${rank_avail[$rank]}"
+      check_node_cold "$check_label" "${rank_avail[$rank]}" "${rank_footprints[$rank]}" "${rank_start_needs[$rank]}"
     done
   fi
 fi
@@ -199,14 +236,27 @@ if n==1:
   hostname=os.environ.get("PLACEMENT_HOSTNAME_V") or None,ssh_host=os.environ.get("PLACEMENT_SSH_V") or None,
   remote=os.environ.get("PLACEMENT_REMOTE_V")=="1")
  ranks[0].update(placement)
-print(json.dumps(dict(schema_version=1,kind="pulsar-memory-check",model=name,result=result,mode=mode,
+document=dict(schema_version=1,kind="pulsar-memory-check",model=name,result=result,mode=mode,
  already_loaded=already=="1",already_how=already_how,footprint_gib=float(footprint),need_start_gib=float(need),
  weights_gib_total=float(weights),weights_gib_per_rank=float(w_rank),kv_gib=float(kv),overhead_gib=float(overhead),
  buffer_gib=float(buffer),spike_gib=float(spike),hard_floor_gib=float(floor),head_available_gib=available[0],
  worker_available_gib=available[1] if n>1 else None,placement=placement,rank_available_gib=ranks,
- max_model_len=mml or None,kv_fixed=kv_fixed=="1",note=note,reason=reason.strip()),indent=2))
+ max_model_len=mml or None,kv_fixed=kv_fixed=="1",note=note,reason=reason.strip())
+if os.environ.get('PULSAR_MEMORY_ESTIMATE_JSON'):
+ from release_spec.memory_estimate import weights_gib
+ estimate=json.loads(os.environ['PULSAR_MEMORY_ESTIMATE_JSON'])
+ document.update(memory_estimate_id=estimate['estimate_id'],memory_estimate_basis=estimate['estimate']['basis'])
+ for row,w in zip(ranks,weights_gib(estimate)):
+  f=round(round(w,2)+float(kv)+float(overhead),2)
+  row.update(weights_gib=round(w,2),footprint_gib=f,need_start_gib=round(f+float(spike),2),
+             projected_residual_gib=round(row['available_gib']-f,2))
+print(json.dumps(document,indent=2))
 PY
 else
+  if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+    estimate_summary=$(python3 -c 'import json,os; d=json.loads(os.environ["PULSAR_MEMORY_ESTIMATE_JSON"]); print(d["estimate_id"][:12]+" · "+d["estimate"]["basis"])')
+    print_hanging "INFO  memory estimate  " "$estimate_summary"
+  fi
   if [ "${QUIET:-0}" = 1 ]; then
     case "$result" in
       pass)

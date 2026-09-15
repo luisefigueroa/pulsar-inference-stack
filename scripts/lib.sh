@@ -713,6 +713,27 @@ estimate_weights_ram_gib() {
   estimate_weights_gib
 }
 
+# Freeze a selected estimate into a readonly process value. Child admission
+# commands receive it explicitly as one argv item; they never reread its source.
+select_memory_estimate() {
+  local file="${1:-}" frozen="${2:-}" expected="${3:-}" error_code="${4:-2}" value
+  local -a args=(--spec-file "$CONF_PATH"
+    --effective-spec-id "${PULSAR_EFFECTIVE_SPEC_ID:-$CONF_NAME}")
+  if [ -n "$file" ] && [ -n "$frozen" ]; then
+    die "select only one memory estimate input" "$error_code"
+  fi
+  if [ -n "$file" ]; then args+=(--file "$file")
+  elif [ -n "$frozen" ]; then args+=(--frozen-json "$frozen")
+  else die "memory estimate ID requires an estimate input" "$error_code"
+  fi
+  [ -z "${PULSAR_OVERRIDE_FILE:-}" ] || args+=(--override-file "$PULSAR_OVERRIDE_FILE")
+  [ -z "$expected" ] || args+=(--estimate-id "$expected")
+  value=$(python3 "$REPO_DIR/scripts/memory_estimate.py" "${args[@]}") \
+    || die "memory estimate is invalid for the effective spec" "$error_code"
+  declare -gr PULSAR_MEMORY_ESTIMATE_JSON="$value"
+  export PULSAR_MEMORY_ESTIMATE_JSON
+}
+
 estimate_kv_gib() {
   if [ -n "${KV_GIB}" ]; then
     echo "$KV_GIB"
@@ -1293,13 +1314,19 @@ if expected and expected != spec['spec_id']:
 facts=dict(lifecycle_action=os.environ['PULSAR_PLAN_ACTION'],port=int(os.environ['PORT']),
            master_port=int(os.environ.get('MASTER_PORT') or '29500'),served_name=os.environ['SERVED_NAME'],
            topology_id=os.environ['CLUSTER_TOPOLOGY_ID'],ranks=json.loads(os.environ['PULSAR_PLAN_RANKS_JSON']))
+if os.environ.get('PULSAR_MEMORY_ESTIMATE_JSON'):
+    from release_spec.memory_estimate import parse, validate_frozen
+    facts['memory_estimate']=validate_frozen(parse(os.environ['PULSAR_MEMORY_ESTIMATE_JSON'].encode()),spec)
 plan=build_plan(spec,selected,facts,json.loads(os.environ['PULSAR_PREPARED_SET_JSON']),selected_spec=selected_document)
 pathlib.Path(sys.argv[1]).write_text(json.dumps(plan,sort_keys=True,indent=2)+'\n')
 result_path=os.environ.get('PULSAR_LAUNCH_RESULT_FILE')
 if result_path:
-    pathlib.Path(result_path).write_text(json.dumps(dict(service_id=plan['service_id'],
+    result=dict(service_id=plan['service_id'],
         selected_spec_id=selected,spec_id=plan['spec_id'],matches_selected_spec=plan['matches_selected_spec'],
-        effective_spec=plan['spec'],lifecycle_action=plan['lifecycle_action'])))
+        effective_spec=plan['spec'],lifecycle_action=plan['lifecycle_action'])
+    if 'memory_estimate' in plan:
+        result['memory_estimate_id']=plan['memory_estimate']['estimate_id']
+    pathlib.Path(result_path).write_text(json.dumps(result))
 PYCODE
 }
 
@@ -2802,10 +2829,13 @@ container_exists_exact() {
 
 require_launch_operational_checks() {
   local rc=0
-  local -a placement=()
+  local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
+    memory_args+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
+  fi
   "$REPO_DIR/scripts/check-image.sh" "$CONF_NAME" "${placement[@]}" || die "image verification failed before launch"
-  "$REPO_DIR/scripts/check-memory.sh" "$CONF_NAME" "${placement[@]}" --cold-start || rc=$?
+  "$REPO_DIR/scripts/check-memory.sh" "$CONF_NAME" "${placement[@]}" "${memory_args[@]}" || rc=$?
   case "$rc" in
     0) ;;
     2) [ "${PULSAR_ACCEPT_MEMORY_WARN:-0}" = 1 ] || die "memory warning requires --accept-memory-warn" ;;

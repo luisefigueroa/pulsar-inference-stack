@@ -12,9 +12,10 @@ from pathlib import PurePosixPath
 import re
 
 from release_spec import serving
+from release_spec.memory_estimate import validate_frozen as validate_memory_estimate
 from release_spec.normalize import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 4
+PLAN_SCHEMA_VERSION = 5
 SELECTED_SPEC_LABEL = "io.pulsar.gb10.selected-spec-id"
 SPEC_LABEL = "io.pulsar.gb10.spec-id"
 PLAN_LABEL = "io.pulsar.gb10.launch-plan"
@@ -146,16 +147,20 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
             "lifecycle_action": facts.get("lifecycle_action", "dry-run")}
     if plan["lifecycle_action"] not in ("dry-run", "start", "replace"):
         fail("unknown lifecycle action")
+    if "memory_estimate" in facts:
+        plan["memory_estimate"] = validate_memory_estimate(facts["memory_estimate"], spec)
+        plan["schema_version"] = 5
     plan["service_id"] = service_identifier(selected_spec_id,topology,[rank['node_id'] for rank in ranks])
     plan["plan_id"] = canonical_json_digest(plan)
     return plan
 
 
 def validate_plan(plan):
-    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] not in (3, 4):
+    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] not in (3, 4, 5):
         fail("unsupported launch-plan schema")
     spec = serving.verify_spec(plan["spec"])
-    if plan["schema_version"] != spec["schema_version"] + 1:
+    expected_version = 5 if "memory_estimate" in plan else spec["schema_version"] + 1
+    if plan["schema_version"] != expected_version:
         fail("launch-plan schema differs from spec schema")
     if plan.get("spec_id") != spec["spec_id"]:
         fail("launch plan spec identity differs")
