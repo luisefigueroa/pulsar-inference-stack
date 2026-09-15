@@ -21,7 +21,7 @@ prepare_snapshot() {
   home_node=$(json_fields "$HOME_JSON" node_id)
   home_rank=$(model_physical_rank "$home_node")
   case " ${SELECTED_IDS[*]} " in *" $home_node "*) ;; *) die "home is outside the selected serving nodes; move it explicitly first" ;; esac
-  HOME_JSON=$(verify_record "$HOME_JSON" 1) || die "home full verification failed"
+  HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
   existing=$(merged_views) || die "node and controller preparation records cannot be reconciled"
   existing=$(json_fields "$existing" views)
@@ -34,7 +34,7 @@ prepare_snapshot() {
     row=$(printf '%s' "$existing" | python3 -c 'import json,sys; r=[v for v in json.load(sys.stdin) if v["node_id"]==sys.argv[1]]; print(json.dumps(r[0]) if len(r)==1 else "null")' "$node")
     verified=false
     if [ "$row" != null ] && [ "$(json_fields "$row" topology_id)" = "$CLUSTER_TOPOLOGY_ID" ]; then
-      if result=$(verify_record "$row" 0); then
+      if result=$(verify_record "$row"); then
         verified=true
         # Keep the original pin and ownership metadata; only verification cache changes.
         printf '%s\n' "$result" >>"$views_tmp"
@@ -87,7 +87,7 @@ prepare_snapshot() {
   local verified_tmp
   verified_tmp=$(mktemp)
   while IFS= read -r row; do
-    verified=$(verify_record "$row" 1) || { rm -f "$verified_tmp"; die "final all-rank verification failed"; }
+    verified=$(verify_record "$row") || { rm -f "$verified_tmp"; die "final all-rank verification failed"; }
     printf '%s\n' "$verified" >>"$verified_tmp"
   done < <(printf '%s' "$existing" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
   existing=$(python3 -c 'import json,sys; print(json.dumps([json.loads(x) for x in open(sys.argv[1])]))' "$verified_tmp"); rm -f "$verified_tmp"

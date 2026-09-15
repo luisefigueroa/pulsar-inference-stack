@@ -90,7 +90,7 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertGreater(len(f.events('transfer')),len(target_transfers))
         self.assertEqual(len(Store(f.state).views(spec_id=f.spec['spec_id'])),4)
 
-    def test_prepare_hashes_each_physical_copy_once_per_invocation(self):
+    def test_prepare_reuses_verified_copies_and_hashes_new_destinations(self):
         for home in (0, 2):
             with self.subTest(home=home), tempfile.TemporaryDirectory(dir=self.root) as temp:
                 f = Fixture(Path(temp), 3)
@@ -102,11 +102,26 @@ class ModelLibraryCLI(unittest.TestCase):
                     self.success(f.run('prepare', '--yes', spec=True))
                     reads = f.events('verification-read')[before:]
                     self.assertEqual({rank: sum(r['bytes'] for r in reads if r['rank'] == rank)
-                                      for rank in range(3)}, dict.fromkeys(range(3), size))
+                                      for rank in range(3)},
+                                     {rank: size if attempt == 0 and rank != home else 0
+                                      for rank in range(3)})
                     self.assertEqual(list((f.root / 'tmp').iterdir()), [])
                 before = len(f.events('verification-read'))
                 self.success(f.run('info', '--full', spec=True))
                 self.assertEqual(sum(r['bytes'] for r in f.events('verification-read')[before:]), 3 * size)
+
+    def test_explicit_full_preparation_hashes_every_reused_copy_once(self):
+        f=self.fixture(nodes=2)
+        self.acquire_candidate(f,nodes=2)
+        self.success(f.run('prepare','--yes',spec=True))
+        f.cfg['trace_verification']=True;f.save()
+        self.success(f.run('prepare','--full','--yes',spec=True))
+        size=f.spec['recipe']['model']['snapshot_manifest']['total_bytes']
+        reads=f.events('verification-read')
+        self.assertEqual({rank:sum(row['bytes'] for row in reads if row['rank']==rank)
+                          for rank in range(2)},{0:size,1:size})
+        self.success(f.run('prepare','--yes',spec=True))
+        self.assertEqual(f.events('verification-read'),reads)
 
     def test_speculative_prepare_reuses_planning_and_final_set_verification(self):
         f = self.speculative_fixture(nodes=3, draft_home=2)
@@ -120,10 +135,43 @@ class ModelLibraryCLI(unittest.TestCase):
                    [f.spec['recipe']['model'], *f.spec['recipe']['required_snapshots'].values()])
         reads = f.events('verification-read')
         self.assertEqual({rank: sum(r['bytes'] for r in reads if r['rank'] == rank)
-                          for rank in range(3)}, dict.fromkeys(range(3), size))
+                          for rank in range(3)},
+                         {rank: sum(model['snapshot_manifest']['total_bytes'] for model in
+                                    [f.spec['recipe']['model'], *f.spec['recipe']['required_snapshots'].values()]
+                                    if store.home(model['snapshot_manifest']['manifest_id'])['node_id']
+                                    != f.cfg['nodes'][rank]['node_id']) for rank in range(3)})
         self.assertEqual(list((f.root / 'tmp').iterdir()), [])
-        self.assertTrue(all(home['verified_at'] != '2000-01-01T00:00:00Z'
+        self.assertTrue(all(home['verified_at'] == '2000-01-01T00:00:00Z'
                             for home in store.records('homes')))
+
+    def test_registered_acquisition_reuses_verification_and_hashes_invalidated_stamp(self):
+        f=self.fixture(nodes=2)
+        acquired=self.acquire_candidate(f,nodes=2)
+        store=Store(f.state)
+        home=store.home(acquired['manifest']['manifest_id'])
+        home['verified_at']='2000-01-01T00:00:00Z'
+        store.put('homes',home['snapshot_manifest_id'],home)
+        f.cfg['trace_verification']=True;f.save()
+        before_sources=len([e for e in f.events('node-operation') if e['operation']=='source-verify'])
+        for use_spec in (True,False):
+            args=[] if use_spec else ['--model-id',f.cfg['model_id'],'--model-commit',f.cfg['revision']]
+            reused=self.success(f.run('acquire',*args,'--yes',spec=use_spec))
+            self.assertEqual(reused['home']['verification']['method'],'metadata')
+            self.assertEqual(reused['home']['verified_at'],home['verified_at'])
+        self.assertEqual(f.events('verification-read'),[])
+        self.assertEqual(len([e for e in f.events('node-operation') if e['operation']=='source-verify']),before_sources)
+        path=Path(home['path'])/'weights.bin';observed=path.stat()
+        os.utime(path,ns=(observed.st_atime_ns,observed.st_mtime_ns+1_000_000))
+        refreshed=self.success(f.run('acquire','--yes',spec=True))
+        self.assertEqual(sum(e['bytes'] for e in f.events('verification-read')),acquired['manifest']['total_bytes'])
+        self.assertNotEqual(refreshed['home']['verified_at'],home['verified_at'])
+        before=len(f.events('verification-read'))
+        self.success(f.run('acquire','--yes',spec=True))
+        self.assertEqual(len(f.events('verification-read')),before)
+        store.remove('homes',home['snapshot_manifest_id'])
+        self.success(f.run('acquire','--yes',spec=True))
+        self.assertEqual(sum(e['bytes'] for e in f.events('verification-read')[before:]),acquired['manifest']['total_bytes'])
+        self.assertEqual(len(f.events('download')),1)
 
     def test_prepare_final_barrier_rejects_changed_published_copy(self):
         f = self.fixture(3)

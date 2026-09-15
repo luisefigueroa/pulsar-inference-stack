@@ -250,7 +250,7 @@ include secrets. No human-text parsing is part of the contract.
 | `pulsar spec show --file FILE --historical --json` | Read supported historical/new specs; historical mode cannot create a launchable spec |
 | `pulsar model ... --json` | Stabilize existing acquire/prepare/info/restore/archive commands and their result envelopes; keep current explicit action permissions |
 | `pulsar start SPEC [--spec-file FILE] [--override-file FILE] --json` | Use the shared execution path and return selected/effective IDs, service ID, and actual launch outcome; preserve existing explicit flags |
-| `pulsar observe --service-id ID --json` | Full current-spec observation, including verified model bytes and effective container configuration on every rank; no mutation |
+| `pulsar observe --service-id ID [--full] --json` | Observe the current spec and effective container configuration on every rank; reuse valid file verification by default, or explicitly request full hashing |
 | `pulsar resources --service-id ID --interval SECONDS --jsonl` | Explicit private telemetry stream using Stack-owned placement and transport; no full model hashing on every sample |
 | `pulsar resources --spec-file FILE [--node NODE] [--override-file FILE] --interval SECONDS --jsonl` | Approved cold-start mode: sample confirmed nodes before launch, then attach only to the matching owned container; no preparation or launch |
 | `pulsar stop SPEC --json`, `pulsar status SPEC --json` | Retain operator selectors, ownership checks, and structured outputs; status includes selected/effective IDs |

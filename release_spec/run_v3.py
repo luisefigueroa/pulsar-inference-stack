@@ -15,6 +15,16 @@ OPERATIONS={'verify-snapshot-manifest','serve-smoke','compare-captures','benchma
 ERRORS={'observation_failed','producer_failed','interrupted','tooling_changed','evaluation_failed','runtime_changed'}
 
 
+def runtime_rank_identity(rank):
+    """Compare serving identity without the legacy file-verification flag."""
+    result={key:value for key,value in rank.items() if key!='files_verified'}
+    if 'snapshots' in result:
+        result['snapshots']={name:{key:value for key,value in member.items()
+                                  if key!='files_verified'}
+                             for name,member in result['snapshots'].items()}
+    return result
+
+
 def verify_run(record, spec, *, policy_digest=None):
     spec=serving.verify_spec(spec)
     serving.closed(record,FIELDS,'run')
@@ -55,26 +65,30 @@ def verify_run(record, spec, *, policy_digest=None):
             serving.closed(rank,(RANK_FIELDS-{'snapshot_manifest_id'}|{'snapshots'}) if spec['schema_version']==3 else RANK_FIELDS,'rank')
             if type(rank['rank']) is not int or rank['rank']!=index:
                 serving.invalid('rank.rank','rank order or coverage differs')
-            for flag in ('running','owned','files_verified'):
+            for flag in ('running','owned'):
                 if rank[flag] is not True:
                     serving.invalid('rank.'+flag,'rank was not fully observed')
+            # Retain the schema-3/4 field as informational data, not a gate.
+            if type(rank['files_verified']) is not bool:
+                serving.invalid('rank.files_verified','expected a legacy boolean')
             expected={'spec_id':spec['spec_id'],'image_digest':spec['recipe']['image_digest'],
                 'snapshot_manifest_id':spec['recipe']['model']['snapshot_manifest']['manifest_id']}
             if spec['schema_version']==3:
                 snapshots=rank.get('snapshots')
-                if not isinstance(snapshots,dict) or any(not isinstance(v,dict) or v.get('files_verified') is not True for v in snapshots.values()):
-                    serving.invalid('rank.snapshots','every snapshot must be fully verified')
+                if not isinstance(snapshots,dict) or any(not isinstance(v,dict) for v in snapshots.values()):
+                    serving.invalid('rank.snapshots','invalid required snapshot identity')
                 expected.pop('snapshot_manifest_id')
-                expected['snapshots'] = {name:{'snapshot_manifest_id':model['snapshot_manifest']['manifest_id'],'files_verified':True}
+                expected['snapshots'] = {name:{'snapshot_manifest_id':model['snapshot_manifest']['manifest_id']}
                     for name,model in serving.required_snapshots(spec).items()}
             for key,value in expected.items():
-                if rank[key]!=value:
+                if runtime_rank_identity(rank)[key]!=value:
                     serving.invalid('rank.'+key,'differs from effective spec')
             require_sha256_hex(rank['boot_witness'],path='rank.boot_witness')
             if rank['container_configuration']!=spec['recipe']['container']:
                 serving.invalid('rank.container_configuration','differs from effective recipe')
     complete=bool(record['ranks_before']) and bool(record['ranks_after'])
-    same=complete and record['ranks_before']==record['ranks_after']
+    same=complete and ([runtime_rank_identity(rank) for rank in record['ranks_before']]
+                       ==[runtime_rank_identity(rank) for rank in record['ranks_after']])
     if type(record['observation_complete']) is not bool or record['observation_complete']!=complete:
         serving.invalid('run.observation_complete','disagrees with rank observations')
     if type(record['same_boot']) is not bool or record['same_boot']!=same:

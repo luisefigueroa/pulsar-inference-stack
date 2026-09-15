@@ -33,7 +33,7 @@ retention_model() {
     flag=false; [ "$OP" != pin ] || flag=true
     if [ "$OP" = pin ]; then
       while IFS= read -r row; do
-        verify_record "$row" 1 >/dev/null || die "cannot pin unverified copies"
+        verify_record "$row" >/dev/null || die "cannot pin unverified copies"
       done < <(printf '%s' "$views" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
     fi
     temporary=$(mktemp)

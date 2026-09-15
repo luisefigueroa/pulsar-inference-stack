@@ -10,7 +10,7 @@ from .integrity import StorageError, atomic_json, read_json, verify_manifest, ve
 from .local import (begin_staging, copy_snapshot, finish_staging, home_record,
                     location, payload, remove_managed_hub, restore, verify_archive)
 from .filesystem import require_serving_filesystem
-from .state import Store, checked_id, ensure_directory, validate_view, view_record_key, view_destination
+from .state import Store, checked_id, ensure_directory, validate_home, validate_view, view_record_key, view_destination
 
 
 def run(request: dict) -> dict:
@@ -119,8 +119,18 @@ def run(request: dict) -> dict:
                     raise StorageError('managed home name and manifest differ')
                 if existing['model_id'] == request['model_id'] and existing['snapshot_revision'] == request['snapshot_revision']:
                     require_serving_filesystem(hub)
-                    stamp=verify_tree(payload(hub,existing),existing,full=True)
-                    homes.append({'manifest':existing,'home':home_record(existing,request['node_id'],hub,stamp)})
+                    previous = next((validate_home(record) for record in request.get('known_homes', [])
+                        if record.get('snapshot_manifest_id') == existing['manifest_id']
+                        and record.get('node_id') == request['node_id']
+                        and record.get('hub_path') == str(hub)
+                        and record.get('path') == str(payload(hub, existing))), None)
+                    stamp=verify_tree(payload(hub,existing),existing,
+                        stamp=previous['verification'] if previous else None,
+                        full=request.get('full', False))
+                    home=home_record(existing,request['node_id'],hub,stamp)
+                    if stamp['method'] == 'metadata':
+                        home['verified_at'] = previous['verified_at']
+                    homes.append({'manifest':existing,'home':home})
         return {'homes':homes}
     if op == 'source-verify':
         from .source import verify_download

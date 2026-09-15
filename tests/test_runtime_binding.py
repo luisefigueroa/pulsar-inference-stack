@@ -25,7 +25,7 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             for rank in range(nodes):
@@ -66,7 +66,7 @@ load_cluster_topology() {{
 require_profile_topology() {{ load_cluster_topology; }}
 runtime_context_for_rank() {{ printf '{{"architecture":"fixture","kernel_release":"fixture","gpu_driver":null,"container_runtime_version":null}}\n'; }}
 resolve_single_node_placement() {{ load_cluster_topology || return; SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=rank-0; SINGLE_NODE_SSH_HOST=local; SINGLE_NODE_CONTROL_IP=192.0.2.1; SINGLE_NODE_REMOTE=0; SINGLE_NODE_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID"; }}
-library_hot_info_for_profile() {{ [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
+library_hot_info_for_profile() {{ printf '%s\\n' "${{PULSAR_OBSERVE_FULL:-0}}" >>"$FIXTURE_ROOT/verification-modes"; [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
 ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROOT/docker.py" $([ "${{1#docker image}}" != "$1" ] && echo image || echo inspect); }}
 ''')
             env={**os.environ,'BASH_ENV':str(envfile),'FIXTURE_ROOT':str(root),'FIXTURE_MODE':mode,'PULSAR_DOCKER':str(tool),'PULSAR_MODEL_LIBRARY_DIR':str(root/'library'),'PULSAR_SPEC_FILE':str(path),'PULSAR_OVERLAY_PATH':str(root/'overlay.json'),'VLLM_IMAGE_MAINLINE':'example/image','VLLM_EXTRA_ARGS':'','EXTRA_ENV':''}
@@ -104,7 +104,11 @@ library_hot_info_for_profile() {
             if launcher and nodes>1:flags += ['--skip-preflight']
             command=['bash',str(script),spec['spec_id'],*flags]
             if public: command=[str(ROOT/'pulsar'),'observe','--service-id',plan['service_id'],'--json']
-            return subprocess.run(command,cwd=root if public else ROOT,env=env,text=True,capture_output=True)
+            if full: command += ['--full']
+            result=subprocess.run(command,cwd=root if public else ROOT,env=env,text=True,capture_output=True)
+            trace=root/'verification-modes'
+            result.verification_modes=trace.read_text().splitlines() if trace.exists() else []
+            return result
 
     def test_required_snapshots_through_public_observation_and_launcher(self):
         for nodes in (1,2):
@@ -120,6 +124,14 @@ library_hot_info_for_profile() {
             self.assertIn('/pulsar/snapshots/',result.stdout)
             result=self.run_scenario(nodes,mode='missing-draft',launcher=True,speculative=True)
             self.assertNotEqual(result.returncode,0,result.stdout)
+
+    def test_full_hashing_is_explicit_through_the_public_observer(self):
+        for full in (False,True):
+            with self.subTest(full=full):
+                result=self.run_scenario(2,public=True,full=full)
+                self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+                self.assertEqual(result.verification_modes,['1' if full else '0'])
+                self.assertEqual(len(json.loads(result.stdout)['result']['ranks']),2)
 
     def test_one_and_two_nodes(self):
         for nodes in (1,2):
