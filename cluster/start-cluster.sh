@@ -14,12 +14,14 @@ cd "$REPO_DIR"
 . "$REPO_DIR/scripts/lib.sh"
 
 case "${1:-}" in -h|--help)
-  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
+  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
   exit 0 ;;
 esac
 MODEL_NAME="${1:?usage: cluster/start-cluster.sh <model-name> [options]}"
 shift
+unset PULSAR_MEMORY_ESTIMATE_JSON
+MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 SPEC_MODE=auto
 SKIP_PREFLIGHT=0
 SKIP_WARMUP=0
@@ -27,6 +29,9 @@ DRY_RUN=0
 REPLACE=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-file requires a file" 2; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
+    --memory-estimate-frozen) [ "$#" -ge 2 ] && [ -n "$2" ] || die "internal memory estimate is missing" 2; MEMORY_ESTIMATE_FROZEN="$2"; shift ;;
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
     --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
@@ -47,6 +52,9 @@ done
 
 acquire_model_library_lifecycle_lock shared
 load_conf "$MODEL_NAME"
+if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
+  select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID"
+fi
 require_spec_platform_admission "$MODEL_NAME"
 acquire_model_library_hot_lock shared
 [ "$(model_source_kind)" = hf ] \
