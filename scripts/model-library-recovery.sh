@@ -10,7 +10,7 @@ archive_create() {
     emit_result "$(model_json kind pulsar-archive-plan snapshot_manifest_id "$MANIFEST_ID" home: "$HOME_JSON" archive_root "$PULSAR_COLD_ROOT")"; return
   fi
   [ "$YES" -eq 1 ] || die "archive creation requires --yes"
-  HOME_JSON=$(verify_record "$HOME_JSON" 1) || die "home verification failed"
+  HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   # An existing archive is never replaced. Corruption requires explicit inspection.
   local exists

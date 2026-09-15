@@ -3,13 +3,14 @@
 set -euo pipefail
 SCRIPT_NAME=observe-serving
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-NAME="" SERVICE_ID="" NODE_SELECTOR=""
+NAME="" SERVICE_ID="" NODE_SELECTOR="" OBSERVE_FULL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --service-id) SERVICE_ID="${2:?service id required}"; shift ;;
     --node) NODE_SELECTOR="${2:?node required}"; shift ;;
     --spec-file) shift ;; # historical caller argument; recorded spec is authoritative
     --json) ;;
+    --full) OBSERVE_FULL=1 ;;
     --*) die "unknown argument: $1" 2 ;;
     *) [ -z "$NAME" ] || die "unexpected argument: $1"; NAME="$1" ;;
   esac
@@ -73,7 +74,7 @@ for ((rank=0; rank<NODES; rank++)); do
     printf '{"available":false}\n' >"$OBS/context-$rank.json"
   fi
 done
-PULSAR_OBSERVE_FULL=1 resolve_library_hot_for_profile "$NAME"
+PULSAR_OBSERVE_FULL="$OBSERVE_FULL" resolve_library_hot_for_profile "$NAME"
 python3 "$REPO_DIR/scripts/service_state.py" actual --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$OBS/plan.json" --observations "$OBS" >"$OBS/actual-plan.json"
 mv "$OBS/actual-plan.json" "$OBS/plan.json"
 printf '%s\n' "$PULSAR_PREPARED_SET_JSON" >"$OBS/prepared.json"

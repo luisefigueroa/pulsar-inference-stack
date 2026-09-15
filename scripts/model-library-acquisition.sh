@@ -2,10 +2,11 @@
 # Internal operation helpers; sourced by model-library.sh only.
 
 find_source_homes() {
-  local rank result tmp
+  local rank result tmp known_homes
+  known_homes=$(model_ctl "$(model_json operation homes model_id "$MODEL_ID" snapshot_revision "$REVISION")") || return 2
   tmp=$(mktemp)
   for ((rank=0; rank<CLUSTER_TOPOLOGY_COUNT; rank++)); do
-    result=$(model_node "$rank" "$(model_node_request find-source model_id "$MODEL_ID" snapshot_revision "$REVISION" node_id "${CLUSTER_NODE_IDS[$rank]}")") \
+    result=$(model_node "$rank" "$(model_node_request find-source model_id "$MODEL_ID" snapshot_revision "$REVISION" node_id "${CLUSTER_NODE_IDS[$rank]}" known_homes: "$known_homes" full: "$([ "$FULL" = 1 ] && echo true || echo false)")") \
       || { local rc=$?; rm -f "$tmp"; return "$rc"; }
     printf '%s\n' "$result" >>"$tmp"
   done
@@ -19,8 +20,12 @@ find_source_homes() {
       known_rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255
       state=$(model_node "$known_rank" "$(model_node_request path-state path "$(json_fields "$record" path)")") || return $?
       if [ "$(json_fields "$state" state)" = present ]; then
-        record=$(verify_record "$record" 1) || return $?
-        found=$(printf '%s' "$found" | python3 -c 'import json,sys; a=json.load(sys.stdin); r=json.loads(sys.argv[1]); m=json.loads(sys.argv[2]); key=(r["node_id"],r["path"]); a=[v for v in a if (v["home"]["node_id"],v["home"]["path"])!=key]; a.append({"home":r,"manifest":m}); print(json.dumps(a))' "$record" "$MANIFEST_JSON")
+        # Discovery already verified copies under the configured home root.
+        # Only verify the registered path separately when it lies elsewhere.
+        if ! printf '%s' "$found" | python3 -c 'import json,sys; r=json.loads(sys.argv[1]); sys.exit(0 if any((v["home"]["node_id"],v["home"]["path"])==(r["node_id"],r["path"]) for v in json.load(sys.stdin)) else 1)' "$record"; then
+          record=$(verify_record "$record") || return $?
+          found=$(printf '%s' "$found" | python3 -c 'import json,sys; a=json.load(sys.stdin); a.append({"home":json.loads(sys.argv[1]),"manifest":json.loads(sys.argv[2])}); print(json.dumps(a))' "$record" "$MANIFEST_JSON")
+        fi
       fi
     fi
   fi
@@ -28,7 +33,7 @@ find_source_homes() {
 }
 
 acquire_model() {
-  local rank source existing count candidate result stage checked original_manifest="$MANIFEST_JSON"
+  local rank source existing count candidate result stage checked registered original_manifest="$MANIFEST_JSON"
   require_cluster_nodes 1 >/dev/null || die "acquisition requires confirmed topology"
   rank=$(model_physical_rank "${NODE:-0}")
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ] && [ "${NODES:-1}" -gt 1 ] && [ "$rank" -ge "$NODES" ]; then die "selected home node is outside exact serving geometry"; fi
@@ -77,8 +82,14 @@ acquire_model() {
       die "home is on another node; use an explicit move instead of downloading again"
     fi
     rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
-    checked=$(model_node "$rank" "$(model_node_request source-verify path "$(json_fields "$HOME_JSON" path)" source: "$source")") || die "existing bytes do not match the complete upstream inventory"
-    MANIFEST_JSON=$(json_fields "$checked" manifest)
+    registered=$(model_ctl "$(model_json operation home snapshot_manifest_id "$(json_fields "$HOME_JSON" snapshot_manifest_id)")") || die "registered home is unavailable"
+    if printf '%s' "$registered" | python3 -c 'import json,sys; old=json.load(sys.stdin)["home"]; new=json.loads(sys.argv[1]); fields=("snapshot_manifest_id","node_id","hub_path","path"); sys.exit(0 if isinstance(old,dict) and all(old[k]==new[k] for k in fields) else 1)' "$HOME_JSON"; then
+      MANIFEST_JSON=$(json_fields "$candidate" manifest)
+      printf '%s' "$source" | python3 -c 'import json,sys; from model_library.source import compare_inventory_to_manifest; compare_inventory_to_manifest(json.load(sys.stdin),json.loads(sys.argv[1]))' "$MANIFEST_JSON" || die "source differs from the registered manifest"
+    else
+      checked=$(model_node "$rank" "$(model_node_request source-verify path "$(json_fields "$HOME_JSON" path)" source: "$source")") || die "existing bytes do not match the complete upstream inventory"
+      MANIFEST_JSON=$(json_fields "$checked" manifest)
+    fi
     result=$(model_json home: "$HOME_JSON")
   else
     stage=$(model_node "$rank" "$(model_node_request begin-source source: "$source")") || die "could not create private same-filesystem staging"

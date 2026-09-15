@@ -72,18 +72,32 @@ class CurrentEvidence(unittest.TestCase):
         root=self.root/'speculative'
         spec,record=make_run(root,speculative=True)
         self.assertEqual(verify_evidence(root/'spec.json',root/'run.json',root)['outcome'],'pass')
-        for change in ('missing','wrong','unverified'):
+        for change in ('missing','wrong'):
             bad=copy.deepcopy(record)
             snapshots=bad['ranks_after'][0]['snapshots']
             if change=='missing': del snapshots['draft']
-            elif change=='wrong': snapshots['draft']['snapshot_manifest_id']='f'*64
-            else: snapshots['draft']['files_verified']=False
+            else: snapshots['draft']['snapshot_manifest_id']='f'*64
             with self.subTest(change=change),self.assertRaises(ValueError): verify_run(bad,spec)
         path=root/'measurements/verify-snapshot-manifest.json'
         value=json.loads(path.read_text());del value['verify-snapshot-manifest']['snapshots']['draft']
         path.write_bytes(pretty_json_bytes(value))
         result,_=evaluate_measurements(spec,root/'policy.json',root/'measurements')
         self.assertNotEqual(result['outcome'],'pass')
+
+    def test_legacy_file_flags_do_not_gate_qualification_or_continuity(self):
+        for speculative in (False, True):
+            with self.subTest(speculative=speculative):
+                root=self.root/('legacy-flags-'+str(speculative))
+                spec,record=make_run(root,speculative=speculative)
+                rank=record['ranks_after'][0]
+                rank['files_verified']=False
+                for member in rank.get('snapshots',{}).values():
+                    member['files_verified']=False
+                self.assertEqual(verify_run(record,spec),record)
+                (root/'run.json').write_bytes(pretty_json_bytes(record))
+                self.assertEqual(verify_evidence(root/'spec.json',root/'run.json',root)['outcome'],'pass')
+                self.assertTrue(record['same_boot'])
+                self.assertFalse(record['ranks_after'][0]['files_verified'])
 
     def test_speculative_evidence_package_verifies_without_workbench(self):
         from release_spec import serving

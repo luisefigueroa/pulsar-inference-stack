@@ -142,11 +142,13 @@ an alternate download path.
 **Prepare** copies or links verified files to the required ranks; it does not
 start the server. Prepared files retain metadata stamps so unchanged files
 can avoid unnecessary full rehashing. A changed tree requires verification.
-Each preparation invocation fully hashes the home and every reused working
-copy once, and each new working copy once before accepting staging. Planning,
-source checks, the final rename, and all-rank readiness reuse those results only
-while the complete file set, directory identity, and file metadata still match.
-Changed metadata triggers full hashing; corruption fails verification. The
+Routine acquisition of registered copies, preparation re-entry, inspection and
+serving observation reuse earlier verification while the complete file set,
+directory identity and file metadata still match. A new invocation does not
+invalidate that proof. Each new working copy is fully hashed before accepting
+staging; planning, source checks, the final rename and all-rank readiness can
+reuse valid results. Changed metadata triggers full hashing; corruption fails
+verification. Reuse preserves the timestamp of the last actual full hash. The
 temporary preparation cache is removed on exit. A publication fallback that
 changes directory identity also requires another full scan. Metadata reuse
 does not detect silent corruption that leaves metadata unchanged; use
@@ -279,7 +281,13 @@ its exact model commit in `required_snapshots`, and freeze with every named
 manifest to produce a schema-3 spec. Keep earlier specs and measurements intact.
 See the [compatibility boundary and reauthoring steps](CONTRACT.md#required-snapshots-and-speculative-decoding).
 
-`pulsar observe --service-id ID --json` performs full all-rank verification.
+`pulsar observe --service-id ID --json` verifies the effective recipe, container
+configuration and continuity on every rank, using normal metadata-based file
+verification. Add `--full` to request a fresh full content audit. Archive
+verification and verification of newly copied bytes remain full audits.
+Qualification uses normal Stack verification; legacy `files_verified` fields
+remain in serialized records for compatibility but do not gate current
+qualification or determine whether the serving runtime changed.
 `pulsar resources --service-id ID --jsonl` samples private node/container metrics.
 To begin before launch, use `--spec-file FILE` and, for a one-node recipe,
 optional `--node NODE`; it never starts the model. Container metrics remain

@@ -40,7 +40,7 @@ Options:
   --yes                 Confirm a model-byte or retention mutation
   --discard-unpromoted   Acknowledge loss of unarchived lab-only bytes
   --json                Machine-readable output
-  --full                Full SHA-256 verification (info/check)
+  --full                Force full SHA-256 verification instead of reuse
 
 Archive location is explicit PULSAR_COLD_ROOT. Configure an existing
 location with ./pulsar configure archive-root. No archive deletion exists.

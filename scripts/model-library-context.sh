@@ -67,9 +67,9 @@ verify_record() {
   if [ -n "${PREPARE_VERIFICATION_DIR:-}" ]; then
     local cached
     cached=$(printf '%s' "$record" | python3 -m model_library.preparation_verification lookup "$PREPARE_VERIFICATION_DIR") || return 2
-    # Every physical copy is hashed once in this invocation. Later callers
-    # reuse only that result, after the node checks identity and metadata.
-    if [ "$cached" = null ]; then full=1; else record="$cached"; full=0; fi
+    # Reuse a result from this invocation when available; otherwise keep the
+    # requested mode and let the node validate the record's existing stamp.
+    if [ "$cached" != null ]; then record="$cached"; full=0; fi
   fi
   select_record_manifest "$record" || return 2
   rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255

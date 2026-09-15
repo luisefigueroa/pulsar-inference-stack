@@ -54,7 +54,18 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
     if op=='resolve':
         return resolve(repo,request)
     if op=='homes':
-        return [validate_home(v) for v in store.records('homes')]
+        homes=[validate_home(v) for v in store.records('homes')]
+        if 'model_id' not in request and 'snapshot_revision' not in request:
+            return homes
+        selected=[]
+        for home in homes:
+            manifest=store.get('manifests',home['snapshot_manifest_id'])
+            if manifest is None:
+                continue  # No trusted manifest lookup: discovery must hash the copy.
+            manifest=verify_manifest(manifest)
+            if all(manifest[key]==request[key] for key in ('model_id','snapshot_revision') if key in request):
+                selected.append(home)
+        return selected
     if op=='views':
         return store.views(manifest_id=request.get('snapshot_manifest_id'),spec_id=request.get('spec_id'))
     if op=='home':
