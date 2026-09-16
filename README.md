@@ -56,7 +56,9 @@ Historical specs remain readable, and existing services are not restarted by
 code updates. New operations support spec schemas 2 and 3; schema 3 binds required
 draft checkpoints.
 
-Run `scripts/selftest.sh` for deterministic tests without starting models.
+Select affected tests using [validation guidance](docs/TESTING.md).
+Use `scripts/selftest.sh --checks-only` for fast syntax/catalog/privacy checks,
+or `scripts/selftest.sh` when a full regression run is warranted; neither starts models.
 Hardware, Docker, confirmed topology and SSH trust are required for actual
 serving operations. Review the selected spec's exact image and hardware
 geometry before preparing or launching it.

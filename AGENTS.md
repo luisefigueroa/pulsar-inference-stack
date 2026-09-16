@@ -89,10 +89,24 @@ compatibility purpose and retirement condition.
 
 ## Verification and operator experience
 
-Run directly affected tests while iterating, relevant subsystem tests after a
-coherent change, and `scripts/selftest.sh` before commit or publication. Public
-CI is standalone and must not depend on private repository access. Tests use
-synthetic fixtures and parameterized doubles, with no real cluster mutations.
+Run directly affected tests while iterating and relevant subsystem checks after
+a coherent change. Select coverage by changed behavior and callers; a commit,
+push, PR, or new approval is not itself a full-suite trigger. Reuse passing
+validation while its relevant code, fixtures, dependencies and environment match.
+Run `scripts/selftest.sh` for broad cross-subsystem changes, dependencies that
+affect execution, uncertainty that selected coverage cannot resolve, or an
+explicit regression check. Explain that reason before running it.
+
+Before commit or publication, review the selected coverage and run fast privacy
+and diff checks, including the required staged checks. Prose-only changes need
+link, consistency and privacy checks; workflow changes need syntax, event/step
+selection and affected-command checks. `scripts/selftest.sh --checks-only`
+runs the existing syntax, catalog and privacy checks without unit tests. See
+[validation selection](docs/TESTING.md#select-checks-for-the-change).
+
+Public CI uses fast PR checks and a manual full-suite run, with no duplicate push
+trigger. CI is standalone and must not depend on private repository access.
+Tests use synthetic fixtures and parameterized doubles, with no real cluster mutations.
 Keep Bash scenarios thin and data-heavy fixtures in Python.
 
 Lead human output with the action, affected object, and blocker. Keep JSON

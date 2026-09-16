@@ -1,4 +1,66 @@
-# Contract refactor verification
+# Testing and validation
+
+## Select checks for the change
+
+Choose tests for changed behavior, its callers and the decision the result can
+support. Run directly affected tests during iteration, then the relevant
+subsystem checks after a coherent change. State the selection in the normal
+review or handoff; do not create a new checklist artifact per command.
+
+| Work | Validation to select |
+| --- | --- |
+| Read-only investigation | Existing evidence and targeted inspection. |
+| Prose-only documentation | Links, consistency, privacy and diff checks; no full suite or tests that assert wording. |
+| Recipe, catalog or evidence data | Canonical spec/package/evidence validation and affected behavior checks; preserve publication safeguards and separate physical authority. |
+| Bounded implementation change | Affected tests and callers' relevant subsystem checks. |
+| CI or check-runner change | Workflow/script syntax, event and step selection, argument handling, and execution of affected checks. |
+| Broad implementation or dependency change | The full suite when the impact spans subsystem contracts or cannot be bounded by selected coverage. |
+| Commit, push or PR with unchanged tested inputs | Reuse the selected results; run the required privacy, staged-content, commit-metadata and diff checks. |
+
+## Full-suite triggers and evidence reuse
+
+Use `scripts/selftest.sh` for broad cross-subsystem behavior changes, dependency
+changes that affect execution, unresolved interaction risks that selected tests
+cannot cover, or an explicitly requested regression/release check. State which
+condition applies before running it. Editing a shared helper is not alone a
+reason: inspect the affected callers and their coverage first. A commit, PR,
+review comment, approval exchange or new agent is not a test trigger by itself.
+
+Before repeating a check, identify what changed, which prior evidence it
+invalidated, and what decision the rerun can affect. Reuse results while the
+relevant source, fixtures, dependencies and execution environment match. A change
+invalidates affected coverage, not automatically every test in the repository.
+Check the combined result when integrating branches with interacting changes.
+
+Keep the commands, outcomes and relevant input identities in the existing review
+or private handoff. Distinguish focused checks, checks-only mode and a completed
+full suite; a passing fast check is not evidence that unit tests ran. Previous
+failures remain visible until resolved. None of this replaces public-command
+validation, contribution integrity, or live readiness at a physical-action boundary.
+
+## Commands and CI
+
+For example, a storage-verification change can select its affected methods and
+these subsystem tests as appropriate:
+
+```sh
+python3 -m unittest tests.test_storage_integrity tests.test_verification_process
+scripts/selftest.sh --checks-only
+```
+
+`--checks-only` runs the existing Python/Bash syntax, catalog and source privacy
+checks without unittest discovery. The command without that flag retains the
+complete regression suite. Staged privacy, commit-metadata and contribution
+checks remain separate publication requirements.
+
+CI runs checks-only mode and the existing changed-catalog and commit-metadata
+checks on pull requests. Full regression runs use `workflow_dispatch`. There is
+no push or scheduled trigger, so opening or updating a PR does not schedule a
+second full run. Periodic regression checks can be dispatched explicitly until a
+schedule is selected. Workflow enablement is an operator setting, separate from
+these event rules.
+
+## Existing regression coverage
 
 `scripts/selftest.sh` runs canonical-spec tests, standalone Stack subsystem
 tests, Python/Bash syntax checks, catalog checks, and publication privacy.

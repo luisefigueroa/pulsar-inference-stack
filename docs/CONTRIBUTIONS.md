@@ -16,12 +16,18 @@ Run the catalog and publication-safety checks on the proposed checkout:
 ```sh
 python3 scripts/check-catalog.py
 python3 scripts/check_publishable_privacy.py
-scripts/selftest.sh
+git diff --check
 ```
 
 `check-catalog.py` checks the release-spec schema, regular-file layout, and the
 filename-to-`spec_id` binding. The privacy scanner remains a separate mandatory
 publication safeguard.
+
+Select additional tests for the changed behavior using
+[validation guidance](TESTING.md#select-checks-for-the-change). A catalog-only
+contribution needs its spec, package and applicable evidence checks; publication
+alone does not require the full implementation suite. Reuse matching validation,
+and check the exact staged content and commit metadata before publishing.
 
 ## Optional assessments
 

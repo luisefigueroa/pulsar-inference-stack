@@ -1,12 +1,25 @@
 #!/usr/bin/env bash
 # Deterministic local checks; no model services or hardware actions.
 set -euo pipefail
+CHECKS_ONLY=0
+if [ "$#" -gt 0 ]; then
+  if [ "$#" -eq 1 ] && [ "$1" = --checks-only ]; then
+    CHECKS_ONLY=1
+  else
+    echo "usage: scripts/selftest.sh [--checks-only]" >&2
+    exit 2
+  fi
+fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONDONTWRITEBYTECODE=1
-python3 -m unittest discover -s release_spec/tests -p 'test_*.py'
-# Resolve this repository's tests package before imports expose release_spec/tests.
-python3 -m unittest discover -s tests -t . -p 'test_*.py'
+if [ "$CHECKS_ONLY" -eq 0 ]; then
+  python3 -m unittest discover -s release_spec/tests -p 'test_*.py'
+  # Resolve this repository's tests package before imports expose release_spec/tests.
+  python3 -m unittest discover -s tests -t . -p 'test_*.py'
+else
+  echo "Checks-only mode: syntax and publication checks; unit tests were not run."
+fi
 python3 - "$ROOT" <<'PY'
 import ast
 from pathlib import Path
