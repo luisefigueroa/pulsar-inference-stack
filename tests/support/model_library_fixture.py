@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -97,14 +98,35 @@ def run_bundled_node_program(program, **kwargs):
     return subprocess.run([sys.executable, "-"], input=program.encode(), **kwargs)
 
 
+def install_node_mutation():
+    """Mutate a published fixture copy before its node response is returned."""
+    from model_library import node
+    original=node.run
+    def changed(request):
+        result=original(request)
+        view=result['view']
+        target=contained(Path(view['path'])/request['manifest']['files'][0]['path'])
+        before=target.stat();data=target.read_bytes()
+        target.write_bytes(bytes([data[0]^1])+data[1:])
+        os.utime(target,ns=(before.st_atime_ns,before.st_mtime_ns))
+        return result
+    node.run=changed
+
+
 def trace_verification():
     """Count actual bytes read by the real bundled SHA-256 verifier."""
     from model_library import integrity
     original = integrity.os.read
 
     def tracked_read(fd, size):
-        data = original(fd, size)
         caller = sys._getframe(1)
+        block=read().get('block_verification')
+        if block and caller.f_code.co_name=='verify_tree' and caller.f_globals.get('__name__')=='model_library.integrity':
+            from model_library.verification_process import process_identity
+            marker=contained(block['ready'])
+            marker.write_text(json.dumps(process_identity(os.getpid())))
+            while not contained(block['resume']).exists(): time.sleep(.02)
+        data = original(fd, size)
         if (data and caller.f_code.co_name == 'verify_tree'
                 and caller.f_globals.get('__name__') == 'model_library.integrity'):
             event('verification-read', bytes=len(data), path=str(caller.f_locals['path']))
@@ -185,11 +207,41 @@ def tool(kind, argv):
         if argv == ["-m", "model_library.node"]:
             value = node_request(json.load(sys.stdin), cfg, current)
             return subprocess.run([sys.executable, *argv], input=json.dumps(value).encode()).returncode
-        if argv != ["-"]:
+        supervised=len(argv)==2 and argv[0]=='-c' and '_pulsar_control' in argv[1]
+        if not supervised and argv != ["-"]:
             raise RuntimeError("fixture expected one immutable bundled node program on stdin")
-        rewritten, request = rewrite_bundled_program(sys.stdin.read(), cfg, current)
+        if supervised:
+            control=os.fdopen(os.dup(0),'rb',buffering=0)
+            size,token=control.readline(128).decode().split()
+            remaining=int(size);parts=[]
+            while remaining:
+                part=control.read(min(remaining,65536))
+                if not part: raise RuntimeError('incomplete fixture node frame')
+                parts.append(part);remaining-=len(part)
+            program=b''.join(parts).decode()
+        else:
+            program=sys.stdin.read()
+        rewritten, request = rewrite_bundled_program(program, cfg, current)
         event("node-operation", operation=request["operation"])
         fault = cfg.get("node_fault", {})
+        if supervised:
+            hook=''
+            if cfg.get('trace_verification') or cfg.get('block_verification'):
+                hook+=f' import runpy\n runpy.run_path({str(Path(__file__).resolve())!r})["trace_verification"]()\n'
+            mutation=cfg.get('node_mutation',{})
+            if mutation.get('operation')==request['operation'] and mutation.get('rank')==rank():
+                hook+=f' import runpy\n runpy.run_path({str(Path(__file__).resolve())!r})["install_node_mutation"]()\n'
+            rewritten=rewritten.replace(' from model_library.node import main\n',hook+' from model_library.node import main\n')
+            if (fault.get('operation')==request['operation'] and fault.get('rank')==rank()
+                    and (not fault.get('manifest_id') or fault['manifest_id']==request.get('manifest',{}).get('manifest_id'))):
+                if not fault.get('after'): return 255
+                rewritten=rewritten.replace(
+                    ' raise SystemExit(supervise_node(main,_pulsar_control.fileno(),_pulsar_token))',
+                    ' _result=supervise_node(main,_pulsar_control.fileno(),_pulsar_token)\n'
+                    ' raise SystemExit(_result or 255)')
+            exec(compile(rewritten,'<fixture-node>','exec'),
+                 {'_pulsar_control':control,'_pulsar_token':token,'__name__':'__main__'})
+            raise RuntimeError('node program did not exit')
         if (fault.get("operation") == request["operation"] and fault.get("rank") == rank()
                 and (not fault.get("manifest_id") or fault["manifest_id"] == request.get("manifest",{}).get("manifest_id"))):
             if fault.get("after"):
@@ -285,7 +337,7 @@ def tool(kind, argv):
         check_shell_paths(command)
         event("relay", target_rank=matches[0]["rank"])
         child_env = {**os.environ, "FIXTURE_RANK": str(matches[0]["rank"])}
-        return subprocess.run(shlex.split(command), env=child_env).returncode
+        return subprocess.run(['bash','-c',command], env=child_env).returncode
     raise RuntimeError("unknown fixture tool: " + kind)
 
 

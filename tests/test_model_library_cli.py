@@ -5,6 +5,10 @@ import hashlib
 import base64
 import os
 import shutil
+import fcntl
+import signal
+import subprocess
+import time
 from pathlib import Path
 import sys
 import tempfile
@@ -42,6 +46,42 @@ class ModelLibraryCLI(unittest.TestCase):
         result = self.success(fixture.acquire(home))
         fixture.candidate(nodes)
         return result
+
+    def test_cancelled_full_audit_retains_stamp_releases_lock_and_retries(self):
+        from model_library.verification_process import process_identity
+        f=self.fixture(nodes=2)
+        self.acquire_candidate(f,nodes=2,home=1)
+        self.success(f.run('prepare','--yes',spec=True))
+        before={p:p.read_bytes() for p in f.state.rglob('*.json')}
+        ready=f.root/'verifier-ready.json';resume=f.root/'verifier-resume'
+        f.cfg['block_verification']={'ready':str(ready),'resume':str(resume)};f.save()
+        command=['bash',str(f.repo/'scripts/model-library.sh'),'info',f.spec['spec_id'],
+                 '--spec-file',str(f.spec_path),'--full','--json']
+        process=subprocess.Popen(command,cwd=f.repo,env=f.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            deadline=time.monotonic()+15
+            identity=None
+            while identity is None:
+                try: identity=json.loads(ready.read_text())
+                except (OSError,ValueError): pass
+                if identity is not None: break
+                if process.poll() is not None:
+                    out,err=process.communicate();self.fail(f'audit exited before hashing: {out!r} {err!r}')
+                if time.monotonic()>deadline: self.fail('verification did not start')
+                time.sleep(.02)
+            process.terminate()  # Signal the caller PID, not its whole group.
+            out,err=process.communicate(timeout=8)
+            self.assertNotEqual(process.returncode,0)
+            self.assertEqual(out,b'')
+            self.assertNotEqual(process_identity(identity[0]),identity)
+            self.assertEqual({p:p.read_bytes() for p in before},before)
+            with (f.state/'lifecycle.lock').open('r+') as lock:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid,signal.SIGKILL);process.communicate(timeout=5)
+            f.cfg.pop('block_verification');f.save()
+        self.success(f.run('info','--full',spec=True))
 
     def speculative_fixture(self, nodes=2, draft_home=0):
         from release_spec.serving import freeze

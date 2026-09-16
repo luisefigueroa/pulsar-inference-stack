@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 
 from release_spec import serving
 from scripts.document_cli import CommandParser, emit, failure
+from model_library.verification_process import Cancelled, run_command
 
 
 def redact_diagnostic(value):
@@ -36,8 +37,7 @@ def producer_provenance():
 
 
 def execute(script, args, *, json_result=False, env=None):
-    result = subprocess.run(['bash', str(ROOT / script), *map(str, args)], env=env,
-                            cwd=ROOT,text=True, capture_output=True)
+    result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
     diagnostic=redact_diagnostic(result.stderr)
     if diagnostic:
         print(diagnostic, file=sys.stderr, end='')
@@ -237,6 +237,9 @@ def main(argv=None):
         return 0
     except (ValueError,OSError,TypeError,KeyError) as exc:
         return failure(exc,json_output=json_output)
+    except Cancelled as exc:
+        return failure(exc,json_output=json_output,
+                       code='cancelled' if exc.confirmed else 'cleanup_incomplete',exit_code=exc.exit_code)
     except RuntimeError as exc:
         return failure(exc,json_output=json_output,code='prerequisite_failed',exit_code=3)
 

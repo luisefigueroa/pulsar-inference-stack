@@ -49,6 +49,18 @@ node-local file verification. Thin Bash boundaries own confirmed topology,
 control SSH, downloader invocation and transfer commands. There is no separate
 Python lifecycle that bypasses these shared boundaries.
 
+Node calls retain the shared Bash topology and SSH adapter. A private process
+helper sends the large code/request bundle through a framed stdin stream, then
+renews its liveness lease. Only a fixed small bootstrap travels in argv. The
+node supervisor owns the worker group, forwards cancellation, escalates after
+the grace period and reaps its children. On Linux, PID/start-time identities
+and parent-death signals also cover a killed caller or supervisor. Completion
+receipts distinguish confirmed cleanup from an unobservable remote outcome;
+they are private control messages, not model records or public result fields.
+The public result wrapper owns and reaps its command group and reports any
+unconfirmed worker cleanup as an error. No persistent verification-job store
+or additional network service is introduced.
+
 ## Expected identity and physical files
 
 Before the first candidate exists, acquisition verifies the complete upstream

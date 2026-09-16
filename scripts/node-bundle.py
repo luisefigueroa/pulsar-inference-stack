@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Emit a self-contained node program from checked-in code and one JSON request.
 
-Callers must run the program with `python3 -` and the source on stdin.
-`python3 -c` hits Linux MAX_ARG_STRLEN once the inlined packages plus a
-real snapshot request exceed ~128KiB.
+Standalone output runs with `python3 -` and source on stdin. Supervised
+output uses the framed stdin transport and the fixed --bootstrap program.
+Only that small bootstrap goes in argv; complete code/request bundles can
+exceed Linux MAX_ARG_STRLEN and must remain on stdin.
 """
 import base64
+import argparse
 import io
 import json
 from pathlib import Path
@@ -13,6 +15,15 @@ import sys
 import zipfile
 
 root=Path(__file__).resolve().parent.parent
+sys.path.insert(0,str(root))
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--supervised',action='store_true')
+parser.add_argument('--bootstrap',action='store_true')
+options=parser.parse_args()
+if options.bootstrap:
+    from model_library.verification_process import BOOTSTRAP
+    print(BOOTSTRAP)
+    raise SystemExit(0)
 request=json.load(sys.stdin)
 data=io.BytesIO()
 with zipfile.ZipFile(data,'w',compression=zipfile.ZIP_DEFLATED) as bundle:
@@ -30,4 +41,6 @@ print('import base64,io,json,pathlib,sys,tempfile\n'
       ' sys.path.insert(0,str(p))\n'
       ' from model_library.node import main\n'
       f' sys.stdin=io.StringIO(base64.b64decode({argument!r}).decode())\n'
-      ' raise SystemExit(main())')
+      + (' from model_library.verification_process import supervise_node\n'
+         ' raise SystemExit(supervise_node(main,_pulsar_control.fileno(),_pulsar_token))'
+         if options.supervised else ' raise SystemExit(main())'))

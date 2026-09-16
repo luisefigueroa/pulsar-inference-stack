@@ -15,18 +15,24 @@ model_physical_rank() {
 }
 
 model_node() {
-  local rank="${1:?physical rank required}" request="${2:?request JSON required}" program
+  local rank="${1:?physical rank required}" request="${2:?request JSON required}"
   require_cluster_nodes "$((rank+1))" >/dev/null || return 1
-  program=$(printf '%s' "$request" | python3 "$REPO_DIR/scripts/node-bundle.py") || return 2
-  # The bundled program inlines release_spec+model_library plus the request.
-  # That exceeds Linux MAX_ARG_STRLEN (~128KiB) on real snapshot verifies, so
-  # it cannot be passed as `python -c`. `python -` reads the program on stdin.
-  if [ "$rank" -eq 0 ]; then
-    printf '%s' "$program" | "${PULSAR_NODE_PYTHON:-python3}" -
+  model_node_program "$rank" "$request"
+}
+
+model_node_program() {
+  local rank="${1:?node required}" request="${2:?request JSON required}" program bootstrap
+  local -a command=() SSH_NODE_COMMAND=()
+  program=$(printf '%s' "$request" | python3 "$REPO_DIR/scripts/node-bundle.py" --supervised) || return 2
+  bootstrap=$(python3 "$REPO_DIR/scripts/node-bundle.py" --bootstrap) || return 2
+  if [ "$rank" = local ] || [ "$rank" = 0 ]; then
+    command=("${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")
   else
     require_topology_ssh_trust >/dev/null || return 2
-    printf '%s' "$program" | ssh_node "$rank" "${PULSAR_NODE_PYTHON:-python3}" -
+    ssh_node_command "$rank"
+    command=("${SSH_NODE_COMMAND[@]}" "$(shell_join_q "${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")")
   fi
+  printf '%s' "$program" | python3 -m model_library.verification_process --owner "$$" -- "${command[@]}"
 }
 
 model_container_observation() {

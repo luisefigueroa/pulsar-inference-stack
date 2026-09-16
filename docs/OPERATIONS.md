@@ -164,6 +164,23 @@ temporary preparation cache is removed on exit. A publication fallback that
 changes directory identity also requires another full scan. Metadata reuse
 does not detect silent corruption that leaves metadata unchanged; use
 `./pulsar model info <spec-id> --full` for a full content audit.
+
+Cancelling a verification command stops its owned workers and waits for cleanup.
+The node renews its controller lease over the existing SSH connection every two
+seconds; a disconnected or silent control channel expires after 30 seconds.
+Workers receive two seconds to terminate gracefully before forced cleanup.
+These are liveness and cleanup limits, not an audit-duration limit: a quiet,
+healthy hash may run as long as needed. Earlier valid verification remains;
+cancelled work cannot publish a partial verification as complete.
+
+The public JSON wrapper reports `cancelled` when cleanup of its local command
+and tracked node workers is confirmed, and
+`cleanup_incomplete` when it cannot establish completion. A disconnected node
+also performs its own lease cleanup. An unconfirmed response is not evidence
+that every remote worker has already stopped; reconcile it before retrying a
+conflicting operation. Cancellation never invokes the model service's stop
+command or changes confirmation of cluster membership.
+
 Control SSH, inference traffic and model transfer use distinct configured
 paths. Multi-node preparation preserves the selected transfer contract and
 does not silently change networks.
