@@ -13,6 +13,14 @@ fi
 . "$REPO_DIR/scripts/model-library-common.sh"
 . "$REPO_DIR/scripts/acquire-source.sh"
 
+# Retain the original command identity across the archive-lock exec wrapper.
+# Node transports also track their immediate caller; neither identity is a PID
+# alone, so a reused PID cannot keep an abandoned verification alive.
+if [ -z "${PULSAR_VERIFICATION_OWNER:-}" ]; then
+  PULSAR_VERIFICATION_OWNER=$(python3 -c 'import json,sys; from model_library.verification_process import process_identity; print(json.dumps(process_identity(int(sys.argv[1]))))' "$$")
+  export PULSAR_VERIFICATION_OWNER
+fi
+
 usage() {
   cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; out=TerminalWriter(); [out.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
 Usage: model-library.sh OPERATION [SPEC_ID] [options]

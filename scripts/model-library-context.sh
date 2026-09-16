@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Internal operation helpers; sourced by model-library.sh only.
 
-local_node() { printf '%s' "$1" | "${PULSAR_NODE_PYTHON:-python3}" -m model_library.node; }
+local_node() { model_node_program local "$1"; }
 
 resolve_selected() {
   local request result

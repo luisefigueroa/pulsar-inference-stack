@@ -970,14 +970,20 @@ ssh_control_endpoint() {
     "${PULSAR_SSH_OPTS[@]}" -- "$host" "$@"
 }
 
-ssh_node() {
+ssh_node_command() {
   local rank="${1:?rank required}"
-  shift
   [ "$rank" -gt 0 ] 2>/dev/null || die "ssh_node requires a remote rank (>0)"
   require_cluster_nodes "$((rank + 1))" \
     || die "rank $rank is not present in the confirmed topology"
   local host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$@"
+  SSH_NODE_COMMAND=("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host")
+}
+
+ssh_node() {
+  local rank="${1:?rank required}"; shift
+  local -a SSH_NODE_COMMAND=()
+  ssh_node_command "$rank"
+  "${SSH_NODE_COMMAND[@]}" "$@"
 }
 
 # Resolve a physical target for a one-node profile. The selector is intentionally

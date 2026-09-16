@@ -198,6 +198,12 @@ Execution operations independently check their live prerequisites.
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
 
+Cancelled Stack actions return the existing error envelope with a nonzero exit
+status. `cancelled` confirms cleanup of the local command and tracked node workers;
+`cleanup_incomplete` means worker exit could not be established. Neither result
+authorizes stopping a model service. Internal lease/worker receipts do not alter
+successful command results or snapshot, prepared-set and evidence schemas.
+
 For non-streaming `--json` operations, stdout is one envelope with schema version
 1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human
 logging goes to stderr. Errors have nonzero exit status. Do not parse human

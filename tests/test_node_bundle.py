@@ -42,9 +42,9 @@ class NodeBundleTransport(unittest.TestCase):
             observed = Path(temp) / "argv.json"
             python.write_text(
                 "#!/usr/bin/env python3\n"
-                "import json,sys\n"
+                "import json,sys,os\n"
                 f"json.dump(sys.argv[1:], open({str(observed)!r}, 'w'))\n"
-                "sys.stdout.write(sys.stdin.read()[:24])\n")
+                "os.execv(sys.executable,[sys.executable,*sys.argv[1:]])\n")
             python.chmod(0o700)
             script = r'''
 set -euo pipefail
@@ -54,9 +54,12 @@ REPO_DIR=$1
 require_cluster_nodes() { CLUSTER_TOPOLOGY_COUNT=1; CLUSTER_NODE_IDS=(node-0); }
 model_node 0 '{"operation":"roots"}'
 '''
-            env = {**os.environ, "PULSAR_NODE_PYTHON": str(python), "PYTHONDONTWRITEBYTECODE": "1"}
+            env = {**os.environ, "PULSAR_NODE_PYTHON": str(python), "PYTHONDONTWRITEBYTECODE": "1",
+                   "PULSAR_HOME_ROOT":str(Path(temp)/'homes'),"PULSAR_HOT_ROOT":str(Path(temp)/'views')}
             result = subprocess.run(["bash", "-c", script, "test", str(ROOT)], env=env,
                                     cwd=str(ROOT), text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(observed.read_text()), ["-"])
-            self.assertTrue(result.stdout.startswith("import base64,io,json"))
+            arguments=json.loads(observed.read_text())
+            self.assertEqual(arguments[0],'-c')
+            self.assertLess(len(arguments[1]),2048)
+            self.assertEqual(json.loads(result.stdout)['view_root'],str(Path(temp)/'views'))
