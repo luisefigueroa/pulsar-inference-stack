@@ -61,6 +61,14 @@ The public result wrapper owns and reaps its command group and reports any
 unconfirmed worker cleanup as an error. No persistent verification-job store
 or additional network service is introduced.
 
+Prepared-set inspection plans all named snapshots and ranks together, deduplicates
+physical copies, and schedules the supplied node commands through this helper.
+The default bound is three workers and one per physical node; callers can lower
+it to one for serial audits. Workers produce verification results; the parent
+refreshes records and assembles the complete set in canonical order. Failure
+cancels peers and stops queued work. Cleanup after a sibling failure retains the
+original error; missing cleanup receipts still prevent success.
+
 ## Expected identity and physical files
 
 Before the first candidate exists, acquisition verifies the complete upstream

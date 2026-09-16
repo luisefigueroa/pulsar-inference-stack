@@ -52,7 +52,7 @@ for command,description in [
  ('pulsar contract','Show the versioned stack/workbench integration contract.'),
  ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving recipe.'),
  ('pulsar memory verify --file FILE --spec-file SPEC','Validate an explicit estimate of resident weights for the exact spec.'),
- ('pulsar observe --service-id ID [--full] --json','Verify every rank; reuse file verification unless --full requests hashing.'),
+ ('pulsar observe --service-id ID [--full] [--verification-jobs N] --json','Verify every rank; reuse file verification unless --full requests hashing.'),
  ('pulsar resources --spec-file FILE --jsonl','Sample confirmed nodes before launch; wait for the matching owned container.'),
  ('pulsar gum','Open the interactive Gum/plain workflow menu.'),
  ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),

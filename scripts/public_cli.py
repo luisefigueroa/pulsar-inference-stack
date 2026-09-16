@@ -37,7 +37,13 @@ def producer_provenance():
 
 
 def execute(script, args, *, json_result=False, env=None):
-    result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
+    try:
+        result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
+    except Cancelled as exc:
+        if exc.diagnostic:
+            detail = redact_diagnostic(exc.diagnostic)[-4000:]
+            raise Cancelled(detail+'\n'+str(exc), signum=exc.exit_code-128, confirmed=exc.confirmed) from exc
+        raise
     diagnostic=redact_diagnostic(result.stderr)
     if diagnostic:
         print(diagnostic, file=sys.stderr, end='')

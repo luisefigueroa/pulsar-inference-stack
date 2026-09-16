@@ -1161,6 +1161,7 @@ library_hot_info_for_profile() {
   local profile="${1:?spec required}"
   local -a args=(info "$profile" --json --for-launch --spec-file "$CONF_PATH")
   [ "${PULSAR_OBSERVE_FULL:-0}" != 1 ] || args+=(--full)
+  [ -z "${PULSAR_OBSERVE_VERIFICATION_JOBS:-}" ] || args+=(--verification-jobs "$PULSAR_OBSERVE_VERIFICATION_JOBS")
   if [ "${NODES:-1}" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then
     args+=(--node "$SINGLE_NODE_ID")
   fi

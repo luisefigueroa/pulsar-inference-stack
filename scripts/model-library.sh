@@ -49,6 +49,7 @@ Options:
   --discard-unpromoted   Acknowledge loss of unarchived lab-only bytes
   --json                Machine-readable output
   --full                Force full SHA-256 verification instead of reuse
+  --verification-jobs N  Prepared-copy workers (default 3; one per node)
 
 Archive location is explicit PULSAR_COLD_ROOT. Configure an existing
 location with ./pulsar configure archive-root. No archive deletion exists.
@@ -61,10 +62,11 @@ if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
 SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
 NODE="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
+VERIFICATION_JOBS=3
 PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out)
+    --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out|--verification-jobs)
       [ $# -ge 2 ] || die "$1 needs a value"
       case "$1" in
         --spec-file) SPEC_FILE="$2" ;;
@@ -74,6 +76,7 @@ while [ $# -gt 0 ]; do
         --model-commit|--revision) REVISION="$2" ;;
         --node) NODE="$2" ;;
         --manifest-out) MANIFEST_OUT="$2" ;;
+        --verification-jobs) VERIFICATION_JOBS="$2" ;;
       esac; shift ;;
     --yes) YES=1 ;;
     --plan) PLAN=1 ;;
@@ -91,12 +94,14 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$OP" in help|-h|--help) usage; exit 0 ;; esac
+[[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--verification-jobs requires a positive integer"
 [ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || die "--plan and --yes are separate operations"
 case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) die "unknown operation: $OP" ;; esac
 if [ "$OP" = archive ]; then case "$ARCHIVE_ACTION" in create|verify) ;; *) die "archive requires create or verify" ;; esac; fi
 MANIFEST_JSON="" SPEC_JSON="" MANIFEST_ID="" HOME_JSON="null"
 
 . "$REPO_DIR/scripts/model-library-context.sh"
+. "$REPO_DIR/scripts/model-library-inspection.sh"
 . "$REPO_DIR/scripts/model-library-acquisition.sh"
 . "$REPO_DIR/scripts/model-library-recovery.sh"
 . "$REPO_DIR/scripts/model-library-preparation.sh"

@@ -74,11 +74,17 @@ verify_record() {
   select_record_manifest "$record" || return 2
   rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255
   result=$(model_node "$rank" "$(model_node_request verify for_runtime: true path "$(json_fields "$record" path)" stamp: "$(json_fields "$record" verification)" full: "$([ "$full" = 1 ] && echo true || echo false)")") || return $?
-  local refreshed
-  refreshed=$(printf '%s' "$record" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["verification"]=json.loads(sys.argv[1])["verification"]; from model_library.state import now; d["verified_at"]=now() if d["verification"]["method"]=="sha256" else d["verified_at"]; print(json.dumps(d))' "$result") || return 2
+  refresh_verified_record "$1" "$record" "$result"
+}
+
+refresh_verified_record() {
+  local original="$1" record="$2" result="$3" completed="${4:-}" rank refreshed
+  select_record_manifest "$record" || return 2
+  rank=$(model_physical_rank "$(json_fields "$record" node_id)") || return 255
+  refreshed=$(printf '%s' "$record" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["verification"]=json.loads(sys.argv[1])["verification"]; from model_library.state import now; d["verified_at"]=(sys.argv[2] or now()) if d["verification"]["method"]=="sha256" else d["verified_at"]; print(json.dumps(d))' "$result" "$completed") || return 2
   # A hash performed during planning is persisted only once execution begins,
   # even when its subsequent filesystem check used matching metadata.
-  if [ "${PLAN:-0}" -eq 0 ] && { [ "$(json_fields "$refreshed" verification.method)" = sha256 ] || [ "$(json_fields "$refreshed" verified_at)" != "$(json_fields "$1" verified_at)" ]; }; then
+  if [ "${PLAN:-0}" -eq 0 ] && { [ "$(json_fields "$refreshed" verification.method)" = sha256 ] || [ "$(json_fields "$refreshed" verified_at)" != "$(json_fields "$original" verified_at)" ]; }; then
     model_ctl "$(model_json operation refresh-verification record: "$refreshed")" >/dev/null || return 2
     if [ "$(json_fields "$refreshed" kind)" = pulsar-prepared-view ]; then
       model_node "$rank" "$(model_node_request refresh-view view: "$refreshed")" >/dev/null || return $?
@@ -94,40 +100,7 @@ remember_preparation_verification() {
 }
 
 prepared_snapshot_info() {
-  local views rank node row verified temp home_node found=0
-  require_home
-  selected_nodes
-  home_node=$(json_fields "$HOME_JSON" node_id)
-  for node in "${SELECTED_IDS[@]}"; do [ "$node" != "$home_node" ] || found=1; done
-  [ "$found" -eq 1 ] || { echo 'home is outside selected serving nodes; explicitly move it first' >&2; return 1; }
-  HOME_JSON=$(verify_record "$HOME_JSON") || return $?
-  views=$(model_ctl "$(model_json operation views spec_id "$SPEC_ID")") || return 2
-  temp=$(mktemp)
-  for ((rank=0; rank<${#SELECTED_IDS[@]}; rank++)); do
-    node="${SELECTED_IDS[$rank]}"
-    row=$(printf '%s' "$views" | python3 -c '
-import json,sys
-rows=[r for r in json.load(sys.stdin) if r["node_id"]==sys.argv[1] and r["rank"]==int(sys.argv[2]) and r["topology_id"]==sys.argv[3] and r["snapshot_manifest_id"]==sys.argv[4]]
-if len(rows)!=1: raise SystemExit(1)
-print(json.dumps(rows[0]))
-' "$node" "$rank" "$CLUSTER_TOPOLOGY_ID" "$MANIFEST_ID") || { rm -f "$temp"; echo 'required prepared copy is missing or placement changed' >&2; return 1; }
-    if [ "$node" = "$home_node" ]; then
-      if [ "$(json_fields "$row" is_home_view)" != true ] || [ "$(json_fields "$row" path)" != "$(json_fields "$HOME_JSON" path)" ] || [ "$(json_fields "$row" hub_path)" != "$(json_fields "$HOME_JSON" hub_path)" ]; then
-        rm -f "$temp"; echo 'home node must use its verified home directly' >&2; return 2
-      fi
-      verified=$(printf '%s' "$row" | python3 -c 'import json,sys; r=json.load(sys.stdin); h=json.loads(sys.argv[1]); r["verification"]=h["verification"]; r["verified_at"]=h["verified_at"]; print(json.dumps(r))' "$HOME_JSON") || { rm -f "$temp"; return 2; }
-    else
-      [ "$(json_fields "$row" is_home_view)" != true ] || { rm -f "$temp"; echo 'non-home node requires a verified working copy' >&2; return 2; }
-      verified=$(verify_record "$row") || { local rc=$?; rm -f "$temp"; return "$rc"; }
-    fi
-    printf '%s\n' "$verified" >>"$temp"
-  done
-  python3 -c '
-import json,sys
-rows=[json.loads(x) for x in open(sys.argv[1])]
-print(json.dumps({"schema_version":1,"kind":"pulsar-prepared-set","spec_id":sys.argv[2],"snapshot_manifest_id":sys.argv[3],"topology_id":sys.argv[4],"home_node_id":sys.argv[5],"revision":sys.argv[6],"home":json.loads(sys.argv[7]),"ranks":rows}))
-' "$temp" "$SPEC_ID" "$MANIFEST_ID" "$CLUSTER_TOPOLOGY_ID" "$home_node" "$REVISION" "$HOME_JSON" || { local rc=$?; rm -f "$temp"; return "$rc"; }
-  rm -f "$temp"
+  python3 -m model_library.inspection member "$PREPARED_INSPECTION_DIR" "${CHECK_SNAPSHOT:-target}"
 }
 
 require_archive_root() {
@@ -175,27 +148,17 @@ select_record_manifest() {
   select_snapshot "$selected"
 }
 
-prepared_info() {
-  if [ "$VIEW_SCHEMA" != 2 ]; then prepared_snapshot_info; return; fi
-  selected_nodes || return 2
-  local name value tmp
-  tmp=$(mktemp)
-  while IFS= read -r name <&3; do
-    select_snapshot "$name" || { rm -f "$tmp"; return 2; }
-    value=$(prepared_snapshot_info) || { local rc=$?; rm -f "$tmp"; echo "required snapshot $name is not ready" >&2; return "$rc"; }
-    printf '%s\n' "$(model_json name "$name" prepared: "$value")" >>"$tmp"
-  done 3< <(snapshot_names)
-  python3 - "$tmp" "$SPEC_ID" "$CLUSTER_TOPOLOGY_ID" <<'PYCODE'
-import json,sys
-rows=[json.loads(line) for line in open(sys.argv[1])]
-print(json.dumps({'schema_version':2,'kind':'pulsar-prepared-set','spec_id':sys.argv[2],
-                  'topology_id':sys.argv[3],'snapshots':{r['name']:r['prepared'] for r in rows}}))
-PYCODE
-  local rc=$?
-  rm -f "$tmp"
-  select_snapshot "${SNAPSHOT:-target}"
-  return "$rc"
-}
+prepared_info() (
+  local work rc=0
+  work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-inspection.XXXXXX")
+  trap 'rm -rf "$work"' EXIT
+  inspect_prepared "$work" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    [ ! -f "$work/members.json" ] || python3 -m model_library.inspection errors "$work"
+    return "$rc"
+  fi
+  cat "$work/prepared.json"
+)
 
 archive_verify() {
   if [ "$VIEW_SCHEMA" != 2 ] || [ -n "$SNAPSHOT" ]; then archive_snapshot_verify; return; fi
