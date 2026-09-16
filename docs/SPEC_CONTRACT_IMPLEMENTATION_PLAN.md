@@ -388,6 +388,9 @@ projection descriptions. Do not rewrite historical decision/evidence records.
 
 ## 10. Verification and acceptance
 
+This section retains the original contract refactor's acceptance plan. Ongoing
+development uses the current [validation selection policy](TESTING.md#select-checks-for-the-change).
+
 Run focused `release_spec` and affected Python tests, Bash syntax checks,
 `shellcheck --severity=error` for affected scripts, and the full
 `scripts/selftest.sh` before commit/publication. Capture baseline failures before
