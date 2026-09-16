@@ -20,19 +20,25 @@ model_node() {
   model_node_program "$rank" "$request"
 }
 
-model_node_program() {
-  local rank="${1:?node required}" request="${2:?request JSON required}" program bootstrap
-  local -a command=() SSH_NODE_COMMAND=()
-  program=$(printf '%s' "$request" | python3 "$REPO_DIR/scripts/node-bundle.py" --supervised) || return 2
+model_node_command() {
+  local rank="${1:?node required}" bootstrap
+  local -a SSH_NODE_COMMAND=()
   bootstrap=$(python3 "$REPO_DIR/scripts/node-bundle.py" --bootstrap) || return 2
   if [ "$rank" = local ] || [ "$rank" = 0 ]; then
-    command=("${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")
+    MODEL_NODE_COMMAND=("${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")
   else
     require_topology_ssh_trust >/dev/null || return 2
     ssh_node_command "$rank"
-    command=("${SSH_NODE_COMMAND[@]}" "$(shell_join_q "${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")")
+    MODEL_NODE_COMMAND=("${SSH_NODE_COMMAND[@]}" "$(shell_join_q "${PULSAR_NODE_PYTHON:-python3}" -c "$bootstrap")")
   fi
-  printf '%s' "$program" | python3 -m model_library.verification_process --owner "$$" -- "${command[@]}"
+}
+
+model_node_program() {
+  local rank="${1:?node required}" request="${2:?request JSON required}" program
+  local -a MODEL_NODE_COMMAND=()
+  program=$(printf '%s' "$request" | python3 "$REPO_DIR/scripts/node-bundle.py" --supervised) || return 2
+  model_node_command "$rank" || return $?
+  printf '%s' "$program" | python3 -m model_library.verification_process --owner "$$" -- "${MODEL_NODE_COMMAND[@]}"
 }
 
 model_container_observation() {

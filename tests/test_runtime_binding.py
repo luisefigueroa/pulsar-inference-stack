@@ -25,7 +25,7 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             for rank in range(nodes):
@@ -66,7 +66,7 @@ load_cluster_topology() {{
 require_profile_topology() {{ load_cluster_topology; }}
 runtime_context_for_rank() {{ printf '{{"architecture":"fixture","kernel_release":"fixture","gpu_driver":null,"container_runtime_version":null}}\n'; }}
 resolve_single_node_placement() {{ load_cluster_topology || return; SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=rank-0; SINGLE_NODE_SSH_HOST=local; SINGLE_NODE_CONTROL_IP=192.0.2.1; SINGLE_NODE_REMOTE=0; SINGLE_NODE_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID"; }}
-library_hot_info_for_profile() {{ printf '%s\\n' "${{PULSAR_OBSERVE_FULL:-0}}" >>"$FIXTURE_ROOT/verification-modes"; [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
+library_hot_info_for_profile() {{ printf '%s\\n' "${{PULSAR_OBSERVE_FULL:-0}}" >>"$FIXTURE_ROOT/verification-modes"; printf '%s\\n' "${{PULSAR_OBSERVE_VERIFICATION_JOBS:-}}" >>"$FIXTURE_ROOT/verification-jobs"; [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
 ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROOT/docker.py" $([ "${{1#docker image}}" != "$1" ] && echo image || echo inspect); }}
 ''')
             env={**os.environ,'BASH_ENV':str(envfile),'FIXTURE_ROOT':str(root),'FIXTURE_MODE':mode,'PULSAR_DOCKER':str(tool),'PULSAR_MODEL_LIBRARY_DIR':str(root/'library'),'PULSAR_SPEC_FILE':str(path),'PULSAR_OVERLAY_PATH':str(root/'overlay.json'),'VLLM_IMAGE_MAINLINE':'example/image','VLLM_EXTRA_ARGS':'','EXTRA_ENV':''}
@@ -105,9 +105,12 @@ library_hot_info_for_profile() {
             command=['bash',str(script),spec['spec_id'],*flags]
             if public: command=[str(ROOT/'pulsar'),'observe','--service-id',plan['service_id'],'--json']
             if full: command += ['--full']
+            if verification_jobs is not None: command += ['--verification-jobs',str(verification_jobs)]
             result=subprocess.run(command,cwd=root if public else ROOT,env=env,text=True,capture_output=True)
             trace=root/'verification-modes'
             result.verification_modes=trace.read_text().splitlines() if trace.exists() else []
+            trace=root/'verification-jobs'
+            result.verification_jobs=trace.read_text().splitlines() if trace.exists() else []
             return result
 
     def test_required_snapshots_through_public_observation_and_launcher(self):
@@ -138,6 +141,17 @@ library_hot_info_for_profile() {
             result=self.run_scenario(nodes)
             self.assertEqual(result.returncode,0,result.stderr)
             doc=json.loads(result.stdout);self.assertEqual(len(doc['ranks']),nodes)
+
+    def test_observer_passes_worker_limit_and_rejects_invalid_limit_before_inspection(self):
+        for jobs in (None,1,2):
+            result=self.run_scenario(2,public=True,verification_jobs=jobs)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(result.verification_jobs,[str(jobs or 3)])
+        for jobs in (0,-1,'no'):
+            result=self.run_scenario(2,public=True,verification_jobs=jobs)
+            self.assertNotEqual(result.returncode,0)
+            self.assertIn('positive integer',result.stderr)
+            self.assertEqual(result.verification_jobs,[])
 
     def test_public_observation_from_an_unrelated_directory(self):
         result=self.run_scenario(1,public=True)

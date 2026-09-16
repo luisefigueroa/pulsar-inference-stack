@@ -83,6 +83,109 @@ class ModelLibraryCLI(unittest.TestCase):
             f.cfg.pop('block_verification');f.save()
         self.success(f.run('info','--full',spec=True))
 
+    def wait_for_verifiers(self, root, process, ranks):
+        from model_library.verification_process import process_identity
+        deadline=time.monotonic()+15;identities={}
+        while len(identities)!=len(ranks):
+            for rank in ranks:
+                try: identities[rank]=json.loads((root/f'ready-{rank}').read_text())
+                except (OSError,ValueError): pass
+            if process.poll() is not None:
+                out,err=process.communicate();self.fail(f'audit ended before barrier: {out!r} {err!r}')
+            if time.monotonic()>deadline: self.fail('all-node verification barrier was not reached')
+            time.sleep(.02)
+        self.assertTrue(all(process_identity(identity[0])==identity for identity in identities.values()))
+        return identities
+
+    def test_parallel_named_audit_matches_serial_and_hashes_every_copy_once(self):
+        f=self.speculative_fixture(nodes=3,draft_home=2)
+        self.success(f.run('prepare','--yes',spec=True))
+        f.cfg['trace_verification']=True;f.save()
+        serial=self.success(f.run('info','--full','--verification-jobs','1',spec=True))
+        size=sum(model['snapshot_manifest']['total_bytes'] for model in
+                 [f.spec['recipe']['model'],*f.spec['recipe']['required_snapshots'].values()])
+        before=len(f.events('verification-read'))
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')),size*3)
+        old_records={p:p.read_bytes() for p in f.state.rglob('*.json')}
+        f.cfg['block_verification']={'ready':str(f.root/'ready'),'resume':str(f.root/'resume'),'per_rank':True};f.save()
+        command=['bash',str(f.repo/'scripts/model-library.sh'),'info',f.spec['spec_id'],
+                 '--spec-file',str(f.spec_path),'--full','--json']
+        process=subprocess.Popen(command,cwd=f.repo,env=f.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            self.wait_for_verifiers(f.root,process,range(3))
+            self.assertEqual({p:p.read_bytes() for p in old_records},old_records)
+            for rank in range(3): (f.root/f'resume-{rank}').touch()
+            out,err=process.communicate(timeout=30)
+            self.assertEqual(process.returncode,0,err)
+            parallel=json.loads(out)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid,signal.SIGKILL);process.communicate(timeout=5)
+            f.cfg.pop('block_verification');f.save()
+        reads=f.events('verification-read')[before:]
+        self.assertEqual({rank:sum(row['bytes'] for row in reads if row['rank']==rank) for rank in range(3)},
+                         {rank:size for rank in range(3)})
+        def stable(value):
+            if isinstance(value,dict): return {k:stable(v) for k,v in value.items() if k!='verified_at'}
+            if isinstance(value,list): return [stable(v) for v in value]
+            return value
+        self.assertEqual(stable(serial),stable(parallel))
+        before=len(f.events('verification-read'))
+        self.success(f.run('info',spec=True))
+        self.assertEqual(len(f.events('verification-read')),before)
+        result=self.success(f.run('check','--full','--verification-jobs','2',spec=True))
+        self.assertEqual(result['observation']['local_state'],'ready')
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')[before:]),size*3)
+        self.assertEqual(list((f.root/'tmp').iterdir()),[])
+
+    def test_corrupt_parallel_worker_cancels_other_nodes_without_masking_error(self):
+        from model_library.verification_process import process_identity
+        f=self.fixture(3);self.acquire_candidate(f,nodes=3,home=2)
+        self.success(f.run('prepare','--yes',spec=True))
+        view=next(v for v in Store(f.state).views(spec_id=f.spec['spec_id']) if v['rank']==1)
+        path=Path(view['path'])/'weights.bin';data=path.read_bytes();path.write_bytes(b'x'*len(data))
+        old_records={p:p.read_bytes() for p in f.state.rglob('*.json')}
+        f.cfg['block_verification']={'ready':str(f.root/'ready'),'resume':str(f.root/'resume'),'per_rank':True};f.save()
+        command=[sys.executable,str(f.repo/'scripts/public_cli.py'),'model','info',f.spec['spec_id'],
+                 '--spec-file',str(f.spec_path),'--full','--json']
+        process=subprocess.Popen(command,cwd=f.repo,env=f.env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            identities=self.wait_for_verifiers(f.root,process,range(3))
+            (f.root/'resume-1').touch()
+            out,err=process.communicate(timeout=15)
+            response=json.loads(out)
+            self.assertNotEqual(process.returncode,0,err)
+            self.assertFalse(response['ok'])
+            self.assertEqual(response['error']['code'],'prerequisite_failed',response)
+            self.assertIn('SHA-256',response['error']['message'])
+            self.assertTrue(all(process_identity(identity[0])!=identity for identity in identities.values()))
+            self.assertEqual({p:p.read_bytes() for p in old_records},old_records)
+            self.assertEqual(list((f.root/'tmp').iterdir()),[])
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid,signal.SIGKILL);process.communicate(timeout=5)
+
+    def test_named_aliases_share_one_verification_per_physical_copy(self):
+        from release_spec.serving import freeze
+        f=self.fixture(2);self.acquire_candidate(f,nodes=2,home=1)
+        recipe=copy.deepcopy(f.spec['recipe']);manifest=recipe['model'].pop('snapshot_manifest')
+        recipe['required_snapshots']={'draft':copy.deepcopy(recipe['model'])}
+        recipe['engine_args'] += ['--speculative_config.model','pulsar-snapshot:draft']
+        f.spec=freeze({'schema_version':2,'kind':'pulsar-recipe-draft','source':f.spec['source'],'recipe':recipe},
+                      {'target':manifest,'draft':manifest})
+        f.spec_path.write_bytes(pretty_json_bytes(f.spec))
+        self.success(f.run('prepare','--yes',spec=True))
+        f.cfg['trace_verification']=True;f.save()
+        result=self.success(f.run('info','--full',spec=True))
+        self.assertEqual(result['snapshots']['target'],result['snapshots']['draft'])
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')),2*manifest['total_bytes'])
+
+    def test_invalid_worker_limits_fail_before_node_operations(self):
+        f=self.fixture()
+        for value in ('0','-1','1.5','true',''):
+            self.failure(f.run('info','--verification-jobs',value),'positive integer')
+        self.assertEqual(f.events('node-operation'),[])
+
     def speculative_fixture(self, nodes=2, draft_home=0):
         from release_spec.serving import freeze
         f=self.fixture(nodes)

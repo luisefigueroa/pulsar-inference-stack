@@ -65,7 +65,13 @@ show_budget() {
 }
 
 
-check_model() {
+check_model() (
+  local PREPARED_INSPECTION_DIR batch_rc=0
+  PREPARED_INSPECTION_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-inspection.XXXXXX")
+  trap 'rm -rf "$PREPARED_INSPECTION_DIR"' EXIT
+  inspect_prepared "$PREPARED_INSPECTION_DIR" || batch_rc=$?
+  case "$batch_rc" in 129|130|143) return "$batch_rc" ;; esac
+  [ -f "$PREPARED_INSPECTION_DIR/members.json" ] || return 2
   if [ "$VIEW_SCHEMA" != 2 ]; then check_snapshot; return; fi
   local name result tmp observation rc=0 member_rc saved_json="$JSON"
   tmp=$(mktemp)
@@ -73,7 +79,7 @@ check_model() {
   while IFS= read -r name <&3; do
     select_snapshot "$name"
     member_rc=0
-    result=$(CHECK_MEMBER=1 check_snapshot) || member_rc=$?
+    result=$(CHECK_MEMBER=1 CHECK_SNAPSHOT="$name" check_snapshot) || member_rc=$?
     if [ "$member_rc" -ne 0 ]; then rc=1; fi
     [ -n "$result" ] || { rm -f "$tmp"; return 2; }
     printf '%s\n' "$(model_json name "$name" result: "$result")" >>"$tmp"
@@ -90,4 +96,4 @@ PYCODE
   model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || return 2
   emit_result "$(model_json spec_id "$SPEC_ID" observation: "$observation")"
   return "$rc"
-}
+)

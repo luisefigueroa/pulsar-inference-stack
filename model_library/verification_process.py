@@ -27,6 +27,8 @@ REAP_SECONDS = 1.0
 MAX_PROGRAM_BYTES = 64 * 1024 * 1024
 OWNER_ENV = 'PULSAR_VERIFICATION_OWNER'
 REPORT_ENV = 'PULSAR_VERIFICATION_REPORT'
+REPORT_FD_ENV = 'PULSAR_VERIFICATION_REPORT_FD'
+FAILURE_ENV = 'PULSAR_VERIFICATION_BATCH_FAILURE'
 
 # Only this fixed, small bootstrap is passed in argv. Bundled code and requests
 # remain on stdin, followed by the live control channel. Unbuffered reads must
@@ -54,10 +56,11 @@ exec(compile(b''.join(_parts),'<pulsar-node>','exec'))
 
 
 class Cancelled(RuntimeError):
-    def __init__(self, message, *, signum=signal.SIGTERM, confirmed=True):
+    def __init__(self, message, *, signum=signal.SIGTERM, confirmed=True, diagnostic=''):
         super().__init__(message)
         self.exit_code = 128 + signum
         self.confirmed = confirmed
+        self.diagnostic = diagnostic
 
 
 @contextmanager
@@ -181,7 +184,11 @@ def finish_worker(pid):
 def report_worker(token, state):
     prefix = os.environ.get(REPORT_ENV)
     if prefix:
-        print(f'{prefix}:{token}:{state}', file=sys.stderr, flush=True)
+        line = f'{prefix}:{token}:{state}\n'
+        if REPORT_FD_ENV in os.environ:
+            os.write(int(os.environ[REPORT_FD_ENV]), line.encode())
+        else:
+            print(line, file=sys.stderr, end='', flush=True)
 
 
 def worker_reports(diagnostic, prefix):
@@ -189,7 +196,7 @@ def worker_reports(diagnostic, prefix):
     for line in diagnostic.splitlines():
         if line.startswith(prefix + ':'):
             fields = line[len(prefix)+1:].split(':')
-            if len(fields) == 2 and len(fields[0]) == 32 and fields[1] in ('started', 'confirmed', 'cancelled', 'incomplete'):
+            if len(fields) == 2 and len(fields[0]) == 32 and fields[1] in ('started', 'confirmed', 'cancelled', 'peer_cancelled', 'incomplete'):
                 states[fields[0]] = fields[1]
                 continue
         lines.append(line)
@@ -351,7 +358,10 @@ def run_transport(command, program, *, owners=(), heartbeat=HEARTBEAT_SECONDS):
         diagnostic = '\n'.join(line for line in diagnostic.splitlines() if not line.startswith(marker))
         confirmed = any(value in ('confirmed','cancelled') for value in receipts)
         interrupted = reason not in (None,'control channel closed') or 'cancelled' in receipts
-        report_worker(token, ('cancelled' if interrupted else 'confirmed') if confirmed else 'incomplete')
+        state = 'cancelled' if interrupted else 'confirmed'
+        if interrupted and os.environ.get(FAILURE_ENV) and Path(os.environ[FAILURE_ENV]).exists():
+            state = 'peer_cancelled'
+        report_worker(token, state if confirmed else 'incomplete')
         if reason is not None and not (reason == 'control channel closed' and confirmed):
             detail = 'worker cleanup confirmed' if confirmed else 'worker cleanup unconfirmed; remote lease expires after 30 seconds without renewal'
             raise Cancelled(f'verification cancelled: {reason}; {detail}',
@@ -361,6 +371,132 @@ def run_transport(command, program, *, owners=(), heartbeat=HEARTBEAT_SECONDS):
         if not confirmed:
             diagnostic += '\nworker cleanup unconfirmed; a disconnected node expires its lease after 30 seconds'
         return subprocess.CompletedProcess(command, code, output, diagnostic)
+
+
+def run_batch(tasks, directory, *, jobs=3, owners=()):
+    """Schedule supplied transports; one per node, no new work after failure.
+
+    Bash supplies every argv and framed program. Per-job files contain data;
+    live ownership receipts bypass those files so an interrupted outer command
+    still knows which remote workers require confirmed cleanup.
+    """
+    if type(jobs) is not int or jobs < 1:
+        raise ValueError('verification jobs must be a positive integer')
+    if [task['index'] for task in tasks] != list(range(len(tasks))):
+        raise ValueError('verification tasks must have unique canonical indexes')
+    own_descendants()
+    root = Path(directory)
+    failure = root/'failed'
+    if failure.exists():
+        raise ValueError('verification batch directory has already been used')
+    report_fd = os.dup(int(os.environ.get(REPORT_FD_ENV, sys.stderr.fileno())))
+    environment = {**os.environ, REPORT_FD_ENV: str(report_fd), FAILURE_ENV: str(failure)}
+    pending = list(tasks)
+    active = {}
+    client_tokens = {}
+    results = {}
+    first_error = None
+    deadline = None
+    owner_dead = False
+    parent = os.getpid()
+
+    def cancel_peers():
+        for process, _task in active.values():
+            signal_group(process.pid, signal.SIGTERM)
+
+    def failed(index, code, error):
+        nonlocal first_error, deadline
+        if first_error is None:
+            first_error = index
+            failure.touch(exist_ok=False)
+            deadline = time.monotonic() + GRACE_SECONDS + 2
+            cancel_peers()
+        results[index] = {'index': index, 'returncode': code, 'error': error}
+
+    try:
+        with cancellation_signals() as cancelled:
+            while pending or active:
+                owner_dead = any(identity is None or process_identity(identity[0]) != identity for identity in owners)
+                if (cancelled['signal'] is not None or owner_dead) and deadline is None:
+                    deadline = time.monotonic() + GRACE_SECONDS + 2
+                    cancel_peers()
+                # Collect before launching: an observed failure prevents new work.
+                for index, (process, task) in list(active.items()):
+                    if not exited(process.pid):
+                        if deadline is None or time.monotonic() < deadline:
+                            continue
+                        confirmed = stop_worker(process.pid, grace=0)
+                        code = 4
+                        error = 'verification client did not finish cleanup; worker cleanup unconfirmed'
+                        if confirmed: process.returncode = 128 + signal.SIGKILL
+                        report_worker(client_tokens[index], 'incomplete')
+                    else:
+                        try:
+                            code = finish_worker(process.pid)
+                            process.returncode = code
+                            code = code if code >= 0 else 128-code
+                            error = (root/'jobs'/f'{index}.err').read_text().strip()
+                            report_worker(client_tokens[index], 'confirmed')
+                        except Cancelled as exc:
+                            code, error = 4, str(exc)
+                            report_worker(client_tokens[index], 'incomplete')
+                    del active[index]
+                    if code:
+                        # A user interruption is different from cleanup following
+                        # a failed hash. Do not manufacture a peer-failure latch.
+                        if deadline is None:
+                            failed(index, code, error)
+                        else:
+                            results[index] = {'index': index, 'returncode': code, 'error': error}
+                    else:
+                        from .state import now
+                        results[index] = {'index': index, 'returncode': 0, 'verified_at': now()}
+                if deadline is not None:
+                    if not active: break
+                else:
+                    busy = {task['node_slot'] for _, task in active.values()}
+                    for task in list(pending):
+                        if len(active) >= jobs: break
+                        if task['node_slot'] in busy: continue
+                        pending.remove(task)
+                        index = task['index']
+                        client_tokens[index] = secrets.token_hex(16)
+                        report_worker(client_tokens[index], 'started')
+                        try:
+                            with open(task['program'], 'rb') as program, \
+                                 (root/'jobs'/f'{index}.out').open('wb') as stdout, \
+                                 (root/'jobs'/f'{index}.err').open('wb') as stderr:
+                                process = subprocess.Popen(task['command'], stdin=program, stdout=stdout,
+                                    stderr=stderr, env=environment, pass_fds=(report_fd,), start_new_session=True,
+                                    preexec_fn=lambda: parent_death_guard(parent))
+                            active[index] = (process, task)
+                            busy.add(task['node_slot'])
+                        except OSError as exc:
+                            report_worker(client_tokens[index], 'confirmed')
+                            failed(index, 2, str(exc)); break
+                if active: time.sleep(.02)
+            for task in pending:
+                results[task['index']] = {'index': task['index'], 'returncode': 125,
+                    'error': 'verification not started after batch failure or cancellation'}
+            code = (128 + (cancelled['signal'] or signal.SIGHUP)) if cancelled['signal'] or owner_dead else 0
+            if not code and first_error is not None:
+                code = results[first_error]['returncode']
+            report = {'returncode': code, 'first_error': first_error,
+                      'results': [results[index] for index in range(len(tasks))]}
+            (root/'batch.json').write_text(json.dumps(report))
+            return code
+    finally:
+        # Unexpected exceptions must close ownership, too. Transport clients
+        # close the remote control channel before their bounded local exit.
+        cancel_peers()
+        for index, (process, _task) in active.items():
+            if wait_exit(process.pid, GRACE_SECONDS + 2):
+                process.returncode = finish_worker(process.pid)
+                report_worker(client_tokens[index], 'confirmed')
+            elif stop_worker(process.pid, grace=0):
+                process.returncode = 128 + signal.SIGKILL
+                report_worker(client_tokens[index], 'incomplete')
+        os.close(report_fd)
 
 
 def run_command(command, *, env=None, cwd=None):
@@ -383,7 +519,7 @@ def run_command(command, *, env=None, cwd=None):
                     process.returncode = 128 + cancelled['signal']
                 stderr.seek(0)
                 states, _ = worker_reports(stderr.read().decode(errors='replace'), prefix)
-                verified = confirmed and all(value in ('confirmed','cancelled') for value in states.values())
+                verified = confirmed and all(value in ('confirmed','cancelled','peer_cancelled') for value in states.values())
                 detail = 'local command and tracked node workers reaped' if verified else 'worker cleanup unconfirmed; a disconnected node expires its lease after 30 seconds'
                 raise Cancelled('Stack command cancelled; '+detail,
                                 signum=cancelled['signal'], confirmed=verified)
@@ -397,15 +533,25 @@ def run_command(command, *, env=None, cwd=None):
             raise
         stdout.seek(0); stderr.seek(0)
         states, diagnostic = worker_reports(stderr.read().decode(errors='replace'), prefix)
-        if any(value not in ('confirmed','cancelled') for value in states.values()):
-            raise Cancelled('Stack command ended with unconfirmed worker cleanup', confirmed=False)
+        if any(value not in ('confirmed','cancelled','peer_cancelled') for value in states.values()):
+            raise Cancelled('Stack command ended with unconfirmed worker cleanup', confirmed=False, diagnostic=diagnostic)
         if 'cancelled' in states.values():
             raise Cancelled('Stack verification cancelled; tracked node workers reaped')
+        if code == 0 and 'peer_cancelled' in states.values():
+            raise Cancelled('Stack verification did not cover the complete prepared set', diagnostic=diagnostic)
         return subprocess.CompletedProcess(command, code, stdout.read().decode(errors='replace'),
                                            diagnostic)
 
 
 def main():
+    if sys.argv[1:2] == ['batch']:
+        parser = argparse.ArgumentParser(description='Run an invocation-owned verification batch')
+        parser.add_argument('batch'); parser.add_argument('--tasks', required=True)
+        parser.add_argument('--directory', required=True); parser.add_argument('--jobs', type=int, default=3)
+        args = parser.parse_args()
+        owners = [process_identity(os.getppid())]
+        if OWNER_ENV in os.environ: owners.append(json.loads(os.environ[OWNER_ENV]))
+        return run_batch(json.loads(Path(args.tasks).read_text()), args.directory, jobs=args.jobs, owners=owners)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--owner', type=int, required=True)
     parser.add_argument('command', nargs=argparse.REMAINDER)

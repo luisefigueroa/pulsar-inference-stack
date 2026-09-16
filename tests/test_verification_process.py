@@ -260,6 +260,19 @@ raise SystemExit('unconfirmed worker was accepted')
             self.assertFalse(response['ok'])
             self.assertEqual(response['error']['code'],'cancelled' if confirmed else 'cleanup_incomplete')
 
+    def test_public_cleanup_error_retains_redacted_original_failure(self):
+        from scripts import public_cli
+        from model_library.verification_process import Cancelled
+        failure=Cancelled('worker cleanup unconfirmed',confirmed=False,
+                          diagnostic='SHA-256 mismatch; password=synthetic-value')
+        with patch.object(public_cli,'run_command',side_effect=failure):
+            with self.assertRaises(Cancelled) as caught:
+                public_cli.execute('fixture',[])
+        self.assertFalse(caught.exception.confirmed)
+        self.assertIn('SHA-256 mismatch',str(caught.exception))
+        self.assertIn('cleanup unconfirmed',str(caught.exception))
+        self.assertNotIn('synthetic-value',str(caught.exception))
+
     def test_lost_simulated_ssh_connection_stops_detached_remote_worker(self):
         # Adopt the simulated remote supervisor after its fake SSH parent dies;
         # this keeps the test responsible for reaping every process it creates.

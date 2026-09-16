@@ -123,9 +123,10 @@ def trace_verification():
         block=read().get('block_verification')
         if block and caller.f_code.co_name=='verify_tree' and caller.f_globals.get('__name__')=='model_library.integrity':
             from model_library.verification_process import process_identity
-            marker=contained(block['ready'])
+            marker=contained(block['ready']+('-'+str(rank()) if block.get('per_rank') else ''))
             marker.write_text(json.dumps(process_identity(os.getpid())))
-            while not contained(block['resume']).exists(): time.sleep(.02)
+            resume=contained(block['resume']+('-'+str(rank()) if block.get('per_rank') else ''))
+            while not resume.exists(): time.sleep(.02)
         data = original(fd, size)
         if (data and caller.f_code.co_name == 'verify_tree'
                 and caller.f_globals.get('__name__') == 'model_library.integrity'):

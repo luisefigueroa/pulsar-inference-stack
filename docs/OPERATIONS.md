@@ -324,6 +324,22 @@ See the [compatibility boundary and reauthoring steps](CONTRACT.md#required-snap
 configuration and continuity on every rank, using normal metadata-based file
 verification. Add `--full` to request a fresh full content audit. Archive
 verification and verification of newly copied bytes remain full audits.
+Prepared-copy inspection in `model info`, `model check` and `observe` uses up to
+three verification workers, with at most one per physical node. The batch covers
+homes and working copies for every required snapshot; shared references to the
+same physical copy are verified once. `--verification-jobs N` sets the bound;
+use `--verification-jobs 1` for serial inspection. The mode is independent of
+`--full`: normal calls still reuse valid metadata, and full audits still hash
+every file. Final preparation checks use the same prepared-set inspection.
+Copies, archive audits and publication keep their existing sequence.
+
+A failed verification stops queued work and cancels active peer workers through
+the same owned-worker cleanup used for interruption. Stack retains the original
+failure and reports unconfirmed cleanup separately. Successful individual
+verifications may refresh their records, but incomplete snapshot/rank coverage
+cannot produce a ready prepared set. Results use a fixed snapshot and rank order,
+independent of worker completion order.
+
 Qualification uses normal Stack verification; legacy `files_verified` fields
 remain in serialized records for compatibility but do not gate current
 qualification or determine whether the serving runtime changed.

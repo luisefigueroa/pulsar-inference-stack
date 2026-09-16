@@ -69,6 +69,10 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         return selected
     if op=='views':
         return store.views(manifest_id=request.get('snapshot_manifest_id'),spec_id=request.get('spec_id'))
+    if op=='inspection-plan':
+        from .inspection import plan
+        return plan(store,request['spec'],request['node_ids'],request['topology_id'],
+                    full=request['full'],cache=request.get('cache') or None)
     if op=='home':
         return {'home':store.home(request['snapshot_manifest_id'])}
     if op=='refresh-verification':

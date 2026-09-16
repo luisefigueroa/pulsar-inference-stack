@@ -204,6 +204,12 @@ status. `cancelled` confirms cleanup of the local command and tracked node worke
 authorizes stopping a model service. Internal lease/worker receipts do not alter
 successful command results or snapshot, prepared-set and evidence schemas.
 
+`model info`, `model check` and `observe` accept `--verification-jobs N` (a
+positive integer, default 3). Prepared-file verification runs at most N jobs
+and at most one per physical node. `1` selects serial execution; `--full`
+independently requests full hashes. Every required snapshot and rank must
+verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#historical-specs-and-current-observations).
+
 For non-streaming `--json` operations, stdout is one envelope with schema version
 1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human
 logging goes to stderr. Errors have nonzero exit status. Do not parse human
