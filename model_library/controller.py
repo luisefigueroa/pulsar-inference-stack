@@ -8,8 +8,9 @@ import sys
 from release_spec import load_spec
 from .integrity import StorageError, read_json, verify_manifest
 from .local import prepared_record
-from .planning import preparation_plan, purge_plan, removal_plan
-from .state import Store, checked_id, now, validate_home, validate_view, view_record_key
+from .planning import preparation_plan, preparation_candidates, purge_plan, removal_plan
+from .state import (Store, checked_id, now, validate_home, validate_view, view_record_key,
+                    shared_view, copy_references, VIEW_IDENTITY_FIELDS)
 
 
 from release_spec.serving import identity_fields, required_snapshots
@@ -110,10 +111,22 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
             raise StorageError('prepared publication identity differs')
         store.save_manifest(manifest)
         for record in records:
+            previous=store.get('views',view_record_key(record))
+            if previous and previous['schema_version']==3:
+                record=shared_view(record)
             store.put('views',view_record_key(record),record)
         return {'prepared':len(records),'spec_id':request['spec_id']}
     if op=='record-view':
         return prepared_record(request['home'],spec_id=request['spec_id'],topology_id=request['topology_id'],rank=request['rank'],is_home_view=request.get('is_home_view',False),pinned=request.get('pinned',False),schema_version=request.get('view_schema',1))
+    if op=='protect-shared-copy':
+        source=validate_view(request['source_view'])
+        previous=store.get('views',view_record_key(source))
+        if previous and any(previous[f]!=source[f] for f in VIEW_IDENTITY_FIELDS):
+            raise StorageError('prepared source changed before sharing')
+        records=copy_references(source,store.views())
+        for record in records:
+            store.put('views',view_record_key(record),shared_view(record))
+        return {'protected':len(records)}
     if op=='pin':
         records=store.views(spec_id=request['spec_id'])
         if not records:
@@ -139,8 +152,10 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         return {'removed_record':True}
     if op=='plan-prepare':
         return preparation_plan(spec=request['spec'],home=request['home'],node_ids=request['node_ids'],topology_id=request['topology_id'],observations=request['observations'],views=request.get('views',store.views(spec_id=request['spec']['spec_id'])),budgets=request['budgets'],snapshot=request.get('snapshot','target'))
+    if op=='prepare-candidates':
+        return preparation_candidates(spec=request['spec'],home=request['home'],node_id=request['node_id'],views=request['views'],transactions=request.get('transactions',()))
     if op=='plan-purge':
-        return purge_plan(views=request.get('views',store.views(spec_id=request['spec_id'])),node_ids=request['node_ids'],observations=request['observations'])
+        return purge_plan(views=request.get('views',store.views(spec_id=request['spec_id'])),node_ids=request['node_ids'],observations=request['observations'],all_views=request.get('all_views'))
     if op=='plan-remove':
         home=store.home(request['snapshot_manifest_id'])
         if home is None:

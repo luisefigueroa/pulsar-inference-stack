@@ -65,16 +65,18 @@ print(json.dumps({"node_id":node,"observable":True,"containers":rows}))
 
 model_json() {
   # A key ending ':' takes a JSON value; other values remain exact strings.
-  python3 -c '
+  # Shared-copy inventories can exceed the per-argument exec limit. Bash emits
+  # NUL-delimited fields on stdin without putting the JSON in Python argv.
+  { [ "$#" -eq 0 ] || printf '%s\0' "$@"; } | python3 -c '
 import json,sys
-args=sys.argv[1:]
+args=sys.stdin.read().split("\0")[:-1]
 if len(args)%2: raise SystemExit("JSON fields need key/value pairs")
 d={}
 for key,value in zip(args[::2],args[1::2]):
  if key.endswith(":"): d[key[:-1]]=json.loads(value)
  else: d[key]=value
 print(json.dumps(d,separators=(",",":")))
-' "$@"
+'
 }
 
 model_ctl() {

@@ -158,15 +158,20 @@ def view_key(spec_id: str, node_id: str, manifest_id: str | None = None) -> str:
 
 def view_record_key(record: dict) -> str:
     version = record.get('schema_version', 1)
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version not in (1, 2, 3):
         raise StorageError('unsupported prepared record schema')
+    if version == 3:
+        version = record.get('binding_schema')
+        if type(version) is not int or version not in (1, 2):
+            raise StorageError('invalid shared-view binding schema')
     return view_key(record['spec_id'], record['node_id'],
                     record['snapshot_manifest_id'] if version == 2 else None)
 
 
 def view_destination(root: Path, record: dict) -> Path:
     key = view_record_key(record)
-    return root / (key if record.get('schema_version', 1) == 2
+    version = record.get('binding_schema', record.get('schema_version', 1))
+    return root / (key if version == 2
                    else checked_id(record['spec_id']))
 
 
@@ -189,8 +194,12 @@ def validate_home(record: dict) -> dict:
 
 def validate_view(record: dict) -> dict:
     extra = {'spec_id', 'topology_id', 'rank', 'pinned', 'is_home_view'}
+    if record.get('schema_version') == 3:
+        extra.add('binding_schema')
+        if type(record.get('binding_schema')) is not int or record['binding_schema'] not in (1, 2):
+            raise StorageError('invalid shared-view binding schema')
     base = {k: v for k, v in record.items() if k not in extra}
-    if type(record.get('schema_version')) is not int or record['schema_version'] not in (1, 2):
+    if type(record.get('schema_version')) is not int or record['schema_version'] not in (1, 2, 3):
         raise StorageError('invalid prepared-view schema')
     base['schema_version'] = 1
     base['kind'] = 'pulsar-home'
@@ -205,3 +214,48 @@ def validate_view(record: dict) -> dict:
     if not isinstance(record['pinned'], bool) or not isinstance(record['is_home_view'], bool):
         raise StorageError('prepared-view retention is unknown')
     return record
+
+
+VIEW_IDENTITY_FIELDS = ('spec_id', 'node_id', 'rank', 'topology_id', 'hub_path',
+                        'path', 'snapshot_manifest_id', 'is_home_view')
+
+
+def shared_view(record: dict) -> dict:
+    """Upgrade ownership semantics without moving files or changing record keys."""
+    validate_view(record)
+    if record['is_home_view']:
+        raise StorageError('home bindings do not own working-copy storage')
+    return {**record, 'schema_version': 3,
+            'binding_schema': record.get('binding_schema', record['schema_version'])}
+
+
+def reconcile_views(records: list[dict]) -> list[dict]:
+    """Conservatively merge controller/node records, including partial upgrades."""
+    result = {}
+    for record in records:
+        validate_view(record)
+        key = view_record_key(record)
+        previous = result.get(key)
+        if previous:
+            if any(previous[f] != record[f] for f in VIEW_IDENTITY_FIELDS):
+                raise StorageError('controller and node view records disagree; inspect before mutation')
+            record = {**record, 'pinned': previous['pinned'] or record['pinned']}
+            if previous['schema_version'] == 3:
+                record = shared_view(record)
+        result[key] = record
+    return list(result.values())
+
+
+def copy_references(record: dict, records: list[dict]) -> list[dict]:
+    """Every binding of this physical working copy; conflicting claims block use."""
+    result = []
+    for other in records:
+        validate_view(other)
+        if other['node_id'] != record['node_id']:
+            continue
+        a, b = Path(record['hub_path']), Path(other['hub_path'])
+        if a == b or a in b.parents or b in a.parents:
+            if any(other[f] != record[f] for f in ('hub_path', 'path', 'snapshot_manifest_id', 'is_home_view')):
+                raise StorageError('prepared copy has conflicting ownership records')
+            result.append(other)
+    return result

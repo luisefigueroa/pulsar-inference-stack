@@ -82,6 +82,12 @@ class StorageRendering(unittest.TestCase):
         self.assertIn('no controller model copy',flat)
         _,flat=self.display(dict(home=HOME,moved=False),'move');self.assertIn('already on the selected node',flat)
 
+    def test_shared_purge_reports_retained_working_files(self):
+        _,flat=self.display(dict(spec_id=SPEC,purged=True,shared_copies_retained=2),'purge')
+        self.assertIn('Prepared bindings removed',flat)
+        self.assertIn('2 retained for other recipes',flat)
+        self.assertNotIn('Prepared copies removed',flat)
+
     def test_retention_success_names_what_was_preserved(self):
         _,flat=self.display(dict(spec_id=SPEC,pinned=False),'unpin');self.assertIn('copies unpinned',flat)
         _,flat=self.display(dict(spec_id=SPEC,purged=True,home_untouched=True,archive_untouched=True),'purge')

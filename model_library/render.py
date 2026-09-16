@@ -122,7 +122,9 @@ def _plan(out: TerminalWriter, document: dict, operation: str) -> None:
     if document.get('action') == 'reuse':
         out.field('Action', 'reuse matching existing files')
     actions = {'reuse': 'reuse verified prepared files', 'home-view': 'use files from the home',
-               'copy': 'copy and verify local files'}
+               'copy': 'copy and verify local files', 'bind': 'bind this recipe to existing verified files',
+               'release-binding': 'remove this binding; retain shared files',
+               'remove-copy': 'remove this binding and its working-copy files'}
     for item in document.get('actions') or []:
         out.field(f'Rank {item.get("rank", "?")}',
                   f'{item.get("node_id", "unknown node")}: {actions.get(item.get("action"), item.get("action", "unknown action"))}')
@@ -247,8 +249,10 @@ def render(document: Any, *, operation: str, archive_action: str = '',
             out.field('Copies', document['copies'])
         return
     if document.get('purged') is True or document.get('removed') is True:
-        out.emit('Prepared copies removed' if document.get('purged') is True else 'Home removed')
+        out.emit('Prepared bindings removed' if document.get('purged') is True else 'Home removed')
         _identity(out, document)
+        if document.get('shared_copies_retained'):
+            out.field('Shared working copies', f"{document['shared_copies_retained']} retained for other recipes")
         if document.get('home_untouched') is True:
             out.field('Home', 'retained')
         if document.get('archive_untouched') is True:
