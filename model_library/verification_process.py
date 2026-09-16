@@ -29,6 +29,7 @@ OWNER_ENV = 'PULSAR_VERIFICATION_OWNER'
 REPORT_ENV = 'PULSAR_VERIFICATION_REPORT'
 REPORT_FD_ENV = 'PULSAR_VERIFICATION_REPORT_FD'
 FAILURE_ENV = 'PULSAR_VERIFICATION_BATCH_FAILURE'
+CANCELLATION_ENV = 'PULSAR_VERIFICATION_BATCH_CANCELLATION'
 
 # Only this fixed, small bootstrap is passed in argv. Bundled code and requests
 # remain on stdin, followed by the live control channel. Unbuffered reads must
@@ -196,7 +197,7 @@ def worker_reports(diagnostic, prefix):
     for line in diagnostic.splitlines():
         if line.startswith(prefix + ':'):
             fields = line[len(prefix)+1:].split(':')
-            if len(fields) == 2 and len(fields[0]) == 32 and fields[1] in ('started', 'confirmed', 'cancelled', 'peer_cancelled', 'incomplete'):
+            if len(fields) == 2 and len(fields[0]) == 32 and fields[1] in ('started', 'confirmed', 'cancelled', 'peer_cancelled', 'failed', 'incomplete'):
                 states[fields[0]] = fields[1]
                 continue
         lines.append(line)
@@ -358,14 +359,23 @@ def run_transport(command, program, *, owners=(), heartbeat=HEARTBEAT_SECONDS):
         diagnostic = '\n'.join(line for line in diagnostic.splitlines() if not line.startswith(marker))
         confirmed = any(value in ('confirmed','cancelled') for value in receipts)
         interrupted = reason not in (None,'control channel closed') or 'cancelled' in receipts
-        state = 'cancelled' if interrupted else 'confirmed'
-        if interrupted and os.environ.get(FAILURE_ENV) and Path(os.environ[FAILURE_ENV]).exists():
-            state = 'peer_cancelled'
+        state = 'confirmed'
+        if interrupted:
+            if os.environ.get(FAILURE_ENV) and Path(os.environ[FAILURE_ENV]).exists():
+                state = 'peer_cancelled'
+            elif os.environ.get(CANCELLATION_ENV):
+                # A signal to one client is a worker failure unless the batch
+                # itself requested cancellation. Remote lease expiry is also
+                # a worker failure, even though its cleanup receipt is cancelled.
+                state = 'cancelled' if Path(os.environ[CANCELLATION_ENV]).exists() else 'failed'
+            else:
+                state = 'cancelled' if reason in ('interrupted', 'caller exited') else 'failed'
         report_worker(token, state if confirmed else 'incomplete')
         if reason is not None and not (reason == 'control channel closed' and confirmed):
             detail = 'worker cleanup confirmed' if confirmed else 'worker cleanup unconfirmed; remote lease expires after 30 seconds without renewal'
             raise Cancelled(f'verification cancelled: {reason}; {detail}',
-                            signum=cancelled['signal'] or signal.SIGHUP, confirmed=confirmed)
+                            signum=cancelled['signal'] or signal.SIGHUP, confirmed=confirmed,
+                            diagnostic=diagnostic)
         if code == 0 and not confirmed:
             raise Cancelled('node operation ended without a worker completion receipt; cleanup unconfirmed', confirmed=False)
         if not confirmed:
@@ -387,10 +397,12 @@ def run_batch(tasks, directory, *, jobs=3, owners=()):
     own_descendants()
     root = Path(directory)
     failure = root/'failed'
-    if failure.exists():
+    cancellation = root/'cancelled'
+    if failure.exists() or cancellation.exists():
         raise ValueError('verification batch directory has already been used')
     report_fd = os.dup(int(os.environ.get(REPORT_FD_ENV, sys.stderr.fileno())))
-    environment = {**os.environ, REPORT_FD_ENV: str(report_fd), FAILURE_ENV: str(failure)}
+    environment = {**os.environ, REPORT_FD_ENV: str(report_fd), FAILURE_ENV: str(failure),
+                   CANCELLATION_ENV: str(cancellation)}
     pending = list(tasks)
     active = {}
     client_tokens = {}
@@ -417,9 +429,15 @@ def run_batch(tasks, directory, *, jobs=3, owners=()):
         with cancellation_signals() as cancelled:
             while pending or active:
                 owner_dead = any(identity is None or process_identity(identity[0]) != identity for identity in owners)
-                if (cancelled['signal'] is not None or owner_dead) and deadline is None:
-                    deadline = time.monotonic() + GRACE_SECONDS + 2
-                    cancel_peers()
+                if cancelled['signal'] is not None or owner_dead:
+                    if not cancellation.exists():
+                        cancellation.touch(exist_ok=False)
+                        # This is the caller's cancellation, independent of
+                        # whether any worker has already reported its cleanup.
+                        report_worker(secrets.token_hex(16), 'cancelled')
+                    if deadline is None:
+                        deadline = time.monotonic() + GRACE_SECONDS + 2
+                        cancel_peers()
                 # Collect before launching: an observed failure prevents new work.
                 for index, (process, task) in list(active.items()):
                     if not exited(process.pid):
@@ -481,7 +499,8 @@ def run_batch(tasks, directory, *, jobs=3, owners=()):
             code = (128 + (cancelled['signal'] or signal.SIGHUP)) if cancelled['signal'] or owner_dead else 0
             if not code and first_error is not None:
                 code = results[first_error]['returncode']
-            report = {'returncode': code, 'first_error': first_error,
+            outcome = 'cancelled' if cancelled['signal'] or owner_dead else 'failed' if first_error is not None else 'complete'
+            report = {'returncode': code, 'outcome': outcome, 'first_error': first_error,
                       'results': [results[index] for index in range(len(tasks))]}
             (root/'batch.json').write_text(json.dumps(report))
             return code
@@ -518,11 +537,11 @@ def run_command(command, *, env=None, cwd=None):
                 if confirmed:
                     process.returncode = 128 + cancelled['signal']
                 stderr.seek(0)
-                states, _ = worker_reports(stderr.read().decode(errors='replace'), prefix)
-                verified = confirmed and all(value in ('confirmed','cancelled','peer_cancelled') for value in states.values())
+                states, diagnostic = worker_reports(stderr.read().decode(errors='replace'), prefix)
+                verified = confirmed and all(value in ('confirmed','cancelled','peer_cancelled','failed') for value in states.values())
                 detail = 'local command and tracked node workers reaped' if verified else 'worker cleanup unconfirmed; a disconnected node expires its lease after 30 seconds'
                 raise Cancelled('Stack command cancelled; '+detail,
-                                signum=cancelled['signal'], confirmed=verified)
+                                signum=cancelled['signal'], confirmed=verified, diagnostic=diagnostic)
             code = finish_worker(process.pid)
             process.returncode = code
         except Cancelled:
@@ -533,12 +552,13 @@ def run_command(command, *, env=None, cwd=None):
             raise
         stdout.seek(0); stderr.seek(0)
         states, diagnostic = worker_reports(stderr.read().decode(errors='replace'), prefix)
-        if any(value not in ('confirmed','cancelled','peer_cancelled') for value in states.values()):
+        if any(value not in ('confirmed','cancelled','peer_cancelled','failed') for value in states.values()):
             raise Cancelled('Stack command ended with unconfirmed worker cleanup', confirmed=False, diagnostic=diagnostic)
         if 'cancelled' in states.values():
-            raise Cancelled('Stack verification cancelled; tracked node workers reaped')
-        if code == 0 and 'peer_cancelled' in states.values():
-            raise Cancelled('Stack verification did not cover the complete prepared set', diagnostic=diagnostic)
+            raise Cancelled('Stack verification cancelled; tracked node workers reaped', diagnostic=diagnostic)
+        if code == 0 and any(value in ('peer_cancelled','failed') for value in states.values()):
+            code = 2
+            diagnostic = diagnostic or 'Stack verification did not cover the complete prepared set'
         return subprocess.CompletedProcess(command, code, stdout.read().decode(errors='replace'),
                                            diagnostic)
 
@@ -568,6 +588,8 @@ def main():
             sys.stdout.buffer.write(result.stdout)
         return result.returncode if result.returncode >= 0 else 128-result.returncode
     except Cancelled as exc:
+        if exc.diagnostic:
+            print(exc.diagnostic, file=sys.stderr)
         print(str(exc), file=sys.stderr)
         return exc.exit_code if exc.confirmed else 4
     except (OSError, ValueError, RuntimeError) as exc:

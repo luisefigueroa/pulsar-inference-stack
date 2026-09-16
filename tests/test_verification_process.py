@@ -239,6 +239,24 @@ raise SystemExit('unconfirmed worker was accepted')
         self.assertEqual(out,b'')
         self.assertIn(b'incomplete node frame',err)
 
+    def test_failed_worker_receipt_cannot_be_hidden_by_zero_command_exit(self):
+        script=self.root/'failed.sh'
+        script.write_text('printf "%s:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:failed\\n" "$PULSAR_VERIFICATION_REPORT" >&2\nprintf "controller lease expired\\n" >&2\nprintf "{\\"verified\\":true}\\n"\n')
+        code='''import json,sys
+from scripts.public_cli import execute
+from model_library.verification_process import Cancelled
+try: execute(sys.argv[1],[],json_result=True)
+except Cancelled: raise SystemExit('worker failure was misclassified as cancellation')
+except RuntimeError as exc:
+ print(json.dumps({'error':str(exc)}),flush=True)
+ raise SystemExit(3)
+raise SystemExit('failed worker was accepted')
+'''
+        process=self.start([sys.executable,'-c',code,str(script)])
+        out,err=process.communicate(timeout=5)
+        self.assertEqual(process.returncode,3,err)
+        self.assertIn('controller lease expired',json.loads(out)['error'])
+
     def test_closed_channel_before_launch_does_not_start_worker(self):
         program,ready,completed=self.program('no-start')
         process=self.start([sys.executable,'-c',BOOTSTRAP],stdin=subprocess.PIPE)

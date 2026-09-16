@@ -180,6 +180,31 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(result['snapshots']['target'],result['snapshots']['draft'])
         self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')),2*manifest['total_bytes'])
 
+    def test_public_info_and_check_retain_remote_lease_failure_and_reap_peers(self):
+        from model_library.verification_process import process_identity
+        f=self.fixture(2);self.acquire_candidate(f,nodes=2,home=1)
+        self.success(f.run('prepare','--yes',spec=True))
+        records={p:p.read_bytes() for namespace in ('homes','views') for p in (f.state/namespace).glob('*.json')}
+        f.cfg['block_verification']={'ready':str(f.root/'ready'),'resume':str(f.root/'resume'),'per_rank':True}
+        f.cfg['node_lease']={'operation':'verify','rank':1,'seconds':.5};f.save()
+        for operation in ('info','check'):
+            with self.subTest(operation=operation):
+                result=subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model',operation,
+                    f.spec['spec_id'],'--spec-file',str(f.spec_path),'--full','--json'],
+                    cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=20)
+                self.assertNotEqual(result.returncode,0)
+                response=json.loads(result.stdout)
+                self.assertEqual(response['error']['code'],'prerequisite_failed',response)
+                self.assertIn('controller lease expired',response['error']['message'])
+                for marker in f.root.glob('ready-*'):
+                    identity=json.loads(marker.read_text())
+                    self.assertNotEqual(process_identity(identity[0]),identity)
+                self.assertEqual({p:p.read_bytes() for p in records},records)
+                self.assertEqual(list((f.root/'tmp').iterdir()),[])
+        observation=Store(f.state).get('observations',f.spec['spec_id'])
+        self.assertEqual(observation['local_state'],'unknown')
+        self.assertIn('controller lease expired',' '.join(observation['blockers']))
+
     def test_invalid_worker_limits_fail_before_node_operations(self):
         f=self.fixture()
         for value in ('0','-1','1.5','true',''):
