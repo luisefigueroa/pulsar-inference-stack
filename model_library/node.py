@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from contextlib import nullcontext
 import shutil
 import sys
 
@@ -10,7 +11,9 @@ from .integrity import StorageError, atomic_json, read_json, verify_manifest, ve
 from .local import (begin_staging, copy_snapshot, finish_staging, home_record,
                     location, payload, remove_managed_hub, restore, verify_archive)
 from .filesystem import require_serving_filesystem
-from .state import Store, checked_id, ensure_directory, validate_home, validate_view, view_record_key, view_destination
+from .state import (Store, checked_id, ensure_directory, validate_home, validate_view,
+                    view_record_key, view_destination, shared_view, reconcile_views,
+                    copy_references, VIEW_IDENTITY_FIELDS, now)
 
 
 def run(request: dict) -> dict:
@@ -34,6 +37,19 @@ def run(request: dict) -> dict:
     if (view_root/'.pulsar-node').is_symlink():
         raise StorageError('node state must not be an internal symlink')
     node_store = Store(view_root/'.pulsar-node')
+    owned_operations = {'view-records', 'refresh-view', 'save-view', 'pin-view',
+                        'forget-view', 'remove-staging', 'begin-view', 'publish-view',
+                        'bind-view', 'remove-view'}
+    # Serialize sharing and final deletion on the physical node, including calls
+    # from different controllers. A read of absent state must stay read-only.
+    lock = (node_store.lock(exclusive=op != 'view-records') if op in owned_operations
+            and (op != 'view-records' or node_store.root.exists()) else nullcontext())
+    with lock:
+        return run_node(request, node_store, home_root, view_root)
+
+
+def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path) -> dict:
+    op = request['operation']
     if op == 'view-records':
         return {'views': node_store.views(spec_id=request.get('spec_id'),manifest_id=request.get('snapshot_manifest_id')),
                 'transactions': [v for v in node_store.records('transactions')
@@ -62,6 +78,8 @@ def run(request: dict) -> dict:
             return {'removed':True}
         if previous and previous.get('pinned') is True and record['pinned'] is False and op!='pin-view':
             raise StorageError('preparation cannot clear an existing pin')
+        if previous and previous['schema_version'] == 3:
+            record = shared_view(record)
         node_store.put('views',key,record)
         node_store.remove('transactions',key)
         return {'saved':True}
@@ -255,9 +273,75 @@ def run(request: dict) -> dict:
         remove_managed_hub(Path(request['hub_path']),home_root,manifest,verification=request['verification'])
         return {'removed':True}
     if op == 'remove-view':
-        remove_managed_hub(Path(request['hub_path']),view_root,manifest,verification=request['verification'])
-        return {'removed':True}
+        return release_view(request, node_store, view_root, manifest)
+    if op == 'bind-view':
+        return bind_view(request, node_store, view_root, manifest)
     raise StorageError(f'unknown node operation {op}')
+
+
+def bind_view(request: dict, store: Store, root: Path, manifest: dict) -> dict:
+    source = validate_view(request['source_view'])
+    previous = store.get('views', view_record_key(source))
+    if previous is None or any(previous[f] != source[f] for f in VIEW_IDENTITY_FIELDS):
+        raise StorageError('prepared source ownership changed before binding')
+    if source['is_home_view'] or source['snapshot_manifest_id'] != manifest['manifest_id']:
+        raise StorageError('binding requires the exact working-copy manifest')
+    if source['node_id'] != request['node_id'] or not Path(source['hub_path']).is_relative_to(root) or Path(source['hub_path']) == root:
+        raise StorageError('prepared source is outside this node working-copy storage')
+    if source['path'] != str(payload(Path(source['hub_path']), manifest)) or read_json(Path(source['hub_path'])/'manifest.json') != manifest:
+        raise StorageError('prepared source hub differs from its manifest')
+    require_serving_filesystem(source['path'])
+    stamp = verify_tree(source['path'], manifest, stamp=source['verification'], full=False)
+    source = {**source, 'verification': stamp,
+              'verified_at': now() if stamp['method'] == 'sha256' else source['verified_at']}
+    target = {k: v for k, v in source.items() if k != 'binding_schema'}
+    record = shared_view({**target, 'schema_version': request.get('view_schema', 1),
+                          'spec_id': request['spec_id'], 'rank': request['rank'],
+                          'topology_id': request['topology_id'], 'pinned': False})
+    key = view_record_key(record)
+    existing = store.get('views', key)
+    if existing and any(existing[f] != record[f] for f in VIEW_IDENTITY_FIELDS):
+        raise StorageError('target recipe already owns a different prepared copy')
+    if store.get('transactions', key) is not None:
+        raise StorageError('target recipe has an incomplete preparation; resume or purge it first')
+    # Upgrade every old owner before adding an alias. A failed upgrade leaves
+    # protected records and the original files; retry completes the conversion.
+    for owner in copy_references(source, store.views()):
+        store.put('views', view_record_key(owner), shared_view(owner))
+    if existing:
+        record['pinned'] = existing['pinned']
+    store.put('views', key, record)
+    return {'view': record}
+
+
+def release_view(request: dict, store: Store, root: Path, manifest: dict) -> dict:
+    record = validate_view(request['view'])
+    if record['is_home_view'] or record['snapshot_manifest_id'] != manifest['manifest_id']:
+        raise StorageError('working-copy release requires the exact manifest')
+    key = view_record_key(record)
+    current = store.get('views', key)
+    if current and any(current[f] != record[f] for f in VIEW_IDENTITY_FIELDS):
+        raise StorageError('prepared ownership changed before release')
+    records = reconcile_views([*request['all_views'], *store.views()])
+    owners = copy_references(record, records)
+    if record['pinned'] or any(v['pinned'] for v in owners if view_record_key(v) == key):
+        raise StorageError('prepared binding is pinned')
+    remaining = [v for v in owners if view_record_key(v) != key]
+    hub = Path(record['hub_path'])
+    removed = False
+    if not remaining and (hub.exists() or hub.is_symlink()):
+        if current is None:
+            raise StorageError('node ownership is missing; refusing physical deletion')
+        for pending in store.records('transactions'):
+            for field in ('stage', 'destination', 'path'):
+                path = Path(pending[field])
+                if path == hub or hub in path.parents or path in hub.parents:
+                    raise StorageError('an incomplete preparation still references the copy')
+        remove_managed_hub(hub, root, manifest, verification=record['verification'])
+        removed = True
+    # Retain node ownership until the controller has acknowledged forgetting
+    # this binding. Lost replies must leave proof for a safe cleanup retry.
+    return {'removed': removed, 'release_ready': True, 'retained_bindings': len(remaining)}
 
 
 def main() -> int:

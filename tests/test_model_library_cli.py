@@ -60,6 +60,108 @@ class ModelLibraryCLI(unittest.TestCase):
         f.spec_path.write_bytes(pretty_json_bytes(f.spec))
         return f
 
+    def recipe_variant(self, fixture):
+        from release_spec.serving import freeze
+        previous=copy.deepcopy(fixture.spec)
+        recipe=copy.deepcopy(previous['recipe'])
+        models={'target':recipe['model'],**recipe.get('required_snapshots',{})}
+        manifests={name:model.pop('snapshot_manifest') for name,model in models.items()}
+        recipe['image_digest']='sha256:'+('c' if recipe['image_digest']!='sha256:'+'c'*64 else 'd')*64
+        draft={'schema_version':previous['schema_version']-1,'kind':'pulsar-recipe-draft','source':previous['source'],'recipe':recipe}
+        fixture.spec=freeze(draft,manifests if previous['schema_version']==3 else manifests['target'])
+        fixture.spec_path.write_bytes(pretty_json_bytes(fixture.spec))
+        return previous
+
+    def test_recipe_change_reuses_three_node_content_and_preserves_pins(self):
+        f=self.fixture(nodes=3)
+        self.acquire_candidate(f,nodes=3,home=2)
+        self.success(f.run('prepare','--yes',spec=True))
+        self.success(f.run('pin','--yes',spec=True))
+        old=self.recipe_variant(f)
+        before=Store(f.state).views(spec_id=old['spec_id'])
+        paths={v['node_id']:v['path'] for v in before}
+        inodes={v['node_id']:Path(v['path']).stat().st_ino for v in before}
+        transfers=f.events('transfer')
+        f.cfg['trace_verification']=True;f.save()
+        records={p:p.read_bytes() for p in f.root.rglob('*.json') if '/views/' in str(p) or p.is_relative_to(f.state)}
+        plan=self.success(f.run('prepare','--plan',spec=True))
+        self.assertEqual([v['action'] for v in plan['actions']],['bind','bind','home-view'])
+        self.assertEqual({p:p.read_bytes() for p in records},records)
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        self.success(f.run('prepare','--yes',spec=True))
+        info=self.success(f.run('info',spec=True))
+        from scripts.runtime_binding import prepared_set
+        prepared_set(info,f.spec,f.topology['topology_id'])
+        self.assertEqual({v['node_id']:v['path'] for v in info['ranks']},paths)
+        self.assertEqual({v['node_id']:Path(v['path']).stat().st_ino for v in info['ranks']},inodes)
+        self.assertEqual(f.events('transfer'),transfers)
+        self.assertEqual(f.events('verification-read'),[])
+        self.assertTrue(all(v['pinned'] for v in Store(f.state).views(spec_id=old['spec_id'])))
+        self.assertFalse(any(v['pinned'] for v in info['ranks']))
+        purge=self.success(f.run('purge','--plan',spec=True))
+        self.assertTrue(all(v['action']=='release-binding' for v in purge['plan']['actions']))
+        self.success(f.run('purge','--yes',spec=True))
+        f.spec=old;f.spec_path.write_bytes(pretty_json_bytes(old))
+        self.success(f.run('info',spec=True))
+        self.success(f.run('unpin','--yes',spec=True))
+        self.success(f.run('purge','--yes',spec=True))
+        for row in before:
+            self.assertEqual(Path(row['path']).exists(),row['is_home_view'])
+
+    def test_shared_named_snapshots_resume_after_lost_binding_reply(self):
+        f=self.speculative_fixture(nodes=2,draft_home=1)
+        self.success(f.run('prepare','--yes',spec=True))
+        old=self.recipe_variant(f)
+        transfers=f.events('transfer')
+        f.cfg['node_fault']={'operation':'bind-view','rank':1,'after':True};f.save()
+        self.failure(f.run('prepare','--yes',spec=True),'binding failed')
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+        self.failure(f.run('info',spec=True))
+        f.cfg.pop('node_fault');f.save()
+        self.success(f.run('prepare','--yes',spec=True))
+        info=self.success(f.run('info',spec=True))
+        from scripts.container_runtime import prepared_snapshots
+        prepared_snapshots(f.spec,info,f.topology['topology_id'])
+        self.assertEqual(set(info['snapshots']),{'target','draft'})
+        self.assertEqual(f.events('transfer'),transfers)
+        old_rows=Store(f.state).views(spec_id=old['spec_id'])
+        new_rows=Store(f.state).views(spec_id=f.spec['spec_id'])
+        self.assertEqual(len(new_rows),4)
+        self.assertEqual({(v['node_id'],v['snapshot_manifest_id'],v['path']) for v in old_rows},
+                         {(v['node_id'],v['snapshot_manifest_id'],v['path']) for v in new_rows})
+        f.cfg['trace_verification']=True;f.save()
+        self.success(f.run('prepare','--full','--yes',spec=True))
+        size=sum(v['snapshot_manifest']['total_bytes'] for v in
+                 [f.spec['recipe']['model'],*f.spec['recipe']['required_snapshots'].values()])
+        self.assertEqual(sum(v['bytes'] for v in f.events('verification-read')),2*size)
+
+    def test_new_placement_copies_only_missing_content_and_corruption_blocks_reuse(self):
+        f=self.fixture(nodes=3)
+        self.acquire_candidate(f,nodes=2)
+        self.success(f.run('prepare','--yes',spec=True))
+        f.candidate(nodes=3)
+        transfers=f.events('transfer')
+        node_events=len(f.events('node-operation'))
+        f.cfg['trace_verification']=True;f.save()
+        plan=self.success(f.run('prepare','--plan',spec=True))
+        self.assertEqual([v['action'] for v in plan['actions']],['home-view','bind','copy'])
+        self.success(f.run('prepare','--yes',spec=True))
+        added=f.events('transfer')[len(transfers):]
+        self.assertTrue(added)
+        self.assertTrue(all(Path(v['destination']).is_relative_to(f.cfg['nodes'][2]['view_root']) for v in added))
+        copies=[v for v in f.events('node-operation')[node_events:] if v['operation']=='begin-view']
+        self.assertEqual([v['rank'] for v in copies],[2])
+        size=f.spec['recipe']['model']['snapshot_manifest']['total_bytes']
+        self.assertEqual({rank:sum(v['bytes'] for v in f.events('verification-read') if v['rank']==rank)
+                          for rank in range(3)},{0:0,1:0,2:size})
+        bad=next(v for v in Store(f.state).views(spec_id=f.spec['spec_id']) if v['node_id']=='node-1')
+        (Path(bad['path'])/'weights.bin').write_bytes(b'corrupt weights')
+        self.recipe_variant(f)
+        transfers=f.events('transfer')
+        self.failure(f.run('prepare','--yes',spec=True),'failed verification')
+        self.assertEqual(f.events('transfer'),transfers)
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
+
     def test_speculative_combined_budget_and_interrupted_preparation(self):
         f=self.speculative_fixture(draft_home=0)
         limit=max(m['snapshot_manifest']['total_bytes'] for m in

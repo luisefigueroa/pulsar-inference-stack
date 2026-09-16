@@ -6,7 +6,7 @@ interprets a missing observation as absence and never modifies files.
 from __future__ import annotations
 
 from .integrity import StorageError
-from .state import checked_id, validate_home, validate_view
+from .state import checked_id, validate_home, validate_view, view_record_key, copy_references
 
 
 from release_spec.serving import identity_fields, required_snapshots
@@ -65,16 +65,47 @@ def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observat
             'dependent_spec_ids': sorted({v['spec_id'] for v in dependencies})}
 
 
-def purge_plan(*, views: list[dict], node_ids: list[str], observations: list[dict]) -> dict:
+def purge_plan(*, views: list[dict], node_ids: list[str], observations: list[dict],
+               all_views: list[dict] | None = None) -> dict:
     checked = require_observations(node_ids, observations)
     blockers = []
+    selected = {view_record_key(v) for v in views}
+    actions = []
     for view in views:
         validate_view(view)
         if view['pinned']:
             blockers.append(f"prepared copy for {view['spec_id']} is pinned; explicitly unpin first")
         if container_references(view, checked):
             blockers.append(f"a container references the prepared copy for {view['spec_id']}")
-    return {'kind': 'pulsar-purge-plan', 'eligible': not blockers, 'blockers': blockers, 'views': views}
+        remaining = [v for v in copy_references(view, views if all_views is None else all_views)
+                     if view_record_key(v) not in selected]
+        actions.append({'rank':view['rank'], 'node_id':view['node_id'],
+                        'action':'release-binding' if remaining or view['is_home_view'] else 'remove-copy',
+                        'retained_bindings':len(remaining)})
+    return {'kind': 'pulsar-purge-plan', 'eligible': not blockers, 'blockers': blockers,
+            'views': views, 'actions': actions}
+
+
+def preparation_candidates(*, spec: dict, home: dict, node_id: str, views: list[dict],
+                           transactions: list[dict] = ()) -> list[dict]:
+    """Prefer this recipe's binding, then deterministic copies of the same bytes."""
+    candidates = [validate_view(v) for v in views if v['node_id'] == node_id
+                  and v['snapshot_manifest_id'] == home['snapshot_manifest_id']]
+    current = [v for v in candidates if v['spec_id'] == spec['spec_id']]
+    if len(current) > 1:
+        raise StorageError('recipe has ambiguous prepared bindings on one node')
+    if current or node_id == home['node_id']:
+        return current
+    if any(v.get('spec_id') == spec['spec_id'] and v.get('node_id') == node_id
+           and v.get('snapshot_manifest_id') == home['snapshot_manifest_id'] for v in transactions):
+        return []  # Resume owned staging; sharing must not silently discard it.
+    result, seen = [], set()
+    for candidate in sorted(candidates, key=lambda v: (v['hub_path'], v['spec_id'])):
+        if not candidate['is_home_view'] and candidate['path'] not in seen:
+            copy_references(candidate, candidates)  # Reject conflicting ownership.
+            seen.add(candidate['path'])
+            result.append(candidate)
+    return result
 
 
 def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id: str,
@@ -99,6 +130,7 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
             (node_id == home['node_id'] and old['is_home_view'] and old['path'] == home['path'] and old['hub_path'] == home['hub_path'])
             or (node_id != home['node_id'] and not old['is_home_view'])))
         view_ready = bool(source_matches and old['topology_id'] == topology_id and
+                          old['rank'] == rank and
                           old['snapshot_manifest_id'] == manifest['manifest_id'] and
                           obs.get('view_verified') is True)
         if view_ready:
@@ -107,6 +139,17 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
             action = 'home-view'
         else:
             action = 'copy'
+        candidate = obs.get('reuse_view')
+        if not old and node_id != home['node_id'] and candidate is not None:
+            validate_view(candidate)
+            if (candidate['node_id'] != node_id or candidate['is_home_view']
+                    or candidate['snapshot_manifest_id'] != manifest['manifest_id']
+                    or candidate['spec_id'] == spec['spec_id']):
+                raise StorageError('reuse candidate does not identify another recipe working copy')
+            if obs.get('view_verified') is not True:
+                blockers.append(f'{node_id}: reusable prepared copy failed verification')
+            else:
+                action = 'bind'
         if old and not view_ready:
             if old['pinned'] or container_references(old, checked):
                 blockers.append(f'{node_id}: existing prepared copy is pinned or referenced')
@@ -118,7 +161,8 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
                 raise StorageError('every copy target requires an observable storage budget')
             if budget['available'] - budget['reserve'] < manifest['total_bytes'] or budget['used'] + manifest['total_bytes'] > budget['limit']:
                 blockers.append(f'{node_id}: insufficient copy budget or disk space')
-        actions.append({'rank': rank, 'node_id': node_id, 'action': action})
+        actions.append({'rank': rank, 'node_id': node_id, 'action': action,
+                        **({'source_view':candidate} if action == 'bind' else {})})
     return {'kind': 'pulsar-preparation-plan', 'spec_id': spec['spec_id'],
             'snapshot_manifest_id': manifest['manifest_id'], 'topology_id': topology_id,
             'eligible': not blockers, 'blockers': blockers, 'actions': actions,

@@ -63,6 +63,18 @@ file identity; the manifest supplies it. Prepared copies are associated with
 their spec and job ranks. Pins preserve copies, while ownership and dependency
 checks prevent deleting data used by another recipe or running container.
 
+Prepared bindings may share a verified working copy on the same physical node.
+The existing view records are the references; there is no separate reference
+counter or content database. Copy selection matches the full snapshot manifest
+and confirms the files before publishing the new spec/rank/topology binding.
+The node serializes binding changes and last-reference deletion with its
+lifecycle lock. Controller-only and node-only references both preserve storage
+after interrupted publication. Shared records use private schema 3 with a
+`binding_schema` of 1 or 2 to retain their original key layout. Converting all
+owners before adding another binding makes older readers refuse the new
+ownership semantics. This does not change serving-spec identity or the public
+prepared-set envelope.
+
 A foreground archive contains the complete snapshot and its manifest. The
 reviewed spec supplies restoration identity after controller loss. The archive
 shares model bytes across recipes and is independent of controller-local

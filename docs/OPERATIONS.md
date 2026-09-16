@@ -142,6 +142,17 @@ an alternate download path.
 **Prepare** copies or links verified files to the required ranks; it does not
 start the server. Prepared files retain metadata stamps so unchanged files
 can avoid unnecessary full rehashing. A changed tree requires verification.
+When another recipe already has the same manifest on a selected physical node,
+preparation can bind the new recipe to that working copy. Its existing path,
+files and verification stamp are reused; recipe, rank and topology bindings
+remain distinct. Earlier recipes keep their bindings and pins. The home rank
+still uses its registered home directly. Only nodes missing suitable content
+need a transfer, and the complete required snapshot set must be ready.
+An owned incomplete transfer resumes its staging rather than silently discarding
+it to create a shared binding.
+`prepare --plan` reports which ranks will reuse a binding, bind existing files,
+or copy files. A recipe change still requires preparation of its own bindings.
+
 Routine acquisition of registered copies, preparation re-entry, inspection and
 serving observation reuse earlier verification while the complete file set,
 directory identity and file metadata still match. A new invocation does not
@@ -217,11 +228,22 @@ should also be recorded in local catalog state.
 ```
 
 Stop retains files, pins and evidence. Purge refuses active or pinned prepared
-copies and preserves homes and archives. Before removing a catalog model's
+copies and preserves homes and archives. It removes only the selected recipe's
+bindings; working-copy files remain while any other recipe has a binding, even
+an unpinned one. The final binding can delete the working copy only after the
+usual ownership, container and incomplete-operation checks. Container references
+to a shared path, including stopped containers, still block purge. Before removing a catalog model's
 home, clear its dependent prepared copies and verify its recovery archive.
 An unpromoted model may be explicitly discarded without an archive after
 dependencies are cleared; private recipes and experiment results remain.
 All protections apply to the shared snapshot, not only the selected recipe.
+
+Sharing upgrades the affected private working-copy records to schema 3 during
+the approved preparation. Their keys, paths and pins are preserved, and retries
+reconcile partial controller/node upgrades. Older Stack code rejects these
+records. Finish older model-library operations before the first shared prepare
+and use the updated Stack for subsequent storage operations; downgrading its
+code does not downgrade shared ownership. A preview never converts records.
 
 There is no archive-deletion command. Catalog edits and ordinary cleanup never
 delete archives; permanent removal belongs to deliberate storage administration.
