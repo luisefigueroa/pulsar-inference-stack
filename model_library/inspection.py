@@ -104,8 +104,9 @@ def assemble(value, directory, batch):
             failed=[(row,results.get(row['job'],{'returncode':125})) for row in member['ranks']
                     if results.get(row['job'],{'returncode':125})['returncode']!=0]
             if failed:
+                primary=[item for item in failed if item[0]['job']==batch.get('first_error')]
                 actual=[item for item in failed if item[1]['returncode'] not in (125,129,130,143)]
-                binding,result=(actual or failed)[0]
+                binding,result=(primary or actual or failed)[0]
                 code=result['returncode']
                 rc=255 if code in (125,129,130,143,255) else 2
                 error=f"rank {binding['record']['rank']}: "+result.get('error','verification was not completed after another failure')

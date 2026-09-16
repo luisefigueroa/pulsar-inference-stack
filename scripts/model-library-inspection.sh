@@ -3,7 +3,7 @@
 # parent refreshes records, after the supplied verification workers are reaped.
 
 inspect_prepared() {
-  local work="$1" index slot request original candidate completed result rc=0 batch_rc=0
+  local work="$1" index slot request original candidate completed result outcome rc=0 batch_rc=0
   local -a MODEL_NODE_COMMAND=()
   selected_nodes || return 2
   model_ctl "$(model_json operation inspection-plan spec: "$SPEC_JSON" node_ids: "$NODE_IDS_JSON" topology_id "$CLUSTER_TOPOLOGY_ID" full: "$([ "$FULL" = 1 ] && echo true || echo false)" cache "${PREPARE_VERIFICATION_DIR:-}")" >"$work/plan.json" || return 2
@@ -28,9 +28,15 @@ root=Path(sys.argv[1]);plan=json.loads((root/'plan.json').read_text())
 (root/'tasks.json').write_text(json.dumps([json.loads((root/'jobs'/f'{j["index"]}.task.json').read_text()) for j in plan['jobs']]))
 PY
   python3 -m model_library.verification_process batch --tasks "$work/tasks.json" --directory "$work" --jobs "$VERIFICATION_JOBS" || batch_rc=$?
-  # User cancellation does not refresh records or continue archive diagnostics.
-  case "$batch_rc" in 129|130|143) return "$batch_rc" ;; esac
   [ -f "$work/batch.json" ] || return 2
+  outcome=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$work/batch.json") || return 2
+  # Only cancellation of the caller skips record updates and assembly. A
+  # worker may independently exit with the same signal-style status codes.
+  case "$outcome" in
+    cancelled) return "$batch_rc" ;;
+    complete|failed) ;;
+    *) return 2 ;;
+  esac
   python3 - "$work/batch.json" >"$work/succeeded.tsv" <<'PY' || return 2
 import json,sys
 for row in json.load(open(sys.argv[1]))['results']:
@@ -51,7 +57,6 @@ row=value['results'][index];row.update(returncode=int(sys.argv[3]),error='could 
 if value['first_error'] is None: value['first_error']=index
 path.write_text(json.dumps(value))
 PY
-      case "$rc" in 129|130|143) return "$rc" ;; esac
     fi
   done 3<"$work/succeeded.tsv"
   python3 -m model_library.inspection assemble "$work"

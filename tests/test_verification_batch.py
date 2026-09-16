@@ -17,7 +17,7 @@ class VerificationBatch(unittest.TestCase):
     ready=processes.VerificationProcesses.ready
     gone=processes.VerificationProcesses.gone
 
-    def tasks(self, nodes, *, limit=3, failure=None, incomplete=None):
+    def tasks(self, nodes, *, limit=3, failure=None, incomplete=None, worker_signal=None, lease=30):
         root=self.root/str(len(list(self.root.iterdir())))
         root.mkdir();(root/'jobs').mkdir()
         (root/'active.json').write_text('[]')
@@ -28,6 +28,7 @@ class VerificationBatch(unittest.TestCase):
 from pathlib import Path
 from model_library.verification_process import supervise_node,process_identity
 root=Path({str(root)!r})
+transport=process_identity(os.getppid())
 def change(add):
  with (root/'lock').open('a') as lock:
   fcntl.flock(lock,fcntl.LOCK_EX)
@@ -40,15 +41,18 @@ def change(add):
   (root/'active.json').write_text(json.dumps(rows))
 def work():
  change(True)
- (root/'{index}.ready').write_text(json.dumps({{'worker':process_identity(os.getpid()),'supervisor':process_identity(os.getppid())}}))
+ (root/'{index}.ready').write_text(json.dumps({{'worker':process_identity(os.getpid()),'supervisor':process_identity(os.getppid()),'transport':transport}}))
  while not (root/'{index}.release').exists(): time.sleep(.01)
  change(False)
+ if {index==failure and worker_signal is not None!r}:
+  print('synthetic worker signal {worker_signal}',file=sys.stderr,flush=True)
+  os.kill(os.getpid(),{int(worker_signal or 0)})
  if {index==failure!r}:
   print('SHA-256 mismatch in synthetic checkpoint',file=sys.stderr,flush=True)
   return 2
  print('{{"verified":true}}',flush=True)
  return 0
-raise SystemExit(supervise_node(work,_pulsar_control.fileno(),_pulsar_token,lease=30,grace=.1))
+raise SystemExit(supervise_node(work,_pulsar_control.fileno(),_pulsar_token,lease={lease},grace=.1))
 ''')
             command=[sys.executable,'-m','model_library.verification_process','--owner',str(os.getpid()),'--',sys.executable,'-c',BOOTSTRAP]
             if index==incomplete:
@@ -131,6 +135,66 @@ except Cancelled as exc:
         self.assertEqual(json.loads(out)['confirmed'],True,err)
         self.assertNotEqual(process.returncode,0)
         self.assertFalse((root/'3.ready').exists())
+        for record in records:
+            self.gone(record['worker']);self.gone(record['supervisor'])
+
+    def test_worker_signal_is_failure_and_does_not_mask_primary_error_with_peer_cleanup(self):
+        for signum in (signal.SIGHUP,signal.SIGINT,signal.SIGTERM):
+            with self.subTest(signal=signum):
+                root=self.tasks([0,1,0],failure=1,worker_signal=signum)
+                process=self.batch(root,public=True)
+                records=[self.ready(root/f'{index}.ready',process) for index in range(2)]
+                (root/'1.release').touch()
+                out,err=process.communicate(timeout=8)
+                self.assertEqual(process.returncode,128+signum,err)
+                self.assertNotIn('cancelled',json.loads(out))
+                report=json.loads((root/'batch.json').read_text())
+                self.assertEqual(report['outcome'],'failed')
+                self.assertEqual(report['first_error'],1)
+                self.assertIn('synthetic worker signal',report['results'][1]['error'])
+                self.assertFalse((root/'2.ready').exists())
+                for record in records:
+                    self.gone(record['worker']);self.gone(record['supervisor'])
+
+    def test_remote_lease_expiry_is_failure_without_a_caller_signal(self):
+        root=self.tasks([0],lease=.2)
+        process=self.batch(root,public=True)
+        record=self.ready(root/'0.ready',process)
+        out,err=process.communicate(timeout=8)
+        self.assertEqual(process.returncode,143,err)
+        self.assertNotIn('cancelled',json.loads(out))
+        report=json.loads((root/'batch.json').read_text())
+        self.assertEqual(report['outcome'],'failed')
+        self.assertIn('controller lease expired',report['results'][0]['error'])
+        self.gone(record['worker']);self.gone(record['supervisor'])
+
+    def test_signal_to_one_transport_is_a_worker_failure(self):
+        root=self.tasks([0,1,0])
+        process=self.batch(root,public=True)
+        records=[self.ready(root/f'{index}.ready',process) for index in range(2)]
+        os.kill(records[1]['transport'][0],signal.SIGTERM)
+        out,err=process.communicate(timeout=8)
+        self.assertEqual(process.returncode,143,err)
+        self.assertNotIn('cancelled',json.loads(out))
+        report=json.loads((root/'batch.json').read_text())
+        self.assertEqual(report['outcome'],'failed')
+        self.assertEqual(report['first_error'],1)
+        self.assertIn('interrupted',report['results'][1]['error'])
+        self.assertFalse((root/'2.ready').exists())
+        for record in records:
+            for key in ('worker','supervisor','transport'): self.gone(record[key])
+
+    def test_signal_to_batch_records_caller_cancellation_explicitly(self):
+        root=self.tasks([0,1,0])
+        process=self.batch(root)
+        records=[self.ready(root/f'{index}.ready',process) for index in range(2)]
+        process.terminate()
+        _,err=process.communicate(timeout=8)
+        self.assertEqual(process.returncode,143,err)
+        report=json.loads((root/'batch.json').read_text())
+        self.assertEqual(report['outcome'],'cancelled')
+        self.assertIsNone(report['first_error'])
+        self.assertFalse((root/'2.ready').exists())
         for record in records:
             self.gone(record['worker']);self.gone(record['supervisor'])
 

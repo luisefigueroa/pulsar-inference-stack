@@ -233,6 +233,10 @@ def tool(kind, argv):
             if mutation.get('operation')==request['operation'] and mutation.get('rank')==rank():
                 hook+=f' import runpy\n runpy.run_path({str(Path(__file__).resolve())!r})["install_node_mutation"]()\n'
             rewritten=rewritten.replace(' from model_library.node import main\n',hook+' from model_library.node import main\n')
+            lease=cfg.get('node_lease',{})
+            if lease.get('operation')==request['operation'] and lease.get('rank')==rank():
+                rewritten=rewritten.replace('supervise_node(main,_pulsar_control.fileno(),_pulsar_token)',
+                    'supervise_node(main,_pulsar_control.fileno(),_pulsar_token,lease='+repr(lease['seconds'])+')')
             if (fault.get('operation')==request['operation'] and fault.get('rank')==rank()
                     and (not fault.get('manifest_id') or fault['manifest_id']==request.get('manifest',{}).get('manifest_id'))):
                 if not fault.get('after'): return 255

@@ -335,8 +335,10 @@ Copies, archive audits and publication keep their existing sequence.
 
 A failed verification stops queued work and cancels active peer workers through
 the same owned-worker cleanup used for interruption. Stack retains the original
-failure and reports unconfirmed cleanup separately. Successful individual
-verifications may refresh their records, but incomplete snapshot/rank coverage
+failure and reports unconfirmed cleanup separately. Caller cancellation is tracked
+separately from worker signal failures and node lease expiry, whose diagnostics
+remain in the command's error response. Successful individual verifications may
+refresh their records, but incomplete snapshot/rank coverage
 cannot produce a ready prepared set. Results use a fixed snapshot and rank order,
 independent of worker completion order.
 
