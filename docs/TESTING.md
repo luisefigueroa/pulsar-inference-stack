@@ -80,6 +80,13 @@ evidence tests re-evaluate measurements independently and reject forged claims.
 
 Resource tests cover confirmed pre-launch placement, unavailable container
 metrics, attachment only to the expected owned recipe, and diagnostic cleanup.
+The original diagnostic-container tests remain implementation history; their
+old backend fixture cannot safely exercise the new native producer. New focused
+suites cover the Bash lifecycle, closed state/control decisions and intercepted
+native syscalls. See [the source proposal](DIAGNOSTIC.md) for their scope and
+temporary dispatcher fixture. The public route remains withdrawn. Do not run
+old CLI fixtures against the new producer or weaken original assertions to hide
+the hold. Neither generation is host-access or GPU proof.
 Workbench separately tests its private stream retention and summary workflow.
 
 The checked-in contract vectors live in `tests/fixtures/contracts/`. Additional

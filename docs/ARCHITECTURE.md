@@ -40,6 +40,9 @@ and boot identity against the recorded effective configuration. It never compare
 a container with the observing checkout's Git commit or mutable defaults.
 
 [The public contract](CONTRACT.md) defines field bindings and CLI operations.
+A separate [diagnostic-container prototype](DIAGNOSTIC.md) explores one-shot
+model-free image checks. Its lifecycle implementation is not accepted for
+execution and is not exposed through the public CLI.
 Baseline-v1 methods and thresholds remain unchanged. Measurements are separate
 immutable runs bound to the effective spec. Tool commits and observed host/runtime
 context describe the campaign; they do not define recipe identity.

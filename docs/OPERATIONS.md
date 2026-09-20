@@ -352,6 +352,13 @@ unavailable until the matching owned recipe appears. Stop the stream to end
 sampling; model services are unaffected.
 
 
+## Unreleased model-free diagnostic prototype
+
+The [diagnostic-container prototype](DIAGNOSTIC.md) is not accepted for
+execution. Its commands are not advertised or dispatched by `pulsar`.
+Retained source and synthetic tests are review material, not an operational
+procedure. Do not execute its internal scripts to bypass this hold.
+
 ## Recipes requiring a draft checkpoint
 
 The target and draft are snapshots used by one serving recipe. Acquire each

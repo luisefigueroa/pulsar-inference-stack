@@ -48,6 +48,8 @@ present in source comments without requiring the predecessor repository.
 `./pulsar contract --json` exposes the schema versions, policy digest, catalog
 authority, and supported public commands. Clients check capabilities instead of
 matching repository commits. See the [public contract](docs/CONTRACT.md).
+The [diagnostic-container prototype](docs/DIAGNOSTIC.md) is retained for review
+but is not an available public operation.
 
 New specs freeze container settings as well as model/image/engine identity.
 Operators may explicitly override supported execution settings; Stack reports
