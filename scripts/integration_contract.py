@@ -28,17 +28,13 @@ def contract() -> dict:
         'measurement_schema_versions': [1, 2],
         'run_record_schema_versions': [3, 4],
         'memory_estimate_schema_versions': [1],
-        'diagnostic_request_schema_versions': [1],
         'serving_guard_schema_versions': [1, 2],
         # Only completed, tested operations are advertised during the rollout.
         'operations': ['contract', 'spec.example', 'spec.freeze', 'spec.verify', 'spec.show', 'spec.compare',
                        'policy.show', 'evidence.measurement', 'evidence.evaluate', 'evidence.verify',
                        'evidence.summary', 'contribution.verify', 'privacy.check', 'privacy.commits',
                        'selftest', 'start', 'observe', 'resources', 'status', 'stop', 'memory.verify',
-                       'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify',
-                       'diagnostic.validate', 'diagnostic.run', 'diagnostic.stage-image',
-                       'image.check', 'image.stage',
-                       'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop'],
+                       'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify'],
         'baseline_policy_digest': APPROVED_POLICY_DIGEST,  # Legacy baseline-v1 field.
         'baseline_policies': dict(SUPPORTED_POLICY_DIGESTS),
         'catalog': {

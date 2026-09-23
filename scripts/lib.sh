@@ -312,7 +312,7 @@ spec_overlay_node_selector() {
 }
 
 # Launch admission for a catalog or explicitly selected spec: refuse to start outside the spec's
-# frozen platform. Called by every launcher (up.sh, serve.sh,
+# frozen platform or ignore a declared guard. Called by every launcher (up.sh, serve.sh,
 # cluster/start-cluster.sh) right after load_conf; never by status or stop,
 # which must still load a spec after the platform setting changed.
 require_spec_platform_admission() {
@@ -320,6 +320,15 @@ require_spec_platform_admission() {
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   python3 -c 'from release_spec.serving import load_spec; import sys; load_spec(sys.argv[1])' "$CONF_PATH" \
     || die "new serving operations require a valid spec using schema 2 or 3; historical services remain inspectable and stoppable" 2
+  CONF_PATH="$CONF_PATH" python3 - <<'PY' || die 'selected recipe requires unsupported guard enforcement' 2
+import os
+from release_spec.serving import load_spec, load_json, apply_overrides
+spec=load_spec(os.environ['CONF_PATH'])
+if os.environ.get('PULSAR_OVERRIDE_FILE'):
+    spec=apply_overrides(spec,load_json(os.environ['PULSAR_OVERRIDE_FILE']))
+if 'guard' in spec['recipe']['container']:
+    raise SystemExit('guard execution is not supported by this Stack')
+PY
   [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
     || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
 }
@@ -2836,15 +2845,6 @@ container_exists_exact() {
 
 require_launch_operational_checks() {
   local rc=0
-  CONF_PATH="$CONF_PATH" python3 - <<'PY' || die 'guarded recipes require pulsar guarded run'
-import os
-from release_spec.serving import load_spec, load_json, apply_overrides
-spec=load_spec(os.environ['CONF_PATH'])
-if os.environ.get('PULSAR_OVERRIDE_FILE'):
-    spec=apply_overrides(spec,load_json(os.environ['PULSAR_OVERRIDE_FILE']))
-if spec['recipe']['container'].get('guard'):
-    raise SystemExit('This recipe requires its foreground guard and lease owner.')
-PY
   local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
   if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then

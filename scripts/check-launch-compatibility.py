@@ -14,6 +14,8 @@ class CompatibilityError(ValueError): pass
 def check_launch_compatibility(spec):
     try: spec=serving.verify_spec(spec)
     except ValueError as exc: raise CompatibilityError(str(exc)) from exc
+    if 'guard' in spec['recipe']['container']:
+        raise CompatibilityError('guard execution is not supported by this Stack')
     serving.snapshot_engine_args(spec['recipe'])
     geometry=spec['recipe']['geometry']
     path=ROOT/'platforms'/(geometry['platform_id']+'.json')

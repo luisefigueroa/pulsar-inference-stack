@@ -25,35 +25,6 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def test_guarded_plan_through_observation_binding_cli(self):
-        from tests.test_serving_guard import guarded_fixture
-        spec, _, prepared, plan, containers, images = guarded_fixture(256 * 1024**2)
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            for name, value in [('spec', spec), ('plan', plan), ('prepared', prepared)]:
-                (root / (name + '.json')).write_text(json.dumps(value))
-            for rank, (container, image) in enumerate(zip(containers, images)):
-                (root / f'container-{rank}.json').write_text(json.dumps(container))
-                (root / f'image-{rank}.json').write_text(json.dumps(image))
-            command = [sys.executable, str(ROOT / 'scripts/runtime_binding.py'), 'observe',
-                       '--spec', str(root / 'spec.json'), '--plan', str(root / 'plan.json'),
-                       '--observations', str(root), '--api-url', 'http://127.0.0.1:8000']
-            result = subprocess.run(command, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            observed = json.loads(result.stdout)
-            self.assertEqual(observed['spec_id'], spec['spec_id'])
-            self.assertEqual(len(observed['ranks']), 3)
-            self.assertTrue(all(rank['files_verified'] for rank in observed['ranks']))
-            self.assertTrue(all(rank['public_container_configuration']['guard']
-                                == spec['recipe']['container']['guard']
-                                for rank in observed['ranks']))
-            # Accepting the plan version must retain the actual guard checks.
-            containers[1]['HostConfig']['MemorySwap'] *= 2
-            (root / 'container-1.json').write_text(json.dumps(containers[1]))
-            result = subprocess.run(command, capture_output=True, text=True)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('swap', result.stderr.lower())
-
     def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
