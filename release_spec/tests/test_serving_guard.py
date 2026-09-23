@@ -122,6 +122,25 @@ class ServingGuardSchema(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate(policy(), {**self.spec['recipe']['container'], **changes})
 
+    def test_entrypoint_rejects_all_unicode_control_characters(self):
+        controls = [*range(0x20), *range(0x7f, 0xa0)]
+        for version in (1, 2):
+            with self.subTest(version=version):
+                accepted = []
+                for point in controls:
+                    value = {**policy(version), 'entrypoint': ['engine' + chr(point)]}
+                    try:
+                        validate(value, self.spec['recipe']['container'])
+                    except ValueError:
+                        continue
+                    accepted.append(f'U+{point:04X}')
+                self.assertEqual(accepted, [])
+
+    def test_entrypoint_preserves_non_control_unicode(self):
+        entrypoint = ['python3', '/opt/模型/入口.py', 'résumé', '😀']
+        changed = serving.apply_overrides(self.spec, {'container': {'guard': {'entrypoint': entrypoint}}})
+        self.assertEqual(serving.verify_spec(changed)['recipe']['container']['guard']['entrypoint'], entrypoint)
+
     def test_catalog_admits_guarded_spec_without_execution_support(self):
         with tempfile.TemporaryDirectory() as temp:
             releases = Path(temp) / 'releases'; releases.mkdir()

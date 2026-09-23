@@ -55,7 +55,7 @@ load_conf "$MODEL_NAME"
 if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
   select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID"
 fi
-require_spec_platform_admission "$MODEL_NAME"
+require_spec_launch_admission "$MODEL_NAME"
 acquire_model_library_hot_lock shared
 [ "$(model_source_kind)" = hf ] \
   || die "non-HF model profiles are not servable (ADR 0006)"

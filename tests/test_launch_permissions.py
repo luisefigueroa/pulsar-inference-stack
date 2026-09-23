@@ -40,7 +40,7 @@ class LaunchPermissions(unittest.TestCase):
 die() { echo "$*" >&2; exit 2; }
 acquire_model_library_lifecycle_lock() { :; }
 load_conf() { NODES=1; CONF_SOURCE=spec; MODEL=example/model; IMAGE=example/image; PORT=8000; SERVED_NAME=example; }
-require_spec_platform_admission() { :; }
+require_spec_launch_admission() { :; }
 acquire_model_library_hot_lock() { :; }
 resolve_spec_decode() { SPEC_DECODE_ENABLED=0; }
 loaded_launch_contract_id() { printf '%064d\n' 0; }
@@ -80,7 +80,7 @@ die() { echo "$*" >&2; exit 2; }
 acquire_model_library_lifecycle_lock() { :; }
 acquire_model_library_hot_lock() { :; }
 load_conf() { NODES=1; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image; PORT=8000; SERVED_NAME=example; }
-require_spec_platform_admission() { :; }
+require_spec_launch_admission() { :; }
 spec_overlay_node_selector() { echo "$1"; }
 resolve_single_node_placement() { SINGLE_NODE_ID=node-0; SINGLE_NODE_KEY=head; SINGLE_NODE_CONTROL_IP=127.0.0.1; SINGLE_NODE_REMOTE=0; }
 single_node_display() { echo fixture; }

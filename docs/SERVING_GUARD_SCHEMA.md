@@ -10,7 +10,7 @@ Explicit null, unknown fields and malformed values are rejected.
 | --- | --- |
 | `schema_version` | Integer 1 or 2 |
 | `program_sha256` | 64 lowercase hexadecimal characters identifying the recorded guard program |
-| `entrypoint` | 1–16 nonempty strings, at most 1,024 characters each, without control characters |
+| `entrypoint` | 1–16 nonempty strings, at most 1,024 characters each, without Unicode control characters (category `Cc`, including DEL and C1) |
 | `min_host_available_bytes` | Integer from 8 through 128 GiB, expressed in bytes |
 | `startup_timeout_seconds` | Integer from 10 through 14,400; cannot exceed the session timeout |
 | `timeout_seconds` | Integer from 10 through 21,600 |
@@ -53,8 +53,10 @@ implementation. `pulsar contract` advertises `serving_guard_schema_versions`
 without adding guarded execution operations. The static launch-compatibility
 check reports guarded recipes unsupported. Ordinary launch entrypoints reject
 them, including guards introduced by explicit overrides, before image staging
-or service replacement. Status, stop, storage and document validation retain
-their existing boundaries.
+or service replacement. This execution-only refusal does not apply to observation
+or pre-launch resource sampling; their schema, platform and ownership checks
+still apply. Status, stop, storage and document validation retain their existing
+boundaries.
 
 Experiment planning, probe selection, stage budgets, measurement sequencing,
 observation cadence and interpretation belong to Workbench skill guidance.

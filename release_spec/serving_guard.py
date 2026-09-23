@@ -2,6 +2,7 @@
 
 import copy
 import re
+import unicodedata
 
 
 def validate(value, container):
@@ -23,7 +24,7 @@ def validate(value, container):
         raise ValueError("guard program SHA-256 required")
     entrypoint = value["entrypoint"]
     if not isinstance(entrypoint, list) or not 1 <= len(entrypoint) <= 16 or any(
-        not isinstance(x, str) or not x or len(x) > 1024 or any(ord(c) < 32 for c in x)
+        not isinstance(x, str) or not x or len(x) > 1024 or any(unicodedata.category(c) == 'Cc' for c in x)
         for x in entrypoint
     ):
         raise ValueError("explicit pinned image entrypoint required")

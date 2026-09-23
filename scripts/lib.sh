@@ -311,15 +311,22 @@ spec_overlay_node_selector() {
   printf '%s\n' "$selector"
 }
 
-# Launch admission for a catalog or explicitly selected spec: refuse to start outside the spec's
-# frozen platform or ignore a declared guard. Called by every launcher (up.sh, serve.sh,
-# cluster/start-cluster.sh) right after load_conf; never by status or stop,
-# which must still load a spec after the platform setting changed.
+# Shared schema/platform admission for launch, observation and resource sampling.
+# Execution-only requirements belong in require_spec_launch_admission below.
 require_spec_platform_admission() {
   local name="${1:-${CONF_NAME:-}}" active="${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   python3 -c 'from release_spec.serving import load_spec; import sys; load_spec(sys.argv[1])' "$CONF_PATH" \
     || die "new serving operations require a valid spec using schema 2 or 3; historical services remain inspectable and stoppable" 2
+  [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
+    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
+}
+
+# Every launcher calls this immediately after loading its selected spec, before
+# staging an image or replacing a service. Read-only commands do not call it.
+require_spec_launch_admission() {
+  require_spec_platform_admission "$@"
+  [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   CONF_PATH="$CONF_PATH" python3 - <<'PY' || die 'selected recipe requires unsupported guard enforcement' 2
 import os
 from release_spec.serving import load_spec, load_json, apply_overrides
@@ -329,8 +336,6 @@ if os.environ.get('PULSAR_OVERRIDE_FILE'):
 if 'guard' in spec['recipe']['container']:
     raise SystemExit('guard execution is not supported by this Stack')
 PY
-  [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
-    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
 }
 
 _finalize_loaded_profile() {

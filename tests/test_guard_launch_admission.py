@@ -1,5 +1,6 @@
 """Actual launcher entrypoints refuse unsupported guards before side effects."""
 import json
+import copy
 import subprocess
 import unittest
 
@@ -15,6 +16,42 @@ class GuardLaunchAdmission(unittest.TestCase):
         self.base = diagnostics.Diagnostics()
         self.base.setUp()
         self.addCleanup(self.base.doCleanups)
+
+    def test_guard_does_not_block_prelaunch_resource_inspection(self):
+        spec = guarded(self.base.spec)
+        self.base.path.write_text(json.dumps(spec))
+        with open(self.base.env['BASH_ENV'], 'a') as stream:
+            stream.write('\nload_cluster_topology() { echo READ_ONLY_TOPOLOGY >&2; exit 67; }\n')
+        result = subprocess.run(['bash', str(ROOT / 'scripts/resources.sh'),
+                                 '--spec-file', str(self.base.path), '--jsonl'],
+                                env=self.base.env, cwd=ROOT, capture_output=True, text=True)
+        # Stop at the topology double before any real transport or sampling.
+        self.assertEqual(result.returncode, 67, result.stderr)
+        self.assertIn('READ_ONLY_TOPOLOGY', result.stderr)
+        self.assertNotIn('guard execution is not supported', result.stderr)
+        self.assertFalse((self.base.root / 'mutations').exists())
+
+    def test_guard_does_not_block_recorded_observation_admission(self):
+        from model_library.state import Store
+        from scripts import container_runtime, service_state
+        spec = guarded(self.base.spec)
+        prepared = copy.deepcopy(self.base.prepared)
+        prepared['spec_id'] = spec['spec_id']
+        for rank in prepared['ranks']:
+            rank['spec_id'] = spec['spec_id']
+        plan = container_runtime.build_plan(spec, spec['spec_id'], self.base.facts, prepared)
+        service_state.save(Store(self.base.root / 'library'), plan)
+        with open(self.base.env['BASH_ENV'], 'a') as stream:
+            stream.write('\nrequire_profile_topology() { echo READ_ONLY_TOPOLOGY >&2; exit 67; }\n')
+        env = {**self.base.env, 'PULSAR_MODEL_LIBRARY_DIR': str(self.base.root / 'library')}
+        result = subprocess.run(['bash', str(ROOT / 'scripts/observe-serving.sh'),
+                                 '--service-id', plan['service_id'], '--json'],
+                                env=env, cwd=ROOT, capture_output=True, text=True)
+        # Only admission is exercised; this is not a guarded execution fixture.
+        self.assertEqual(result.returncode, 67, result.stderr)
+        self.assertIn('READ_ONLY_TOPOLOGY', result.stderr)
+        self.assertNotIn('guard execution is not supported', result.stderr)
+        self.assertFalse((self.base.root / 'mutations').exists())
 
     def test_every_launcher_rejects_guard_before_pulls_or_replacement(self):
         for script, nodes, flags in [('scripts/up.sh', 3, ['--yes', '--pull-image', '--replace']),
