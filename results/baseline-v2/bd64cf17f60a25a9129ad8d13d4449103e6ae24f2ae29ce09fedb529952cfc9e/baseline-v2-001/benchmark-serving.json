@@ -1,0 +1,64 @@
+{
+  "benchmark-serving": {
+    "explicit_request_count": null,
+    "input_tokens": 512,
+    "levels": [
+      {
+        "aggregate_tps": "9.210727",
+        "completion": "complete",
+        "concurrency": 1,
+        "decode_tps_p50": "9.705284",
+        "measured_request_count": 4,
+        "reason": "completed",
+        "requested_request_count": 4,
+        "ttft_p50_ms": "1094.486329",
+        "ttft_p95_ms": "1112.61353",
+        "wall_s": "111.174726"
+      },
+      {
+        "aggregate_tps": "9.308987",
+        "completion": "complete",
+        "concurrency": 2,
+        "decode_tps_p50": "9.657628",
+        "measured_request_count": 4,
+        "reason": "completed",
+        "requested_request_count": 4,
+        "ttft_p50_ms": "28534.245029",
+        "ttft_p95_ms": "28644.922168",
+        "wall_s": "110.001233"
+      },
+      {
+        "aggregate_tps": "9.30101",
+        "completion": "complete",
+        "concurrency": 4,
+        "decode_tps_p50": "9.639055",
+        "measured_request_count": 8,
+        "reason": "completed",
+        "requested_request_count": 8,
+        "ttft_p50_ms": "83547.661509",
+        "ttft_p95_ms": "83783.469739",
+        "wall_s": "220.191138"
+      },
+      {
+        "aggregate_tps": "9.296358",
+        "completion": "complete",
+        "concurrency": 8,
+        "decode_tps_p50": "9.653185",
+        "measured_request_count": 16,
+        "reason": "completed",
+        "requested_request_count": 16,
+        "ttft_p50_ms": "193549.449771",
+        "ttft_p95_ms": "193851.222551",
+        "wall_s": "440.602637"
+      }
+    ],
+    "output_tokens": 256,
+    "prompt_style": "synthetic"
+  },
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "benchmark-serving",
+  "program": "validate/bench_serve.py",
+  "reason": "completed",
+  "schema_version": 1
+}
