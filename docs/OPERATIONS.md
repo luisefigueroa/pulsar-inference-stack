@@ -185,6 +185,28 @@ Control SSH, inference traffic and model transfer use distinct configured
 paths. Multi-node preparation preserves the selected transfer contract and
 does not silently change networks.
 
+Image placement can be completed separately from serving:
+
+```sh
+./pulsar image stage SPEC --spec-file candidate.json --plan --json
+./pulsar image stage SPEC --spec-file candidate.json --yes --json
+./pulsar image check SPEC --spec-file candidate.json --json
+```
+
+For a locally built containerd image, digest-only Docker exports omit repository
+names. Supply `--export-tag REPOSITORY:TAG` to preserve an existing build tag
+through save/load. Stack requires that tag and the pinned reference to resolve
+to the same ARM64 Linux image and digest, checks before and after each transfer,
+and refuses to replace a different destination tag. The tag is only an export
+handle; final admission still checks the spec's repository/digest reference on
+every rank. No new tag is created and no registry fallback occurs. A failed
+post-check retains the imported artifacts for inspection; it never starts a
+service or retries by pulling. `--pull` remains an explicitly separate mode and
+cannot be combined with `--export-tag`.
+
+Review node occupancy, Docker storage capacity and the staging preview before
+approving transfer. Image staging alone does not prove model readiness.
+
 Start immediately rechecks the actual model files, image, recipe, geometry,
 placement, capacity and ownership. Recipe or image changes require another
 spec. Deployment settings such as API port, served name and placement remain

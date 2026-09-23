@@ -40,6 +40,15 @@ Geometry owns TP/PP flags; site bindings own model paths, ports, addresses,
 served names, and credentials. Literal recipe environment cannot override those
 reserved bindings. No draft is executable Bash.
 
+`recipe.container.guard` is an optional schema-1 bounded-serving policy. Its
+presence binds the guard program hash, pinned image entrypoint, host-memory
+floor and startup/whole-session deadlines into recipe identity. Absence preserves
+existing spec identities and behavior. Guarded execution emits launch-plan
+schema 6, retaining the program and unique invocation ID for later observation.
+The public `guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+operations own this foreground lifecycle; ordinary start rejects guarded recipes.
+See [guarded serving](GUARDED_SERVING.md) for no-swap semantics and limitations.
+
 ## Required snapshots and speculative decoding
 
 Schema 3 retains `recipe.model` as the serving target and adds the required
@@ -181,6 +190,13 @@ unambiguous active service selector.
 
 ## Public operations
 
+Serving-guard policy schemas 1 and 2 are advertised independently of spec and
+launch-plan schemas. Schema 1 retains the fixed 64 MiB host-swap allowance;
+schema 2 requires `max_host_swap_growth_bytes` (integer, 0–256 MiB). The explicit
+`guarded template --max-host-swap-growth-bytes` option selects schema 2. Policy
+values and the guard program hash are recipe-bound; existing records are not
+normalized into a newer schema. See [guarded serving](GUARDED_SERVING.md).
+
 Document operations need no Docker, topology, model files, or clean checkout.
 Execution operations independently check their live prerequisites.
 
@@ -189,9 +205,14 @@ Execution operations independently check their live prerequisites.
 | `spec example/freeze/verify/show/compare` | Author, validate, read, and compare serving specs |
 | `model acquire/prepare/info/restore/archive` | Existing explicit model-file lifecycle; use `--model-commit` for first acquisition |
 | `start`, `status`, `stop` | Serve, inspect, or stop an owned service |
+| `image check SPEC [--spec-file FILE]` | Inspect the pinned ARM64 image reference on every selected node |
+| `image stage SPEC [--spec-file FILE] [--export-tag TAG] (--plan \| --yes)` | Preview or explicitly stage the spec image; verify pinned references afterward without launching |
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
 | `resources --service-id ID --jsonl` | Stream private diagnostics for a recorded service |
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
+| `diagnostic validate --request FILE --payload-dir DIR` | Hash and validate model-free diagnostic inputs without hardware access |
+| `diagnostic stage-image --request FILE --payload-dir DIR --request-id SHA256 --output-dir NEW_DIR (--plan \| --yes)` | Preview image/storage readiness or explicitly stream the exact local image to missing confirmed ranks |
+| `diagnostic run --request FILE --payload-dir DIR --request-id SHA256 --output-dir NEW_DIR --yes` | Execute a bounded diagnostic on all confirmed GB10 ranks using an already-present exact image |
 | `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
 | `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
@@ -203,6 +224,11 @@ status. `cancelled` confirms cleanup of the local command and tracked node worke
 `cleanup_incomplete` means worker exit could not be established. Neither result
 authorizes stopping a model service. Internal lease/worker receipts do not alter
 successful command results or snapshot, prepared-set and evidence schemas.
+
+Model-free diagnostics additionally require container cleanup and idle-rank
+checks before success. Their request schema and result are independent of model
+specs and qualification; see [diagnostic execution](DIAGNOSTICS.md). Node worker
+exit after cancellation does not by itself prove Docker container removal.
 
 `model info`, `model check` and `observe` accept `--verification-jobs N` (a
 positive integer, default 3). Prepared-file verification runs at most N jobs

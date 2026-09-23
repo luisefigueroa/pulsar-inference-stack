@@ -114,6 +114,79 @@ def evaluate(args):
 
 
 def dispatch(command, args):
+    if command == 'image':
+        if not args or args in (['--help'], ['-h']):
+            return {'check': 'image check SPEC [--spec-file FILE] [--node NODE] [--json]',
+                    'stage': 'image stage SPEC [--spec-file FILE] [--export-tag TAG] (--plan | --yes) [--json]',
+                    'scope': 'Exact spec image only; no serving start or implicit registry pull.'}
+        if args[0] == 'check':
+            return execute('scripts/check-image.sh', [*args[1:], '--json'], json_result=True)
+        if args[0] == 'stage':
+            return execute('scripts/sync-image.sh', [*args[1:], '--json'], json_result=True)
+        raise ValueError('usage: pulsar image check|stage --help')
+    if command == 'guarded':
+        if not args or args in (['--help'], ['-h']):
+            return {'template': 'guarded template --entrypoint-json ARRAY [--json]',
+                    'validate': 'guarded validate --spec-file FILE [--json]',
+                    'run': 'guarded run --spec-file FILE --spec-id SHA256 --output-dir NEW_DIR --yes [--json]',
+                    'stop': 'guarded stop --output-dir DIR --run-id SHA256 [--json]',
+                    'scope': 'Foreground bounded serving; no image pulls, acquisition or replacement.'}
+        if args[0] == 'run':
+            return execute('scripts/guarded-serving.sh', args[1:], json_result=True)
+        parser = CommandParser()
+        if args[0] == 'template':
+            from serving_guard.program import template
+            parser.add_argument('--entrypoint-json', required=True)
+            parser.add_argument('--min-host-available-bytes', type=int, default=24 * 1024**3)
+            parser.add_argument('--startup-timeout-seconds', type=int, default=7200)
+            parser.add_argument('--timeout-seconds', type=int, default=10800)
+            parser.add_argument('--max-host-swap-growth-bytes', type=int,
+                                help='Explicit 0-256 MiB allowance; selects guard schema 2')
+            options = parser.parse_args(args[1:])
+            value = template(json.loads(options.entrypoint_json), minimum=options.min_host_available_bytes,
+                             startup=options.startup_timeout_seconds, timeout=options.timeout_seconds,
+                             max_host_swap_growth_bytes=options.max_host_swap_growth_bytes)
+            from release_spec.serving_guard import validate
+            return validate(value, {'memory_limit_bytes': 96 * 1024**3, 'network_mode': 'host',
+                                    'restart_policy': 'no', 'healthcheck': None})
+        if args[0] == 'validate':
+            from serving_guard.program import digest, program
+            parser.add_argument('--spec-file', required=True)
+            options = parser.parse_args(args[1:])
+            spec = serving.load_spec(options.spec_file)
+            guard = spec['recipe']['container'].get('guard')
+            if guard is None or guard['program_sha256'] != digest(program()):
+                raise ValueError('spec must select the installed serving guard program')
+            return {'spec_id': spec['spec_id'], 'guard': guard, 'physical_execution': False}
+        if args[0] == 'stop':
+            from serving_guard.controller import stop
+            parser.add_argument('--output-dir', required=True, type=Path)
+            parser.add_argument('--run-id', required=True)
+            options = parser.parse_args(args[1:])
+            return stop(options.output_dir.absolute(), options.run_id)
+        raise ValueError('usage: pulsar guarded template|validate|run|stop --help')
+    if command == 'diagnostic':
+        if not args or args in (['--help'], ['-h']):
+            return {'validate': 'diagnostic validate --request FILE --payload-dir DIR [--json]',
+                    'run': 'diagnostic run --request FILE --payload-dir DIR --request-id SHA256 --output-dir NEW_DIR --yes [--json]',
+                    'stage-image': 'diagnostic stage-image --request FILE --payload-dir DIR --request-id SHA256 --output-dir NEW_DIR (--plan | --yes) [--json]',
+                    'scope': 'Bounded model-free GB10 diagnostics; exact local images, no image pull or service replacement.'}
+        if args[:1] == ['run']:
+            return execute('scripts/diagnostic.sh', ['run', *args[1:]], json_result=True)
+        if args[:1] == ['stage-image']:
+            return execute('scripts/sync-image.sh', ['--diagnostic', *args[1:]], json_result=True)
+        if args[:1] == ['validate']:
+            from diagnostics.schema import digest, load
+            parser = CommandParser(description='Validate exact model-free diagnostic inputs without touching hardware.')
+            parser.add_argument('--request', required=True)
+            parser.add_argument('--payload-dir', required=True)
+            options = parser.parse_args(args[1:])
+            request, payload = load(options.request, options.payload_dir)
+            return {'schema_version': 1, 'kind': 'pulsar-diagnostic-validation',
+                    'request_id': digest(request), 'image_id': request['image_id'],
+                    'geometry': request['geometry'], 'limits': request['limits'],
+                    'payload_files': len(payload), 'physical_execution': False}
+        raise ValueError('usage: pulsar diagnostic validate|stage-image|run --help')
     if command == 'memory' and args[:1] == ['verify']:
         from release_spec.memory_estimate import load
         parser=CommandParser()
@@ -228,12 +301,20 @@ def main(argv=None):
             raise ValueError('a public command is required')
         # Interpret artifact paths at the user's working directory before
         # entering Stack's implementation directory.
-        path_flags={'--spec-file','--manifest','--manifest-out','--override-file','--overlay','--memory-estimate-file'}
+        path_flags={'--spec-file','--manifest','--manifest-out','--override-file','--overlay','--memory-estimate-file',
+                    '--request','--payload-dir','--output-dir'}
         for index in range(1,len(argv)):
             if argv[index-1] in path_flags:
                 argv[index]=str(Path(argv[index]).absolute())
         human_scripts={'start':'scripts/up.sh','stop':'scripts/down.sh',
                        'status':'scripts/status.sh','model':'scripts/model-library.sh'}
+        if len(argv) >= 2 and argv[0] == 'image' and argv[1] in ('check', 'stage') and any(a in ('--help', '-h') for a in argv[2:]):
+            script = 'check-image.sh' if argv[1] == 'check' else 'sync-image.sh'
+            os.execvp('bash', ['bash', str(ROOT/'scripts'/script), '--help'])
+        if len(argv) >= 2 and argv[0] == 'diagnostic' and argv[1] in ('run', 'stage-image') and any(a in ('--help', '-h') for a in argv[2:]):
+            os.execvp('bash', ['bash', str(ROOT/'scripts/diagnostic.sh'), argv[1], '--help'])
+        if len(argv) >= 2 and argv[:2] == ['guarded', 'run'] and any(a in ('--help', '-h') for a in argv[2:]):
+            os.execvp('bash', ['bash', str(ROOT/'scripts/guarded-serving.sh'), '--help'])
         if argv[0] in human_scripts and (not json_output or any(a in ('--help','-h') for a in argv[1:])):
             command=['bash',str(ROOT/human_scripts[argv[0]]),*argv[1:]]
             os.chdir(ROOT)

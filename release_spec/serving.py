@@ -70,7 +70,8 @@ def choice(value: Any, choices: tuple[str, ...], path: str) -> str:
 
 
 def canonical_container(value: Any) -> dict:
-    c = copy.deepcopy(closed(value, CONTAINER_FIELDS, "recipe.container"))
+    fields = CONTAINER_FIELDS | ({"guard"} if isinstance(value, dict) and "guard" in value else set())
+    c = copy.deepcopy(closed(value, fields, "recipe.container"))
     choice(c["network_mode"], ("bridge", "host"), "recipe.container.network_mode")
     choice(c["ipc_mode"], ("host", "private"), "recipe.container.ipc_mode")
     if c["ipc_mode"] == "host":
@@ -113,6 +114,12 @@ def canonical_container(value: Any) -> dict:
         for name in ("interval_seconds", "timeout_seconds", "retries"):
             integer(health[name], "recipe.container.healthcheck." + name, 1)
         integer(health["start_period_seconds"], "recipe.container.healthcheck.start_period_seconds")
+    if "guard" in c:
+        from .serving_guard import validate
+        try:
+            c["guard"] = validate(c["guard"], c)
+        except ValueError as exc:
+            invalid("recipe.container.guard", str(exc))
     return c
 
 

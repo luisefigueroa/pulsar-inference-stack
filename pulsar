@@ -9,7 +9,7 @@ case "$command" in
   start|stop|status|model)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
-  observe|resources|policy|evidence|privacy|selftest|contribution|memory)
+  observe|resources|policy|evidence|privacy|selftest|contribution|memory|diagnostic|guarded|image)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
 esac
@@ -49,6 +49,9 @@ for command,description in [
  ('pulsar release list','Read catalog specs; deprecated human alias retained through CLI contract 1.'),
  ('pulsar inventory','Inspect service ownership and current resource use.'),
  ('pulsar doctor','Run explicit host and topology diagnostics.'),
+ ('pulsar diagnostic validate|stage-image|run','Validate inputs, explicitly stage an image, or run a bounded diagnostic.'),
+ ('pulsar image check|stage','Inspect or explicitly stage the exact spec image without starting a service.'),
+ ('pulsar guarded template|validate|run|stop','Review and supervise a bounded, recipe-bound serving session.'),
  ('pulsar contract','Show the versioned stack/workbench integration contract.'),
  ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving recipe.'),
  ('pulsar memory verify --file FILE --spec-file SPEC','Validate an explicit estimate of resident weights for the exact spec.'),

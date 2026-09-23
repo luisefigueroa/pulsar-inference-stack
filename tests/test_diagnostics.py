@@ -18,7 +18,7 @@ class Diagnostics(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.spec,self.path,self.prepared,self.facts,self.plan,self.containers,self.images=fixture(self.root,3)
         (self.root/'releases').mkdir();(self.root/'homes').mkdir();(self.root/'views').mkdir()
-        for image in self.images:image['Architecture']='arm64'
+        for image in self.images:image.update(Architecture='arm64',Os='linux')
         (self.root/'image.json').write_text(json.dumps(self.images[0]))
         tool=self.root/'docker.py';tool.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,sys
@@ -26,14 +26,23 @@ root=pathlib.Path(os.environ['DIAG_ROOT']);args=sys.argv[1:];rank=int(os.environ
 if args[0]=='info':print('nvidia' if '-f' in args else 'Runtimes: nvidia');sys.exit(0)
 if args[:2]==['image','inspect']:
  if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2):sys.exit(1)
+ if mode in ('named-success','export-tag-collision','export-tag-unobservable','export-tag-drift') and rank>0 and not (root/('loaded-'+str(rank))).exists():sys.exit(1)
  image=json.loads((root/'image.json').read_text())
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
+ if len(args)==4 and '--format' not in args:
+  tagged=dict(image)
+  if mode=='export-tag-mismatch' or (mode=='export-tag-drift' and (root/'loaded-1').exists()):tagged['Id']='sha256:'+'f'*64
+  print(json.dumps([image,tagged]));sys.exit(0)
  print(json.dumps(image));sys.exit(0)
+if args[:2]==['image','ls']:
+ if mode=='export-tag-unobservable':sys.exit(1)
+ if mode=='export-tag-collision':print('sha256:'+'f'*64)
+ sys.exit(0)
 if args[0] in ('pull','save','load'):
  with (root/'mutations').open('a') as f:f.write(args[0]+' '+str(rank)+'\\n')
  if args[0]=='pull':(root/'pulled').touch()
  if args[0]=='save':sys.stdout.write('image-fixture')
- if args[0]=='load':sys.stdin.read()
+ if args[0]=='load':sys.stdin.read();(root/('loaded-'+str(rank))).touch()
  sys.exit(0)
 if args[0]=='ps':sys.exit(0)
 sys.exit(2)
@@ -66,6 +75,7 @@ ssh_node() {{
  case "$cmd" in
   'docker info'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" info >/dev/null ;;
   'docker image inspect'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" image inspect ;;
+  'docker image ls'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" image ls ;;
   'docker pull'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" pull ;;
   'docker load'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" load ;;
   *) return 2 ;;
@@ -127,6 +137,55 @@ ssh_node() {{
         self.assertNotEqual(result.returncode,0)
         self.assertNotIn('pull',(self.root/'mutations').read_text())
         self.assertIn('explicit --pull',result.stderr)
+
+    def test_named_export_preview_and_exact_reference_readback(self):
+        tag=self.spec['source']['image_repository']+':staging-test'
+        flags=[self.spec['spec_id'],'--export-tag',tag,'--json']
+        result=self.run_tool('sync-image.sh',[*flags,'--plan'],'named-success')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['export_reference'],tag)
+        self.assertFalse((self.root/'mutations').exists())
+        result=subprocess.run([str(ROOT/'pulsar'),'image','stage',*flags,'--yes'],
+            env={**self.env,'DIAG_MODE':'named-success'},cwd=ROOT,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        value=json.loads(result.stdout)
+        self.assertTrue(value['ok'])
+        self.assertEqual(value['result']['state'],'ok')
+        self.assertEqual(len(value['result']['ranks']),3)
+        mutations=(self.root/'mutations').read_text().splitlines()
+        self.assertCountEqual(mutations,['save 0','load 1','save 0','load 2'])
+        self.assertEqual([item for item in mutations if item.startswith('load')],['load 1','load 2'])
+
+    def test_named_export_rejects_mismatch_collision_and_unknown_before_transfer(self):
+        tag=self.spec['source']['image_repository']+':staging-test'
+        for mode in ('export-tag-mismatch','export-tag-collision','export-tag-unobservable'):
+            result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--export-tag',tag,'--yes'],mode)
+            with self.subTest(mode=mode):
+                self.assertNotEqual(result.returncode,0)
+                self.assertFalse((self.root/'mutations').exists())
+        for tag in ('another/repository:tag',tag.split(':')[0],tag+'@sha256:'+'a'*64):
+            result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--export-tag',tag,'--yes'])
+            self.assertNotEqual(result.returncode,0)
+            self.assertFalse((self.root/'mutations').exists())
+
+    def test_named_export_source_drift_stops_before_next_worker(self):
+        tag=self.spec['source']['image_repository']+':staging-test'
+        result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--export-tag',tag,'--yes'],'export-tag-drift')
+        self.assertNotEqual(result.returncode,0)
+        self.assertCountEqual((self.root/'mutations').read_text().splitlines(),['save 0','load 1'])
+
+    def test_public_image_check_help_and_already_present_json(self):
+        for args in (['image','check',self.spec['spec_id'],'--json'],
+                     ['image','stage',self.spec['spec_id'],'--plan','--json'],
+                     ['image','stage',self.spec['spec_id'],'--yes','--json']):
+            result=subprocess.run([str(ROOT/'pulsar'),*args],env=self.env,cwd=ROOT,text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertEqual(json.loads(result.stdout)['result']['state'],'ok')
+        for action in ('check','stage'):
+            result=subprocess.run([str(ROOT/'pulsar'),'image',action,'--help'],env=self.env,cwd=ROOT,text=True,capture_output=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            self.assertIn('Usage:',result.stdout)
+        self.assertFalse((self.root/'mutations').exists())
 
     def raw_inventory(self):
         names=['head','worker','rank-2']

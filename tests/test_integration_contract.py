@@ -19,6 +19,8 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(document['cli_contract_versions'],[1])
         self.assertEqual(document['spec_schema_versions'],[2,3])
         self.assertIn('spec.freeze',document['operations'])
+        self.assertIn('image.check',document['operations'])
+        self.assertIn('image.stage',document['operations'])
         self.assertFalse(document['catalog']['state_gate'])
         self.assertFalse(document['catalog']['review_gate'])
         self.assertFalse(document['catalog']['evidence_gate'])

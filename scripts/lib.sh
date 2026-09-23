@@ -2836,6 +2836,15 @@ container_exists_exact() {
 
 require_launch_operational_checks() {
   local rc=0
+  CONF_PATH="$CONF_PATH" python3 - <<'PY' || die 'guarded recipes require pulsar guarded run'
+import os
+from release_spec.serving import load_spec, load_json, apply_overrides
+spec=load_spec(os.environ['CONF_PATH'])
+if os.environ.get('PULSAR_OVERRIDE_FILE'):
+    spec=apply_overrides(spec,load_json(os.environ['PULSAR_OVERRIDE_FILE']))
+if spec['recipe']['container'].get('guard'):
+    raise SystemExit('This recipe requires its foreground guard and lease owner.')
+PY
   local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
   if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
