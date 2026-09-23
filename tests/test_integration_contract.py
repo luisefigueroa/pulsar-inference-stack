@@ -18,6 +18,8 @@ class IntegrationContract(unittest.TestCase):
         self.assertNotIn('recipe_projector',document)
         self.assertEqual(document['cli_contract_versions'],[1])
         self.assertEqual(document['spec_schema_versions'],[2,3])
+        self.assertEqual(document['serving_guard_schema_versions'],[1,2])
+        self.assertFalse(any(operation.startswith('guarded.') for operation in document['operations']))
         self.assertIn('spec.freeze',document['operations'])
         self.assertFalse(document['catalog']['state_gate'])
         self.assertFalse(document['catalog']['review_gate'])

@@ -28,6 +28,7 @@ def contract() -> dict:
         'measurement_schema_versions': [1, 2],
         'run_record_schema_versions': [3, 4],
         'memory_estimate_schema_versions': [1],
+        'serving_guard_schema_versions': [1, 2],
         # Only completed, tested operations are advertised during the rollout.
         'operations': ['contract', 'spec.example', 'spec.freeze', 'spec.verify', 'spec.show', 'spec.compare',
                        'policy.show', 'evidence.measurement', 'evidence.evaluate', 'evidence.verify',
