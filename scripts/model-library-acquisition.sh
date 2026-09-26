@@ -76,6 +76,7 @@ acquire_model() {
   fi
   [ "$YES" -eq 1 ] || die "acquisition requires --yes after reviewing the exact commit and selected node"
   if [ "$count" -eq 1 ]; then
+    phase 1 1 "reusing the recorded home; checking it against the upstream file list"
     candidate=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)[0]))')
     HOME_JSON=$(json_fields "$candidate" home)
     if [ -n "$NODE" ] && [ "$(json_fields "$HOME_JSON" node_id)" != "${CLUSTER_NODE_IDS[$rank]}" ]; then
@@ -92,12 +93,16 @@ acquire_model() {
     fi
     result=$(model_json home: "$HOME_JSON")
   else
+    phase 1 4 "staging on $(human_node_name "$rank")"
     stage=$(model_node "$rank" "$(model_node_request begin-source source: "$source")") || die "could not create private same-filesystem staging"
+    phase 2 4 "downloading $(source_summary "$source") to $(human_node_name "$rank")"
     source_download_on_rank "$rank" "$(json_fields "$stage" stage)" "$source" || die "download incomplete; no home was published"
+    phase 3 4 "verifying SHA-256 of every downloaded file"
     checked=$(model_node "$rank" "$(model_node_request source-verify path "$(json_fields "$stage" path)" source: "$source")") || die "download verification failed; no home was published"
     MANIFEST_JSON=$(json_fields "$checked" manifest)
     existing=$(find_source_homes) || die "cannot recheck all-node home absence before publication"
     [ "$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 0 ] || die "another home appeared; staged download was not published"
+    phase 4 4 "publishing the home on $(human_node_name "$rank")"
     result=$(model_node "$rank" "$(model_node_request publish-home stage "$(json_fields "$stage" stage)" node_id "${CLUSTER_NODE_IDS[$rank]}")") || die "home publication failed"
   fi
   if [ -n "$original_manifest" ]; then

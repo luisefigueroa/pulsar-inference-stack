@@ -150,6 +150,7 @@ case "$OP" in
   check) check_model ;;
   archive)
     if [ "$ARCHIVE_ACTION" = verify ]; then
+      phase 1 1 "verifying archive contents against the expected file hashes"
       result=$(archive_verify) || die "archive verification failed"
       emit_result "$result"
     else archive_create; fi ;;

@@ -77,19 +77,28 @@ case "$action" in
   menu)
     [ $# = 0 ] || { usage >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"
-    choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \
-      "Check saved nodes and fabric" "Detect cluster candidates" \
-      "Configure cluster membership" "Check SSH trust" "Enroll SSH trust" "Back") || exit 0
-    case "$choice" in
-      0) exec "$0" setup ;;
-      1) exec "$0" show ;;
-      2) exec "$0" check ;;
-      3) exec "$0" detect ;;
-      4) exec "$0" configure ;;
-      5) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" check ;;
-      6) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll ;;
-      7) exit 0 ;;
-    esac ;;
+    # Each action runs as a child and returns here; Back leaves this menu.
+    while true; do
+      choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \
+        "Check saved nodes and fabric" "Detect cluster candidates" \
+        "Configure cluster membership" "Check SSH trust" "Enroll SSH trust" "Back") \
+        || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+      set +e
+      case "$choice" in
+        0) "$0" setup ;;
+        1) "$0" show ;;
+        2) "$0" check ;;
+        3) "$0" detect ;;
+        4) "$0" configure ;;
+        5) "$REPO_DIR/scripts/topology-ssh-trust.sh" check ;;
+        6) "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll ;;
+        *) exit 0 ;;
+      esac
+      rc=$?
+      set -e
+      [ "$rc" -ne 130 ] || exit 130
+      echo
+    done ;;
   detect|configure)
     flags=()
     while [ $# -gt 0 ]; do

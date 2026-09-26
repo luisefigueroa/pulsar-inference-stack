@@ -42,12 +42,17 @@ choose_index() {
     printf '%s\n' "$(($# - 2))"
     return 0
   fi
-  if [ "${CHOOSE_MODE:-}" = archive ]; then
-    printf '3\n'
-    return 0
-  fi
   if [ -f "$CHOOSE_COUNT" ]; then n=$(cat "$CHOOSE_COUNT"); else n=0; fi
   echo $((n + 1)) > "$CHOOSE_COUNT"
+  if [ "${CHOOSE_MODE:-}" = archive ]; then
+    # Open the archive menu once, then choose Exit when the home menu returns.
+    if [ "$n" = 0 ]; then printf '3\n'; else printf '%s\n' "$(($# - 2))"; fi
+    return 0
+  fi
+  if [ "${CHOOSE_MODE:-}" = interrupt ]; then
+    if [ "$n" = 0 ]; then printf '3\n'; return 0; fi
+    return 130
+  fi
   if [ "$n" = 0 ]; then printf '0\n'; else printf '1\n'; fi
 }
 ''')
@@ -109,6 +114,16 @@ choose_index() {
         self.assertIn("Archive storage configuration", options)
         self.assertEqual(self.pulsar_log.read_text().split(), ["configure", "archive-root", "menu"])
         self.assertFalse(self.fabric_log.exists())
+        # The submenu returns to the home menu instead of ending the session.
+        blocks = self.choose_blocks()
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[1][0], "Pulsar Inference Stack")
+
+    def test_ctrl_c_at_the_home_menu_exits_with_130(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(CHOOSE_MODE="interrupt", PULSAR_COLD_ROOT="")
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(len(self.choose_blocks()), 2)
 
 
 if __name__ == "__main__":

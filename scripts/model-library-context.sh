@@ -119,6 +119,27 @@ save_home_result() {
   model_ctl "$(model_json operation save-home manifest: "$MANIFEST_JSON" home: "$registered_home" expected_home: "$old")"
 }
 
+# phase STEP TOTAL TEXT
+# Progress for long operations, on stderr only. Previews (--plan) stay quiet;
+# stdout results, including JSON, are unchanged.
+phase() {
+  [ "$PLAN" -eq 0 ] || return 0
+  local name="$OP"
+  [ "$OP" != archive ] || name="archive $ARCHIVE_ACTION"
+  printf '[%s %s/%s] %s\n' "$name" "$1" "$2" "$3" >&2
+}
+
+# source_summary SOURCE_JSON — "MODEL @ COMMIT (N files, X GiB)" for progress.
+source_summary() {
+  printf '%s' "$1" | python3 -c '
+import json,sys
+s=json.load(sys.stdin); files=s.get("files") or []
+sizes=[f.get("size") for f in files if isinstance(f,dict)]
+size=f", {sum(sizes)/1024**3:.1f} GiB" if sizes and all(type(x) is int for x in sizes) else ""
+model=s.get("model_id","model"); commit=str(s.get("snapshot_revision",""))[:8]
+print(f"{model} @ {commit} ({len(files)} files{size})")'
+}
+
 emit_result() {
   if [ "$JSON" -eq 1 ]; then
     printf '%s' "$1" | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value,dict), "operation returned no result object"; print(json.dumps(value,sort_keys=True))'

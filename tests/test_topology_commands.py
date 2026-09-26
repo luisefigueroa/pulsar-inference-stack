@@ -197,11 +197,12 @@ class TopologyCommands(unittest.TestCase):
     def test_gum_root_entry_and_back_does_not_probe(self):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
-        f.env.update(GUM='1', TERM='xterm', GUM_BIN=str(f.root/'bin/gum'), TOPOLOGY_GUM_HOME='4', TOPOLOGY_GUM_CHOICE='7',
+        # Cluster topology, Back to the home menu, then Exit.
+        f.env.update(GUM='1', TERM='xterm', GUM_BIN=str(f.root/'bin/gum'), TOPOLOGY_GUM_HOME='4,6', TOPOLOGY_GUM_CHOICE='7',
                      PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertEqual([tool for tool, _ in f.calls()], ['gum', 'gum'])
+        self.assertEqual([tool for tool, _ in f.calls()], ['gum', 'gum', 'gum'])
 
     def test_service_started_during_confirmation_blocks_save(self):
         f = self.fixture

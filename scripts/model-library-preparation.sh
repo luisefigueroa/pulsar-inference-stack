@@ -66,6 +66,8 @@ prepare_snapshot() {
   if [ "$PLAN" -eq 1 ]; then rm -f "$views_tmp"; emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; rm -f "$views_tmp"; return 1; }
+  local steps=$(( ${#SELECTED_RANKS[@]} + 1 )) scope=""
+  [ "$VIEW_SCHEMA" != 2 ] || scope="${PREPARE_SNAPSHOT:-target} "
   . "$REPO_DIR/scripts/model-transfer.sh"
   source_rank="$home_rank"; source_path=$(json_fields "$HOME_JSON" path); source_stamp=$(json_fields "$HOME_JSON" verification)
   # Rank 0 is prepared first when a remote home serves multiple ranks. Its
@@ -73,6 +75,12 @@ prepare_snapshot() {
   for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
     rank="${SELECTED_RANKS[$slot]}"; node="${CLUSTER_NODE_IDS[$rank]}"
     action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["actions"][int(sys.argv[1])]["action"])' "$slot")
+    case "$action" in
+      reuse) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): reusing verified files" ;;
+      bind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): binding to existing verified files" ;;
+      home-view) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): using files from the home" ;;
+      *) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): copying and verifying files" ;;
+    esac
     if [ "$action" = reuse ]; then
       if [ "$rank" -eq 0 ] && [ "$home_rank" -ne 0 ]; then
         source_rank=0
@@ -102,6 +110,7 @@ prepare_snapshot() {
   existing=$(python3 -c 'import json,sys; print(json.dumps(sorted([json.loads(x) for x in open(sys.argv[1])],key=lambda r:r["rank"])))' "$views_tmp")
   rm -f "$views_tmp"
   # All-rank barrier checks current identity/metadata, rehashing changed copies.
+  phase "$steps" "$steps" "${scope}verifying every rank before recording readiness"
   local verified_tmp
   verified_tmp=$(mktemp)
   while IFS= read -r row; do

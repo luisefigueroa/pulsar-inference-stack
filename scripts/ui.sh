@@ -237,6 +237,9 @@ choose() {
 # choose_index HEADER OPTION...
 # Prints the selected zero-based option index. Unlike choose(), display text is
 # not used as identity, so duplicate or truncated labels remain selectable.
+# PULSAR_CHOOSE_DEFAULT=N starts the Gum cursor on option N; the plain menu
+# has no cursor. Returns 1 on Esc/EOF/cancel and 130 on Gum Ctrl-C, so a
+# nested menu can step back on Esc and leave entirely on Ctrl-C.
 choose_index() {
   local header="$1"
   shift
@@ -244,18 +247,25 @@ choose_index() {
     return 1
   fi
   if [ "$have_gum" = 1 ]; then
-    local indexed=() option out rc selected index=1
+    local indexed=() option out rc selected index=1 default="${PULSAR_CHOOSE_DEFAULT:-}"
+    local -a initial=()
     for option in "$@"; do
       indexed+=("${index}"$'\t'"${option}")
       index=$((index + 1))
     done
+    if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
+      initial=(--selected="${indexed[$default]}")
+    fi
     _ui_gum_choose_style_args
     set +e
     out=$(printf '%s\n' "${indexed[@]}" | "$GUM_CMD" choose \
-      "${GUM_CHOOSE_STYLE_ARGS[@]}" \
+      "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" \
       --header "$header")
     rc=$?
     set -e
+    if [ "$rc" -eq 130 ]; then
+      return 130
+    fi
     if [ "$rc" -ne 0 ] || [[ "${out:-}" != *$'\t'* ]]; then
       return 1
     fi
@@ -323,17 +333,18 @@ confirm() {
 }
 
 # spin TITLE CMD...
+# Shows a spinner while a short, silent step runs. CMD's stdout passes through
+# so callers can capture it; its stderr stays visible. Do not wrap commands
+# that report progress themselves.
 spin() {
   local title="$1"
   shift
   if [ "$have_gum" = 1 ]; then
-    "$GUM_CMD" spin --title "$title" --show-output -- "$@"
+    "$GUM_CMD" spin --spinner.foreground="$PULSAR_ACCENT" \
+      --title.foreground="$PULSAR_ACCENT" --title "$title" -- "$@"
   else
-    if declare -F log >/dev/null 2>&1; then
-      log "$title"
-    else
-      printf '%s\n' "$title" >&2
-    fi
+    # stderr keeps a captured stdout clean.
+    printf '%s\n' "$title" >&2
     "$@"
   fi
 }

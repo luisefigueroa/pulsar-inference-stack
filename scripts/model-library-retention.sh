@@ -140,6 +140,7 @@ move_home() {
   plan=$(model_json kind pulsar-home-move-plan snapshot_manifest_id "$MANIFEST_ID" source_node "$(json_fields "$HOME_JSON" node_id)" destination_node "$target_node" transfer_route "$route")
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "move requires --yes after reviewing destination and transfer route"
+  phase 1 3 "verifying the home on $(human_node_name "$source_rank")"
   source_state=$(model_node "$source_rank" "$(model_node_request path-state path "$(json_fields "$HOME_JSON" path)")") || die "source home is unobservable"
   if [ "$(json_fields "$source_state" state)" = missing ]; then
     existing=$(model_node "$target_rank" "$(model_node_request exists)") || die "target cannot be verified"
@@ -155,6 +156,7 @@ move_home() {
   if [ "$(json_fields "$existing" exists)" = true ]; then
     result=$(printf '%s' "$existing" | python3 -c 'import json,sys; from pathlib import Path; from model_library.local import home_record; d=json.load(sys.stdin); print(json.dumps({"home":home_record(json.loads(sys.argv[1]),sys.argv[2],Path(d["hub_path"]),d["verification"])}))' "$MANIFEST_JSON" "$target_node")
   else
+    phase 2 3 "copying the home to $(human_node_name "$target_rank")"
     stage=$(model_node "$target_rank" "$(model_node_request begin-home)") || die "destination already has files; inspect before reuse or movement"
     . "$REPO_DIR/scripts/model-transfer.sh"
     model_transfer "$source_rank" "$(json_fields "$HOME_JSON" path)" "$target_rank" "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "move transfer incomplete; original home remains"
@@ -163,6 +165,7 @@ move_home() {
   "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$HOME_JSON" node_id)" --path "$(json_fields "$HOME_JSON" hub_path)" --json >/dev/null || die "source acquired a reference; both verified copies remain for explicit recovery"
   dependencies=$(snapshot_dependencies) || die "cannot recheck snapshot dependencies after transfer"
   [ "$(json_fields "$dependencies" views)" = '[]' ] && [ "$(json_fields "$dependencies" transactions)" = '[]' ] || die "new dependencies appeared; both copies remain"
+  phase 3 3 "retiring the source copy and recording the new home"
   # Retire source only after destination full verification. A failed deletion
   # leaves the original record and both copies visible, never a fabricated move.
   model_node "$source_rank" "$(model_node_request remove-home hub_path "$(json_fields "$HOME_JSON" hub_path)" verification: "$(json_fields "$HOME_JSON" verification)")" >/dev/null || die "source retirement failed; inspect both copies before retrying"
