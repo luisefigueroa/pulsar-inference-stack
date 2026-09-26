@@ -70,3 +70,29 @@ downloads weights, launches or stops a model, or changes archives.
 
 A later metadata change, including withdrawal, does not alter spec identity and
 does not automatically stop services or remove files or archives.
+
+## Remove a catalog entry
+
+Prefer withdrawal, which keeps the recipe visible with its reason. When the
+maintainer explicitly decides that a spec should leave the catalog, remove it
+in one change:
+
+1. Delete `releases/SPEC_ID.json` and every `results/*/SPEC_ID/` directory.
+2. Append an entry to `catalog-removals.json` with the complete `spec_id`, the
+   `removed_at` date (`YYYY-MM-DD`) and a public `reason`. Keep the reason free
+   of private paths, addresses, node identities and credentials.
+
+```json
+{"schema_version": 1, "kind": "pulsar-catalog-removals", "removals": [
+  {"spec_id": "SPEC_ID", "removed_at": "2026-09-26", "reason": "Superseded by SPEC_ID"}
+]}
+```
+
+`scripts/check-new-specs.py` rejects a deletion that is not recorded in the
+ledger or that leaves evidence behind, and rejects a changed or dropped ledger
+entry. `scripts/check-catalog.py` rejects a recorded spec that still has catalog
+or evidence files. Git history retains the removed documents.
+
+Removal does not stop services or remove model files, prepared copies or
+archives. Installations that still hold the recipe's storage can manage it with
+the retained spec document through `--spec-file`.

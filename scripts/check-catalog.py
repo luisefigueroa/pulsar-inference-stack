@@ -3,7 +3,9 @@
 
 No private checkout, model bytes, GPU, Docker, or network access is required.
 Catalog membership is the maintainer's decision. Evidence and current launch
-compatibility are separate diagnostics and do not gate this check.
+compatibility are separate diagnostics and do not gate this check. Specs
+recorded in catalog-removals.json must have no remaining catalog or results/
+files.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ STACK_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(STACK_ROOT))
 
 from release_spec import load_spec
+from release_spec.catalog_removals import LEDGER_PATH, parse_removals
 
 
 class CatalogError(ValueError):
@@ -63,6 +66,18 @@ def check_catalog(repo_root: str | Path) -> dict:
             raise CatalogError(f'releases/{name}: filename differs from catalog identity')
         declared_evidence_count += len(spec.get('evidence', []))
         specs.append(spec)
+    ledger = root / LEDGER_PATH
+    if ledger.is_symlink() or (ledger.exists() and not ledger.is_file()):
+        raise CatalogError(f'{LEDGER_PATH}: removal ledger must be a regular file')
+    removals = parse_removals(ledger.read_bytes() if ledger.exists() else None)
+    results = root / 'results'
+    policies = [path for path in results.iterdir() if path.is_dir() and not path.is_symlink()] if results.is_dir() else []
+    for spec_id in sorted(removals):
+        if f'{spec_id}.json' in release_files:
+            raise CatalogError(f'releases/{spec_id}.json: spec is recorded as removed in {LEDGER_PATH}')
+        for policy in policies:
+            if (policy / spec_id).exists() or (policy / spec_id).is_symlink():
+                raise CatalogError(f'results/{policy.name}/{spec_id}: evidence remains for a removed spec')
     return {'schema_version': 1, 'kind': 'pulsar-catalog-verification', 'verified': True,
             'spec_count': len(specs), 'declared_evidence_count': declared_evidence_count}
 

@@ -19,7 +19,7 @@ PUBLISHABLE_PREFIXES = (
     "bench/results/",
     "releases/",
 )
-PUBLISHABLE_EXACT = {"README.md", "SECURITY.md"}
+PUBLISHABLE_EXACT = {"README.md", "SECURITY.md", "catalog-removals.json"}
 REDACTED_VALUES = {
     "",
     "redacted",

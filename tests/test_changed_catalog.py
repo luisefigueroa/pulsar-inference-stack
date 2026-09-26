@@ -2,6 +2,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -111,6 +112,70 @@ class ChangedCatalog(unittest.TestCase):
         self.old.unlink();self.git('add','-A');self.git('commit','-qm','Topic deletion')
         with self.assertRaisesRegex(ValueError,'deletion or renaming'):
             checker.check(self.root,base=base,merge_base=True)
+
+    def write_ledger(self, *entries):
+        ledger={'schema_version':1,'kind':'pulsar-catalog-removals','removals':list(entries)}
+        (self.root/'catalog-removals.json').write_text(json.dumps(ledger))
+
+    def removal(self, reason='Superseded by a faster recipe'):
+        return {'spec_id':self.old.stem,'removed_at':'2026-09-26','reason':reason}
+
+    def commit_evidence(self):
+        evidence=self.root/'results/baseline-v2'/self.old.stem/'run-001'
+        evidence.mkdir(parents=True);(evidence/'run.json').write_text('{}')
+        self.git('add','.');self.git('commit','-qm','Evidence fixture')
+        return self.git('rev-parse','HEAD').strip(),self.root/'results/baseline-v2'/self.old.stem
+
+    def test_recorded_removal_with_its_evidence_is_accepted(self):
+        base,evidence=self.commit_evidence()
+        self.old.unlink();shutil.rmtree(evidence);self.write_ledger(self.removal())
+        self.git('add','-A')
+        self.assertEqual(checker.check(self.root,staged=True),0)
+        self.git('commit','-qm','Remove recorded spec')
+        self.assertEqual(checker.check(self.root,base=base),0)
+        self.assertEqual(checker.check(self.root,base=base,merge_base=True),0)
+
+    def test_recorded_removal_must_remove_evidence(self):
+        base,_=self.commit_evidence()
+        self.old.unlink();self.write_ledger(self.removal())
+        self.git('add','-A')
+        with self.assertRaisesRegex(ValueError,'still has results/ evidence'):
+            checker.check(self.root,staged=True)
+        self.git('commit','-qm','Remove spec but keep evidence')
+        with self.assertRaisesRegex(ValueError,'still has results/ evidence'):
+            checker.check(self.root,base=base)
+
+    def test_ledger_for_another_spec_does_not_permit_removal(self):
+        self.old.unlink()
+        self.write_ledger({**self.removal(),'spec_id':'e'*64})
+        self.assert_removal_rejected(self.base)
+
+    def test_removal_entries_are_append_only(self):
+        self.old.unlink();self.write_ledger(self.removal())
+        self.git('add','-A');self.git('commit','-qm','Remove recorded spec')
+        base=self.git('rev-parse','HEAD').strip()
+        self.write_ledger(self.removal('Rewritten reason'));self.git('add','-A')
+        with self.assertRaisesRegex(ValueError,'append-only'):
+            checker.check(self.root,staged=True)
+        (self.root/'catalog-removals.json').unlink();self.git('add','-A')
+        with self.assertRaisesRegex(ValueError,'append-only'):
+            checker.check(self.root,staged=True)
+        self.git('commit','-qm','Drop ledger')
+        with self.assertRaisesRegex(ValueError,'append-only'):
+            checker.check(self.root,base=base)
+
+    def test_malformed_ledger_is_rejected(self):
+        self.old.unlink()
+        for entry,message in (({**self.removal(),'removed_at':'2026-02-30'},'calendar date'),
+                              ({**self.removal(),'reason':' '},'reason'),
+                              ({**self.removal(),'extra':True},'exactly')):
+            with self.subTest(message=message):
+                self.write_ledger(entry);self.git('add','-A')
+                with self.assertRaisesRegex(ValueError,message):
+                    checker.check(self.root,staged=True)
+        self.write_ledger(self.removal(),self.removal());self.git('add','-A')
+        with self.assertRaisesRegex(ValueError,'more than once'):
+            checker.check(self.root,staged=True)
 
 
 if __name__ == '__main__':
