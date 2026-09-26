@@ -8,7 +8,7 @@ if [ $# = 0 ]; then
   exit 0
 fi
 if [ "$1" = --help ] || [ "$1" = -h ]; then
-  printf 'Usage: scripts/status.sh <spec_id> [--spec-file FILE] [--node NODE] [--json]\n'
+  printf 'Usage: pulsar status SPEC_ID [--spec-file FILE] [--node NODE] [--json]\n'
   exit 0
 fi
 JSON=0

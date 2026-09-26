@@ -301,7 +301,7 @@ else
         if [ "$already" = 1 ]; then
           warn "residual headroom tight but model already serving — OK for dry-run/status; cold relaunch needs free memory first"
         else
-          warn "memory is tight — start only if you accept risk (up.sh --accept-memory-warn)"
+          warn "memory is tight — start only if you accept risk (./pulsar start --accept-memory-warn)"
         fi
         exit 2
         ;;

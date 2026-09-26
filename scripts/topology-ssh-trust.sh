@@ -13,8 +13,8 @@ PROBE_TOOL="$REPO_DIR/scripts/probe-node.py"
 usage() {
   cat <<'EOF'
 usage:
-  scripts/topology-ssh-trust.sh enroll [--yes] [--accept-key-change]
-  scripts/topology-ssh-trust.sh check [--json]
+  pulsar ssh-trust enroll [--yes] [--accept-key-change]
+  pulsar ssh-trust check [--json]
 
 Enroll records each confirmed node's SSH host keys in topology schema 2. The
 ceremony uses the operator's existing OpenSSH trust on the exact saved control

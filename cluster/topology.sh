@@ -131,7 +131,7 @@ require_topology_ssh_trust() {
   if [ "$CLUSTER_TOPOLOGY_SCHEMA" != 2 ] \
       || [ "$CLUSTER_TOPOLOGY_SSH_TRUSTED" != 1 ]; then
     echo "topology: SSH identity is not enrolled" >&2
-    echo "  Run scripts/topology-ssh-trust.sh enroll before using SSH-over-RoCE." >&2
+    echo "  Run ./pulsar ssh-trust enroll before using SSH-over-RoCE." >&2
     return 1
   fi
 }
@@ -174,7 +174,7 @@ require_cluster_nodes() {
       echo "  No confirmed topology manifest exists at $CLUSTER_TOPOLOGY_FILE." >&2
       echo "  HEAD_IP/WORKER_IP environment variables do not confirm membership." >&2
     fi
-    echo "  Run scripts/detect-fabric.sh --write-topology to discover and confirm cluster membership." >&2
+    echo "  Run ./pulsar topology setup to discover and confirm cluster membership." >&2
     return 1
   fi
 }

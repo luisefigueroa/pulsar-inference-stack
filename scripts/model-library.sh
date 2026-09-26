@@ -23,7 +23,7 @@ fi
 
 usage() {
   cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; out=TerminalWriter(); [out.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
-Usage: model-library.sh OPERATION [SPEC_ID] [options]
+Usage: pulsar model OPERATION [SPEC_ID] [options]
 
   acquire       Download an exact snapshot or reuse verified files
   prepare       Prepare verified files on the exact serving nodes

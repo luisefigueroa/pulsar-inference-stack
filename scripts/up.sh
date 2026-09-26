@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Orchestrate checks then launch serve.sh or start-cluster.sh.
-#   scripts/up.sh SPEC_ID [--spec-file FILE] [--node NODE_ID]
-#                 [--dry-run] [--yes] [--verbose]
+#   pulsar start SPEC_ID [--spec-file FILE] [--node NODE_ID]
+#                [--dry-run] [--yes] [--verbose]
 set -euo pipefail
 SCRIPT_NAME=up
 # shellcheck disable=SC1091
@@ -9,7 +9,7 @@ SCRIPT_NAME=up
 
 up_usage() {
   cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; w=TerminalWriter(); [w.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
-usage: scripts/up.sh SPEC_ID [options]
+usage: pulsar start SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate
   --override-file FILE   Explicit typed execution changes; report a modified recipe
@@ -34,7 +34,7 @@ case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 NAME="${1:-}"
 unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 unset PULSAR_MEMORY_ESTIMATE_JSON
-[ -n "$NAME" ] || die "usage: $0 <model-name> [options]"
+[ -n "$NAME" ] || die "usage: pulsar start SPEC_ID [options]; see ./pulsar start --help"
 shift
 
 SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
@@ -128,7 +128,7 @@ if [ "$NODES" -gt 1 ]; then
   if ! require_profile_topology \
       "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR"; then
     echo "FAIL  topology  profile needs $NODES confirmed ranks"
-    die "run scripts/detect-fabric.sh --write-topology, then retry"
+    die "confirm membership for this geometry with ./pulsar topology configure, then retry"
   fi
   echo "PASS  topology  profile=$NODES ranks  available=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 fi
@@ -157,11 +157,11 @@ if [ "$img_rc" != 0 ]; then
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after rank sync"
       else
-        die "image missing on remote rank(s) — run: scripts/sync-image.sh $NAME --yes"
+        die "image missing on remote rank(s): $IMAGE — re-run with --pull-image to stage the pinned image"
       fi
       ;;
     worker-unreachable|rank-unreachable|target-unreachable)
-      die "one or more required physical nodes are unreachable over BatchMode SSH"
+      die "one or more required physical nodes are unreachable over BatchMode SSH — run ./pulsar topology check to see which node"
       ;;
     worker-docker-error|rank-docker-error|head-docker-error|target-docker-error)
       die "Docker is unavailable on one or more required physical nodes"
@@ -172,7 +172,7 @@ if [ "$img_rc" != 0 ]; then
         QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
           || die "image still missing after sync"
       else
-        die "image missing ($img_state): $IMAGE"
+        die "image missing ($img_state): $IMAGE — re-run with --pull-image to stage the pinned image"
       fi
       ;;
     *)
@@ -193,7 +193,7 @@ if [ "$SKIP_W" != 1 ]; then
   fi
   set -e
   if [ "$w_rc" != 0 ]; then
-    die "model files are not ready — see the weights check above"
+    die "model files are not ready — see the weights check above; run ./pulsar model prepare $NAME ${PLACEMENT_ARGS[*]:+${PLACEMENT_ARGS[*]} }--yes (acquire or restore first if no home exists)"
   fi
 else
   echo "SKIP  weights"
@@ -216,7 +216,7 @@ set -e
 case "$mem_rc" in
   0) ;;
   1)
-    die "memory preflight FAILED"
+    die "memory preflight FAILED — free memory or stop other GPU services (./pulsar inventory lists them), or choose a smaller spec; --verbose shows the calculation"
     ;;
   2)
     if [ "$DRY" = 1 ]; then
@@ -297,11 +297,11 @@ if [ "$DRY" = 1 ]; then
   cat <<EOF
 
 DRY-RUN OK
-  conf:     $NAME
+  spec:     $NAME
   served:   $SERVED_NAME
   plan:     $PLAN_FILE
   would:    $([ "$NODES" -gt 1 ] && echo "cluster/start-cluster.sh $NAME ${spec_flag[*]:-} ${launch_flags[*]:-}" || echo "serve.sh $NAME -d ${PLACEMENT_ARGS[*]:-} ${spec_flag[*]:-} ${launch_flags[*]:-}")
-  live:     scripts/status.sh $NAME ${PLACEMENT_ARGS[*]:-}
+  live:     ./pulsar status $NAME ${PLACEMENT_ARGS[*]:-}
   note:     no containers changed
 EOF
   exit 0
@@ -370,11 +370,11 @@ fi
 cat <<EOF
 
 READY
-  conf:     $NAME
+  spec:     $NAME
   served:   $SERVED_NAME
   url:      ${SERVICE_API_BASE}/v1
-  inspect:  scripts/quick-status.sh
-  status:   scripts/status.sh $NAME ${PLACEMENT_ARGS[*]:-}
-  stop:     scripts/down.sh $NAME ${PLACEMENT_ARGS[*]:-}
-  security: do not expose :${PORT} without auth (SECURITY.md)
+  inspect:  ./pulsar inventory
+  status:   ./pulsar status $NAME ${PLACEMENT_ARGS[*]:-}
+  stop:     ./pulsar stop $NAME ${PLACEMENT_ARGS[*]:-}
+  security: do not expose :${PORT} without authentication
 EOF
