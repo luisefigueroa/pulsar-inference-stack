@@ -9,6 +9,7 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from model_library.render import render
+from model_library.node_names import NodeNames, saved_hostnames
 from scripts.terminal_format import TerminalWriter
 
 SPEC='a'*64
@@ -20,8 +21,8 @@ MANIFEST=dict(model_id='example/model',snapshot_revision=REVISION,manifest_id=SN
 
 
 class StorageRendering(unittest.TestCase):
-    def display(self,document,operation):
-        stream=io.StringIO();render(document,operation=operation,writer=TerminalWriter(width=44,stream=stream))
+    def display(self,document,operation,names=None):
+        stream=io.StringIO();render(document,operation=operation,writer=TerminalWriter(width=44,stream=stream),names=names)
         output=stream.getvalue()
         self.assertTrue(all(len(line)<=44 for line in output.splitlines()),output)
         self.assertNotIn('"schema_version":',output)
@@ -35,6 +36,26 @@ class StorageRendering(unittest.TestCase):
         self.assertIn(REVISION,output.replace(' ', '').replace('\n',''))
         self.assertIn('node-1',flat);self.assertIn('--json',flat)
         self.assertNotIn('Acquisition complete',flat)
+
+    def test_human_output_names_nodes_by_saved_hostname(self):
+        names=NodeNames({'node-0':'spark-a','node-1':'spark-b'})
+        rows=[dict(rank=0,node_id='node-0',path=PATH,pinned=False),dict(rank=1,node_id='node-9',path=PATH,pinned=True)]
+        _,flat=self.display(dict(kind='pulsar-prepared-set',spec_id=SPEC,home=HOME,ranks=rows,
+                                 blockers=['node-1: disk is full']),'info',names)
+        self.assertIn('Home node spark-b',flat);self.assertIn('Rank 0 spark-a',flat)
+        # A node missing from the saved topology stays visible as unknown.
+        self.assertIn('node-9 (not in saved topology)',flat)
+        _,flat=self.display(dict(kind='pulsar-acquisition-plan',model_id='example/model',selected_node='node-1',
+                                 blockers=['node-1: disk is full'],existing_homes=[]),'acquire',names)
+        self.assertIn('Destination spark-b',flat);self.assertIn('Blocker spark-b: disk is full',flat)
+
+    def test_saved_hostnames_reads_topology_and_tolerates_absence(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'topology.json'
+            self.assertEqual(saved_hostnames(path),{})
+            path.write_text(json.dumps({'nodes':[{'rank':0,'node_id':'node-0','hostname':'spark-a'}]}))
+            self.assertEqual(saved_hostnames(path),{'node-0':'spark-a'})
 
     def test_verified_reuse_does_not_claim_a_download(self):
         _,flat=self.display(dict(kind='pulsar-acquisition-result',reused=True,manifest=MANIFEST,home=HOME),'acquire')

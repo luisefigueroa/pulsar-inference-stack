@@ -14,7 +14,10 @@ catalog() { python3 -m model_library.catalog "$@"; }
 select_node() {
   require_cluster_nodes 1 >/dev/null || return 2
   local index
-  index=$(choose_index "Select a confirmed physical node" "${CLUSTER_NODE_IDS[@]}") || return 1
+  local -a names=()
+  for index in "${!CLUSTER_NODE_IDS[@]}"; do names+=("$(human_node_name "$index")"); done
+  # Show hostnames; operations receive the stable node_id.
+  index=$(choose_index "Select a confirmed physical node" "${names[@]}") || return 1
   printf '%s\n' "${CLUSTER_NODE_IDS[$index]}"
 }
 

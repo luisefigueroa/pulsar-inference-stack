@@ -151,8 +151,9 @@ class Catalog(unittest.TestCase):
         # SSH, topology discovery or model files are touched.
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
-        (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); }\n')
-        (scripts / "ui.sh").write_text('choose_index() { if [ "$1" = "Choose one operation" ]; then printf "%s\\n" "$MENU_ACTION"; else printf "0\\n"; fi; }; confirm() { return "$MENU_CONFIRM_STATUS"; }\n')
+        (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
+        self.choices = self.root / "choices.log"
+        (scripts / "ui.sh").write_text('choose_index() { printf "%s\\n" "$@" >> "'+str(self.choices)+'"; if [ "$1" = "Choose one operation" ]; then printf "%s\\n" "$MENU_ACTION"; else printf "0\\n"; fi; }; confirm() { return "$MENU_CONFIRM_STATUS"; }\n')
         log = self.root / "action.json"
         action = scripts / "model-library.sh"
         action.write_text('#!/usr/bin/env python3\nimport json,sys\nopen('+repr(str(log))+',"w").write(json.dumps(sys.argv[1:]))\n')
@@ -175,6 +176,10 @@ class Catalog(unittest.TestCase):
     def test_menu_check_executes_one_explicit_action(self):
         spec, action = self.menu_action()
         self.assertEqual(action, ["check", spec["spec_id"], "--node", "fixture-node"])
+        # The node picker names machines by hostname and passes the stable node_id.
+        choices = self.choices.read_text()
+        self.assertIn("Select a confirmed physical node\nfixture-host\n", choices)
+        self.assertNotIn("fixture-node", choices)
 
     def test_menu_restore_requires_confirmation_and_never_starts(self):
         spec, action = self.menu_action(action_index=2, confirm_status=0)

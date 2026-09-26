@@ -6,6 +6,18 @@ export PYTHONDONTWRITEBYTECODE=1
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
+  start|stop|status|model|models)
+    # Human mode accepts a unique shortened catalog spec ID and prints the
+    # complete ID it selected. --json and --spec-file keep the exact contract.
+    selection=$(python3 "$REPO_DIR/scripts/spec_selector.py" --repo-root "$REPO_DIR" "$command" "$@") || exit $?
+    if [ -n "$selection" ]; then
+      arguments=("$@")
+      arguments[${selection%% *}]="${selection#* }"
+      set -- "${arguments[@]}"
+    fi
+    ;;
+esac
+case "$command" in
   start|stop|status|model)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
@@ -68,7 +80,7 @@ for heading,rows in [
         w.emit(command,initial_indent='  ')
         w.emit(description,initial_indent='    ')
 w.blank()
-w.emit('SPEC is the complete 64-character catalog spec ID (pulsar models list --json). Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. Most commands accept --help. See docs/OPERATIONS.md.')
+w.emit('SPEC is a catalog spec ID. People may type a unique prefix of at least 12 characters; the command prints the complete ID it selected. --json, --spec-file, model purge and model remove require the complete 64-character ID. Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. Most commands accept --help. See docs/OPERATIONS.md.')
 PY
     ;;
   *) printf 'Unknown command: %s\nTry: ./pulsar help\n' "$command" >&2; exit 2 ;;

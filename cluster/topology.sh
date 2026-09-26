@@ -11,6 +11,8 @@ _topology_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _topology_repo="$(cd "$_topology_dir/.." && pwd)"
 
 CLUSTER_TOPOLOGY_FILE="${CLUSTER_TOPOLOGY_FILE:-$_topology_repo/.cluster-topology.json}"
+# Python renderers name nodes from the same saved membership.
+export CLUSTER_TOPOLOGY_FILE
 CLUSTER_SSH_CONFIG_FILE="${CLUSTER_SSH_CONFIG_FILE:-$_topology_repo/.cluster-ssh-config}"
 CLUSTER_TOPOLOGY_LOADED=0
 CLUSTER_TOPOLOGY_ID=""

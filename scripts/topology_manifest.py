@@ -665,14 +665,10 @@ def render(document: dict[str, Any], skipped_ssh: int = 0) -> None:
     term.emit("NODES")
     for node in nodes:
         hcas = [link["hca"] for link in node.get("rdma") or []]
-        if node["rank"] == 0:
-            position = "this node"
-        else:
-            position = f"cluster node {node['rank'] + 1}"
         if node["rank"] > 0:
             term.blank()
         term.emit(
-            f"{position} · {node['hostname']}",
+            f"{node['hostname']} (this node)" if node["rank"] == 0 else node["hostname"],
             initial_indent="  ",
             subsequent_indent="    ",
         )
@@ -1196,7 +1192,7 @@ def render_trust_diff(report: dict[str, Any]) -> None:
     for node in report["nodes"]:
         term.blank()
         term.emit(
-            f"cluster node {node['rank'] + 1} · {node['hostname']}",
+            node["hostname"],
             initial_indent="  ",
             subsequent_indent="    ",
         )

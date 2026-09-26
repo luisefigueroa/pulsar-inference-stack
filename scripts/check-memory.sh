@@ -143,9 +143,14 @@ if [ "$NODES" -gt 1 ]; then
 fi
 head_avail="${rank_avail[0]}"
 worker_avail="${rank_avail[1]:-n/a}"
+# People read hostnames; a one-node spec runs on its selected placement.
+memory_node_name() {
+  if [ "$NODES" -eq 1 ]; then printf '%s\n' "${SINGLE_NODE_HOSTNAME:-$(human_node_name 0)}"
+  else printf '%s (rank %s)\n' "$(human_node_name "$1")" "$1"; fi
+}
 availability_summary=""
 for ((rank = 0; rank < NODES; rank++)); do
-  availability_summary+=" r${rank}=${rank_avail[$rank]}GiB"
+  availability_summary+=" $(memory_node_name "$rank")=${rank_avail[$rank]}GiB"
 done
 
 check_node_cold() {
@@ -194,14 +199,12 @@ if [ "$topology_ready" = 1 ]; then
   if [ "$already" = 1 ]; then
     mode="already-loaded"
     for ((rank = 0; rank < NODES; rank++)); do
-      check_label="rank $rank"
-      [ "$NODES" -eq 1 ] && check_label="$SINGLE_NODE_HOSTNAME"
+      check_label=$(memory_node_name "$rank")
       check_node_warm "$check_label" "${rank_avail[$rank]}"
     done
   else
     for ((rank = 0; rank < NODES; rank++)); do
-      check_label="rank $rank"
-      [ "$NODES" -eq 1 ] && check_label="$SINGLE_NODE_HOSTNAME"
+      check_label=$(memory_node_name "$rank")
       check_node_cold "$check_label" "${rank_avail[$rank]}" "${rank_footprints[$rank]}" "${rank_start_needs[$rank]}"
     done
   fi
@@ -289,7 +292,7 @@ else
     esac
   else
     log "$NAME result=$result mode=$mode footprint=${need_footprint} GiB/rank start_need=${need_start} (w_rank=$w_rank kv=$kv oh=$overhead +spike=$spike; buffer_target=$buffer)"
-    [ "$NODES" -eq 1 ] && log "placement=$(single_node_display) · node-id=${SINGLE_NODE_ID:-standalone}"
+    [ "$NODES" -eq 1 ] && log "placement=$(single_node_display)"
     log "available:${availability_summary}"
     [ "$already" = 1 ] && log "already loaded: $already_how"
     [ -n "$mml" ] && log "max-model-len=${mml}${OVERRIDE_LEN:+ (override)}"
