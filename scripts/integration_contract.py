@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from release_spec.serving import SUPPORTED_SPEC_SCHEMAS
 from release_spec.contribution import APPROVED_POLICY_DIGEST
 from release_spec.baseline_policy import SUPPORTED_POLICY_DIGESTS
+from scripts.document_cli import ERROR_CODES, EXIT_STATUSES
 from scripts.terminal_format import TerminalWriter
 
 
@@ -48,6 +49,11 @@ def contract() -> dict:
             'nullable_review': True,
         },
         'diagnostics': ['verify-evidence', 'check-launch-compatibility'],
+        # Envelope error codes and --json exit statuses. Callers branch on
+        # ok and error.code, never on message text; an unknown code is a failure.
+        'error_codes': {code: {'exit_status': status, 'meaning': meaning}
+                        for code, (status, meaning) in ERROR_CODES.items()},
+        'exit_statuses': dict(EXIT_STATUSES),
     }
 
 

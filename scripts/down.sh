@@ -39,6 +39,10 @@ load_cluster_topology || die "confirmed topology is required for safe stop"
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
 stop_named_service_by_labels "$TARGET" "$NODE_SELECTOR"
 retire_stopped_service_indexes "$TARGET" "$NODE_SELECTOR"
+if [ -n "${PULSAR_STOP_RESULT_FILE:-}" ]; then
+  stopped=true; [ "${STOP_NAMED_NOTHING_FOUND:-0}" != 1 ] || stopped=false
+  printf '{"spec_id": "%s", "stopped": %s}\n' "$TARGET" "$stopped" >"$PULSAR_STOP_RESULT_FILE"
+fi
 if [ "${STOP_NAMED_NOTHING_FOUND:-0}" = 1 ]; then
   log "Nothing was stopped. Model files, pins, archives and experiment evidence are unchanged."
 else

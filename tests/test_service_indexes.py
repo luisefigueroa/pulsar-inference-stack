@@ -52,7 +52,7 @@ load_cluster_topology() {
  [ "$FIXTURE_NODE_COUNT" = 1 ] || CLUSTER_NODE_IDS+=(node-1)
  CLUSTER_NODE_SSH_HOSTS=(local fixture-peer)
 }
-stop_named_service_by_labels() { return "$FIXTURE_STOP_RC"; }
+stop_named_service_by_labels() { STOP_NAMED_NOTHING_FOUND="${FIXTURE_NOTHING_FOUND:-0}"; return "$FIXTURE_STOP_RC"; }
 remove_all_stack_managed_local() { return "$FIXTURE_STOP_RC"; }
 remove_all_stack_managed_remote() { return "$FIXTURE_STOP_RC"; }
 list_managed_container_ids_local() { return 0; }
@@ -72,6 +72,15 @@ list_managed_container_ids_remote() { return 0; }
                         self.assertEqual(result.returncode==0,rc==0,result.stderr+result.stdout)
                         self.assertEqual(self.store.get('services',plan['service_id']) is None,rc==0)
                         self.assertIsNotNone(self.store.get('service-plans',plan['plan_id']))
+                        if rc==0:
+                            stopped=None if selector=='--all' else True
+                            self.assertEqual(json.loads(result.stdout)['result']['stopped'],stopped)
+        result=subprocess.run([str(ROOT/'pulsar'),'stop',self.plan['selected_spec_id'],'--json'],
+            env={**env,'FIXTURE_STOP_RC':'0','FIXTURE_NODE_COUNT':'1','FIXTURE_NOTHING_FOUND':'1'},
+            text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['result'],
+                         {'completed':True,'spec_id':self.plan['selected_spec_id'],'stopped':False})
 
 
 if __name__=='__main__': unittest.main()

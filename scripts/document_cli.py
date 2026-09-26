@@ -11,13 +11,49 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from release_spec import serving
+from release_spec.immutable_io import ImmutableDescriptorDirectoryError
 from release_spec.schema import ReleaseSpecError
 from scripts.terminal_format import TerminalWriter
+
+# The public error envelope's codes. Exit statuses are integers, except the
+# signal-derived "128+signal" for interrupted actions. docs/CONTRACT.md and
+# `pulsar contract --json` publish this table; tests keep them in step.
+ERROR_CODES = {
+    "usage_error": (2, "The command line is invalid: an unknown command or missing or bad arguments."),
+    "file_error": (2, "A file or directory named by the caller could not be read or written."),
+    "invalid_spec": (2, "Spec or document content failed validation."),
+    "unsupported_spec_version": (2, "The document's schema version is not supported."),
+    "invalid_stack_output": (2, "A Stack script produced output that is not JSON. This is a Stack defect."),
+    "prerequisite_failed": (3, "A Stack action exited unsuccessfully; message and details hold its diagnostics."),
+    "cancelled": ("128+signal", "Interrupted; cleanup of the command and its node workers was confirmed."),
+    "cleanup_incomplete": ("128+signal", "Interrupted; worker exit could not be confirmed."),
+}
+EXIT_STATUSES = {
+    "0": "Success.",
+    "2": "The request was rejected before any action: usage, file, spec or Stack output error.",
+    "3": "A prerequisite or Stack action failed.",
+    "128+signal": "Interrupted by the signal; see cancelled and cleanup_incomplete.",
+}
+
+
+class UsageError(serving.SpecValidationError):
+    """The command line is invalid; no input was read."""
 
 
 class CommandParser(argparse.ArgumentParser):
     def error(self, message):
-        raise serving.SpecValidationError("arguments", message)
+        raise UsageError("arguments", message)
+
+
+def error_code(exc: BaseException) -> str:
+    """Envelope code for an input, usage or validation failure."""
+    if isinstance(exc, UsageError):
+        return "usage_error"
+    if isinstance(exc, (OSError, ImmutableDescriptorDirectoryError, serving.InputFileError)):
+        return "file_error"
+    if getattr(exc, "field", None) == "schema_version":
+        return "unsupported_spec_version"
+    return "invalid_spec"
 
 
 def emit(result, *, json_output: bool):
@@ -35,7 +71,10 @@ def emit(result, *, json_output: bool):
             print(json.dumps(result, indent=2, sort_keys=True))
 
 
-def failure(exc, *, json_output: bool, code="invalid_spec", exit_code=2):
+def failure(exc, *, json_output: bool, code=None, exit_code=None):
+    code = code or error_code(exc)
+    if exit_code is None:
+        exit_code = ERROR_CODES[code][0]
     details = [{"field": getattr(exc, "field", "$"),
                 "message": getattr(exc, "reason", str(exc))}]
     if json_output:
@@ -92,8 +131,7 @@ def main(argv=None):
         emit(result, json_output=json_output)
         return 0
     except (ReleaseSpecError, OSError, ValueError) as exc:
-        code = "unsupported_spec_version" if getattr(exc, "field", None) == "schema_version" else "invalid_spec"
-        return failure(exc, json_output=json_output, code=code)
+        return failure(exc, json_output=json_output)
 
 
 if __name__ == "__main__":

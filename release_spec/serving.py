@@ -44,6 +44,10 @@ class SpecValidationError(ReleaseSpecError):
         self.reason = message
 
 
+class InputFileError(SpecValidationError):
+    """A named input file is missing, unreadable or unsafe to read."""
+
+
 def invalid(field: str, message: str):
     raise SpecValidationError(field, message)
 
@@ -301,7 +305,7 @@ def load_json(path: str | Path) -> Any:
     try:
         return parse_strict_json(read_absolute_file(Path(path).absolute(), label="spec input"), label="spec input")
     except ImmutableDescriptorDirectoryError as exc:
-        raise SpecValidationError("input", str(exc)) from exc
+        raise InputFileError("input", str(exc)) from exc
 
 
 def load_spec(path: str | Path, *, historical: bool = False) -> dict:
