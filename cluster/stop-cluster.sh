@@ -65,7 +65,7 @@ fi
 
 load_conf "$ARG"
 if [ "$NODES" -le 1 ]; then
-  echo "[stop] ERROR: $ARG is a single-node profile; use scripts/down.sh $ARG" >&2
+  echo "[stop] ERROR: $ARG is a single-node spec; use ./pulsar stop $ARG" >&2
   exit 1
 fi
 require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \

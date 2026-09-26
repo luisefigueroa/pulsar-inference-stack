@@ -138,7 +138,7 @@ def render_text(
     }[document["archives"]["status"]]
     specs = document["catalog"]["spec_count"]
     catalog = (
-        "empty (expected until a recipe is reviewed)"
+        "empty (no specs published yet)"
         if specs == 0
         else ("1 recipe" if specs == 1 else f"{specs} recipes")
     )

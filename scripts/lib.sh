@@ -87,7 +87,7 @@ OVERHEAD_GIB_DEFAULT="${OVERHEAD_GIB_DEFAULT:-$PULSAR_OVERHEAD_GIB_DEFAULT}"
 
 log()  { printf '[%s] %s\n' "${SCRIPT_NAME:-pulsar}" "$*"; }
 warn() { printf '[%s] warn: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; }
-die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; exit "${2:-1}"; }
+die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$1" >&2; exit "${2:-1}"; }
 
 # Human-facing name for vLLM's zero-based rank. Keep "rank" in machine data
 # and launcher arguments; normal CLI output talks about physical cluster nodes.
@@ -437,7 +437,7 @@ load_conf() {
     load_spec_profile "$name"
     return
   fi
-  die "no spec named '$name': select a spec id from scripts/release.sh list, or supply --spec-file for a candidate"
+  die "no spec named '$name': select a spec id from ./pulsar models list --json, or supply --spec-file for a candidate"
 }
 
 engine_arg_value() {
@@ -926,7 +926,7 @@ refuse_removed_weight_mode_flag() {
 # get a generic "unknown arg".
 REMOVED_FORCE_MESSAGE='--force was removed (ADR 0008): status labels never block serving. Drop the flag.'
 REMOVED_ALLOW_UNVALIDATED_MESSAGE='--allow-unvalidated was removed (ADR 0008): drop the flag. Lab expected-identity files are not a live product (ADR 0012).'
-REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are catalog specs whose review.status is display-only (scripts/release.sh list). It does not mean ADR 0004 Validated.'
+REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are catalog specs whose review.status is display-only (./pulsar models list). It does not mean ADR 0004 Validated.'
 REMOVED_CATALOG_VALIDATED_MESSAGE='--validated was removed (ADR 0008): drop the flag. --reviewed-identity is retired (ADR 0012). It does not mean ADR 0004 Validated.'
 REMOVED_ACTIVATE_MESSAGE='activate was removed (ADR 0008): use prepare.'
 refuse_removed_force_flag() {
@@ -1859,7 +1859,7 @@ report_untracked_launch_container() {
 
   warn "docker run on ${where} returned invalid container id output — refusing arbitrary cleanup"
   warn "a managed container for conf=${conf} may have been created and was deliberately left untouched"
-  warn "safe remediation: scripts/inventory.sh   then   scripts/down.sh ${conf}"
+  warn "safe remediation: ./pulsar inventory   then   ./pulsar stop ${conf}"
 
   meta=""
   if [ -n "$host" ]; then
@@ -2245,11 +2245,13 @@ remove_safe_managed_id_on_node() {
 # Every confirmed Docker endpoint is probed before mutation. An unobservable
 # node blocks removal (a live rank could be stranded).
 # Exit: 0 stopped or absent; 2 refused; 1 unobservable/operational.
+# Sets STOP_NAMED_NOTHING_FOUND=1 when no matching service was running.
 stop_named_service_by_labels() {
   local conf="${1:?conf required}" node_selector="${2:-}"
   local count index ids id meta probe=0 placement reason rank have_conf
   local -a found_indices=() found_ids=() found_ranks=()
   local filtered_indices=() filtered_ids=() i
+  STOP_NAMED_NOTHING_FOUND=0
   load_cluster_topology || return 1
   count="$CLUSTER_TOPOLOGY_COUNT"
   [ "$count" -gt 0 ] || count=1
@@ -2314,7 +2316,8 @@ stop_named_service_by_labels() {
   fi
 
   if [ "${#found_ids[@]}" -eq 0 ]; then
-    log "no stack-managed service found for conf=$conf"
+    log "no stack-managed service is running for spec $conf; nothing to stop"
+    STOP_NAMED_NOTHING_FOUND=1
     return 0
   fi
 

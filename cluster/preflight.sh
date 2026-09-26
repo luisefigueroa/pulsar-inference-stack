@@ -167,7 +167,7 @@ if [ -n "$PROFILE" ]; then
   if "$REPO_DIR/scripts/check-weights.sh" "$PROFILE" >/dev/null; then
     ok "model files: ready library staging for $PROFILE"
   else
-    bad "model files are not prepared — run: scripts/model-library.sh prepare $PROFILE --yes"
+    bad "model files are not prepared — run: ./pulsar model prepare $PROFILE --yes"
   fi
 fi
 

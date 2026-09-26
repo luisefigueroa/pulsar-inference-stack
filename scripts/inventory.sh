@@ -24,7 +24,7 @@ FROM_FIXTURE=""
 
 usage() {
   cat <<'EOF'
-usage: scripts/inventory.sh [--json] [--verbose] [--from-fixture path]
+usage: pulsar inventory [--json] [--verbose] [--from-fixture path]
 
   Read-only inventory of vLLM-related containers on this node and every other
   confirmed cluster node. Reports ownership, safe_to_stop, MemAvailable, and

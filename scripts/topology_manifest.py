@@ -604,7 +604,7 @@ def validate_manifest(
     if require_ssh_trust and not topology_has_ssh_trust(topology):
         fail(
             "topology SSH identity is not enrolled; run "
-            "scripts/topology-ssh-trust.sh enroll"
+            "./pulsar ssh-trust enroll"
         )
 
     topology_id = clean_text(topology.get("topology_id"), "topology_id")
@@ -1080,7 +1080,7 @@ def validate_ssh_config_file(
     if actual != expected:
         fail(
             "generated SSH config is missing or stale; run "
-            "scripts/topology-ssh-trust.sh enroll"
+            "./pulsar ssh-trust enroll"
         )
 
 

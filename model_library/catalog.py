@@ -153,7 +153,7 @@ def render(rows, *, details=False, writer=None):
     out = writer or TerminalWriter()
     if not rows:
         out.emit("The catalog is empty.")
-        out.emit("A qualifying recipe enters the catalog after review and merge. Interactive ./pulsar confirms cluster membership first. ./pulsar models still lists the catalog without topology.")
+        out.emit("A spec enters the catalog when the maintainer publishes it under releases/. Interactive ./pulsar confirms cluster membership first. ./pulsar models still lists the catalog without topology.")
         return
     out.emit("Catalog review, prepared files and running service are separate states.")
     out.emit("These are saved observations. Start rechecks its prerequisites.")
@@ -195,6 +195,17 @@ def render(rows, *, details=False, writer=None):
             out.emit("Saved location records describe known managed files; they are not proof that those files are currently intact.")
 
 
+def prefix_hint(repo, spec_id):
+    """Name the complete catalog IDs a shortened spec ID matches; never select one."""
+    if len(spec_id) >= 64 or not spec_id or any(c not in "0123456789abcdef" for c in spec_id):
+        return
+    matches = sorted(path.stem for path in (Path(repo) / "releases").glob(f"{spec_id}*.json"))
+    if not matches:
+        raise StorageError(f"no catalog spec ID starts with {spec_id}; see ./pulsar models list")
+    raise StorageError("expected the complete 64-character spec ID; " + spec_id + " matches "
+                       + ", ".join(matches))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="pulsar models", description="Read catalog specs and saved storage observations")
     parser.add_argument("command", choices=("list", "show"), nargs="?", default="list")
@@ -206,6 +217,8 @@ def main(argv=None):
     try:
         if args.command == "show" and not args.spec_id:
             raise StorageError("show requires one complete spec id")
+        if args.spec_id:
+            prefix_hint(args.repo_root, args.spec_id)
         rows = entries(args.repo_root, Store(args.state_root), spec_id=args.spec_id)
         if args.json:
             print(json.dumps({"schema_version": 1, "kind": "pulsar-model-catalog", "entries": rows}, sort_keys=True))
