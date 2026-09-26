@@ -94,7 +94,8 @@ plan_and_confirm() {
     return 1
   fi
   [ "$rc" -eq 0 ] || return 1
-  confirm "$question" no || { echo 'Nothing changed.'; return 1; }
+  # Gum Ctrl-C (130) at the question leaves the menu, as at any other prompt.
+  confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -eq 130 ] && return 130; return 1; }
 }
 
 # perform ACTION LABEL SPEC — gathers snapshot and node, previews, confirms, runs.
@@ -122,17 +123,17 @@ perform() {
     verify) run_operation verify "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive verify "$spec" ;;
     start|stop)
       question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
-      confirm "$question" no || { echo 'Nothing changed.'; return 0; }
+      confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; return 0; }
       if [ "$action" = start ]; then
         run_operation start "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/up.sh" "$spec" "${args[@]}"
       else
         run_operation stop "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/down.sh" "$spec" "${args[@]}"
       fi ;;
     archive)
-      plan_and_confirm archive "$label" "$spec" archive create "$spec" "${args[@]}" || return 0
+      plan_and_confirm archive "$label" "$spec" archive create "$spec" "${args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
       run_operation archive "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive create "$spec" "${args[@]}" --yes ;;
     *)
-      plan_and_confirm "$action" "$label" "$spec" "$action" "$spec" "${args[@]}" || return 0
+      plan_and_confirm "$action" "$label" "$spec" "$action" "$spec" "${args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
       run_operation "$action" "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" "$action" "$spec" "${args[@]}" --yes ;;
   esac
 }

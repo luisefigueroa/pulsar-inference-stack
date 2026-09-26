@@ -159,7 +159,10 @@ choose_index() {
   for option in "$@"; do [ "$option" != "$answer" ] || { echo "$i"; return 0; }; i=$((i + 1)); done
   echo "MISSING OPTION: $answer" >>"$CHOICES_LOG"; return 99
 }
-confirm() { printf '%s\n' "$1" >>"$CONFIRM_LOG"; [ "$(_pop "$MENU_CONFIRMS")" = yes ]; }
+confirm() {
+  printf '%s\n' "$1" >>"$CONFIRM_LOG"
+  case "$(_pop "$MENU_CONFIRMS")" in yes) return 0 ;; "<ctrl-c>") return 130 ;; *) return 1 ;; esac
+}
 '''
     ACTION = """#!/usr/bin/env python3
 import json,os,sys
@@ -234,6 +237,13 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([a[-1] for a in actions], ["--json"])
         self.assertIn("Nothing changed.", result.stdout)
+
+    def test_ctrl_c_at_a_confirmation_leaves_the_menu(self):
+        _, result, actions, _, questions = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["<ctrl-c>"])
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual([a[-1] for a in actions], ["--json"])
+        self.assertIn("Nothing changed.", result.stdout)
+        self.assertIn("Restore", questions)
 
     def test_blocked_plan_is_shown_without_a_confirmation(self):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],

@@ -333,15 +333,23 @@ confirm() {
 }
 
 # spin TITLE CMD...
-# Shows a spinner while a short, silent step runs. CMD's stdout passes through
-# so callers can capture it; its stderr stays visible. Do not wrap commands
+# Shows a spinner while a short, silent step runs, then replays CMD's stdout
+# (capturable by the caller) and stderr and returns CMD's status. Output is
+# saved inside the spinner so no Gum version can drop it. Do not wrap commands
 # that report progress themselves.
 spin() {
-  local title="$1"
+  local title="$1" out err rc=0
   shift
   if [ "$have_gum" = 1 ]; then
+    out=$(mktemp) || return 1
+    err=$(mktemp) || { rm -f "$out"; return 1; }
     "$GUM_CMD" spin --spinner.foreground="$PULSAR_ACCENT" \
-      --title.foreground="$PULSAR_ACCENT" --title "$title" -- "$@"
+      --title.foreground="$PULSAR_ACCENT" --title "$title" -- \
+      bash -c 'out="$1" err="$2"; shift 2; "$@" >"$out" 2>"$err"' _ "$out" "$err" "$@" || rc=$?
+    cat "$out"
+    cat "$err" >&2
+    rm -f "$out" "$err"
+    return "$rc"
   else
     # stderr keeps a captured stdout clean.
     printf '%s\n' "$title" >&2
