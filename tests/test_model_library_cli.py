@@ -47,6 +47,21 @@ class ModelLibraryCLI(unittest.TestCase):
         fixture.candidate(nodes)
         return result
 
+    def test_long_operations_report_phases_on_stderr_only(self):
+        f=self.fixture(nodes=2)
+        acquired=f.acquire(1)
+        self.success(acquired)
+        self.assertIn('[acquire 1/4] staging on ',acquired.stderr)
+        self.assertIn('[acquire 4/4] publishing the home on ',acquired.stderr)
+        f.candidate(2)
+        preview=f.run('prepare','--plan',spec=True)
+        self.success(preview)
+        self.assertNotIn('[prepare ',preview.stderr)
+        prepared=f.run('prepare','--yes',spec=True)
+        self.success(prepared)
+        self.assertIn('[prepare 1/3] rank 0 on ',prepared.stderr)
+        self.assertIn('[prepare 3/3] verifying every rank before recording readiness',prepared.stderr)
+
     def test_cancelled_full_audit_retains_stamp_releases_lock_and_retries(self):
         from model_library.verification_process import process_identity
         f=self.fixture(nodes=2)

@@ -33,6 +33,22 @@ are separate:
 ./pulsar inventory
 ```
 
+The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
+until **Back** or **Exit**; each operation returns to the same recipe with a
+one-line result. It lists operations in lifecycle order and keeps storage
+maintenance under **Storage and archive**. An operation is left out only when
+saved records rule it out, and a **Not shown** line names it and the reason.
+One **suggested** next step comes from the same saved records and this menu
+session; it is a starting point, not a readiness check. Storage mutations show
+the operation's own `--plan` preview before a confirmation that names the
+model, nodes and consequence; a blocked plan ends without a question. Esc
+steps back one level. Ctrl-C at a prompt leaves the menu; during an operation
+it stops that operation and returns to the menu.
+
+Long storage operations report each phase on stderr, such as
+`[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet
+and stdout, including `--json` results, is unchanged.
+
 Commands typed by a person accept a unique catalog spec ID prefix of at least
 12 characters, as `models list` shows it, and print the complete ID they
 selected. An ambiguous or unknown prefix fails and names the matching IDs.

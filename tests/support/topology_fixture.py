@@ -85,8 +85,11 @@ def double_main():
         lines = sys.stdin.read().splitlines()
         if 'choose' in args:
             header = args[args.index('--header')+1]
-            choice = int(os.environ.get('TOPOLOGY_GUM_HOME' if header == 'Pulsar Inference Stack' else 'TOPOLOGY_GUM_CHOICE', '0'))
-            print(lines[choice])
+            # A comma-separated choice list answers successive visits to one menu.
+            choices = os.environ.get('TOPOLOGY_GUM_HOME' if header == 'Pulsar Inference Stack' else 'TOPOLOGY_GUM_CHOICE', '0').split(',')
+            visits = sum(1 for line in (root/'calls.jsonl').read_text().splitlines()
+                         if json.loads(line)[0] == 'gum' and header in json.loads(line)[1]) - 1
+            print(lines[int(choices[min(visits, len(choices)-1)])])
             return 0
         return int(os.environ.get('TOPOLOGY_CONFIRM_RC', '1'))
     rank, action = 0, tool

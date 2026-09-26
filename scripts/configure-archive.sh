@@ -23,7 +23,8 @@ archive_cli() {
 }
 
 archive_cli show
-choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") || exit 0
+choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") \
+  || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
 case "$choice" in
   0)
     while true; do

@@ -10,21 +10,26 @@ archive_create() {
     emit_result "$(model_json kind pulsar-archive-plan snapshot_manifest_id "$MANIFEST_ID" home: "$HOME_JSON" archive_root "$PULSAR_COLD_ROOT")"; return
   fi
   [ "$YES" -eq 1 ] || die "archive creation requires --yes"
+  phase 1 3 "verifying the home on $(human_node_name "$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")")"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   # An existing archive is never replaced. Corruption requires explicit inspection.
   local exists
   exists=$(python3 -c 'from pathlib import Path; import sys; from model_library.local import location; import json; p=location(sys.argv[1],json.loads(sys.argv[2]),archive=True); print(int(p.exists() or p.is_symlink()))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   if [ "$exists" -eq 1 ]; then
+    phase 2 3 "an archive already exists; verifying it instead of replacing it"
     result=$(archive_verify) || die "existing archive did not verify; it was not replaced"
   elif [ "$rank" -eq 0 ]; then
+    phase 2 3 "copying the home into the archive"
     result=$(local_node "$(model_node_request archive path "$(json_fields "$HOME_JSON" path)" archive_root "$PULSAR_COLD_ROOT")") || die "archive copy failed"
   else
+    phase 2 3 "copying the home from $(human_node_name "$rank") into the archive"
     . "$REPO_DIR/scripts/model-transfer.sh"
     stage=$(local_node "$(model_node_request begin-archive archive_root "$PULSAR_COLD_ROOT")") || die "archive staging failed"
     model_transfer "$rank" "$(json_fields "$HOME_JSON" path)" 0 "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "archive transfer incomplete"
     result=$(local_node "$(model_node_request publish-archive archive_root "$PULSAR_COLD_ROOT" stage "$(json_fields "$stage" stage)")") || die "archive was not published"
   fi
+  phase 3 3 "recording the verified archive"
   result=$(model_ctl "$(model_json operation archive-record snapshot_manifest_id "$MANIFEST_ID" root "$PULSAR_COLD_ROOT" result: "$result")") || return 2
   emit_result "$result"
 }
@@ -43,8 +48,11 @@ restore_model() {
     emit_result "$(model_json kind pulsar-restore-plan snapshot_manifest_id "$MANIFEST_ID" selected_node "${CLUSTER_NODE_IDS[$rank]}" archive_root "$PULSAR_COLD_ROOT")"; return
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
+  phase 1 4 "verifying the archive against the expected file hashes"
   archive_verify >/dev/null || die "archive does not match the selected manifest"
+  phase 2 4 "staging on $(human_node_name "$rank")"
   stage=$(model_node "$rank" "$(model_node_request begin-home)") || die "restore staging failed"
+  phase 3 4 "copying from the archive to $(human_node_name "$rank")"
   archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   if [ "$rank" -eq 0 ]; then
     python3 -c 'from model_library.local import copy_files; from pathlib import Path; import json,sys; copy_files(Path(sys.argv[1]),Path(sys.argv[2]),json.loads(sys.argv[3]))' "$archive_path" "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "restore copy failed"
@@ -54,6 +62,7 @@ restore_model() {
   fi
   existing=$(find_source_homes) || die "cannot recheck all-node home absence"
   [ "$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 0 ] || die "another home appeared; restore remains staged"
+  phase 4 4 "publishing the home on $(human_node_name "$rank")"
   result=$(model_node "$rank" "$(model_node_request publish-home stage "$(json_fields "$stage" stage)" node_id "${CLUSTER_NODE_IDS[$rank]}")") || die "restore publication failed"
   result=$(save_home_result "$result" "$previous") || die "verified files were published but home registration failed; inspect before retrying"
   emit_result "$result"

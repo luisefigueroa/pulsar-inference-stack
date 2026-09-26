@@ -145,49 +145,138 @@ class Catalog(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(all(len(line) <= 44 for line in result.stdout.splitlines()), result.stdout)
 
-    def menu_action(self, action_index=0, confirm_status=1):
+    # Scripted operator shell: parameterized doubles for the UI, topology and
+    # every operation. No Docker, SSH, topology discovery or model files.
+    UI = r'''
+emit_frame() { cat; }
+spin() { shift; "$@"; }
+_pop() { local n; n=$(cat "$1.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$1.n"; sed -n "$((n + 1))p" "$1"; }
+choose_index() {
+  local header="$1" answer i=0 option; shift
+  { printf '%s\n' "$header" "$@"; printf '\n'; } >>"$CHOICES_LOG"
+  answer=$(_pop "$MENU_ANSWERS")
+  case "$answer" in "") return 99 ;; "<esc>") return 1 ;; "<ctrl-c>") return 130 ;; "#"*) echo "${answer#\#}"; return 0 ;; esac
+  for option in "$@"; do [ "$option" != "$answer" ] || { echo "$i"; return 0; }; i=$((i + 1)); done
+  echo "MISSING OPTION: $answer" >>"$CHOICES_LOG"; return 99
+}
+confirm() {
+  printf '%s\n' "$1" >>"$CONFIRM_LOG"
+  case "$(_pop "$MENU_CONFIRMS")" in yes) return 0 ;; "<ctrl-c>") return 130 ;; *) return 1 ;; esac
+}
+'''
+    ACTION = """#!/usr/bin/env python3
+import json,os,sys
+open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")
+if "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
+raise SystemExit(int(os.environ.get("ACTION_RC","0")))
+"""
+
+    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive"):
         spec = self.add_spec()
-        # Build a minimal operator shell with parameterized doubles. No Docker,
-        # SSH, topology discovery or model files are touched.
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
-        self.choices = self.root / "choices.log"
-        (scripts / "ui.sh").write_text('choose_index() { printf "%s\\n" "$@" >> "'+str(self.choices)+'"; if [ "$1" = "Choose one operation" ]; then printf "%s\\n" "$MENU_ACTION"; else printf "0\\n"; fi; }; confirm() { return "$MENU_CONFIRM_STATUS"; }\n')
-        log = self.root / "action.json"
-        action = scripts / "model-library.sh"
-        action.write_text('#!/usr/bin/env python3\nimport json,sys\nopen('+repr(str(log))+',"w").write(json.dumps(sys.argv[1:]))\n')
-        action.chmod(0o700)
-        # Catalog Python still uses the real shared package with a temporary releases root.
+        (scripts / "ui.sh").write_text(self.UI)
+        for name in ("model-library.sh", "status.sh", "up.sh", "down.sh"):
+            (scripts / name).write_text(self.ACTION); (scripts / name).chmod(0o700)
+        files = {name: self.root / name for name in ("answers", "confirms", "choices.log", "confirm.log", "action.log", "plan.json")}
+        files["answers"].write_text("\n".join(answers) + "\n")
+        files["confirms"].write_text("\n".join(confirms) + "\n")
+        files["plan.json"].write_text(json.dumps(plan or {"kind": "pulsar-restore-plan", "selected_node": "fixture-node"}))
         env = dict(os.environ, PYTHONPATH=str(ROOT), GUM="0", PULSAR_MODEL_LIBRARY_DIR=str(self.store.root),
-                   MENU_ACTION=str(action_index), MENU_CONFIRM_STATUS=str(confirm_status))
-        # The wrapper supplies a shell-root catalog path, so provide its released spec.
+                   CLUSTER_TOPOLOGY_FILE=str(self.root / "no-topology.json"),
+                   MENU_ANSWERS=str(files["answers"]), MENU_CONFIRMS=str(files["confirms"]),
+                   CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),
+                   ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc))
+        env.pop("PULSAR_COLD_ROOT", None)
+        if archive_root is not None:
+            env["PULSAR_COLD_ROOT"] = archive_root
         shutil.copytree(self.repo / "releases", shell_root / "releases")
-        # module ROOT remains the canonical stack path; force a catalog function override
-        # through a tiny Python launcher that injects the fixture repo into module argv.
+        # The catalog reads the fixture releases root through a tiny python3 launcher.
         binary = self.root / "bin"; binary.mkdir()
         python = binary / "python3"
         python.write_text('#!/usr/bin/env bash\nif [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then shift 2; exec '+sys.executable+' -m model_library.catalog --repo-root '+str(shell_root)+' "$@"; fi\nexec '+sys.executable+' "$@"\n')
         python.chmod(0o700); env["PATH"] = str(binary) + os.pathsep + os.environ["PATH"]
         result = subprocess.run(["bash", str(scripts / "model-storage.sh"), "menu"], env=env, text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return spec, json.loads(log.read_text()) if log.exists() else None
+        log = files["action.log"]
+        actions = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
+        choices = files["choices.log"].read_text()
+        self.assertNotIn("MISSING OPTION", choices)
+        confirm_log = files["confirm.log"]
+        return spec["spec_id"], result, actions, choices, confirm_log.read_text() if confirm_log.exists() else ""
 
-    def test_menu_check_executes_one_explicit_action(self):
-        spec, action = self.menu_action()
-        self.assertEqual(action, ["check", spec["spec_id"], "--node", "fixture-node"])
+    def test_menu_returns_to_the_recipe_after_an_action(self):
+        spec, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node"]])
+        self.assertIn("✓ Check now finished for", result.stdout)
+        self.assertEqual(choices.count("Choose one operation\n"), 2)
+        self.assertEqual(choices.count("Select a catalog recipe\n"), 2)
         # The node picker names machines by hostname and passes the stable node_id.
-        choices = self.choices.read_text()
         self.assertIn("Select a confirmed physical node\nfixture-host\n", choices)
         self.assertNotIn("fixture-node", choices)
 
-    def test_menu_restore_requires_confirmation_and_never_starts(self):
-        spec, action = self.menu_action(action_index=2, confirm_status=0)
-        self.assertEqual(action, ["restore", spec["spec_id"], "--node", "fixture-node", "--yes"])
+    def test_failed_action_keeps_the_session(self):
+        _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], action_rc=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertIn("✗ Check now failed for", result.stdout)
+        self.assertIn("(exit 1)", result.stdout)
+        self.assertEqual(choices.count("Choose one operation\n"), 2)
 
-    def test_declined_menu_restore_has_no_action(self):
-        _, action = self.menu_action(action_index=2, confirm_status=1)
-        self.assertIsNone(action)
+    def test_restore_previews_the_plan_before_a_specific_confirmation(self):
+        spec, result, actions, _, questions = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"],
+                                   ["model-library.sh", "restore", spec, "--node", "fixture-node", "--yes"]])
+        self.assertIn("Restoration preview", result.stdout)
+        self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
+
+    def test_declined_restore_changes_nothing(self):
+        _, result, actions, _, _ = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([a[-1] for a in actions], ["--json"])
+        self.assertIn("Nothing changed.", result.stdout)
+
+    def test_ctrl_c_at_a_confirmation_leaves_the_menu(self):
+        _, result, actions, _, questions = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["<ctrl-c>"])
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual([a[-1] for a in actions], ["--json"])
+        self.assertIn("Nothing changed.", result.stdout)
+        self.assertIn("Restore", questions)
+
+    def test_blocked_plan_is_shown_without_a_confirmation(self):
+        plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],
+                         "views": [], "actions": []}, "incomplete_preparations": []}
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back"], plan=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([a[-2:] for a in actions], [["--plan", "--json"]])
+        self.assertIn("prepared copy is pinned", result.stdout)
+        self.assertIn("The plan is blocked; nothing changed.", result.stdout)
+        self.assertEqual(questions, "")
+
+    def test_escape_steps_back_one_level(self):
+        _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "<esc>", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(choices.count("Choose one operation\n"), 2)
+
+    def test_ctrl_c_at_a_prompt_leaves_the_menu(self):
+        _, result, actions, _, _ = self.run_menu(["#0", "<ctrl-c>"])
+        self.assertEqual(result.returncode, 130)
+        self.assertEqual(actions, [])
+
+    def test_operations_follow_saved_state_and_explain_what_is_hidden(self):
+        _, result, _, choices, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertEqual(block, ["Check now (suggested)", "Download", "Start", "Stop", "Live status",
+                                 "Storage and archive…", "Show details", "Back"])
+        shown = " ".join(result.stdout.split())
+        self.assertIn("Suggested: Check now — no saved check", shown)
+        self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
+        self.assertIn("Not shown: Prepare, Move home, Create archive, Remove home (no home is recorded)", shown)
 
 
 if __name__ == "__main__": unittest.main()

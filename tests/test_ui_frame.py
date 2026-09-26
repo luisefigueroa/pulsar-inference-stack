@@ -20,6 +20,8 @@ class UiFrame(unittest.TestCase):
             f"printf '%s\\n' \"$*\" >> '{self.gum_log}'\n"
             "if [ \"$1\" = style ]; then cat; exit 0; fi\n"
             "if [ \"$1\" = input ]; then printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
+            # Like Gum versions without --show-output: run the command, drop its output.
+            "if [ \"$1\" = spin ]; then while [ \"$1\" != -- ]; do shift; done; shift; \"$@\" >/dev/null 2>&1; exit $?; fi\n"
             "exit 2\n"
         )
         gum.chmod(0o755)
@@ -47,6 +49,14 @@ class UiFrame(unittest.TestCase):
             ["bash", "-c", script],
             env=env, cwd=str(ROOT), text=True, capture_output=True,
         )
+
+    def test_gum_spin_returns_output_and_status_even_when_gum_drops_it(self):
+        result = self.run_ui('plan=$(spin "Planning" bash -c "echo plan-json; echo planning-error >&2; exit 3"); '
+                             'rc=$?; printf "[%s] rc=%s\\n" "$plan" "$rc"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "[plan-json] rc=3\n")
+        self.assertIn("planning-error", result.stderr)
+        self.assertIn("spin", self.gum_log.read_text())
 
     def test_plain_frame_prints_text_without_invoking_gum(self):
         result = self.run_ui('printf "Setup\\n" | emit_frame', gum=False)

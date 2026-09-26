@@ -44,13 +44,11 @@ def age_seconds(value, now=None):
 def age_text(age):
     if age is None:
         return "age unknown"
-    if age < 60:
-        return "less than a minute ago"
-    if age < 3600:
-        return f"{age // 60} minutes ago"
-    if age < 86400:
-        return f"{age // 3600} hours ago"
-    return f"{age // 86400} days ago"
+    for seconds, unit in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if age >= seconds:
+            count = age // seconds
+            return f"{count} {unit}{'' if count == 1 else 's'} ago"
+    return "less than a minute ago"
 
 
 def combined_observation(members):
