@@ -27,7 +27,7 @@ VALUE_OPTIONS = {
     "--snapshot", "--spec-file", "--manifest", "--model-id", "--model-commit",
     "--revision", "--node", "--manifest-out", "--verification-jobs",
     "--override-file", "--memory-estimate-file", "--memory-estimate-id",
-    "--backend", "--transport", "--copy-streams",
+    "--backend", "--transport", "--copy-streams", "--repo-root", "--state-root",
 }
 
 
@@ -86,7 +86,8 @@ def spec_position(command: str, args: list[str]) -> tuple[int | None, str | None
     if command in ("start", "stop", "status"):
         return (0 if args and not args[0].startswith("-") else None), None
     if command == "models":
-        return (1 if args[:1] in (["show"], ["check"]) and len(args) > 1 else None), None
+        # models check forwards to the model parser, so flags may precede the spec.
+        return (_first_positional(args, 1) if args[:1] in (["show"], ["check"]) else None), None
     if command == "model" and args:
         operation = args[0]
         start = 2 if operation == "archive" else 1
