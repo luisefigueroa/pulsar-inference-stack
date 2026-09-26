@@ -1,0 +1,165 @@
+{
+  "archive_observation": null,
+  "evaluation": {
+    "diagnostics": {
+      "compare-captures": {
+        "compare-captures": {
+          "diagnostic_verdict": "identical",
+          "exact_text_count": 30,
+          "hard_disagreement_count": 0,
+          "identical_record_count": 30,
+          "max_matched_prefix_logprob_delta": "0",
+          "mean_prefix_match": "1",
+          "min_prefix_match": "1",
+          "sample_count": 30,
+          "source_digests": {
+            "a": "f6a8e968e3b8f7311f2c4e2bc54eef60885086062a6034d4e9b4b2f4047e37e0",
+            "b": "f6a8e968e3b8f7311f2c4e2bc54eef60885086062a6034d4e9b4b2f4047e37e0"
+          }
+        },
+        "completion": "complete",
+        "kind": "pulsar-validator-measurement",
+        "operation": "compare-captures",
+        "program": "validate/compare_captures.py",
+        "reason": "completed",
+        "schema_version": 1
+      }
+    },
+    "kind": "pulsar-baseline-evaluation",
+    "measurement_sha256": {
+      "benchmark-serving": "ec3509af0f2880b816e40334d5ba93e6725f8bc17802ca2fe391389ce08918a4",
+      "compare-captures": "2fb40db1f57e67520b1a49bc1e06c544f531257a4dcf947a04b8e292b62914fa",
+      "evaluate-gsm8k": "75009fdda48312b5761dfc31f2e27482c2adb3757a751aa8b9c3a06cdefa191c",
+      "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
+      "validate-soak": "9f2647178b360ad51c4cecd767d6576f895d59c17101838e8c28603e7e86846f",
+      "verify-snapshot-manifest": "c90c182accccd9350b1b7104ae0d6546e04a8400bfaf16834e364346e5af784c"
+    },
+    "measurements": [
+      {
+        "criterion_id": "identity-snapshot-manifest",
+        "outcome": "pass",
+        "thresholds": [
+          {
+            "metric": "unmatched_file_count",
+            "operator": "==",
+            "unit": "count",
+            "value": "0"
+          }
+        ]
+      },
+      {
+        "criterion_id": "serving-integration-smoke",
+        "outcome": "pass",
+        "thresholds": [
+          {
+            "metric": "health_complete",
+            "operator": "==",
+            "unit": "boolean",
+            "value": "1"
+          },
+          {
+            "metric": "warmup_complete",
+            "operator": "==",
+            "unit": "boolean",
+            "value": "1"
+          },
+          {
+            "metric": "completion_smoke_complete",
+            "operator": "==",
+            "unit": "boolean",
+            "value": "1"
+          }
+        ]
+      },
+      {
+        "criterion_id": "gsm8k-subset",
+        "outcome": "pass",
+        "thresholds": [
+          {
+            "metric": "accuracy",
+            "operator": ">=",
+            "unit": "ratio",
+            "value": "0.5"
+          },
+          {
+            "metric": "measured_sample_count",
+            "operator": ">=",
+            "unit": "count",
+            "value": "100"
+          },
+          {
+            "metric": "dataset_id",
+            "operator": "==",
+            "unit": "id",
+            "value": "openai/gsm8k"
+          },
+          {
+            "metric": "dataset_revision",
+            "operator": "==",
+            "unit": "commit",
+            "value": "740312add88f781978c0658806c59bc2815b9866"
+          },
+          {
+            "metric": "dataset_file_sha256",
+            "operator": "==",
+            "unit": "digest",
+            "value": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59"
+          }
+        ]
+      },
+      {
+        "criterion_id": "soak-60",
+        "outcome": "pass",
+        "thresholds": [
+          {
+            "metric": "duration_seconds",
+            "operator": ">=",
+            "unit": "seconds",
+            "value": "3600"
+          },
+          {
+            "metric": "request_error_count",
+            "operator": "==",
+            "unit": "count",
+            "value": "0"
+          },
+          {
+            "metric": "completed_requests",
+            "operator": ">",
+            "unit": "count",
+            "value": "0"
+          }
+        ]
+      },
+      {
+        "criterion_id": "perf-snapshot",
+        "outcome": "pass",
+        "thresholds": [
+          {
+            "metric": "required_levels_complete",
+            "operator": "==",
+            "unit": "boolean",
+            "value": "1"
+          }
+        ]
+      }
+    ],
+    "outcome": "pass",
+    "outcomes": {
+      "gsm8k-subset": "pass",
+      "identity-snapshot-manifest": "pass",
+      "perf-snapshot": "pass",
+      "serving-integration-smoke": "pass",
+      "soak-60": "pass"
+    },
+    "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+    "schema_version": 2,
+    "spec_id": "0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07",
+    "suite": "baseline-v2"
+  },
+  "kind": "pulsar-evidence-summary",
+  "outcome": "pass",
+  "run_id": "baseline-v2-002",
+  "schema_version": 2,
+  "spec_id": "0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07"
+}
