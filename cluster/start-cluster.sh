@@ -169,17 +169,20 @@ cluster_abort() {
 }
 
 existing=0
+existing_nodes=()
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
   probe_rc=0
   container_ownership_inspect_remote "$host" "$CONTAINER" >/dev/null || probe_rc=$?
-  case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank $rank; refusing launch" ;; esac
+  case "$probe_rc" in 0) existing=1; existing_nodes+=("$(human_node_name "$rank")") ;; 3) ;; *) die "cannot inspect existing service on $(human_node_name "$rank") (rank $rank); refusing launch" ;; esac
 done
 probe_rc=0
 container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
-case "$probe_rc" in 0) existing=1 ;; 3) ;; *) die "cannot inspect existing service on rank 0; refusing launch" ;; esac
+case "$probe_rc" in 0) existing=1; existing_nodes=("$(human_node_name 0)" "${existing_nodes[@]}") ;; 3) ;; *) die "cannot inspect existing service on $(human_node_name 0) (rank 0); refusing launch" ;; esac
 if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
-  die "service $CONTAINER already exists; inspect every rank, then pass --replace only with explicit replacement approval"
+  where=$(printf '%s, ' "${existing_nodes[@]}"); where="${where%, }"
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --detail "container $CONTAINER on $where"
+  die "service $CONTAINER already exists on $where; inspect every rank, then pass --replace only with explicit replacement approval"
 fi
 if [ "$REPLACE" = 1 ]; then
   echo "[cluster] removing existing stack-managed ranks (ownership required)"

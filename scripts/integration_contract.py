@@ -14,6 +14,7 @@ from release_spec.serving import SUPPORTED_SPEC_SCHEMAS
 from release_spec.contribution import APPROVED_POLICY_DIGEST
 from release_spec.baseline_policy import SUPPORTED_POLICY_DIGESTS
 from scripts.document_cli import ERROR_CODES, EXIT_STATUSES
+from scripts.start_blockers import BLOCKERS
 from scripts.terminal_format import TerminalWriter
 
 
@@ -54,6 +55,8 @@ def contract() -> dict:
         'error_codes': {code: {'exit_status': status, 'meaning': meaning}
                         for code, (status, meaning) in ERROR_CODES.items()},
         'exit_statuses': dict(EXIT_STATUSES),
+        # start --json failures list these in error.details as "blocker".
+        'start_blocker_codes': sorted(BLOCKERS),
     }
 
 

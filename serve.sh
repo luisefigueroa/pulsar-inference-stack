@@ -146,8 +146,10 @@ else
 fi
 case "$existing_rc" in
   0)
-    [ "$REPLACE" = 1 ] \
-      || die "service $CONTAINER already exists on $(single_node_display); inspect it, then pass --replace only with explicit replacement approval"
+    if [ "$REPLACE" != 1 ]; then
+      START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --node "$(single_node_display)" --detail "container $CONTAINER"
+      die "service $CONTAINER already exists on $(single_node_display); inspect it, then pass --replace only with explicit replacement approval"
+    fi
     ;;
   3) ;;
   *) die "cannot determine whether $CONTAINER already exists on $(single_node_display); refusing launch" ;;

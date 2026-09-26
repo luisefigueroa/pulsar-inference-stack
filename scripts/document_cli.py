@@ -75,8 +75,8 @@ def failure(exc, *, json_output: bool, code=None, exit_code=None):
     code = code or error_code(exc)
     if exit_code is None:
         exit_code = ERROR_CODES[code][0]
-    details = [{"field": getattr(exc, "field", "$"),
-                "message": getattr(exc, "reason", str(exc))}]
+    details = getattr(exc, "envelope_details", None) or [
+        {"field": getattr(exc, "field", "$"), "message": getattr(exc, "reason", str(exc))}]
     if json_output:
         print(json.dumps({"schema_version": 1, "ok": False,
                           "error": {"code": code, "message": str(exc), "details": details}}, sort_keys=True))

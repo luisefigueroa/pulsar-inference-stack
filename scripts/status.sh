@@ -19,7 +19,7 @@ if ! observation=$("$ROOT/scripts/observe-serving.sh" "$@"); then
 import json,sys
 inventory=json.load(sys.stdin)
 services=[row for row in inventory.get("services",[]) if row.get("conf")==sys.argv[1]]
-if not services: raise SystemExit("No matching service could be observed")
+if not services: raise SystemExit(f"No running service for spec {sys.argv[1][:12]} was observed. Start it with ./pulsar start {sys.argv[1][:12]}")
 print(json.dumps(dict(schema_version=1,kind="pulsar-service-status",selected_spec_id=sys.argv[1],
     configuration_verified=False,services=services,
     message="Service inventory only; complete current-spec observation is unavailable.")))

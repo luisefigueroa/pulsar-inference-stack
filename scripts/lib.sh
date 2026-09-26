@@ -86,6 +86,16 @@ LAUNCH_SPIKE_GIB="${LAUNCH_SPIKE_GIB:-$PULSAR_LAUNCH_SPIKE_GIB}"
 OVERHEAD_GIB_DEFAULT="${OVERHEAD_GIB_DEFAULT:-$PULSAR_OVERHEAD_GIB_DEFAULT}"
 
 log()  { printf '[%s] %s\n' "${SCRIPT_NAME:-pulsar}" "$*"; }
+# start_blocker CODE [--node NAME] [--rank N] [--detail TEXT]
+# Prints one BLOCKED line from the catalog in scripts/start_blockers.py and,
+# when PULSAR_START_BLOCKERS_FILE is set, records it for start --json. The fix
+# names START_BLOCKER_SPEC (default NAME) and START_BLOCKER_PLACEMENT (default
+# the placement arguments).
+start_blocker() {
+  local code="$1"; shift
+  python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" --spec "${START_BLOCKER_SPEC:-${NAME:-}}" \
+    --placement "${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" "$@"
+}
 warn() { printf '[%s] warn: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$1" >&2; exit "${2:-1}"; }
 

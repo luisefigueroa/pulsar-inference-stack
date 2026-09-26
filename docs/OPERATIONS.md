@@ -229,6 +229,16 @@ missing image by implication. After inspecting the current service, pass
 when staging the selected digest-pinned image is also approved. Generic `--yes`
 does not grant either permission.
 
+Start runs every independent check (image, model files, memory) before it
+reports, and prints one line per blocker with the affected node and one next
+step, for example
+`BLOCKED node_unreachable: spark-2 (rank 1): the node is unreachable over SSH. Next: ./pulsar topology check`.
+An incomplete topology, an unreachable node or unavailable Docker ends the
+checks early because later checks need every node. With `--pull-image`, the
+image is staged only after every other check passes, so a start that is
+blocked anyway changes nothing. The same blockers appear in `start --json`
+error details; see [the public contract](CONTRACT.md).
+
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks
 for confirmation before mutations and never chains restoration into preparation

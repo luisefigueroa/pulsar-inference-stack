@@ -21,6 +21,13 @@ class StackOutputError(Exception):
     """A Stack script succeeded but its stdout was not the promised JSON."""
 
 
+class StartBlocked(RuntimeError):
+    """Start refused; envelope_details holds one record per start blocker."""
+    def __init__(self, message, blockers):
+        super().__init__(message)
+        self.envelope_details = blockers
+
+
 def redact_diagnostic(value):
     from scripts.check_publishable_privacy import SECRET_PATTERNS
     for _,pattern in SECRET_PATTERNS:
@@ -137,9 +144,19 @@ def dispatch(command, args):
         os.chdir(ROOT)
         os.execvp('bash',['bash',str(ROOT/'scripts/resources.sh'),*args])
     if command == 'start':
+        from scripts.start_blockers import read as read_blockers
         with tempfile.TemporaryDirectory(prefix='pulsar-start-result.') as temp:
-            path=Path(temp)/'result.json'
-            execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path)})
+            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'
+            try:
+                execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path),
+                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers)})
+            except Cancelled:
+                raise
+            except RuntimeError as exc:
+                recorded=read_blockers(blockers)
+                if recorded:
+                    raise StartBlocked(str(exc),recorded) from exc
+                raise
             return serving.load_json(path)
     if command == 'model':
         result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True)
