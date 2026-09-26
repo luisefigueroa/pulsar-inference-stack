@@ -123,7 +123,7 @@ model_transfer_relay() (
     shells[$role]=$(shell_join_q "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -o "HostName=$remote_ip" -o "HostKeyAlias=$alias" -o "BindAddress=$local_ip" -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no)
     aliases[$role]="$alias"
   done
-  log "Move transfer route: physical node $source_rank → controller pipe → physical node $destination_rank; verified RoCE rail on each leg, no controller model copy." >&2
+  log "Move transfer route: $(human_node_name "$source_rank") → controller pipe → $(human_node_name "$destination_rank"); verified RoCE rail on each leg, no controller model copy." >&2
   model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" stamp: "$source_stamp" full: false)" >/dev/null || die "relay source does not match manifest"
   command=$(python3 -m model_library.transfer staging-code)
   ssh_node "$destination_rank" "$(shell_join_q python3 -c "$command" "$destination_path" "$revision")" || die "relay destination staging is unsafe"

@@ -89,15 +89,15 @@ log()  { printf '[%s] %s\n' "${SCRIPT_NAME:-pulsar}" "$*"; }
 warn() { printf '[%s] warn: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$1" >&2; exit "${2:-1}"; }
 
-# Human-facing name for vLLM's zero-based rank. Keep "rank" in machine data
-# and launcher arguments; normal CLI output talks about physical cluster nodes.
-human_cluster_node() {
-  local rank="${1:?node position required}"
-  if [ "$rank" = 0 ]; then
-    printf 'this node\n'
-  else
-    printf 'cluster node %s\n' "$((rank + 1))"
+# Human-facing name for a confirmed node position: its saved hostname. Machine
+# data and launcher arguments keep node_id and rank; people read hostnames.
+human_node_name() {
+  local index="${1:?node position required}" name
+  name="${CLUSTER_NODE_HOSTNAMES[$index]:-${CLUSTER_NODE_SSH_HOSTS[$index]:-}}"
+  if [ -z "$name" ] && [ "$index" = 0 ]; then
+    name=$(hostname -s 2>/dev/null || hostname 2>/dev/null || true)
   fi
+  printf '%s\n' "${name:-node $index}"
 }
 
 terminal_width() {
@@ -1112,12 +1112,12 @@ resolve_single_node_placement() {
   else
     SINGLE_NODE_REMOTE=1
     [ -n "$SINGLE_NODE_ID" ] || {
-      warn "confirmed node $index has no stable node_id"
+      warn "$(human_node_name "$index") has no stable node_id"
       return 1
     }
     [ -n "$SINGLE_NODE_SSH_HOST" ] \
       && [ "$SINGLE_NODE_SSH_HOST" != local ] || {
-      warn "confirmed node $index has no remote SSH endpoint"
+      warn "$(human_node_name "$index") has no remote SSH endpoint"
       return 1
     }
   fi
@@ -2083,18 +2083,18 @@ discover_single_node_index_for_conf() {
       3) continue ;;
       0) ;;
       *)
-        warn "cannot inspect $cname on confirmed node $index"
+        warn "cannot inspect $cname on $(human_node_name "$index")"
         return 1
         ;;
     esac
     role=$(single_node_key_for_index "$index") || return 1
     if ! container_removal_is_proven "$meta" "$conf" single "$role"; then
       reason=$(container_removal_refuse_reason "$meta" "$conf" single "$role")
-      warn "refusing $cname on node $index: $reason"
+      warn "refusing $cname on $(human_node_name "$index"): $reason"
       return 2
     fi
     if [ "$found" -ge 0 ]; then
-      warn "refusing ambiguous placement: $cname exists on nodes $found and $index"
+      warn "refusing ambiguous placement: $cname exists on $(human_node_name "$found") and $(human_node_name "$index")"
       return 2
     fi
     found="$index"
@@ -2202,21 +2202,21 @@ remove_safe_managed_id_on_node() {
   placement=$(single_node_key_for_index "$index") || return 1
   meta=$(container_ownership_inspect_on_node "$index" "$id") || probe=$?
   if [ "$probe" -eq 3 ]; then
-    log "container id=${id:0:12} already gone on node $index"
+    log "container id=${id:0:12} already gone on $(human_node_name "$index")"
     return 0
   fi
   if [ "$probe" -ne 0 ]; then
-    warn "confirmed node $index is unobservable during revalidation"
+    warn "$(human_node_name "$index") is unobservable during revalidation"
     return 1
   fi
   IFS=$'\t' read -r _ _ _ conf rank < <(container_ownership_fields "$meta")
   if ! container_all_candidate_is_safe "$meta" "$placement"; then
     reason=$(container_all_refuse_reason "$meta" "$placement")
-    warn "refusing id=${id:0:12} on node $index: $reason"
+    warn "refusing id=${id:0:12} on $(human_node_name "$index"): $reason"
     return 2
   fi
   short="${id:0:12}"
-  log "removing stack-managed id=$short conf=$conf rank=$rank on node $index"
+  log "removing stack-managed id=$short conf=$conf rank=$rank on $(human_node_name "$index")"
   if [ "$index" -eq 0 ]; then
     if ! "$PULSAR_DOCKER" rm -f "$id" >/dev/null; then
       warn "docker rm -f failed for id=$short"
@@ -2231,11 +2231,11 @@ remove_safe_managed_id_on_node() {
   host="${CLUSTER_NODE_SSH_HOSTS[$index]}"
   if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
       "docker rm -f $(printf '%q' "$id") >/dev/null"; then
-    warn "docker rm -f failed for id=$short on node $index"
+    warn "docker rm -f failed for id=$short on $(human_node_name "$index")"
     return 1
   fi
   if ! container_id_absent_remote "$host" "$id"; then
-    warn "container id=$short still present or unverifiable on node $index after docker rm -f"
+    warn "container id=$short still present or unverifiable on $(human_node_name "$index") after docker rm -f"
     return 1
   fi
   return 0
@@ -2258,7 +2258,7 @@ stop_named_service_by_labels() {
 
   for ((index = 0; index < count; index++)); do
     if ! list_managed_container_ids_on_node "$index" >/dev/null; then
-      warn "confirmed node $index is unobservable — not removing conf=$conf (an unobserved live rank could be stranded)"
+      warn "$(human_node_name "$index") is unobservable — not removing conf=$conf (an unobserved live rank could be stranded)"
       return 1
     fi
   done
@@ -2266,7 +2266,7 @@ stop_named_service_by_labels() {
   for ((index = 0; index < count; index++)); do
     placement=$(single_node_key_for_index "$index") || return 1
     ids=$(list_managed_container_ids_on_node "$index") || {
-      warn "confirmed node $index is unobservable — not removing conf=$conf"
+      warn "$(human_node_name "$index") is unobservable — not removing conf=$conf"
       return 1
     }
     for id in $ids; do
@@ -2277,14 +2277,14 @@ stop_named_service_by_labels() {
         continue
       fi
       if [ "$probe" -ne 0 ]; then
-        warn "confirmed node $index is unobservable — not removing conf=$conf"
+        warn "$(human_node_name "$index") is unobservable — not removing conf=$conf"
         return 1
       fi
       IFS=$'\t' read -r _ _ _ have_conf rank < <(container_ownership_fields "$meta")
       [ "$have_conf" = "$conf" ] || continue
       if ! container_all_candidate_is_safe "$meta" "$placement"; then
         reason=$(container_all_refuse_reason "$meta" "$placement")
-        warn "refusing conf=$conf id=${id:0:12} on node $index: $reason"
+        warn "refusing conf=$conf id=${id:0:12} on $(human_node_name "$index"): $reason"
         return 2
       fi
       found_indices+=("$index")
@@ -2418,7 +2418,7 @@ remove_all_stack_managed_remote() {
     IFS=$'\t' read -r _ _ _ conf rank < <(container_ownership_fields "$meta")
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing managed candidate id=${id:0:12} on node $placement: $reason"
+      warn "refusing managed candidate id=${id:0:12} on $host: $reason"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -2435,11 +2435,11 @@ remove_all_stack_managed_remote() {
     fi
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing id=$short on node $placement after revalidation: $reason"
+      warn "refusing id=$short on $host after revalidation: $reason"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
-    log "removing stack-managed on $host id=$short conf=$conf rank=$rank (node $placement)"
+    log "removing stack-managed on $host id=$short conf=$conf rank=$rank"
     remote_rm="docker rm -f $(printf '%q' "$id") >/dev/null"
     if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_rm"; then
       warn "docker rm -f failed for id=$short on $host"

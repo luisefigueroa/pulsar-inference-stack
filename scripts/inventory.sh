@@ -401,7 +401,7 @@ collect_live_snapshot() {
     rank_mem_status=unreachable
     rank_mem_source=unreachable
     rank_status=unreachable
-    node_label=$(human_cluster_node "$rank")
+    node_label="$node_hostname"
     rank_reason="$node_label · SSH unreachable ($host)"
 
     if _ssh_worker_raw "$host" true >/dev/null 2>&1; then
@@ -1546,7 +1546,7 @@ if ws == "ok":
     noun = "node" if len(remote_nodes) == 1 else "nodes"
     remote_detail = f"{len(remote_nodes)} other cluster {noun} confirmed"
     if wip:
-        remote_detail += f" · cluster node 2 SSH {wip}"
+        remote_detail += f" · {placement_label('worker')} SSH {wip}"
     field("Nodes", f"OK · {remote_detail}", indent=0)
 elif ws == "unset":
     field("Nodes", "no other cluster nodes confirmed", indent=0)
@@ -1580,7 +1580,7 @@ for index, (name, block) in enumerate(display_nodes):
     status_detail = f" · {probe_status}" if probe_status else ""
     field(
         "Memory" if index == 0 else "",
-        f"{node_label(name)} · {fmt_mem(block.get('mem_available_gib'))} "
+        f"{placement_label(name)} · {fmt_mem(block.get('mem_available_gib'))} "
         f"available{status_detail}",
         indent=0,
     )
@@ -1588,7 +1588,7 @@ if verbose:
     for index, (name, block) in enumerate(display_nodes):
         field(
             "Sources" if index == 0 else "",
-            f"{node_label(name)} · {block.get('mem_source') or '?'}",
+            f"{placement_label(name)} · {block.get('mem_source') or '?'}",
             indent=0,
         )
 

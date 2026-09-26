@@ -65,7 +65,7 @@ doctor_ready_line() {
   print_hanging '[doctor] ' "$message"
 }
 
-[ "$JSON" = 1 ] || echo "[doctor] this node"
+[ "$JSON" = 1 ] || echo "[doctor] this node ($(hostname -s 2>/dev/null || hostname))"
 
 arch=$(uname -m)
 arch_ok=0
@@ -258,16 +258,16 @@ for field,expected in (("gpu",sys.argv[1]),("docker_ok",True),("docker_nvidia",T
 print(("ok" if p.get("arch") in sys.argv[2].split() else "fail")+"|arch|arch: "+str(p.get("arch")))
 ' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe"
       while IFS='|' read -r level id message; do
-        record "$level" "rank_${rank}_${id}" "Node $rank: $message"
+        record "$level" "rank_${rank}_${id}" "$(human_node_name "$rank"): $message"
       done <<<"$probe_rows"
       remote_available=$(mem_available_gib_remote "${CLUSTER_NODE_SSH_HOSTS[$rank]}")
       if awk -v a="$remote_available" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 >= f)}'; then
-        record ok "rank_${rank}_memory" "Node $rank: MemAvailable $remote_available GiB"
+        record ok "rank_${rank}_memory" "$(human_node_name "$rank"): MemAvailable $remote_available GiB"
       else
-        record fail "rank_${rank}_memory" "Node $rank: memory unavailable or below the hard floor"
+        record fail "rank_${rank}_memory" "$(human_node_name "$rank"): memory unavailable or below the hard floor"
       fi
     else
-      record fail "rank_${rank}_probe" "Node $rank cannot be inspected through its confirmed control endpoint"
+      record fail "rank_${rank}_probe" "$(human_node_name "$rank") cannot be inspected through its confirmed control endpoint"
     fi
   done
 fi

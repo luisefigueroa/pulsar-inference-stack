@@ -109,7 +109,7 @@ fi
 echo "│  nodes=$NODES  served=$SERVED_NAME  port=$PORT"
 echo "│  weights=model library (hot staging)"
 if [ "$NODES" -eq 1 ]; then
-  echo "│  placement=$(single_node_display)  node-id=${SINGLE_NODE_ID:-standalone}"
+  echo "│  placement=$(single_node_display)"
 fi
 if [ "${PULSAR_EFFECTIVE_SPEC_ID:-$NAME}" != "$NAME" ]; then
   echo "│  Modified recipe: ${PULSAR_EFFECTIVE_SPEC_ID}"

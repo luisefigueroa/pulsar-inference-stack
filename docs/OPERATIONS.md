@@ -33,6 +33,13 @@ are separate:
 ./pulsar inventory
 ```
 
+Commands typed by a person accept a unique catalog spec ID prefix of at least
+12 characters, as `models list` shows it, and print the complete ID they
+selected. An ambiguous or unknown prefix fails and names the matching IDs.
+`--json`, `--spec-file`, `model purge` and `model remove` require the complete
+64-character ID, so scripts and the workbench never depend on a prefix. Human
+output names machines by their saved hostname; JSON keeps the stable `node_id`.
+
 Withdrawn recipes remain visible with their reason. They are not recommended,
 but their exact configuration can still run when operational checks pass.
 Withdrawal never stops services or removes model files or archives. A spec

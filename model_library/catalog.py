@@ -14,6 +14,7 @@ import sys
 
 from release_spec import load_spec
 from .integrity import StorageError
+from .node_names import NodeNames
 from .state import Store, checked_id
 from scripts.terminal_format import TerminalWriter
 
@@ -149,8 +150,9 @@ ARCHIVE_LABELS = {"unknown": "unknown", "missing": "not found at last check",
     "not-configured": "storage is not configured"}
 
 
-def render(rows, *, details=False, writer=None):
+def render(rows, *, details=False, writer=None, names=None):
     out = writer or TerminalWriter()
+    names = names or NodeNames()
     if not rows:
         out.emit("The catalog is empty.")
         out.emit("A spec enters the catalog when the maintainer publishes it under releases/. Interactive ./pulsar confirms cluster membership first. ./pulsar models still lists the catalog without topology.")
@@ -186,12 +188,12 @@ def render(rows, *, details=False, writer=None):
             out.field("Image", row["image"]["digest"])
             out.field("Arguments", " ".join(row["engine_args"]))
             home = row["home"]
-            out.field("Home record", f"{home['node_id']}: {home['path']}" if home else "none recorded")
+            out.field("Home record", f"{names(home['node_id'])}: {home['path']}" if home else "none recorded")
             out.field("Copy records", str(len(row["prepared_copies"])))
             for view in sorted(row["prepared_copies"], key=lambda v: v["rank"]):
-                out.field(f"Rank {view['rank']}", f"{view['node_id']}; {'pinned' if view['pinned'] else 'not pinned'}; {view['path']}")
+                out.field(f"Rank {view['rank']}", f"{names(view['node_id'])}; {'pinned' if view['pinned'] else 'not pinned'}; {view['path']}")
             for blocker in row["blockers"]:
-                out.field("Blocker", blocker)
+                out.field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
             out.emit("Saved location records describe known managed files; they are not proof that those files are currently intact.")
 
 
@@ -199,7 +201,8 @@ def prefix_hint(repo, spec_id):
     """Name the complete catalog IDs a shortened spec ID matches; never select one."""
     if len(spec_id) >= 64 or not spec_id or any(c not in "0123456789abcdef" for c in spec_id):
         return
-    matches = sorted(path.stem for path in (Path(repo) / "releases").glob(f"{spec_id}*.json"))
+    from scripts.spec_selector import matches as catalog_matches
+    matches = catalog_matches(repo, spec_id)
     if not matches:
         raise StorageError(f"no catalog spec ID starts with {spec_id}; see ./pulsar models list")
     raise StorageError("expected the complete 64-character spec ID; " + spec_id + " matches "
@@ -223,7 +226,7 @@ def main(argv=None):
         if args.json:
             print(json.dumps({"schema_version": 1, "kind": "pulsar-model-catalog", "entries": rows}, sort_keys=True))
         else:
-            render(rows, details=args.command == "show")
+            render(rows, details=args.command == "show", names=NodeNames.saved(args.repo_root))
         return 0
     except (StorageError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f"catalog: {exc}", file=sys.stderr)

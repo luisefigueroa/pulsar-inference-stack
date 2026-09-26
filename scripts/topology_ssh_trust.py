@@ -452,10 +452,16 @@ def short_fingerprints(values: list[str]) -> str:
     return ",".join(value[:20] for value in values)
 
 
+def node_hostnames(report: dict[str, Any]) -> dict[int, str]:
+    return {node["rank"]: node.get("hostname") or f"node {node['rank']}"
+            for node in report.get("nodes") or []}
+
+
 def doctor_rows(report: dict[str, Any]) -> None:
+    hostnames = node_hostnames(report)
     for node in report.get("nodes") or []:
         rank = node["rank"]
-        label = "this node" if rank == 0 else f"cluster node {rank + 1}"
+        label = hostnames[rank]
         failed = [item for item in node["endpoints"] if not item["ok"]]
         if not failed:
             endpoints = node["endpoints"]
@@ -473,7 +479,7 @@ def doctor_rows(report: dict[str, Any]) -> None:
             observed_node_id = str(item.get("observed_node_id") or "none")[:12]
             via = ""
             if item.get("source_rank") not in (None, 0):
-                via = f" via cluster node {item['source_rank'] + 1}"
+                via = f" via {hostnames.get(item['source_rank'], 'node ' + str(item['source_rank']))}"
             message = (
                 f"{label} · {item['kind']} {item['endpoint']}{via} · "
                 f"{item['state']} · node expected {expected_node_id}; "
@@ -490,10 +496,11 @@ def render_human(report: dict[str, Any]) -> None:
     term.emit("TOPOLOGY SSH TRUST")
     term.field("Cluster", report["topology_id"][:12])
     term.field("Result", "PASS" if report["ok"] else "FAIL")
+    hostnames = node_hostnames(report)
     for node in report["nodes"]:
         term.blank()
         term.emit(
-            f"cluster node {node['rank'] + 1} · {node['hostname']}",
+            node["hostname"],
             initial_indent="  ",
             subsequent_indent="    ",
         )
@@ -502,7 +509,7 @@ def render_human(report: dict[str, Any]) -> None:
             status = "PASS" if endpoint["ok"] else endpoint["state"]
             via = ""
             if endpoint.get("source_rank") not in (None, 0):
-                via = f" via cluster node {endpoint['source_rank'] + 1}"
+                via = f" via {hostnames.get(endpoint['source_rank'], 'node ' + str(endpoint['source_rank']))}"
             value = f"{endpoint['endpoint']}{via} · {status}"
             if endpoint.get("detail"):
                 value += f" · {endpoint['detail']}"
