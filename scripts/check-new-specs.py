@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""New or edited catalog files use the current spec; unchanged history is readable."""
+"""New or edited catalog files use the current spec; unchanged history is readable.
+
+A catalog file may be deleted only for a spec recorded in catalog-removals.json
+whose results/ evidence is removed in the same change.
+"""
 import argparse
 from pathlib import Path
 import re
@@ -9,6 +13,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from release_spec import serving
+from release_spec.catalog_removals import LEDGER_PATH, check_append_only, parse_removals
 from release_spec.immutable_io import parse_strict_json
 
 
@@ -24,6 +29,31 @@ def commit(root,ref):
     return value
 
 
+def tree_blob(root,rev,path):
+    """Read one regular file from a commit, or from the index when rev is None."""
+    listing=git(root,'ls-files','--stage','--',path) if rev is None else git(root,'ls-tree',rev,'--',path)
+    if not listing: return None
+    if listing.split(b' ',1)[0] not in (b'100644',b'100755'): raise ValueError(f'{path} must be a regular file')
+    return git(root,'show',(':' if rev is None else rev+':')+path)
+
+
+def evidence_spec_ids(root,rev):
+    names=git(root,'ls-files','-z','--','results/') if rev is None else git(root,'ls-tree','-r','-z','--name-only',rev,'--','results/')
+    return {parts[2] for parts in (name.decode().split('/') for name in names.split(b'\0') if name) if len(parts)>3}
+
+
+def check_removals(root,removed,*,base_rev,head_rev):
+    before=parse_removals(None if base_rev is False else tree_blob(root,base_rev,LEDGER_PATH))
+    after=parse_removals(tree_blob(root,head_rev,LEDGER_PATH))
+    check_append_only(before,after)
+    unrecorded=sorted(spec_id for spec_id in removed if spec_id not in after)
+    if unrecorded:
+        raise ValueError(f'catalog records must remain readable history; deletion or renaming is not allowed unless the spec is recorded in {LEDGER_PATH}')
+    remaining=sorted(removed & evidence_spec_ids(root,head_rev))
+    if remaining:
+        raise ValueError(f'removed catalog spec still has results/ evidence: {", ".join(remaining)}')
+
+
 def check(root,*,base=None,head='HEAD',staged=False,merge_base=False):
     root=Path(root).absolute()
     if staged:
@@ -35,12 +65,13 @@ def check(root,*,base=None,head='HEAD',staged=False,merge_base=False):
         if merge_base:
             base_commit=git(root,'merge-base',base_commit,head_commit).decode().strip()
         changes=git(root,'diff','--name-status','--no-renames','-z',base_commit,head_commit,'--','releases/').split(b'\0')[:-1]
-    checked=0
+    checked=0;removed=set()
     for status,raw_name in zip(changes[::2],changes[1::2]):
         name=raw_name.decode()
         if name=='releases/README.md': continue
         if status==b'D':
-            raise ValueError('catalog records must remain readable history; deletion or renaming is not allowed')
+            match=re.fullmatch(r'releases/([0-9a-f]{64})\.json',name)
+            removed.add(match.group(1) if match else name);continue
         if not re.fullmatch(r'releases/[0-9a-f]{64}\.json',name):
             raise ValueError('new catalog entry has an invalid filename')
         if staged:
@@ -53,6 +84,11 @@ def check(root,*,base=None,head='HEAD',staged=False,merge_base=False):
             spec=serving.verify_spec(parse_strict_json(git(root,'show',head_commit+':'+name),label='committed spec'))
         if Path(name).stem!=spec['spec_id']: raise ValueError('catalog filename differs from spec identity')
         checked+=1
+    if staged:
+        has_head=subprocess.run(['git','-C',str(root),'rev-parse','--verify','-q','HEAD^{commit}'],capture_output=True).returncode==0
+        check_removals(root,removed,base_rev='HEAD' if has_head else False,head_rev=None)
+    else:
+        check_removals(root,removed,base_rev=base_commit,head_rev=head_commit)
     return checked
 
 

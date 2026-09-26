@@ -35,7 +35,9 @@ are separate:
 
 Withdrawn recipes remain visible with their reason. They are not recommended,
 but their exact configuration can still run when operational checks pass.
-Withdrawal never stops services or removes model files or archives.
+Withdrawal never stops services or removes model files or archives. A spec
+removed from the catalog is listed in `catalog-removals.json`; manage any
+remaining local storage for it with `--spec-file` and its retained document.
 
 ## Configure topology and storage
 

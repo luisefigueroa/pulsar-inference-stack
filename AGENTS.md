@@ -44,7 +44,9 @@ member. `state` and `review` are nullable metadata and never catalog or serving
 gates. Do not infer, promote, or rewrite either value. Baseline results, archive
 proof, and current launch compatibility are independent optional assessments;
 their outcome does not add or remove catalog membership. Withdrawal metadata
-does not stop services or delete archives automatically.
+does not stop services or delete archives automatically. Removal from the
+catalog is a separate explicit maintainer decision: delete the spec and its
+`results/` evidence together and append the reason to `catalog-removals.json`.
 
 New operations and contributions use spec schemas 2 and 3 through the public
 `pulsar` CLI contract. Schema-1 catalog records remain historical and readable; do not

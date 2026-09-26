@@ -150,6 +150,20 @@ class CatalogContributions(unittest.TestCase):
             current=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
             self.assertTrue(compat.check_launch_compatibility(current)['compatible'])
 
+    def test_removed_spec_leaves_catalog_and_evidence_together(self):
+        ledger=self.root/'catalog-removals.json'
+        entry={'spec_id':self.spec['spec_id'],'removed_at':'2026-09-26','reason':'Superseded'}
+        ledger.write_text(json.dumps({'schema_version':1,'kind':'pulsar-catalog-removals','removals':[entry]}))
+        with self.assertRaisesRegex(catalog.CatalogError,'recorded as removed'):self.check()
+        self.path.unlink()
+        with self.assertRaisesRegex(catalog.CatalogError,'evidence remains'):self.check()
+        shutil.rmtree(self.directory)
+        self.assertEqual(self.check()['spec_count'],0)
+        ledger.write_text(json.dumps({'schema_version':1,'kind':'pulsar-catalog-removals','removals':[{**entry,'spec_id':'E'*64}]}))
+        with self.assertRaisesRegex(ValueError,'complete spec id'):self.check()
+        ledger.unlink();ledger.symlink_to(self.root/'missing.json')
+        with self.assertRaisesRegex(catalog.CatalogError,'regular file'):self.check()
+
     def test_schema_and_evidence_clis_are_independent(self):
         schema=subprocess.run([
             sys.executable,str(ROOT/'scripts/verify-contribution.py'),
