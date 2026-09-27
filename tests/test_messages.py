@@ -52,10 +52,14 @@ class Prefixes(unittest.TestCase):
 # Words the glossary in docs/OPERATIONS.md#terms retired from human output.
 RETIRED = re.compile(r"\b[Pp]rofiles?\b|\bconf=|(?<!served-)model-name|[Hh]ot staging|[Cc]luster nodes?"
                      r"|[Rr]ecovery archive|[Cc]old recovery|[Aa]rchive directory|[Aa]rchive root\b")
-MESSAGE = re.compile(r"\b(die|warn|error_line|usage_die|log|echo|print_hanging|field|emit|print|fail|ok|bad|record)\b"
-                     r"[^#]*[\"']")
+# Any quoted string on a non-comment line: messages are often built in tuples,
+# variables or continuation lines, away from the helper that prints them.
+STRING = re.compile(r"\"[^\"]*\"|'[^']*'")
 # Identifiers and legacy explanations, not operator wording.
 ALLOWED = {"scripts/model_identity.py", "model_library/migration_views.py", "scripts/release_consumer.py"}
+# Messages that explain a removed legacy concept by its old name.
+LEGACY_LINES = ("REMOVED_LIST_VALIDATED_MESSAGE=",)
+DOCSTRING = ('"' * 3, "'" * 3)
 
 
 class Glossary(unittest.TestCase):
@@ -68,10 +72,24 @@ class Glossary(unittest.TestCase):
             if name in ALLOWED:
                 continue
             for number, line in enumerate(path.read_text().splitlines(), 1):
-                code = line.split(" #", 1)[0]
-                if MESSAGE.search(code) and RETIRED.search(code) and "--" + "skip" not in code:
-                    offenders.append(f"{name}:{number}: {line.strip()[:100]}")
+                if line.lstrip().startswith("#"):
+                    continue
+                if line.lstrip().startswith(DOCSTRING) or any(marker in line for marker in LEGACY_LINES):
+                    continue
+                for text in STRING.findall(line.split(" # ", 1)[0]):
+                    # Sentences only: identifiers, keys and paths have no spaces,
+                    # and {...} inside an f-string is code, not wording.
+                    text = re.sub(r"\{[^}]*\}", "", text)
+                    if " " in text and RETIRED.search(text):
+                        offenders.append(f"{name}:{number}: {line.strip()[:100]}")
+                        break
         self.assertEqual(offenders, [], "\n".join(offenders))
+
+
+class ConfLabels(unittest.TestCase):
+    def test_spec_ids_and_legacy_configurations_are_named_differently(self):
+        result = shell('conf_label_display ' + "ab" * 32 + '; echo; conf_label_display qwen-legacy-tp2')
+        self.assertEqual(result.stdout, "spec abababababab\nlegacy configuration 'qwen-legacy-tp2'")
 
 
 class Deprecations(unittest.TestCase):

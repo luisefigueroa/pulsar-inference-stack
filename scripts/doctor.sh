@@ -156,7 +156,7 @@ if [ "$port_listening" = 1 ]; then
       mflag="${1:-}" conf_l="${2:-}" net="${3:-}"
       if [ "$mflag" = "true" ] && [ -n "$conf_l" ]; then
         if [ "$net" = "host" ] || [ "$net" = "default" ]; then
-          managed_hit="$cname conf=$conf_l net=$net"
+          managed_hit="$cname conf label=$conf_l net=$net"
           break
         fi
       fi
@@ -219,7 +219,7 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   fi
 else
   record warn cold_storage \
-    "cold recovery storage is not configured (explicit PULSAR_COLD_ROOT required)"
+    "archive location is not configured (./pulsar configure archive-root)"
 fi
 
 avail=$(mem_available_gib_local)

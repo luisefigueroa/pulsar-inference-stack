@@ -26,7 +26,7 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 
 | Term | Meaning |
 | --- | --- |
-| spec | The catalog entry you select, shown as its spec ID or a 12-character prefix. |
+| spec | The serving specification you select: a catalog spec published under `releases/`, or a candidate passed with `--spec-file`. Shown as its spec ID or a 12-character prefix. |
 | recipe | The spec's execution configuration: image, engine arguments, container and geometry. An override produces a modified recipe. |
 | model files | The model's bytes, verified against the spec's snapshot manifest. |
 | home | The one verified copy of a snapshot, on one serving node. |

@@ -206,7 +206,7 @@ select_cluster_profile_fabric() {
   fi
   for ((rank = 0; rank < required; rank++)); do
     [ -n "${CLUSTER_PROFILE_HCAS[$rank]:-}" ] || {
-      echo "topology: rank $rank has no HCA in the spec's fabric" >&2
+      echo "topology: ${CLUSTER_NODE_HOSTNAMES[$rank]:-unnamed node} (rank $rank) has no HCA in the spec's fabric" >&2
       return 1
     }
   done

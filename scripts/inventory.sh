@@ -342,7 +342,7 @@ collect_live_snapshot() {
   fi
   worker_ip=""
   worker_status="unset"
-  worker_reason="no other cluster nodes confirmed"
+  worker_reason="no other nodes confirmed"
   if [ "$topology_count" -gt 1 ]; then
     worker_ip="${CLUSTER_NODE_SSH_HOSTS[1]}"
     worker_status="ok"
@@ -380,7 +380,7 @@ collect_live_snapshot() {
     | parse_gpu_csv_to_json_lines head >>"$tmp_g" || true
 
   if [ "$topology_count" -le 1 ]; then
-    printf 'worker\t\tnull\tnull\tunset\tunset\tunset\tno other cluster nodes confirmed\t\t\t\t\n' \
+    printf 'worker\t\tnull\tnull\tunset\tunset\tunset\tno other nodes confirmed\t\t\t\t\n' \
       >>"$tmp_n"
   fi
 
@@ -1409,10 +1409,10 @@ def node_label(name):
     if name == "head":
         return "this node"
     if name == "worker":
-        return "cluster node 2"
+        return "rank 1 node (hostname not recorded)"
     if name.startswith("rank-"):
         try:
-            return f"cluster node {int(name.split('-', 1)[1]) + 1}"
+            return f"rank {int(name.split('-', 1)[1])} node (hostname not recorded)"
         except ValueError:
             pass
     return name
