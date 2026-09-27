@@ -5,7 +5,9 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -15,7 +17,8 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from model_library.catalog import entries, render, age_seconds
+from model_library.catalog import archive_fact, argument_groups, entries, render, age_seconds
+from model_library.node_names import NodeNames
 from model_library.state import Store, view_key
 from model_library.integrity import StorageError
 from release_spec import pretty_json_bytes
@@ -50,12 +53,18 @@ class Catalog(unittest.TestCase):
             "kind": "pulsar-saved-observation", "spec_id": spec["spec_id"],
             "checked_at": "2026-09-05T00:00:00Z", **fields})
 
+    def show(self, rows, *, details=False, width=80, location="configured", names=None):
+        output = io.StringIO()
+        render(rows, details=details, writer=TerminalWriter(width=width, stream=output),
+               names=names or NodeNames({"node-a": "spark-1"}), location=location, now=self.now)
+        return output.getvalue()
+
     def test_empty_catalog_does_not_create_state(self):
         self.assertEqual(entries(self.repo, self.store), [])
         self.assertFalse(self.store.root.exists())
         output = io.StringIO(); render([], writer=TerminalWriter(stream=output))
         self.assertIn("catalog is empty", output.getvalue())
-        self.assertIn("confirms cluster membership first", output.getvalue())
+        self.assertIn("Specs appear when the maintainer publishes them under releases/.", output.getvalue())
 
     def test_catalog_spec_without_files_stays_unknown(self):
         self.add_spec()
@@ -75,9 +84,18 @@ class Catalog(unittest.TestCase):
         row = entries(self.repo, self.store, now=self.now)[0]
         self.assertIsNone(row["state"])
         self.assertIsNone(row["review"])
-        output = io.StringIO()
-        render([row], writer=TerminalWriter(stream=output))
-        self.assertGreaterEqual(output.getvalue().count("not specified"), 2)
+        # Unset metadata adds no rows; set metadata is shown as written.
+        for details in (False, True):
+            text = self.show([row], details=details)
+            self.assertNotIn("not specified", text)
+            self.assertNotRegex(text, r"(?m)^  (State|Review) ")
+        spec["state"] = "released"
+        spec["review"] = {"status": "validated", "reviewer": "example-reviewer",
+                          "reviewed_at": "2026-09-03T00:00:00Z"}
+        (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+        text = self.show(entries(self.repo, self.store, now=self.now))
+        self.assertRegex(text, r"(?m)^  State +released$")
+        self.assertRegex(text, r"(?m)^  Review +validated$")
 
     def test_explicit_missing_differs_from_unknown(self):
         spec = self.add_spec()
@@ -92,9 +110,10 @@ class Catalog(unittest.TestCase):
         spec = self.add_spec()
         self.observe(spec, local_state="ready", archive_state="verified")
         row = entries(self.repo, self.store, now=self.now)[0]
-        output = io.StringIO(); render([row], writer=TerminalWriter(stream=output))
-        self.assertIn("files prepared at last check", output.getvalue())
-        self.assertIn("Start rechecks", output.getvalue())
+        text = self.show([row])
+        self.assertRegex(text, r"(?m)^  Files +prepared on every rank \(checked 1 hour ago\)$")
+        self.assertTrue(" ".join(text.split()).endswith("start rechecks everything."), text)
+        self.assertNotIn("running", text)
         self.assertNotIn("running", row)
 
     def test_known_home_and_archive_do_not_imply_current_health(self):
@@ -129,8 +148,7 @@ class Catalog(unittest.TestCase):
         spec = self.add_spec(historical=True)
         row = entries(self.repo, self.store)[0]
         self.assertEqual((row["start_supported"], row["start_unsupported_reason"]), (False, "historical_spec"))
-        output = io.StringIO(); render([row], writer=TerminalWriter(stream=output))
-        self.assertIn("Start     not supported by this Stack (historical schema-1 spec)", output.getvalue())
+        self.assertRegex(self.show([row]), r"(?m)^  Start +not supported by this Stack \(historical schema-1 spec\)$")
         self.assertEqual(row["spec_id"], spec["spec_id"])
 
     def test_guarded_spec_stays_listed_and_says_start_is_unsupported(self):
@@ -144,12 +162,10 @@ class Catalog(unittest.TestCase):
         self.assertIs(rows[guarded["spec_id"]]["start_supported"], False)
         self.assertEqual(rows[guarded["spec_id"]]["start_unsupported_reason"], "guard_unsupported")
         for details in (False, True):
-            output = io.StringIO()
-            render([rows[guarded["spec_id"]]], details=details, writer=TerminalWriter(stream=output))
-            self.assertIn("Start     not supported by this Stack (serving guard)", output.getvalue())
-            output = io.StringIO()
-            render([rows[ordinary["spec_id"]]], details=details, writer=TerminalWriter(stream=output))
-            self.assertNotIn("not supported by this Stack", output.getvalue())
+            text = self.show([rows[guarded["spec_id"]]], details=details)
+            self.assertRegex(text, r"(?m)^  Start +not supported by this Stack \(serving guard\)$")
+            text = self.show([rows[ordinary["spec_id"]]], details=details)
+            self.assertNotIn("not supported by this Stack", text)
 
     def test_withdrawn_guarded_spec_does_not_claim_serving_remains_possible(self):
         spec = self.add_spec(guarded=True)
@@ -170,21 +186,198 @@ class Catalog(unittest.TestCase):
     def test_archive_presence_does_not_claim_full_verification(self):
         spec = self.add_spec()
         self.observe(spec, local_state="unknown", archive_state="present")
-        output = io.StringIO()
-        render(entries(self.repo, self.store), writer=TerminalWriter(stream=output))
-        self.assertIn("present; verify before restore", output.getvalue())
-        self.assertNotIn("verified at last check", output.getvalue())
-        self.assertNotIn("Last archive verification", output.getvalue())
+        text = self.show(entries(self.repo, self.store, now=self.now))
+        self.assertRegex(text, r"(?m)^  Archive +present at last check, not verified$")
+        self.assertNotIn("Last archive verification", text)
+
+    def test_one_archive_line_reconciles_the_check_with_the_verification_record(self):
+        # The contradictions this replaces: "Archive unknown" beside a saved
+        # verification, and "present; verify before restore" beside a newer one.
+        spec = self.add_spec(); manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-08-17T01:00:00Z"})
+        text = self.show(entries(self.repo, self.store, now=self.now))
+        self.assertRegex(text, r"(?m)^  Archive +verified 19 days ago$")
+        self.assertEqual(text.count("Archive"), 1)
+        self.observe(spec, local_state="ready", archive_state="missing")
+        text = self.show(entries(self.repo, self.store, now=self.now))
+        self.assertRegex(text, r"(?m)^  Archive +not found at last check \(verified 19 days ago before that\)$")
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-09-04T12:00:00Z"})
+        self.observe(spec, local_state="ready", archive_state="present")
+        text = self.show(entries(self.repo, self.store, now=self.now))
+        self.assertRegex(text, r"(?m)^  Archive +verified 13 hours ago$")
+
+    def test_archive_fact_table(self):
+        hour, day = 3600, 86400
+        record = {"verified_at": "fixture"}
+        # (check state, checked, check age, record, record age) -> wording
+        table = [
+            (("unknown", False, None, None, None), "unknown: never checked"),
+            (("unknown", False, None, record, 19 * day), "verified 19 days ago"),
+            (("unknown", True, 2 * hour, None, None), "unknown (checked 2 hours ago)"),
+            (("unknown", True, 2 * hour, record, 19 * day), "verified 19 days ago"),
+            (("verified", True, 13 * hour, record, 13 * hour), "verified 13 hours ago"),
+            (("verified", True, 13 * hour, record, 3 * day), "verified 13 hours ago"),
+            (("verified", True, 13 * hour, None, None), "verified 13 hours ago"),
+            (("present", True, 2 * hour, None, None), "present at last check, not verified"),
+            (("present", True, 2 * hour, record, 13 * hour), "verified 13 hours ago"),
+            (("present", True, 2 * day, record, 13 * hour), "verified 13 hours ago"),
+            (("missing", True, 2 * hour, None, None), "not found at last check"),
+            (("missing", True, 2 * hour, record, 19 * day), "not found at last check (verified 19 days ago before that)"),
+            (("missing", True, 2 * day, record, 13 * hour), "verified 13 hours ago"),
+            (("unavailable", True, 2 * hour, None, None), "unavailable at last check"),
+            (("unavailable", True, 2 * hour, record, 19 * day),
+             "unavailable at last check (verified 19 days ago before that)"),
+            (("unavailable", True, 2 * day, record, 13 * hour), "verified 13 hours ago"),
+            (("not-configured", True, 2 * hour, None, None), "archive location not configured at last check"),
+            (("not-configured", True, 2 * hour, record, 19 * day),
+             "archive location not configured at last check (verified 19 days ago before that)"),
+            (("not-configured", True, 2 * day, record, 13 * hour), "verified 13 hours ago"),
+        ]
+        for (state, checked, check_age, saved, saved_age), wording in table:
+            with self.subTest(state=state, checked=checked, record=saved is not None, check_age=check_age):
+                self.assertEqual(archive_fact(state, check_age, saved, saved_age, checked=checked)[2], wording)
 
     def test_future_observation_age_is_unknown(self):
         self.assertIsNone(age_seconds("2027-01-01T00:00:00Z", self.now))
 
+    def put_home(self, spec, node="node-a"):
+        manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.store.put("homes", manifest, {"schema_version": 1, "kind": "pulsar-home",
+            "snapshot_manifest_id": manifest, "node_id": node, "hub_path": "/nonexistent/home",
+            "path": "/nonexistent/home/snapshot", "verification": {"snapshot_manifest_id": manifest},
+            "verified_at": "2026-09-05T00:00:00Z"})
+        return manifest
+
+    def test_list_leads_with_state_and_fits_80_and_44_columns(self):
+        spec = self.add_spec()
+        self.put_home(spec)
+        for width in (80, 44):
+            text = self.show(entries(self.repo, self.store, now=self.now), width=width)
+            lines = text.splitlines()
+            self.assertTrue(all(len(line) <= width for line in lines), text)
+            # The block leads with the model and spec, then saved state; one caveat ends the view.
+            self.assertTrue(lines[0].startswith("example/model"), text)
+            self.assertIn(f"spec {spec['spec_id'][:12]}", text)
+            self.assertRegex(text, r"(?m)^  Recipe +1 node · tensor parallel 1$")
+            self.assertRegex(text, r"(?m)^  Files +unknown: never checked$")
+            self.assertRegex(text, r"(?m)^  Archive +unknown: never checked$")
+            self.assertEqual(" ".join(text.split("\n\n")[-1].split()),
+                             "Saved records. ./pulsar models check SPEC refreshes them; start rechecks everything.")
+            for retired in ("not specified", "choose Check now", "node(s)", "Home record", "Copy records",
+                            "Last archive verification", "Files / archive"):
+                self.assertNotIn(retired, text)
+
+    def test_details_keep_flags_with_values_and_the_digest_whole(self):
+        spec = self.add_spec()
+        self.put_home(spec)
+        pairs = [(flag, value) for flag, value in zip(spec["recipe"]["engine_args"], spec["recipe"]["engine_args"][1:])
+                 if flag.startswith("--") and not value.startswith("--")]
+        self.assertTrue(pairs)
+        for width in (80, 44):
+            text = self.show(entries(self.repo, self.store, now=self.now), details=True, width=width)
+            lines = text.splitlines()
+            self.assertIn("    " + spec["recipe"]["image_digest"], lines)
+            for flag, value in pairs:
+                line = next(line for line in lines if re.search(rf"(^| ){re.escape(flag)}( |$)", line))
+                # The value starts on the flag's line; only an overlong value breaks later.
+                self.assertIn(f"{flag} {shlex.quote(value)[:10]}", line, text)
+            self.assertRegex(text, r"(?m)^  Home +spark-1$")
+            self.assertIn("/nonexistent/home/snapshot", text)
+            self.assertRegex(text, r"(?m)^  Prepared copies +none recorded$")
+
+    def test_argument_groups_pair_flags_with_values(self):
+        self.assertEqual(argument_groups(["--max-model-len", "8192", "--enforce-eager", "--seed", "-1",
+                                          "--speculative-config", '{"method": "mtp"}', "--x=y", "plain"]),
+                         ["--max-model-len 8192", "--enforce-eager", "--seed -1",
+                          "--speculative-config '{\"method\": \"mtp\"}'", "--x=y", "plain"])
+
+    @classmethod
+    def help_text(cls, *command):
+        cache = cls.__dict__.get("_help", None)
+        if cache is None:
+            cache = cls._help = {}
+        if command not in cache:
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_"))}
+            result = subprocess.run([str(ROOT / "pulsar"), *command, "--help"], env={**env, "COLUMNS": "100"},
+                                    stdin=subprocess.DEVNULL, text=True, capture_output=True, timeout=60)
+            assert result.returncode == 0, result.stderr
+            cache[command] = result.stdout
+        return cache[command]
+
+    def suggested(self, text):
+        lines = text.splitlines()
+        start = next((index for index, line in enumerate(lines) if line.startswith("  Suggested ")), None)
+        if start is None:
+            return None
+        command = [lines[start][len("  Suggested"):].strip()]
+        while command[-1].endswith(" \\"):
+            start += 1
+            command.append(lines[start].strip())
+        return "\n".join(command)
+
+    def assert_pasteable(self, command):
+        syntax = subprocess.run(["bash", "-n"], input=command, text=True, capture_output=True)
+        self.assertEqual(syntax.returncode, 0, syntax.stderr)
+        tokens = shlex.split(command.replace("\\\n", " "))
+        self.assertEqual(tokens[0], "./pulsar")
+        # models check forwards to the model check operation and its options.
+        help_command = ("model",) if tokens[1] in ("model", "models") else (tokens[1],)
+        for flag in (token for token in tokens if token.startswith("--")):
+            self.assertIn(flag, self.help_text(*help_command), (command, help_command))
+        return tokens
+
+    def assert_suggestion(self, expected, location="configured"):
+        for details in (False, True):
+            for width in (80, 44):
+                text = self.show(entries(self.repo, self.store, now=self.now), details=details,
+                                 width=width, location=location)
+                command = self.suggested(text)
+                if expected is None:
+                    self.assertIsNone(command, text)
+                    continue
+                self.assertIsNotNone(command, text)
+                self.assertEqual(self.assert_pasteable(command), expected, text)
+
+    def test_suggested_command_is_the_menu_step_as_a_pasteable_command(self):
+        spec = self.add_spec(); prefix = spec["spec_id"][:12]
+        manifest = self.put_home(spec)
+        # Never checked, or checked too long ago: check the node the saved home names.
+        self.assert_suggestion(["./pulsar", "models", "check", prefix, "--node", "spark-1"])
+        self.observe(spec, local_state="ready", archive_state="present", checked_at="2026-09-01T00:00:00Z")
+        self.assert_suggestion(["./pulsar", "models", "check", prefix, "--node", "spark-1"])
+        self.observe(spec, local_state="changed", archive_state="present")
+        self.assert_suggestion(["./pulsar", "model", "prepare", prefix, "--node", "spark-1", "--yes"])
+        self.observe(spec, local_state="ready", archive_state="present")
+        self.assert_suggestion(["./pulsar", "start", prefix, "--node", "spark-1"])
+        # No home: the operator names the destination node, as the menu asks for one.
+        self.store.remove("homes", manifest)
+        self.observe(spec, local_state="missing", archive_state="not-configured")
+        acquire = ["./pulsar", "model", "acquire", prefix, "--node", "NODE_ID", "--yes"]
+        self.assert_suggestion(acquire, location="not-configured")
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-09-04T01:00:00Z"})
+        self.assert_suggestion(["./pulsar", "model", "restore", prefix, "--node", "NODE_ID", "--yes"])
+        self.assert_suggestion(acquire, location="disabled")
+
+    def test_a_guarded_spec_gets_no_suggestion_toward_start(self):
+        spec = self.add_spec(guarded=True)
+        self.put_home(spec)
+        self.assert_suggestion(["./pulsar", "models", "check", spec["spec_id"][:12], "--node", "spark-1"])
+        for state in ("ready", "changed", "missing"):
+            self.observe(spec, local_state=state, archive_state="present")
+            self.assert_suggestion(None)
+
     def test_narrow_details_and_help_do_not_overflow(self):
         spec = self.add_spec()
         self.observe(spec, local_state="ready", archive_state="verified", blockers=["A long explanatory message is wrapped so an operator can read it at a narrow terminal width."])
-        output = io.StringIO()
-        render(entries(self.repo, self.store), details=True, writer=TerminalWriter(width=44, stream=output))
-        self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()), output.getvalue())
+        digest = spec["recipe"]["image_digest"]
+        for width in (80, 44):
+            text = self.show(entries(self.repo, self.store, now=self.now), details=True, width=width)
+            # The image digest is the one identifier printed whole, past the width.
+            lines = [line for line in text.splitlines() if line != "    " + digest]
+            self.assertTrue(all(len(line) <= width for line in lines), text)
         result = subprocess.run([str(ROOT / "pulsar"), "help"], env={**os.environ, "COLUMNS": "44"},
                                 text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)

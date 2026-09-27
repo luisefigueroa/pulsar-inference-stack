@@ -45,17 +45,23 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 ```
 
 The catalog includes every released recipe even when no local files are
-present. It separates the spec's review status, local file preparation and
-archive observations. Details include exact identity, known home location,
-per-rank prepared copies, pins and blockers. A **rank** is this job's slot in
-the serving group; rank 0 provides the API and need not hold the home.
+present. Each spec is one block that leads with its saved state: recipe
+geometry, files, archive and, when saved records point to one, the
+**Suggested** next step as a command to paste. State and review rows appear
+only when the spec sets them. The archive line reconciles the last check with
+the archive verification record and shows the strongest fact with its age,
+such as `verified 13 hours ago` or `not found at last check (verified 19 days
+ago before that)`. Details add exact identity, the image digest, engine
+arguments, the home, per-rank prepared copies, pins and blockers. A **rank** is
+this job's slot in the serving group; rank 0 provides the API and need not
+hold the home.
 
 Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
-launch will work. **Check now** checks the selected managed locations; it
-does not search arbitrary cache trees, download files or start a server.
-**Files prepared** does not mean a service is running. Live service checks
-are separate:
+launch will work. `models check` (**Check now** in the menu) checks the
+selected managed locations; it does not search arbitrary cache trees, download
+files or start a server. Files prepared on every rank does not mean a service
+is running. Live service checks are separate:
 
 ```sh
 ./pulsar status <spec-id> --node <node> --json
@@ -71,7 +77,10 @@ saved records rule it out, and a **Not shown** line names it and the reason.
 cannot run; `models show` marks it `Start not supported by this Stack`, and no
 suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
-session; it is a starting point, not a readiness check. Storage mutations show
+session; it is a starting point, not a readiness check. `models list` and
+`models show` print the same step as a command; a download or restore names
+`NODE_ID` for the operator to choose, as the menu asks for a node. The recipe
+list labels show the same short saved state. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
 model, nodes and consequence; a blocked plan ends without a question. Esc
 steps back one level. Ctrl-C at a prompt leaves the menu; during an operation

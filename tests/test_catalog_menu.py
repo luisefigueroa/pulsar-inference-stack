@@ -174,6 +174,72 @@ class View(unittest.TestCase):
             menu.view_lines(row(), "configured", width=80, names=NAMES)
 
 
+class SuggestedCommand(unittest.TestCase):
+    def command(self, state, location="configured"):
+        return menu.suggested_command(state, location, NAMES)
+
+    def test_one_node_recipes_name_their_recorded_node_by_hostname(self):
+        one = {"geometry": {"nodes": 1, "tp": 1, "pp": 1}}
+        self.assertEqual(self.command(row(home=HOME, **one)), ["./pulsar", "models", "check", "abababababab",
+                                                               "--node", "spark-1"])
+        self.assertEqual(self.command(checked(home=HOME, local_state="ready", **one)),
+                         ["./pulsar", "start", "abababababab", "--node", "spark-1"])
+        # Without a home a prepared copy still names the node; an unknown node keeps its ID.
+        copy = {"rank": 0, "node_id": "n7", "path": "/fixture/copy", "pinned": False}
+        self.assertEqual(self.command(row(prepared_copies=[copy], **one))[-2:], ["--node", "n7"])
+        self.assertEqual(self.command(row(**one)), ["./pulsar", "models", "check", "abababababab"])
+
+    def test_multi_node_recipes_take_their_nodes_from_the_topology(self):
+        self.assertEqual(self.command(checked(home=HOME, local_state="changed")),
+                         ["./pulsar", "model", "prepare", "abababababab", "--yes"])
+        self.assertEqual(self.command(checked(home=HOME, local_state="ready")), ["./pulsar", "start", "abababababab"])
+
+    def test_acquire_and_restore_leave_the_destination_to_the_operator(self):
+        self.assertEqual(self.command(checked()), ["./pulsar", "model", "acquire", "abababababab",
+                                                   "--node", "NODE_ID", "--yes"])
+        self.assertEqual(self.command(checked(archive_state="verified")),
+                         ["./pulsar", "model", "restore", "abababababab", "--node", "NODE_ID", "--yes"])
+        state = checked(snapshots=two_snapshots(HOME, None))
+        self.assertEqual(self.command(state), ["./pulsar", "model", "acquire", "abababababab",
+                                               "--snapshot", "draft", "--node", "NODE_ID", "--yes"])
+
+    def test_no_command_when_nothing_is_suggested(self):
+        self.assertIsNone(self.command(checked(home=HOME, local_state="ready", **GUARDED)))
+        self.assertIsNone(self.command(checked(home=HOME, local_state="unknown")))
+
+
+class Labels(unittest.TestCase):
+    def test_labels_show_saved_state_and_fit_80_and_44_columns(self):
+        long_model = "org/" + "very-long-model-name-" * 4
+        states = {
+            "never checked": row(model_id=long_model),
+            "files prepared · start unsupported": checked(home=HOME, local_state="ready", **GUARDED),
+            "not prepared": checked(local_state="missing"),
+            "files changed · withdrawn": checked(home=HOME, local_state="changed",
+                                                 review={"status": "withdrawn", "reason": "Superseded."}),
+        }
+        for width in (80, 44):
+            for expected, state in states.items():
+                with self.subTest(width=width, state=expected):
+                    text = menu.menu_label(state, width)
+                    self.assertLessEqual(len(text), width - 6)
+                    self.assertIn("[abababab]", text)
+                    self.assertNotIn("not specified", text)
+                    if width == 80:
+                        self.assertTrue(text.endswith("] " + expected), text)
+        self.assertEqual(menu.short_state(checked(home=HOME, local_state="ready")), "files prepared")
+
+    def test_cli_prints_the_spec_id_and_label_per_entry(self):
+        document = json.dumps({"entries": [row(), checked(spec_id="cd" * 32, local_state="ready", home=HOME)]})
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
+                patch.dict("os.environ", {"COLUMNS": "80"}):
+            self.assertEqual(menu.main(["labels"]), 0)
+        self.assertEqual(output.getvalue().splitlines(),
+                         ["ab" * 32 + "\torg/model [abababab] never checked",
+                          "cd" * 32 + "\torg/model [cdcdcdcd] files prepared"])
+
+
 class Question(unittest.TestCase):
     def test_questions_name_model_placement_and_consequence(self):
         state = checked(home=HOME)

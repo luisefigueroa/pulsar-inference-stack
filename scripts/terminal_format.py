@@ -40,6 +40,7 @@ class TerminalWriter:
         text: object = "",
         initial_indent: str = "",
         subsequent_indent: str | None = None,
+        break_on_hyphens: bool = False,
     ) -> None:
         if text is None or text == "":
             print(file=self.stream)
@@ -51,7 +52,7 @@ class TerminalWriter:
             initial_indent=initial_indent,
             subsequent_indent=subsequent_indent,
             break_long_words=True,
-            break_on_hyphens=False,
+            break_on_hyphens=break_on_hyphens,
         )
         for line in wrapper.wrap(str(text)):
             print(line, file=self.stream)

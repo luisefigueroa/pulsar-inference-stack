@@ -1,11 +1,12 @@
 """Interactive catalog menu decisions from saved records only.
 
 Decides which operations the catalog menu offers for one recipe, which it
-leaves out and why, one suggested next step, and the wording of confirmation
-questions. Input is the catalog projection (``pulsar models show --json``) and
-the archive-location status; nothing here probes nodes. Leaving an operation
-out is a menu convenience: every operation still enforces its own
-preconditions and remains available from the CLI.
+leaves out and why, one suggested next step (also as the command that runs
+it), the recipe list labels, and the wording of confirmation questions. Input
+is the catalog projection (``pulsar models show --json``) and the
+archive-location status; nothing here probes nodes. Leaving an operation out
+is a menu convenience: every operation still enforces its own preconditions
+and remains available from the CLI.
 
 Output for the Bash menu is tab-separated lines; the menu never parses JSON
 itself.
@@ -18,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from .catalog import ARCHIVE_LABELS, LOCAL_LABELS, age_text
+from .catalog import age_text, archive_text, files_text
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
 
@@ -151,12 +152,85 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     return None
 
 
+def recorded_node(row: dict) -> str | None:
+    """The node_id saved records name for the recipe: a home, else a prepared copy."""
+    for member in members(row).values():
+        if (member.get("home") or {}).get("node_id"):
+            return str(member["home"]["node_id"])
+    for view in sorted(row.get("prepared_copies") or [], key=lambda view: view.get("rank", 0)):
+        if view.get("node_id"):
+            return str(view["node_id"])
+    return None
+
+
+def suggested_command(row: dict, archive_location: str, names: NodeNames | None = None) -> list[str] | None:
+    """The suggested next step (see suggestion) as the command that runs it.
+
+    One-node recipes name the node their saved records place them on, by
+    hostname when the saved topology knows it. Acquire and restore choose a
+    destination, so they carry a NODE_ID placeholder, as the menu asks for a
+    node. Returns None when nothing is suggested, as for a guarded spec.
+    """
+    names = names or NodeNames()
+    offered, _, _ = operations(row, archive_location)
+    suggested = suggestion(row, offered, archive_location, None, names)
+    if not suggested:
+        return None
+    action, spec = suggested[0], row["spec_id"][:12]
+    node = recorded_node(row) if row["geometry"]["nodes"] == 1 else None
+    placement = ["--node", (names.hostnames or {}).get(node) or node] if node else []
+    if action in ("acquire", "restore"):
+        snapshot = []
+        if isinstance(row.get("snapshots"), dict):
+            without_home = [str(name) for name, member in row["snapshots"].items() if not member.get("home")]
+            snapshot = ["--snapshot", without_home[0]] if without_home else []
+        return ["./pulsar", "model", action, spec, *snapshot, "--node", "NODE_ID", "--yes"]
+    if action == "check":
+        return ["./pulsar", "models", "check", spec, *placement]
+    if action == "prepare":
+        return ["./pulsar", "model", "prepare", spec, *placement, "--yes"]
+    if action == "start":
+        return ["./pulsar", "start", spec, *placement]
+    # Status and stop find the recorded service without a node.
+    return ["./pulsar", action, spec]
+
+
+# Files state in a recipe label: the same saved facts, in a few words.
+LABEL_FILES = {"ready": "files prepared", "missing": "not prepared", "changed": "files changed",
+               "unknown": "files unknown"}
+
+
+def short_state(row: dict) -> str:
+    """Saved state for a recipe label; review status only when the spec sets one."""
+    parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"]
+    if start_unsupported(row):
+        parts.append("start unsupported")
+    status = (row.get("review") or {}).get("status")
+    if status:
+        parts.append(str(status))
+    return " · ".join(parts)
+
+
+def menu_label(row: dict, width: int) -> str:
+    """One recipe list entry that fits the menu: model [spec] state.
+
+    A long model ID is shortened first, to no fewer than 8 characters; only
+    then is the end of the state cut.
+    """
+    budget = max(32, min(100, width)) - 6
+    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
+    model = clean(row["model_id"])
+    if len(model) + len(suffix) > budget and len(model) > 11:
+        model = model[:max(8, budget - len(suffix) - 3)] + "..."
+    text = model + suffix
+    return text if len(text) <= budget else text[:budget - 3] + "..."
+
+
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
-    checked = f"checked {age_text(row.get('observation_age_seconds'))}" if row.get("checked_at") else "not checked yet"
-    out.emit(f"Files: {LOCAL_LABELS[row['local_state']]} · Archive: {ARCHIVE_LABELS[row['archive_state']]} · {checked}")
+    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row)}")
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
     by_reason: dict[str, list[str]] = {}
@@ -292,6 +366,7 @@ def read_row(stream, spec_id: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
     view = sub.add_parser("view", help="menu lines for one recipe; catalog JSON on stdin")
     view.add_argument("--spec-id", required=True)
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
@@ -304,6 +379,11 @@ def main(argv: list[str] | None = None) -> int:
     confirm.add_argument("--node")
     args = parser.parse_args(argv)
     try:
+        if args.command == "labels":
+            width = terminal_width()
+            for entry in json.load(sys.stdin).get("entries") or []:
+                print(f"{entry['spec_id']}\t{menu_label(entry, width)}")
+            return 0
         row = read_row(sys.stdin, args.spec_id)
         names = NodeNames.saved()
         if args.command == "view":

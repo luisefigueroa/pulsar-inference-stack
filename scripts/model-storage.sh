@@ -186,22 +186,15 @@ browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
   require_gum "the catalog menu" "pulsar models list | show SPEC | check SPEC"
-  local result index rc
-  local -a ids=() labels=()
+  local result index rc entry
+  local -a entries=() ids=() labels=()
   while true; do
     result=$(catalog list --json) || return $?
-    mapfile -t ids < <(printf '%s' "$result" | python3 -c 'import json,sys;print("\n".join(r["spec_id"] for r in json.load(sys.stdin)["entries"]))')
-    if [ "${#ids[@]}" -eq 0 ] || [ -z "${ids[0]:-}" ]; then catalog list; return; fi
-    mapfile -t labels < <(printf '%s' "$result" | python3 -c '
-import json,sys,shutil
-width=max(32,min(100,shutil.get_terminal_size((80,24)).columns))-6
-for row in json.load(sys.stdin)["entries"]:
- review=row.get("review") or {}
- suffix=" ["+row["spec_id"][:8]+"] "+(review.get("status") or "not specified")
- model=row["model_id"]; available=max(4,width-len(suffix))
- if len(model)>available:model=model[:available-3]+"..."
- print(model+suffix)
-')
+    # Each entry is "SPEC_ID<tab>label"; labels show the same saved state as models list.
+    mapfile -t entries < <(printf '%s' "$result" | catalog_menu labels)
+    if [ "${#entries[@]}" -eq 0 ]; then catalog list; return; fi
+    ids=(); labels=()
+    for entry in "${entries[@]}"; do ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}"); done
     index=$(choose_index "Select a catalog spec" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$index" -lt "${#ids[@]}" ] || return 0
