@@ -35,6 +35,7 @@ class HomeMenu(unittest.TestCase):
         self.pulsar_log = self.root / "pulsar.log"
         (scripts / "ui.sh").write_text(r'''
 emit_frame() { cat; }
+require_gum() { :; }
 choose_index() {
   printf '%s\n' "$@" >> "$CHOOSE_LOG"
   printf '\n' >> "$CHOOSE_LOG"
@@ -67,7 +68,6 @@ choose_index() {
         env = {
             **os.environ,
             "PYTHONPATH": str(ROOT),
-            "GUM": "0",
             "PULSAR_FORCE_MENU": "1",
             "PULSAR_SETUP_STATUS_PY": str(ROOT / "scripts/setup_status.py"),
             "CHOOSE_LOG": str(self.choose_log),

@@ -10,13 +10,9 @@ if [ "$command_name" != menu ]; then
   if [ "$#" -eq 0 ]; then set -- show; fi
   exec python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"
 fi
-if [ ! -t 0 ] && [ "${PULSAR_FORCE_MENU:-0}" != 1 ]; then
-  echo 'Archive configuration menu needs a terminal.' >&2
-  echo 'Use: ./pulsar configure archive-root show|set PATH --yes|disable --yes' >&2
-  exit 2
-fi
 # shellcheck source=ui.sh
 . "${PULSAR_HOME_UI:-$STACK_ROOT/scripts/ui.sh}"
+require_gum "the archive storage menu" "pulsar configure archive-root show | set PATH --yes | disable --yes"
 
 archive_cli() {
   python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"

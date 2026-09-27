@@ -44,7 +44,6 @@ record() {
 doctor_ready_line() {
   local message="$1"
   local use_color=1 colors green reset
-  [ "${GUM:-1}" != 0 ] || use_color=0
   [ -z "${NO_COLOR:-}" ] || use_color=0
   case "${PULSAR_COLOR:-}" in
     never|0|no|off|false) use_color=0 ;;

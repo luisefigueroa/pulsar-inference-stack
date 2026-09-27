@@ -185,6 +185,7 @@ recipe_menu() {
 browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
+  require_gum "the catalog menu" "pulsar models list | show SPEC | check SPEC"
   local result index rc
   local -a ids=() labels=()
   while true; do

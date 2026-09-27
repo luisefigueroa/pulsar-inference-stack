@@ -66,8 +66,11 @@ if [ "$JSON" = 1 ] && [ "$WRITE" = 1 ]; then
   die "--json and --write-topology are separate operations"
 fi
 
-if [ "$WRITE" = 1 ] && [ "$YES" != 1 ] && [ ! -t 0 ]; then
-  die "refusing write without a TTY; rerun interactively or pass --yes"
+if [ "$WRITE" = 1 ] && [ "$YES" != 1 ]; then
+  # The save confirmation draws with Gum; check before any discovery work.
+  . "$REPO_DIR/scripts/ui.sh"
+  gum_available \
+    || die "saving membership asks for confirmation in an interactive terminal with Gum; review with pulsar topology detect, then use: pulsar topology configure --yes"
 fi
 require_cmd python3
 . "$REPO_DIR/scripts/topology-probes.sh"
@@ -308,10 +311,7 @@ echo
 "$MANIFEST_TOOL" render-save "$verified" "$CLUSTER_TOPOLOGY_FILE"
 
 if [ "$YES" != 1 ]; then
-  if [ ! -t 0 ]; then
-    die "refusing write without a TTY; rerun interactively or pass --yes"
-  fi
-  . "$REPO_DIR/scripts/ui.sh"
+  # ui.sh was loaded, and Gum found, before discovery started.
   if ! confirm "Save this cluster membership?"; then
     log "aborted — topology not modified"
     exit 0

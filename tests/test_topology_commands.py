@@ -185,21 +185,48 @@ class TopologyCommands(unittest.TestCase):
             if process.poll() is None: process.kill(); process.wait()
         return process.returncode, output.decode(errors='replace')
 
-    def test_plain_menu_back_does_not_probe_and_cancel_does_not_save(self):
+    def use_gum(self, **answers):
+        """Draw menus and confirmations with the fake Gum on the test terminal."""
+        self.fixture.env.update(TERM='xterm-256color', GUM_BIN=str(self.fixture.root/'bin/gum'), **answers)
+
+    def gum_prompts(self, kind):
+        """Headers of Gum menus or questions of Gum confirmations, in order."""
+        return [args[args.index('--header')+1] if kind == 'choose' else args[-1]
+                for tool, args in self.fixture.calls() if tool == 'gum' and args[:1] == [kind]]
+
+    def probes(self):
+        return [tool for tool, _ in self.fixture.calls() if tool != 'gum']
+
+    def test_menu_back_does_not_probe_and_cancel_does_not_save(self):
         f = self.fixture
-        result, output = self.interactive(['topology', 'menu'], '8\n', 'Select number:')
-        self.assertEqual(result, 0, output); self.assertIn('Cluster topology', output)
-        self.assertEqual(f.calls(), [])
+        self.use_gum(TOPOLOGY_GUM_CHOICE='7', TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'menu'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('choose'), ['Cluster topology'])
+        self.assertEqual(self.probes(), [])
         before = f.path.read_bytes()
-        result, output = self.interactive(['topology', 'configure'], 'n\n', 'Save this cluster membership?')
+        result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertEqual(result, 0, output); self.assertEqual(f.path.read_bytes(), before)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+
+    def test_menus_without_gum_name_commands_and_do_not_probe(self):
+        f = self.fixture  # TERM=dumb: Gum cannot draw
+        for args, expected in ((['topology', 'menu'], 'the topology menu'), (['topology', 'setup'], 'guided setup')):
+            result, output = self.interactive(args, '', '')
+            self.assertEqual(result, 2, output)
+            self.assertIn(f'error: {expected} needs an interactive terminal with Gum; use: pulsar topology', output)
+        before = f.path.read_bytes()
+        result, output = self.interactive(['topology', 'configure'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertIn('pulsar topology configure --yes', ' '.join(output.split()))
+        self.assertEqual(f.calls(), [])
+        self.assertEqual(f.path.read_bytes(), before)
 
     def test_gum_root_entry_and_back_does_not_probe(self):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
         # Cluster topology, Back to the home menu, then Exit.
-        f.env.update(GUM='1', TERM='xterm', GUM_BIN=str(f.root/'bin/gum'), TOPOLOGY_GUM_HOME='4,6', TOPOLOGY_GUM_CHOICE='7',
-                     PULSAR_COLD_ROOT=str(f.root))
+        self.use_gum(TOPOLOGY_GUM_HOME='4,6', TOPOLOGY_GUM_CHOICE='7', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual([tool for tool, _ in f.calls()], ['gum', 'gum', 'gum'])
@@ -208,8 +235,10 @@ class TopologyCommands(unittest.TestCase):
         f = self.fixture
         before = f.path.read_bytes()
         f.env['TOPOLOGY_ACTIVE_AFTER'] = '4'  # old + proposed two-node idle checks
-        result, output = self.interactive(['topology', 'configure'], 'y\n', 'Save this cluster membership?')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertNotEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_first_use_requires_enrollment_even_for_one_node(self):
@@ -225,23 +254,28 @@ class TopologyCommands(unittest.TestCase):
     def test_setup_refuses_noninteractive_use_and_skips_healthy_enrollment(self):
         f = self.fixture
         result = f.run('topology', 'setup')
-        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('error: guided setup needs an interactive terminal with Gum', result.stderr)
         self.assertEqual(f.calls(), [])
         before = f.path.read_bytes(), f.config.read_bytes()
+        self.use_gum()
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
-        self.assertNotIn('Enroll these SSH identities?', output)
+        self.assertEqual(self.gum_prompts('confirm'), [])
         self.assertFalse(any(tool == 'avahi-browse' for tool, _ in f.calls()))
 
     def test_setup_enrolls_missing_trust_only_after_confirmation(self):
         f = self.fixture
         self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
         before = f.path.read_bytes()
-        result, output = self.interactive(['topology', 'setup'], 'n\n', 'Enroll these SSH identities?')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertNotEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
         self.assertEqual(f.path.read_bytes(), before)
-        result, output = self.interactive(['topology', 'setup'], 'y\n', 'Enroll these SSH identities?')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(f.run('topology', 'check', '--json').returncode, 0)
@@ -249,9 +283,10 @@ class TopologyCommands(unittest.TestCase):
     def test_fresh_setup_configures_and_enrolls_in_order_with_separate_confirmations(self):
         f = self.fixture
         f.path.unlink(); f.config.unlink()
-        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], 'y\ny\n', 'Save this cluster membership?')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertIn('Enroll these SSH identities?', output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?', 'Enroll these SSH identities?'])
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         self.assertTrue(f.config.is_file())
@@ -259,15 +294,17 @@ class TopologyCommands(unittest.TestCase):
     def test_fresh_setup_cancel_never_reaches_enrollment(self):
         f = self.fixture
         f.path.unlink(); f.config.unlink()
-        result, output = self.interactive(['topology', 'setup'], 'n\n', 'Save this cluster membership?')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertNotEqual(result, 0, output)
-        self.assertNotIn('Enroll these SSH identities?', output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
 
     def test_setup_detects_invalid_or_unready_saved_state_without_replacing_it(self):
         f = self.fixture
         f.path.write_text('{broken')
         before = f.path.read_bytes()
+        self.use_gum()
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertNotEqual(result, 0, output)
         self.assertEqual(f.path.read_bytes(), before)

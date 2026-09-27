@@ -120,7 +120,8 @@ to single-node clusters too. The menu exposes the same **First-use setup** actio
 Initial key-based SSH login must already work; this flow verifies and records
 host identities, rather than installing remote login keys. No step starts or
 stops a model. For noninteractive agents, use configuration and SSH enrollment
-as separate explicitly approved commands; guided setup itself requires a terminal.
+as separate explicitly approved commands; guided setup itself requires an
+interactive terminal with Gum.
 
 `show` reads saved membership without probing. `check` checks every saved node's
 identity, confirmed control endpoint, platform readiness and pairwise fabric
@@ -147,8 +148,8 @@ by the proposed topology. The report is advisory and read-only; saving membershi
 does not silently move, purge, unpin, or rewrite model-library records.
 
 Show, check and detection support `--json`. `./pulsar topology menu` opens just
-this menu; opening either menu performs no probes. Gum and plain terminal modes
-use the same commands. Low-level manifest utilities remain available under
+this menu; opening either menu performs no probes. Every menu choice runs one of
+the commands above. Low-level manifest utilities remain available under
 `pulsar topology` with their existing arguments. From the private workbench,
 invoke the configured public Stack executable by absolute path; Workbench creates no
 second topology implementation.
@@ -295,7 +296,7 @@ resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks
 for confirmation before mutations and never chains restoration into preparation
-or launch. Gum and plain-terminal menus use the same actions.
+or launch. The menu needs Gum; every action is also a command.
 
 ## Move, archive and restore
 
@@ -376,9 +377,14 @@ Use Python 3.11 or newer, Bash, Git and util-linux `flock`. Serving nodes need
 Docker with NVIDIA GPU access. Inter-node operations use OpenSSH, rsync and
 iproute2 with confirmed control and RoCE endpoints. Acquisition requires a
 modern `hf` CLI on the selected node; its own local authentication is used.
-The optional Gum executable is included for the terminal menus; `GUM=0` uses
-plain prompts. Diagnostic output reports missing prerequisites instead of
-silently choosing other tools or transport.
+Menus and confirmation prompts draw with Gum: the repository bundles it for the
+arm64 Linux nodes (`third_party/gum/`); elsewhere install `gum` from the
+package manager or point `GUM_BIN` at it. `NO_COLOR` or
+`PULSAR_COLOR=never` draws them without color. Without Gum or an interactive
+terminal, a menu opens nothing: it names the equivalent commands and exits
+with status 2, and a command that would ask for confirmation names its `--yes`
+form. Diagnostic output reports missing prerequisites instead of silently
+choosing other tools or transport.
 
 Operator overrides `PULSAR_HOME_ROOT` and `PULSAR_HOT_ROOT` select storage roots;
 a spec's deployment-overlay `cache_root` selects its home acquisition root.

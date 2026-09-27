@@ -193,6 +193,7 @@ class Catalog(unittest.TestCase):
     # Scripted operator shell: parameterized doubles for the UI, topology and
     # every operation. No Docker, SSH, topology discovery or model files.
     UI = r'''
+require_gum() { :; }
 emit_frame() { cat; }
 spin() { shift; "$@"; }
 _pop() { local n; n=$(cat "$1.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$1.n"; sed -n "$((n + 1))p" "$1"; }
@@ -228,7 +229,7 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         files["answers"].write_text("\n".join(answers) + "\n")
         files["confirms"].write_text("\n".join(confirms) + "\n")
         files["plan.json"].write_text(json.dumps(plan or {"kind": "pulsar-restore-plan", "selected_node": "fixture-node"}))
-        env = dict(os.environ, PYTHONPATH=str(ROOT), GUM="0", PULSAR_MODEL_LIBRARY_DIR=str(self.store.root),
+        env = dict(os.environ, PYTHONPATH=str(ROOT), PULSAR_MODEL_LIBRARY_DIR=str(self.store.root),
                    CLUSTER_TOPOLOGY_FILE=str(self.root / "no-topology.json"),
                    MENU_ANSWERS=str(files["answers"]), MENU_CONFIRMS=str(files["confirms"]),
                    CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),

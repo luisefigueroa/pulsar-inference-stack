@@ -11,10 +11,18 @@ export PYTHONDONTWRITEBYTECODE=1
 
 SETUP_PY="${PULSAR_SETUP_STATUS_PY:-$REPO_DIR/scripts/setup_status.py}"
 status_json=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format json)
+complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("complete") else "0")')
+next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_action") or "")')
+# Without Gum the menu does not open; name the commands behind its choices.
+case "$complete:$next_action" in
+  1:*) require_gum "the Pulsar menu" "pulsar models list | inventory | doctor | configure archive-root | topology show | help" ;;
+  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | help" ;;
+  *:select-archive) require_gum "the Pulsar menu" "pulsar configure archive-root set PATH --yes | help" ;;
+  *) require_gum "the Pulsar menu" "pulsar topology setup | help" ;;
+esac
 echo
 python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text
 echo
-complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("complete") else "0")')
 
 if [ "$complete" = 1 ]; then
   choice=$(choose_index "Pulsar Inference Stack" "Catalog and storage" "Live service inventory" \
@@ -38,7 +46,6 @@ if [ "$complete" = 1 ]; then
   exec "$REPO_DIR/scripts/home.sh"
 fi
 
-next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_action") or "")')
 next_label=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_label") or "")')
 choice=$(choose_index "Pulsar Inference Stack" "$next_label" "Exit") \
   || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }

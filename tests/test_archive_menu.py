@@ -17,6 +17,7 @@ class ArchiveMenu(unittest.TestCase):
         self.confirm_log = self.root / "confirm.log"
         self.ui = self.root / "ui.sh"
         self.ui.write_text(r'''
+require_gum() { :; }
 choose_index() { printf '0\n'; }
 prompt_input() { printf '%s\n' "$ARCHIVE_PATH"; }
 emit_error() { cat >&2; }
@@ -32,8 +33,6 @@ confirm() {
             env={
                 **os.environ,
                 "PYTHONPATH": str(ROOT),
-                "GUM": "0",
-                "PULSAR_FORCE_MENU": "1",
                 "PULSAR_HOME_UI": str(self.ui),
                 "PULSAR_SETUP_ROOT": str(self.root),
                 "ARCHIVE_PATH": str(path),
@@ -55,6 +54,20 @@ confirm() {
         self.assertIn("Try another path?", self.confirm_log.read_text())
         self.assertNotIn("Save this archive location", self.confirm_log.read_text())
         self.assertFalse(missing.exists())
+        self.assertFalse((self.root / ".env").exists())
+
+    def test_without_gum_the_menu_names_commands_and_changes_nothing(self):
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "GUM"))}
+        result = subprocess.run(
+            ["bash", str(ROOT / "scripts/configure-archive.sh"), "menu"],
+            env={**env, "PULSAR_SETUP_ROOT": str(self.root), "TERM": "xterm-256color",
+                 "PYTHONDONTWRITEBYTECODE": "1"},
+            stdin=subprocess.DEVNULL, cwd=str(ROOT), text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "error: the archive storage menu needs an interactive terminal with Gum; "
+                                        "use: pulsar configure archive-root show | set PATH --yes | disable --yes\n")
         self.assertFalse((self.root / ".env").exists())
 
     def test_existing_directory_can_be_saved(self):
