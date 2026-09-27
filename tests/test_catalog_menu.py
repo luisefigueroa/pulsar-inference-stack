@@ -210,5 +210,16 @@ class Question(unittest.TestCase):
                                         "--plan-file", "plan.json"]), 3)
 
 
+class Historical(unittest.TestCase):
+    def test_schema1_specs_are_not_startable_from_this_stack(self):
+        from model_library.catalog import start_support
+        self.assertEqual(start_support({"schema_version": 1}), (False, "historical_spec"))
+        state = checked(home=HOME, local_state="ready", start_supported=False, start_unsupported_reason="historical_spec")
+        offered, hidden, _ = menu.operations(state, "configured")
+        self.assertNotIn("start", offered)
+        self.assertEqual(hidden["start"], "historical schema-1 specs cannot be started")
+        self.assertIsNone(menu.suggestion(state, offered, "configured", None, NAMES))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,7 +67,7 @@ PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out|--verification-jobs)
-      [ $# -ge 2 ] || die "$1 needs a value"
+      [ $# -ge 2 ] || usage_die "$1 needs a value"
       case "$1" in
         --spec-file) SPEC_FILE="$2" ;;
         --snapshot) SNAPSHOT="$2" ;;
@@ -88,16 +88,16 @@ while [ $# -gt 0 ]; do
     --transport) [ "${2:-}" = ssh-roce ] || die "bulk copies require confirmed ssh-roce"; shift ;;
     --copy-streams) [ "${2:-}" = 8 ] || die "bulk copies use eight streams"; shift ;;
     -h|--help) usage; exit 0 ;;
-    --*) die "unknown option: $1" ;;
-    *) [ -z "$SPEC_ID" ] || die "unexpected argument: $1"; SPEC_ID="$1" ;;
+    --*) usage_die "unknown option: $1" ;;
+    *) [ -z "$SPEC_ID" ] || usage_die "unexpected argument: $1"; SPEC_ID="$1" ;;
   esac
   shift
 done
 case "$OP" in help|-h|--help) usage; exit 0 ;; esac
-[[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--verification-jobs requires a positive integer"
-[ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || die "--plan and --yes are separate operations"
-case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) die "unknown operation: $OP" ;; esac
-if [ "$OP" = archive ]; then case "$ARCHIVE_ACTION" in create|verify) ;; *) die "archive requires create or verify" ;; esac; fi
+[[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || usage_die "--verification-jobs requires a positive integer"
+[ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || usage_die "--plan and --yes are separate operations"
+case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) usage_die "unknown operation: $OP" ;; esac
+if [ "$OP" = archive ]; then case "$ARCHIVE_ACTION" in create|verify) ;; *) usage_die "archive requires create or verify" ;; esac; fi
 MANIFEST_JSON="" SPEC_JSON="" MANIFEST_ID="" HOME_JSON="null"
 
 . "$REPO_DIR/scripts/model-library-context.sh"

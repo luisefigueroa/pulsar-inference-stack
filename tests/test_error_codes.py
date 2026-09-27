@@ -35,6 +35,22 @@ class ErrorCodes(unittest.TestCase):
                 self.assertEqual(status, 2)
                 self.assertEqual(response["error"]["code"], "usage_error", response)
 
+    def test_lifecycle_argument_mistakes_are_usage_errors(self):
+        # Argument parsing happens before any lock, topology or node access.
+        for args in (["start", "ab" * 32, "--bogus"], ["stop", "ab" * 32, "--bogus"], ["stop", "abc"],
+                     ["model", "bogus-operation"], ["status", "ab" * 32, "--bogus"]):
+            with self.subTest(args=args):
+                status, response = pulsar(*args)
+                self.assertEqual(status, 2)
+                self.assertEqual(response["error"]["code"], "usage_error", response)
+
+    def test_malformed_json_is_invalid_spec_not_a_file_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "spec.json"
+            path.write_text("{bad")
+            status, response = pulsar("spec", "verify", "--file", str(path))
+        self.assertEqual(response["error"]["code"], "invalid_spec", response)
+
     def test_unreadable_input_file_is_a_file_error(self):
         with tempfile.TemporaryDirectory() as temp:
             status, response = pulsar("spec", "verify", "--file", str(Path(temp) / "missing.json"))

@@ -66,7 +66,7 @@ def combined_observation(members):
 
 # Why this Stack cannot start a spec, as the start blocker code a start would
 # report, and the human wording for it.
-START_UNSUPPORTED_LABELS = {"guard_unsupported": "serving guard"}
+START_UNSUPPORTED_LABELS = {"guard_unsupported": "serving guard", "historical_spec": "historical schema-1 spec"}
 
 
 def start_support(spec):
@@ -74,9 +74,12 @@ def start_support(spec):
 
     Returns (start_supported, start_unsupported_reason). A serving guard in
     recipe.container needs enforcement this Stack does not implement, so every
-    launcher refuses it as the guard_unsupported start blocker. This is not a
+    launcher refuses it as the guard_unsupported start blocker. Historical
+    schema-1 specs have no launch compiler (historical_spec). This is not a
     readiness check and never gates catalog membership.
     """
+    if spec.get("schema_version") not in (2, 3):
+        return False, "historical_spec"
     recipe = spec.get("recipe")
     container = recipe.get("container") if isinstance(recipe, dict) else None
     if isinstance(container, dict) and "guard" in container:

@@ -302,10 +302,15 @@ def verify_spec(document: Any) -> dict:
 
 
 def load_json(path: str | Path) -> Any:
+    # Only reading is a file problem; malformed content is a document error.
     try:
-        return parse_strict_json(read_absolute_file(Path(path).absolute(), label="spec input"), label="spec input")
+        raw = read_absolute_file(Path(path).absolute(), label="spec input")
     except ImmutableDescriptorDirectoryError as exc:
         raise InputFileError("input", str(exc)) from exc
+    try:
+        return parse_strict_json(raw, label="spec input")
+    except ImmutableDescriptorDirectoryError as exc:
+        raise SpecValidationError("input", str(exc)) from exc
 
 
 def load_spec(path: str | Path, *, historical: bool = False) -> dict:

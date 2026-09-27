@@ -20,20 +20,20 @@ TARGET="$1"; shift
 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --node) NODE_SELECTOR="${2:?node required}"; shift ;;
-    --spec-file) export PULSAR_SPEC_FILE="${2:?file required}"; shift ;;
+    --node) [ -n "${2:-}" ] || usage_die "--node requires a node"; NODE_SELECTOR="$2"; shift ;;
+    --spec-file) [ -n "${2:-}" ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
     --retain-weights) ;;
-    --pin-weights|--purge-hot) die "stop retains files; use an explicit model pin or purge command" 2 ;;
-    *) die "unknown argument: $1" 2 ;;
+    --pin-weights|--purge-hot) usage_die "stop retains files; use an explicit model pin or purge command" ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
 if [ "$TARGET" = --all ]; then
-  [ -z "$NODE_SELECTOR" ] || die "--node cannot be used with --all" 2
+  [ -z "$NODE_SELECTOR" ] || usage_die "--node cannot be used with --all"
   # The delegated command acquires the lock once for all confirmed ranks.
   exec "$REPO_DIR/cluster/stop-cluster.sh" --all
 fi
-[[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || die "stop requires the complete 64-character spec id (./pulsar models list --json)" 2
+[[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || usage_die "stop requires the complete 64-character spec id (./pulsar models list --json)"
 acquire_model_library_lifecycle_lock exclusive
 load_cluster_topology || die "confirmed topology is required for safe stop"
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"

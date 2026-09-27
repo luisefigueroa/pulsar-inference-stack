@@ -41,7 +41,10 @@ start_blocker() {
 IMAGE = r'''#!/usr/bin/env bash
 state="$FIXTURE_IMAGE"; [ ! -e "$SYNC_MARKER" ] || state=ok
 if [ "$state" = ok ]; then rank_state=ok; elif [ "$state" = rank-unreachable ]; then rank_state=unreachable; else rank_state=missing; fi
-case " $* " in *" --json "*) printf '{"state":"%s","ranks":[{"rank":0,"topology_index":0,"state":"%s"}]}\n' "$state" "$rank_state" ;; *) echo "IMAGE $state" ;; esac
+ranks='{"rank":0,"topology_index":0,"state":"'"$rank_state"'"}'
+# "mixed": one rank unreachable and another known to lack the image.
+if [ "$state" = mixed ]; then state=rank-unreachable; ranks='{"rank":0,"topology_index":0,"state":"unreachable"},{"rank":1,"topology_index":1,"state":"missing"}'; fi
+case " $* " in *" --json "*) printf '{"state":"%s","ranks":[%s]}\n' "$state" "$ranks" ;; *) echo "IMAGE $state" ;; esac
 [ "$state" = ok ]
 '''
 WEIGHTS = '#!/usr/bin/env bash\ntouch "$WEIGHTS_MARKER"\nexit "$FIXTURE_WEIGHTS_RC"\n'
@@ -51,9 +54,9 @@ exit "$FIXTURE_MEMORY_RC"
 '''
 
 
-# Blockers that no ./pulsar command resolves; their fix names the document
-# that explains why. Adding a code here needs the same justification.
-NO_COMMAND_FIX = {"guard_unsupported": "docs/SERVING_GUARD_SCHEMA.md"}
+# Blockers that no ./pulsar command resolves; their fix says what to use
+# instead. Adding a code here needs the same justification.
+NO_COMMAND_FIX = {"guard_unsupported": "docs/SERVING_GUARD_SCHEMA.md", "historical_spec": "docs/OPERATIONS.md"}
 
 
 class Catalog(unittest.TestCase):
@@ -85,6 +88,16 @@ class Catalog(unittest.TestCase):
         record = start_blockers.blocker("node_unreachable", node="spark-2", rank=1)
         self.assertEqual(start_blockers.human(record), "BLOCKED node_unreachable: spark-2 (rank 1): the node is "
                                                        "unreachable over SSH. Next: ./pulsar topology check")
+
+    def test_fixes_keep_the_effective_recipe(self):
+        record = start_blockers.blocker("image_missing", spec="ab" * 32, placement="--node spark-1",
+                                        spec_file="/tmp/candidate spec.json", override_file="/tmp/override.json",
+                                        memory_estimate_file="/tmp/estimate.json")
+        self.assertEqual(record["fix"], "./pulsar start " + "ab" * 32 + " --spec-file '/tmp/candidate spec.json' "
+                         "--override-file /tmp/override.json --memory-estimate-file /tmp/estimate.json "
+                         "--node spark-1 --pull-image")
+        prepare = start_blockers.blocker("model_files_not_ready", spec="ab" * 32, override_file="/tmp/o.json")
+        self.assertNotIn("--override-file", prepare["fix"])
 
     def test_contract_publishes_the_codes(self):
         self.assertEqual(integration_contract.contract()["start_blocker_codes"], sorted(start_blockers.BLOCKERS))
@@ -131,12 +144,41 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual(codes, ["model_files_not_ready"])  # from the first run only
         self.assertTrue(self.sync.exists(), result.stderr + result.stdout)
 
+    def test_known_missing_image_is_reported_with_an_unreachable_node(self):
+        result, codes = self.start(image="mixed")
+        self.assertEqual(codes, ["node_unreachable", "image_missing"])
+        self.assertIn("on fixture-host-1", result.stdout)
+        self.assertFalse(self.weights.exists())
+
     def test_unreachable_node_ends_the_checks_and_names_the_node(self):
         result, codes = self.start(image="rank-unreachable")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(codes, ["node_unreachable"])
         self.assertIn("BLOCKED node_unreachable: fixture-host-0 (rank 0)", result.stdout)
         self.assertFalse(self.weights.exists())
+
+
+class StatusWithoutService(unittest.TestCase):
+    def status(self, worker):
+        with tempfile.TemporaryDirectory() as temp:
+            scripts = Path(temp) / "scripts"; scripts.mkdir()
+            shutil.copyfile(ROOT / "scripts/status.sh", scripts / "status.sh")
+            (scripts / "observe-serving.sh").write_text("#!/usr/bin/env bash\nexit 1\n")
+            (scripts / "inventory.sh").write_text("#!/usr/bin/env bash\necho '" + json.dumps(
+                {"services": [], "worker": worker}) + "'\n")
+            for name in ("observe-serving.sh", "inventory.sh"):
+                (scripts / name).chmod(0o700)
+            return subprocess.run(["bash", str(scripts / "status.sh"), "ab" * 32], text=True,
+                                  capture_output=True, timeout=30)
+
+    def test_start_is_suggested_only_when_absence_is_established(self):
+        complete = self.status({"status": "ok"})
+        self.assertEqual(complete.returncode, 1)
+        self.assertIn("Start it with ./pulsar start abababababab", complete.stderr)
+        unknown = self.status({"status": "unreachable", "reason": "spark-2 · SSH unreachable"})
+        self.assertEqual(unknown.returncode, 1)
+        self.assertIn("is unknown: spark-2 · SSH unreachable", unknown.stderr)
+        self.assertNotIn("pulsar start", unknown.stderr)
 
 
 class JsonEnvelope(unittest.TestCase):

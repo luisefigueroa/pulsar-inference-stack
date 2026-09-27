@@ -34,7 +34,7 @@ case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 NAME="${1:-}"
 unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 unset PULSAR_MEMORY_ESTIMATE_JSON
-[ -n "$NAME" ] || die "usage: pulsar start SPEC_ID [options]; see ./pulsar start --help"
+[ -n "$NAME" ] || usage_die "usage: pulsar start SPEC_ID [options]; see ./pulsar start --help"
 shift
 
 SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
@@ -42,15 +42,15 @@ DRY=0 VERBOSE=0 NODE_SELECTOR=""
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
-    --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
-    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-file requires a file" 2; MEMORY_ESTIMATE_FILE="$2"; shift ;;
-    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
+    --override-file) [ "$#" -ge 2 ] || usage_die "--override-file requires a JSON file"; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
+    --spec-file) [ "$#" -ge 2 ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || usage_die "--memory-estimate-file requires a file"; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || usage_die "--memory-estimate-id requires a digest"; MEMORY_ESTIMATE_ID="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
     --force) refuse_removed_force_flag ;;
     --skip-preflight) SKIP_PF=1 ;;
-    --skip-weights-check) die "model-file verification cannot be skipped" 2 ;;
+    --skip-weights-check) usage_die "model-file verification cannot be skipped" ;;
     --accept-memory-warn) ACCEPT_MEM=1 ;;
     --pull-image) PULL_IMG=1 ;;
     --replace) REPLACE=1 ;;
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
       refuse_removed_weight_mode_flag
       ;;
     --node)
-      [ "$#" -ge 2 ] || die "--node requires a topology node id or hostname" 2
+      [ "$#" -ge 2 ] || usage_die "--node requires a topology node id or hostname"
       NODE_SELECTOR="$2"
       shift
       ;;
@@ -69,7 +69,7 @@ while [ $# -gt 0 ]; do
       up_usage
       exit 0
       ;;
-    *) die "unknown arg: $1" ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
@@ -93,11 +93,11 @@ if [ "$NODES" -eq 1 ]; then
   PLACEMENT_SELECTOR="${SINGLE_NODE_ID:-$SINGLE_NODE_KEY}"
   PLACEMENT_ARGS=(--node "$PLACEMENT_SELECTOR")
   # Suggested commands name the node by hostname, which --node also accepts.
-  # shellcheck disable=SC2034 # read by start_blocker in lib.sh
-  START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
+  # Exported so serve.sh, which records service_exists, names the node too.
+  export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
 elif [ -n "$NODE_SELECTOR" ]; then
-  die "--node is only valid for one-node profiles" 2
+  usage_die "--node is only valid for one-node profiles"
 fi
 resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
@@ -191,6 +191,11 @@ if [ "$img_rc" != 0 ]; then
         blocked docker_unavailable --node "$host" --rank "$rank"
       done < <(image_ranks docker-error)
       [ "$BLOCKER_COUNT" -gt 0 ] || blocked docker_unavailable --detail "image check state $img_state"
+      # Ranks already known to lack the image are reported now, not after repair.
+      missing_on=$(image_ranks missing | cut -f2 | paste -sd, - | sed 's/,/, /g')
+      if [ -n "$missing_on" ] && { [ "$DRY" = 1 ] || [ "$PULL_IMG" != 1 ]; }; then
+        blocked image_missing --detail "$IMAGE on $missing_on"
+      fi
       stop_if_blocked
       ;;
     missing-on-worker|missing-on-rank|missing-on-head|missing-on-target|missing-both|unknown|"")

@@ -11,7 +11,6 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from release_spec import serving
-from release_spec.immutable_io import ImmutableDescriptorDirectoryError
 from release_spec.schema import ReleaseSpecError
 from scripts.terminal_format import TerminalWriter
 
@@ -49,7 +48,9 @@ def error_code(exc: BaseException) -> str:
     """Envelope code for an input, usage or validation failure."""
     if isinstance(exc, UsageError):
         return "usage_error"
-    if isinstance(exc, (OSError, ImmutableDescriptorDirectoryError, serving.InputFileError)):
+    # ImmutableDescriptorDirectoryError alone is ambiguous (read or parse);
+    # load_json separates the two, so only its InputFileError is a file error.
+    if isinstance(exc, (OSError, serving.InputFileError)):
         return "file_error"
     if getattr(exc, "field", None) == "schema_version":
         return "unsupported_spec_version"

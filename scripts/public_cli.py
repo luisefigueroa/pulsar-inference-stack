@@ -47,7 +47,13 @@ def producer_provenance():
             'working_tree_dirty': bool(dirty.stdout) if dirty.returncode == 0 else None}
 
 
+# Private status the lifecycle scripts use for command-line mistakes (usage_die
+# in lib.sh) while --json is active, so they are reported as usage_error.
+USAGE_EXIT = 64
+
+
 def execute(script, args, *, json_result=False, env=None):
+    env = {**(os.environ if env is None else env), 'PULSAR_USAGE_EXIT': str(USAGE_EXIT)}
     try:
         result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
     except Cancelled as exc:
@@ -61,6 +67,9 @@ def execute(script, args, *, json_result=False, env=None):
     if result.returncode:
         if result.stdout:
             print(redact_diagnostic(result.stdout), file=sys.stderr, end='')
+        if result.returncode == USAGE_EXIT:
+            lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
+            raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('ERROR: ', 1)[-1].split('error: ', 1)[-1])
         raise RuntimeError((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
     if json_result:
         try:

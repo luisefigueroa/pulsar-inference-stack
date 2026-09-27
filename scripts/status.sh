@@ -13,13 +13,23 @@ if [ "$1" = --help ] || [ "$1" = -h ]; then
 fi
 JSON=0
 for arg in "$@"; do [ "$arg" != --json ] || JSON=1; done
-if ! observation=$("$ROOT/scripts/observe-serving.sh" "$@"); then
+observe_rc=0
+observation=$("$ROOT/scripts/observe-serving.sh" "$@") || observe_rc=$?
+# A --json usage error is reported as such, not replaced by the inventory view.
+if [ -n "${PULSAR_USAGE_EXIT:-}" ] && [ "$observe_rc" = "$PULSAR_USAGE_EXIT" ]; then exit "$observe_rc"; fi
+if [ "$observe_rc" != 0 ]; then
   inventory=$("$ROOT/scripts/inventory.sh" --json) || exit 1
   observation=$(printf '%s' "$inventory" | python3 -c '
 import json,sys
 inventory=json.load(sys.stdin)
 services=[row for row in inventory.get("services",[]) if row.get("conf")==sys.argv[1]]
-if not services: raise SystemExit(f"No running service for spec {sys.argv[1][:12]} was observed. Start it with ./pulsar start {sys.argv[1][:12]}")
+if not services:
+    worker=inventory.get("worker") or {}
+    # Absence is established only when every remote node was observed.
+    if worker.get("status") not in ("ok","unset"):
+        reason=worker.get("reason") or "a node could not be observed"
+        raise SystemExit(f"Service state for spec {sys.argv[1][:12]} is unknown: {reason}. Run ./pulsar topology check")
+    raise SystemExit(f"No running service for spec {sys.argv[1][:12]} was observed. Start it with ./pulsar start {sys.argv[1][:12]}")
 print(json.dumps(dict(schema_version=1,kind="pulsar-service-status",selected_spec_id=sys.argv[1],
     configuration_verified=False,services=services,
     message="Service inventory only; complete current-spec observation is unavailable.")))

@@ -94,10 +94,16 @@ log()  { printf '[%s] %s\n' "${SCRIPT_NAME:-pulsar}" "$*"; }
 start_blocker() {
   local code="$1"; shift
   python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" --spec "${START_BLOCKER_SPEC:-${NAME:-}}" \
-    --placement "${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" "$@"
+    --placement "${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" \
+    --spec-file "${PULSAR_SPEC_FILE:-}" --override-file "${PULSAR_OVERRIDE_FILE:-}" \
+    --memory-estimate-file "${MEMORY_ESTIMATE_FILE:-}" --memory-estimate-id "${MEMORY_ESTIMATE_ID:-}" "$@"
 }
 warn() { printf '[%s] warn: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$1" >&2; exit "${2:-1}"; }
+# usage_die MESSAGE — a command-line mistake: exit 2, or PULSAR_USAGE_EXIT
+# when the public CLI asks for a distinct status so --json can report
+# usage_error instead of prerequisite_failed.
+usage_die() { die "$1" "${PULSAR_USAGE_EXIT:-2}"; }
 
 # Human-facing name for a confirmed node position: its saved hostname. Machine
 # data and launcher arguments keep node_id and rank; people read hostnames.
@@ -336,9 +342,14 @@ require_spec_platform_admission() {
 # staging an image or replacing a service. Read-only commands do not call it.
 # A serving guard in the effective recipe, including one an override adds, is
 # refused as the guard_unsupported start blocker: this Stack cannot run it.
+# Historical schema-1 specs are refused as historical_spec.
 require_spec_launch_admission() {
   local name="${1:-${CONF_NAME:-}}" guard
   local -a detail=()
+  if [ "${CONF_SOURCE:-conf}" = spec ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("schema_version")==1 else 1)' "$CONF_PATH" 2>/dev/null; then
+    START_BLOCKER_SPEC="$name" start_blocker historical_spec
+    die "spec ${name:0:12} is a historical schema-1 spec; historical services remain inspectable and stoppable" 2
+  fi
   require_spec_platform_admission "$@"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   # Prints "spec" or "override" (where the guard comes from), or nothing.
