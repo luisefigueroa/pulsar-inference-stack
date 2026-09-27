@@ -1,10 +1,15 @@
 """Actual launcher entrypoints refuse unsupported guards before side effects."""
+import contextlib
+import io
 import json
 import copy
+import os
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from release_spec.tests.test_serving_guard import guarded, policy, GIB
+from scripts import public_cli, start_blockers
 from tests.test_container_runtime import fixture
 from tests import test_diagnostics as diagnostics
 
@@ -53,6 +58,14 @@ class GuardLaunchAdmission(unittest.TestCase):
         self.assertNotIn('guard execution is not supported', result.stderr)
         self.assertFalse((self.base.root / 'mutations').exists())
 
+    def launch(self, script, spec_id, *flags):
+        blockers = self.base.root / 'blockers.jsonl'
+        blockers.unlink(missing_ok=True)
+        result = subprocess.run(['bash', str(ROOT / script), spec_id, *flags],
+                                env={**self.base.env, 'PULSAR_START_BLOCKERS_FILE': str(blockers)},
+                                cwd=ROOT, capture_output=True, text=True)
+        return result, start_blockers.read(blockers)
+
     def test_every_launcher_rejects_guard_before_pulls_or_replacement(self):
         for script, nodes, flags in [('scripts/up.sh', 3, ['--yes', '--pull-image', '--replace']),
                                      ('serve.sh', 1, ['--replace']),
@@ -60,11 +73,40 @@ class GuardLaunchAdmission(unittest.TestCase):
             with self.subTest(script=script):
                 spec = guarded(fixture(nodes)[0])
                 self.base.path.write_text(json.dumps(spec))
-                result = subprocess.run(['bash', str(ROOT / script), spec['spec_id'], *flags],
-                                        env=self.base.env, cwd=ROOT, capture_output=True, text=True)
-                self.assertNotEqual(result.returncode, 0)
+                result, recorded = self.launch(script, spec['spec_id'], *flags)
+                self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertIn('guard execution is not supported', result.stderr)
+                self.assertIn(spec['spec_id'][:12], result.stderr)
+                self.assertEqual(result.stdout.count('BLOCKED '), 1, result.stdout)
+                self.assertIn('BLOCKED guard_unsupported: this spec requires serving-guard enforcement '
+                              '(recipe.container.guard), which this Stack cannot run. Next: no start is '
+                              'possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md', result.stdout)
+                self.assertEqual(recorded, [start_blockers.blocker('guard_unsupported')])
                 self.assertFalse((self.base.root / 'mutations').exists())
+
+    def test_start_json_returns_the_guard_blocker_in_details(self):
+        spec = guarded(fixture(3)[0])
+        self.base.path.write_text(json.dumps(spec))
+        output = io.StringIO()
+        with patch.dict(os.environ, self.base.env, clear=True), contextlib.redirect_stdout(output), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = public_cli.main(['start', spec['spec_id'], '--yes', '--json'])
+        error = json.loads(output.getvalue())['error']
+        self.assertEqual(status, 3)
+        self.assertEqual(error['code'], 'prerequisite_failed')
+        self.assertEqual(error['details'], [start_blockers.blocker('guard_unsupported')])
+        self.assertIn('guard execution is not supported', error['message'])
+        self.assertFalse((self.base.root / 'mutations').exists())
+
+    def test_unguarded_spec_passes_launch_admission(self):
+        spec = fixture(3)[0]
+        self.base.path.write_text(json.dumps(spec))
+        with open(self.base.env['BASH_ENV'], 'a') as stream:
+            stream.write('\nrequire_profile_topology() { echo PAST_ADMISSION >&2; exit 67; }\n')
+        result, recorded = self.launch('scripts/up.sh', spec['spec_id'], '--yes')
+        self.assertEqual(result.returncode, 67, result.stderr)
+        self.assertIn('PAST_ADMISSION', result.stderr)
+        self.assertEqual(recorded, [])
 
     def test_guard_added_by_override_is_also_rejected(self):
         spec = fixture(3)[0]
@@ -73,11 +115,12 @@ class GuardLaunchAdmission(unittest.TestCase):
         override.write_text(json.dumps({'container': {'guard': policy(),
             'memory_limit_bytes': 96 * GIB, 'network_mode': 'host',
             'restart_policy': 'no', 'restart_max_retries': 0, 'healthcheck': None}}))
-        result = subprocess.run(['bash', str(ROOT / 'scripts/up.sh'), spec['spec_id'],
-                                 '--override-file', str(override), '--yes', '--replace', '--pull-image'],
-                                env=self.base.env, cwd=ROOT, capture_output=True, text=True)
-        self.assertNotEqual(result.returncode, 0)
+        result, recorded = self.launch('scripts/up.sh', spec['spec_id'], '--override-file', str(override),
+                                       '--yes', '--replace', '--pull-image')
+        self.assertEqual(result.returncode, 2, result.stderr)
         self.assertIn('guard execution is not supported', result.stderr)
+        self.assertEqual([row['blocker'] for row in recorded], ['guard_unsupported'])
+        self.assertIn('(added by --override-file)', recorded[0]['message'])
         self.assertFalse((self.base.root / 'mutations').exists())
 
 

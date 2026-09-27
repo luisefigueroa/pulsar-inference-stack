@@ -38,6 +38,9 @@ until **Back** or **Exit**; each operation returns to the same recipe with a
 one-line result. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
+**Start** is also left out for a spec with a serving guard, which this Stack
+cannot run; `models show` marks it `Start not supported by this Stack`, and no
+suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
 session; it is a starting point, not a readiness check. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
@@ -237,7 +240,9 @@ An incomplete topology, an unreachable node or unavailable Docker ends the
 checks early because later checks need every node. With `--pull-image`, the
 image is staged only after every other check passes, so a start that is
 blocked anyway changes nothing. The same blockers appear in `start --json`
-error details; see [the public contract](CONTRACT.md).
+error details; see [the public contract](CONTRACT.md). A spec with a serving
+guard is refused before any check as `guard_unsupported`, which no command
+resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).
 
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks

@@ -31,6 +31,11 @@ BLOCKERS = {
     "service_exists": ("a service for this spec already exists",
                        "./pulsar status {spec} {placement}(pass --replace only with explicit replacement approval)"),
     "preflight_failed": ("the multi-node preflight failed", "./pulsar doctor"),
+    # The one blocker no ./pulsar command resolves: this Stack validates guard
+    # documents but has no guard execution, so the fix names the guard docs.
+    "guard_unsupported": ("this spec requires serving-guard enforcement (recipe.container.guard), "
+                          "which this Stack cannot run",
+                          "no start is possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md"),
 }
 
 

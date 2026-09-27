@@ -51,13 +51,32 @@ exit "$FIXTURE_MEMORY_RC"
 '''
 
 
+# Blockers that no ./pulsar command resolves; their fix names the document
+# that explains why. Adding a code here needs the same justification.
+NO_COMMAND_FIX = {"guard_unsupported": "docs/SERVING_GUARD_SCHEMA.md"}
+
+
 class Catalog(unittest.TestCase):
     def test_every_blocker_names_one_next_step(self):
         for code in start_blockers.BLOCKERS:
             record = start_blockers.blocker(code, spec="ab" * 32, placement="--node spark-2")
             self.assertEqual(record["blocker"], code)
-            self.assertTrue(record["fix"].startswith("./pulsar "), record)
             self.assertNotIn("{", record["fix"])
+            if code in NO_COMMAND_FIX:
+                self.assertFalse(record["fix"].startswith("./pulsar "), record)
+                self.assertIn(NO_COMMAND_FIX[code], record["fix"])
+                self.assertTrue((ROOT / NO_COMMAND_FIX[code]).is_file())
+            else:
+                self.assertTrue(record["fix"].startswith("./pulsar "), record)
+
+    def test_guard_blocker_says_no_start_is_possible(self):
+        record = start_blockers.blocker("guard_unsupported", spec="ab" * 32, placement="--node spark-2",
+                                        detail="added by --override-file")
+        self.assertIsNone(record["node"])
+        self.assertEqual(start_blockers.human(record),
+                         "BLOCKED guard_unsupported: this spec requires serving-guard enforcement "
+                         "(recipe.container.guard), which this Stack cannot run (added by --override-file). "
+                         "Next: no start is possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md")
 
     def test_record_names_node_rank_and_fills_spec_and_placement(self):
         record = start_blockers.blocker("model_files_not_ready", spec="ab" * 32, placement="--node spark-2")
@@ -69,6 +88,7 @@ class Catalog(unittest.TestCase):
 
     def test_contract_publishes_the_codes(self):
         self.assertEqual(integration_contract.contract()["start_blocker_codes"], sorted(start_blockers.BLOCKERS))
+        self.assertIn("guard_unsupported", integration_contract.contract()["start_blocker_codes"])
 
 
 class StartScenarios(unittest.TestCase):

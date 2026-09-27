@@ -334,18 +334,30 @@ require_spec_platform_admission() {
 
 # Every launcher calls this immediately after loading its selected spec, before
 # staging an image or replacing a service. Read-only commands do not call it.
+# A serving guard in the effective recipe, including one an override adds, is
+# refused as the guard_unsupported start blocker: this Stack cannot run it.
 require_spec_launch_admission() {
+  local name="${1:-${CONF_NAME:-}}" guard
+  local -a detail=()
   require_spec_platform_admission "$@"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
-  CONF_PATH="$CONF_PATH" python3 - <<'PY' || die 'selected recipe requires unsupported guard enforcement' 2
+  # Prints "spec" or "override" (where the guard comes from), or nothing.
+  guard=$(CONF_PATH="$CONF_PATH" python3 - <<'PY'
 import os
 from release_spec.serving import load_spec, load_json, apply_overrides
 spec=load_spec(os.environ['CONF_PATH'])
+source='spec' if 'guard' in spec['recipe']['container'] else ''
 if os.environ.get('PULSAR_OVERRIDE_FILE'):
     spec=apply_overrides(spec,load_json(os.environ['PULSAR_OVERRIDE_FILE']))
-if 'guard' in spec['recipe']['container']:
-    raise SystemExit('guard execution is not supported by this Stack')
+    if not source and 'guard' in spec['recipe']['container']:
+        source='override'
+print(source)
 PY
+  ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched" 2
+  [ -n "$guard" ] || return 0
+  [ "$guard" != override ] || detail=(--detail "added by --override-file")
+  START_BLOCKER_SPEC="$name" start_blocker guard_unsupported ${detail[@]+"${detail[@]}"}
+  die "spec ${name:0:12}: guard execution is not supported by this Stack; nothing was launched" 2
 }
 
 _finalize_loaded_profile() {

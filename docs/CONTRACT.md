@@ -248,9 +248,10 @@ When `start --json` is refused, the error is `prerequisite_failed` and
 `details` holds one record per start blocker: `field` is `blocker`, plus
 `blocker` (a code from `start_blocker_codes` in the contract), `node` and `rank`
 (null when the blocker is not node-specific), `message` and `fix`, the one
-command to run next. Start runs every independent check before it reports, so
-one refusal can list several blockers. Branch on `blocker`; `message` and `fix`
-are for people.
+command to run next. `guard_unsupported` is the exception: no command resolves
+it, so its `fix` names the serving guard documentation. Start runs every
+independent check before it reports, so one refusal can list several blockers.
+Branch on `blocker`; `message` and `fix` are for people.
 
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,
