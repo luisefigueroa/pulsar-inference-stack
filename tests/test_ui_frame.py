@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import pty
 import select
+import shutil
 import subprocess
 import tempfile
 import time
@@ -136,11 +137,16 @@ class UiFrame(unittest.TestCase):
         self.assertEqual(result.stdout, "rc=130\n")
 
     def test_without_gum_a_menu_names_commands_and_exits_2(self):
+        # A PATH with only what ui.sh runs, so an installed gum cannot be found.
+        bare = self.root / "bin"
+        bare.mkdir()
+        for tool in ("bash", "uname"):
+            (bare / tool).symlink_to(shutil.which(tool))
         cases = {
             "no terminal": ({}, False),
             "dumb terminal": ({"TERM": "dumb"}, True),
             "no Gum executable": ({"GUM_BIN": "", "VENDORED_GUM": str(self.root / "absent"),
-                                   "PATH": "/usr/bin:/bin"}, True),
+                                   "PATH": str(bare)}, True),
         }
         for name, (extra, forced) in cases.items():
             with self.subTest(name):
@@ -173,7 +179,10 @@ class MenuEntries(unittest.TestCase):
     def run_in_terminal(self, *args, term="xterm-256color"):
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PULSAR_", "CLUSTER_", "GUM"))}
-        env.update(TERM=term, PATH="/usr/bin:/bin", VENDORED_GUM=str(self.root / "absent-gum"),
+        # A GUM_BIN that cannot run disables Gum whatever else is installed.
+        unusable = self.root / "gum-not-executable"
+        unusable.write_text("")
+        env.update(TERM=term, GUM_BIN=str(unusable),
                    CLUSTER_TOPOLOGY_FILE=str(self.root / "topology.json"),
                    PULSAR_MODEL_LIBRARY_DIR=str(self.root / "model-library"),
                    PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false", PYTHONDONTWRITEBYTECODE="1")
