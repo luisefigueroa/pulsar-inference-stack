@@ -8,7 +8,21 @@ if [ $# = 0 ]; then
   exit 0
 fi
 if [ "$1" = --help ] || [ "$1" = -h ]; then
-  printf 'Usage: pulsar status SPEC_ID [--spec-file FILE] [--node NODE] [--json]\n'
+  python3 "$ROOT/scripts/terminal_format.py" <<'HELP'
+usage: pulsar status SPEC_ID [--node NODE_ID] [--spec-file FILE] [--json]
+       pulsar status
+
+Observe the live service for the exact spec on every participating node.
+
+  --node NODE_ID    One-node spec: the node ID of its recorded service; the
+                    recorded node is used when omitted
+  --spec-file FILE  Name a workbench candidate; the service's recorded spec
+                    is what status observes
+  --json            Print the observation as JSON
+
+Without SPEC_ID, list the catalog. When the service cannot be fully observed,
+status reports the service inventory instead and says so.
+HELP
   exit 0
 fi
 JSON=0

@@ -11,7 +11,7 @@ TRUST_TOOL="$REPO_DIR/scripts/topology_ssh_trust.py"
 PROBE_TOOL="$REPO_DIR/scripts/probe-node.py"
 
 usage() {
-  cat <<'EOF'
+  python3 "$REPO_DIR/scripts/terminal_format.py" <<'EOF'
 usage:
   pulsar ssh-trust enroll [--yes] [--accept-key-change]
   pulsar ssh-trust check [--json]

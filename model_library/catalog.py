@@ -18,7 +18,7 @@ from release_spec import load_spec
 from .integrity import StorageError
 from .node_names import NodeNames
 from .state import Store, checked_id
-from scripts.terminal_format import TerminalWriter
+from scripts.terminal_format import TerminalWriter, emit_help
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -456,13 +456,37 @@ def prefix_hint(repo, spec_id):
                        + ", ".join(matches))
 
 
+HELP = """\
+usage: pulsar models [list|menu] [--json]
+       pulsar models show SPEC [--json]
+       pulsar models check SPEC [--node NODE]
+
+Browse catalog specs with their saved file and archive state; only check contacts nodes.
+
+  list        Every catalog spec: recipe, files, archive and the suggested next step
+  show SPEC   One spec in detail: identity, image, engine arguments, home, prepared copies and blockers
+  check SPEC  Check the spec's managed files and archive and save the result; see pulsar model --help
+  menu        Open the catalog menu; it needs an interactive terminal with Gum
+  --json      Print list or show as JSON
+
+Without a command, a terminal opens the menu and other callers get the list. SPEC is a catalog spec ID; people may type a unique prefix of at least 12 characters.
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="pulsar models", description="Read catalog specs and saved storage observations")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "-h" in argv or "--help" in argv:
+        emit_help(HELP)
+        return 0
+    parser = argparse.ArgumentParser(prog="pulsar models", usage="pulsar models [list|show SPEC] [--json]",
+                                     add_help=False)
     parser.add_argument("command", choices=("list", "show"), nargs="?", default="list")
     parser.add_argument("spec_id", nargs="?")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--repo-root", default=ROOT)
-    parser.add_argument("--state-root", default=os.environ.get("PULSAR_MODEL_LIBRARY_DIR", os.environ.get("MODEL_LIBRARY_DIR", str(ROOT / ".model-library"))))
+    # Internal: model-storage.sh and tests select the catalog and state roots.
+    parser.add_argument("--repo-root", default=ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--state-root", default=os.environ.get("PULSAR_MODEL_LIBRARY_DIR", os.environ.get("MODEL_LIBRARY_DIR", str(ROOT / ".model-library"))),
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.command == "show" and not args.spec_id:

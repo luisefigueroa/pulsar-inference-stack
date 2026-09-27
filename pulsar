@@ -65,7 +65,7 @@ w.emit('Pulsar Inference Stack')
 w.emit('Catalog, model storage, recovery and exact-spec serving.')
 for heading,rows in [
  ('Set up this checkout',[
-  ('pulsar','Open the workflow menu; bind this checkout to the cluster before catalog actions.'),
+  ('pulsar','Open the menu on a terminal with Gum: setup steps and read-only browsing until this checkout is bound, then catalog and cluster actions.'),
   ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
   ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),
   ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
@@ -83,8 +83,8 @@ for heading,rows in [
   ('pulsar inventory','Inspect service ownership and current resource use.')]),
  ('Contributors and integrations',[
   ('pulsar contract','Show the versioned stack/workbench integration contract.'),
-  ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving recipe.'),
-  ('pulsar memory verify --file FILE --spec-file SPEC','Validate an explicit estimate of resident weights for the exact spec.'),
+  ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving spec.'),
+  ('pulsar memory verify --file FILE --spec-file FILE','Validate an explicit estimate of resident weights for the exact spec.'),
   ('pulsar observe --service-id ID [--full] [--verification-jobs N] --json','Verify every rank; reuse file verification unless --full requests hashing.'),
   ('pulsar resources --service-id ID|--spec-file FILE --jsonl','Sample confirmed nodes before launch; wait for the matching owned container.'),
   ('pulsar release list','Deprecated; use pulsar models list. Removed in CLI contract 2.')]),

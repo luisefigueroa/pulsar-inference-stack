@@ -3,7 +3,7 @@
 set -euo pipefail
 SCRIPT_NAME=down
 down_usage() {
-  cat <<'HELP'
+  python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/terminal_format.py" <<'HELP'
 usage: pulsar stop SPEC_ID [--node NODE_ID] [--spec-file FILE]
        pulsar stop --all
 

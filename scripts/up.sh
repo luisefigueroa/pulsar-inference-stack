@@ -8,7 +8,7 @@ SCRIPT_NAME=up
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 up_usage() {
-  cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; w=TerminalWriter(); [w.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
+  python3 "$REPO_DIR/scripts/terminal_format.py" <<'HELP'
 usage: pulsar start SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate

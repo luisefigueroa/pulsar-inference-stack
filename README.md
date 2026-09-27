@@ -5,11 +5,12 @@ repository owns the catalog, verified model files, archives,
 preparation and vLLM lifecycle commands. The separate private
 `pulsar-inference-workbench` owns model onboarding and experiments.
 
-The catalog begins empty. The workbench maintainer decides which schema-valid
-specs are published under `releases/`; the filename must equal the complete
-`spec_id`. Nullable `state` and `review` metadata, evidence, archive state, and
-launch compatibility do not gate membership. Deterministic tests of this stack
-do not establish physical serving results for any model.
+Specs appear when the maintainer publishes them under `releases/`. The
+workbench maintainer decides which schema-valid specs are published; the
+filename must equal the complete `spec_id`. Nullable `state` and `review`
+metadata, evidence, archive state, and launch compatibility do not gate
+membership. Deterministic tests of this stack do not establish physical
+serving results for any model.
 
 ```sh
 ./pulsar help
@@ -19,23 +20,44 @@ do not establish physical serving results for any model.
 ./pulsar contract --json
 ```
 
-On a terminal, `./pulsar` confirms cluster membership, SSH trust and archive
-location before offering catalog actions. The catalog begins empty; browsing
-with `./pulsar models` does not require topology. Direct commands still
-perform one explicit action. Select **Check now** to refresh a chosen entry.
-Acquiring files, restoring an archive, preparing copies and starting a
-service remain separate operations.
+On a terminal, `./pulsar` first offers the next setup step (cluster membership
+and SSH trust, then an archive location), read-only catalog browsing, and Exit;
+catalog and cluster actions follow once this checkout is bound. Specs appear
+when the maintainer publishes them under `releases/`; browsing with
+`./pulsar models` does not require topology. Direct commands still perform one
+explicit action; `./pulsar models check SPEC` refreshes a chosen entry.
+Acquiring files, restoring an archive, preparing copies and starting a service
+remain separate operations. The menus draw with Gum, bundled for the arm64
+nodes; every menu action is also a command.
 
-Use bare `./pulsar` for the interactive menu. **Cluster
-topology** offers saved membership, live checks, discovery, explicit
-configuration and SSH trust. `./pulsar topology detect` discovers candidates
-without saving; `./pulsar topology configure` asks before saving membership.
-Workbench invokes the same public commands through its configured Stack executable.
+For first use, choose **Set up cluster membership and SSH trust**, or run
+`./pulsar topology setup`. It guides membership and SSH identity enrollment
+with separate confirmations, then checks readiness. From the workbench, run
+these stack commands by the configured absolute Stack executable path shown by
+`./workbench check`.
 
-For first use, choose **First-use setup** or run `./pulsar topology setup`.
-It guides membership and SSH identity enrollment with separate confirmations,
-then checks readiness. From the workbench, run these stack commands by the
-configured absolute Stack executable path shown by `./workbench check`.
+After setup, the bare `./pulsar` menu adds **Catalog and storage** and
+**Cluster topology**, which offers saved membership, live checks, discovery,
+explicit configuration and SSH trust. `./pulsar topology detect` discovers
+candidates without saving; `./pulsar topology configure` asks before saving
+membership. Workbench invokes the same public commands through its configured
+Stack executable.
+
+To serve a spec, pick it from the catalog and run each step as its own command:
+
+```sh
+./pulsar models
+./pulsar model prepare SPEC --node NODE --yes
+./pulsar start SPEC --node NODE
+./pulsar status SPEC
+./pulsar stop SPEC
+```
+
+SPEC is a catalog spec ID or a unique prefix of at least 12 characters, as
+`./pulsar models` shows it. A one-node spec names its node (hostname) with
+`--node`; a multi-node spec takes its nodes from the confirmed topology and
+omits it. Preparation needs the model files first: `./pulsar model acquire` or
+`./pulsar model restore`, as the catalog's suggested step shows.
 
 Use [Operations](docs/OPERATIONS.md) for the complete operator workflow,
 storage configuration and recovery. [Architecture](docs/ARCHITECTURE.md)

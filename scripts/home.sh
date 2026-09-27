@@ -16,9 +16,9 @@ next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(js
 # Without Gum the menu does not open; name the commands behind its choices.
 case "$complete:$next_action" in
   1:*) require_gum "the Pulsar menu" "pulsar models list | inventory | doctor | configure archive-root | topology show | help" ;;
-  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | help" ;;
-  *:select-archive) require_gum "the Pulsar menu" "pulsar configure archive-root set PATH --yes | help" ;;
-  *) require_gum "the Pulsar menu" "pulsar topology setup | help" ;;
+  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | models list | help" ;;
+  *:select-archive) require_gum "the Pulsar menu" "pulsar configure archive-root set PATH --yes | models list | help" ;;
+  *) require_gum "the Pulsar menu" "pulsar topology setup | models list | help" ;;
 esac
 echo
 python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text
@@ -46,14 +46,24 @@ if [ "$complete" = 1 ]; then
   exec "$REPO_DIR/scripts/home.sh"
 fi
 
+# First run: the next setup step, read-only browsing, or Exit. Each choice
+# returns here with the setup status read again.
 next_label=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_label") or "")')
-choice=$(choose_index "Pulsar Inference Stack" "$next_label" "Exit") \
+choice=$(choose_index "Pulsar Inference Stack" "$next_label" "Browse the catalog (read-only)" "Exit") \
   || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
-[ "$choice" = 0 ] || exit 0
-case "$next_action" in
-  confirm-membership) "$REPO_DIR/scripts/detect-fabric.sh" --write-topology || true ;;
-  enroll-ssh-trust) "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll || true ;;
-  select-archive) "$REPO_DIR/pulsar" configure archive-root menu || true ;;
+set +e
+case "$choice:$next_action" in
+  0:set-up-topology) "$REPO_DIR/pulsar" topology setup ;;
+  0:enroll-ssh-trust) "$REPO_DIR/pulsar" ssh-trust enroll ;;
+  0:select-archive) "$REPO_DIR/pulsar" configure archive-root menu ;;
+  # Saved records only: the list probes no node.
+  1:*) "$REPO_DIR/pulsar" models list ;;
   *) exit 0 ;;
 esac
+rc=$?
+set -e
+[ "$rc" -ne 130 ] || exit 130
+if [ "$choice" = 0 ] && [ "$rc" -ne 0 ]; then
+  printf '✗ Setup step did not complete; details above\n'
+fi
 exec "$REPO_DIR/scripts/home.sh"

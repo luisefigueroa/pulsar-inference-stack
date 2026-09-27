@@ -75,10 +75,30 @@ class SetupStatus(unittest.TestCase):
     def test_missing_topology_asks_to_confirm_membership(self):
         document = build(self.repo, {})
         self.assertFalse(document["complete"])
-        self.assertEqual(document["next_action"], "confirm-membership")
+        self.assertEqual(document["next_action"], "set-up-topology")
         self.assertEqual(document["topology"]["status"], "missing")
         self.assertEqual(document["catalog"]["spec_count"], 0)
         self.assertEqual(document["archives"]["status"], "not-configured")
+
+    def test_without_membership_one_step_sets_up_membership_and_trust(self):
+        for contents in (None, "{"):
+            if contents is not None:
+                (self.repo / ".cluster-topology.json").write_text(contents)
+            document = build(self.repo, {})
+            self.assertEqual(document["next_action"], "set-up-topology")
+            self.assertEqual(document["next_label"], "Set up cluster membership and SSH trust")
+        self.write_topology(schema1(2))
+        self.assertEqual(build(self.repo, {})["next_label"], "Enroll SSH trust")
+
+    def test_catalog_counts_specs(self):
+        for count, expected in ((1, "1 spec"), (2, "2 specs")):
+            with self.subTest(count=count):
+                (self.repo / "releases" / f"{str(count) * 64}.json").write_text("{}")
+                self.assertEqual(build(self.repo, {})["catalog"]["spec_count"], count)
+                output = io.StringIO()
+                render_text(build(self.repo, {}), writer=TerminalWriter(width=44, stream=output))
+                self.assertRegex(output.getvalue(), rf"(?m)^  Catalog +{expected}$")
+                self.assertNotIn("recipe", output.getvalue())
 
     def test_one_node_schema1_needs_archive_location(self):
         self.write_topology(schema1(1))
@@ -106,7 +126,7 @@ class SetupStatus(unittest.TestCase):
         (self.repo / ".cluster-topology.json").write_text("{")
         document = build(self.repo, {})
         self.assertEqual(document["topology"]["status"], "invalid")
-        self.assertEqual(document["next_action"], "confirm-membership")
+        self.assertEqual(document["next_action"], "set-up-topology")
 
     def test_process_empty_cold_root_is_disabled_not_a_gap(self):
         self.write_topology(schema1(1))

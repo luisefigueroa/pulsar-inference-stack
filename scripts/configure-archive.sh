@@ -6,6 +6,26 @@ REPO_DIR="$STACK_ROOT"
 CONFIG_ROOT="${PULSAR_SETUP_ROOT:-$STACK_ROOT}"
 export PYTHONPATH="$STACK_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 command_name="${1:-show}"
+case "$command_name" in
+  -h|--help|help)
+    python3 "$STACK_ROOT/scripts/terminal_format.py" <<'HELP'
+usage: pulsar configure archive-root [show] [--json]
+       pulsar configure archive-root set PATH --yes [--json]
+       pulsar configure archive-root disable --yes [--json]
+       pulsar configure archive-root menu
+
+Select the existing directory that holds archives, saved as PULSAR_COLD_ROOT in this checkout's .env.
+
+  show            Show the archive location, its source and observed access (the default)
+  set PATH --yes  Save an existing absolute directory; Pulsar never creates or mounts it
+  disable --yes   Save an empty location, which disables archives; no archive is deleted
+  menu            Choose in a menu; it needs an interactive terminal with Gum
+  --json          Print the resulting configuration as JSON
+
+A PULSAR_COLD_ROOT process value, including empty, takes precedence over the saved one.
+HELP
+    exit 0 ;;
+esac
 if [ "$command_name" != menu ]; then
   if [ "$#" -eq 0 ]; then set -- show; fi
   exec python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"

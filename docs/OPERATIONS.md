@@ -106,11 +106,14 @@ remaining local storage for it with `--spec-file` and its retained document.
 ## Configure topology and storage
 
 Confirmed topology determines membership and physical node identity. On a
-terminal, `./pulsar` offers only the next bind step (confirm membership, enroll
-SSH trust, or select an archive location) until this checkout is bound to the
-cluster. That menu uses saved local files; it does not probe nodes. After the
-checkout is bound, open `./pulsar` and choose **Cluster topology**. The same
-actions are available directly:
+terminal, `./pulsar` offers the next setup step (**Set up cluster membership
+and SSH trust**, which runs `./pulsar topology setup`; **Enroll SSH trust**
+when membership is already saved; or **Select archive location**), read-only
+catalog browsing (`./pulsar models list`) and Exit until this checkout is bound
+to the cluster. A step that fails reports that it did not complete before the
+menu returns. That menu uses saved local files; it does not probe nodes. After
+the checkout is bound, open `./pulsar` and choose **Cluster topology**. The
+same actions are available directly:
 
 ```sh
 ./pulsar topology setup
@@ -125,7 +128,8 @@ Start with `setup` on a fresh checkout. It guides membership configuration,
 checks SSH enrollment, offers missing enrollment with a separate key-confirmation
 prompt, and finishes with a topology readiness check. Healthy existing setup is
 reused. Cancellation or failed enrollment cannot report success. This applies
-to single-node clusters too. The menu exposes the same **First-use setup** action.
+to single-node clusters too. The first-run menu's setup step and the topology
+menu's **First-use setup** run this same command.
 Initial key-based SSH login must already work; this flow verifies and records
 host identities, rather than installing remote login keys. No step starts or
 stops a model. For noninteractive agents, use configuration and SSH enrollment
