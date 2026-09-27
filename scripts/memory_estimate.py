@@ -39,7 +39,7 @@ def main(argv=None):
         print(json.dumps(frozen, sort_keys=True, separators=(",", ":")))
         return 0
     except (ValueError, OSError, TypeError, KeyError) as exc:
-        print(f"memory estimate: {exc}", file=sys.stderr)
+        print(f"error: memory estimate: {exc}", file=sys.stderr)
         return 2
 
 

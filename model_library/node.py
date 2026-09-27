@@ -350,7 +350,7 @@ def main() -> int:
         print(json.dumps(run(request),sort_keys=True))
         return 0
     except (StorageError, OSError, ValueError, KeyError, TypeError) as exc:
-        print(f'model storage: {exc}',file=sys.stderr)
+        print(f'error: model storage: {exc}',file=sys.stderr)
         return 2
 
 if __name__=='__main__':

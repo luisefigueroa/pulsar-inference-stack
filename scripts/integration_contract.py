@@ -57,6 +57,12 @@ def contract() -> dict:
         'exit_statuses': dict(EXIT_STATUSES),
         # start --json failures list these in error.details as "blocker".
         'start_blocker_codes': sorted(BLOCKERS),
+        # Aliases that warn on stderr and are removed in CLI contract 2.
+        'deprecated_commands': {
+            'gum': {'replacement': 'pulsar', 'removed_in_cli_contract': 2},
+            'release list': {'replacement': 'pulsar models list', 'removed_in_cli_contract': 2},
+            'wizard': {'replacement': 'pulsar models', 'removed_in_cli_contract': 2},
+        },
     }
 
 

@@ -225,7 +225,7 @@ def main(argv=None):
                 print(f"  Plan digest:\n    {result['plan_digest']}")
             print('  Legacy records and files remain in place.')
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        print(f'view migration: {exc}', file=sys.stderr)
+        print(f'error: view migration: {exc}', file=sys.stderr)
         return 2
     return 0
 

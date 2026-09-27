@@ -10,6 +10,7 @@ set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
+SCRIPT_NAME=cluster
 # shellcheck disable=SC1091
 . "$REPO_DIR/scripts/lib.sh"
 
@@ -76,12 +77,12 @@ resolve_library_hot_for_profile "$MODEL_NAME"
 WEIGHT_OWNER_ID="${LIBRARY_VIEW_HOME_NODE_ID}"
 WEIGHT_CONFIG_ID="${LIBRARY_VIEW_CONTENT_ID}"
 runtime_model="$LIBRARY_VIEW_CONTAINER_MODEL_PATH"
-echo "[cluster] exact profile: $MODEL_NAME · $NODES ranks · topology ${CLUSTER_TOPOLOGY_ID:0:12}"
-echo "[cluster] weights: model library · local hot staging · home=${WEIGHT_OWNER_ID:0:12} · identity=$LIBRARY_VIEW_IDENTITY_STATUS · revision=${LIBRARY_VIEW_REVISION:0:12}"
-echo "[cluster] recipe is fixed by the selected spec"
+log "exact profile: $MODEL_NAME · $NODES ranks · topology ${CLUSTER_TOPOLOGY_ID:0:12}"
+log "weights: model library · local hot staging · home=${WEIGHT_OWNER_ID:0:12} · identity=$LIBRARY_VIEW_IDENTITY_STATUS · revision=${LIBRARY_VIEW_REVISION:0:12}"
+log "recipe is fixed by the selected spec"
 if [ "$SKIP_PREFLIGHT" = 0 ]; then
   cluster/preflight.sh "$MODEL_NAME" || {
-    echo "[cluster] preflight FAILED — not starting. (--skip-preflight to override at your own risk)" >&2
+    error_line "preflight failed — not starting (--skip-preflight overrides at your own risk)"
     exit 1
   }
 fi
@@ -133,9 +134,9 @@ if [ "$DRY_RUN" = 1 ]; then
   echo "  rank 0 · local · ${CLUSTER_NODE_HOSTNAMES[0]}"
   echo "    $(shell_join_q_redacted "${HEAD_CMD[@]}")"
   if [ -n "$_api_key" ]; then
-    echo "[cluster] API key auth enabled on rank 0 (secret redacted)"
+    log "API key auth enabled on rank 0 (secret redacted)"
   else
-    echo "[cluster] API open on rank 0 (no VLLM_API_KEY) — trusted lab network only"
+    log "API open on rank 0 (no VLLM_API_KEY) — trusted lab network only"
   fi
   exit 0
 fi
@@ -155,15 +156,15 @@ declare -A TRACKED_CIDS=()
 # Best-effort teardown by immutable IDs created by this invocation only.
 cluster_abort() {
   local why="${1:-cluster start failed}" rank host
-  echo "[cluster] ABORT: $why — removing launch-tracked IDs only" >&2
+  error_line "$why — removing launch-tracked IDs only"
   if [ -n "${TRACKED_CIDS[0]:-}" ]; then
-    echo "[cluster] abort: remove rank 0 id=${TRACKED_CIDS[0]:0:12}" >&2
+    log "abort: remove rank 0 id=${TRACKED_CIDS[0]:0:12}" >&2
     remove_container_id_local "${TRACKED_CIDS[0]}"
   fi
   for ((rank = NODES - 1; rank >= 1; rank--)); do
     [ -n "${TRACKED_CIDS[$rank]:-}" ] || continue
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-    echo "[cluster] abort: remove rank $rank id=${TRACKED_CIDS[$rank]:0:12} on $host" >&2
+    log "abort: remove rank $rank id=${TRACKED_CIDS[$rank]:0:12} on $host" >&2
     remove_container_id_remote "$host" "${TRACKED_CIDS[$rank]}"
   done
 }
@@ -185,16 +186,16 @@ if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
   die "service $CONTAINER already exists on $where; inspect every rank, then pass --replace only with explicit replacement approval"
 fi
 if [ "$REPLACE" = 1 ]; then
-  echo "[cluster] removing existing stack-managed ranks (ownership required)"
+  log "removing existing stack-managed ranks (ownership required)"
   stale_rc=0
   remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
   if [ "$stale_rc" -eq 2 ]; then
-    echo "[cluster] ERROR: ownership not proven on every existing rank of $CONTAINER" >&2
-    echo "[cluster] No ambiguous rank was removed. Inspect labels or stop manually." >&2
+    error_line "ownership not proven on every existing rank of $CONTAINER"
+    log "No ambiguous rank was removed. Inspect labels or stop manually." >&2
     exit 1
   fi
   if [ "$stale_rc" -ne 0 ]; then
-    echo "[cluster] ERROR: failed while removing existing cluster ranks (rc=$stale_rc)" >&2
+    error_line "failed while removing existing cluster ranks (rc=$stale_rc)"
     exit 1
   fi
 fi
@@ -204,7 +205,7 @@ persist_launch_plan_file "$PLAN_FILE"
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-  echo "[cluster] starting rank $rank on $host"
+  log "starting rank $rank on $host"
   raw_id=""
   if ! raw_id=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
       "${REMOTE_COMMANDS[$rank]}"); then
@@ -213,15 +214,15 @@ for ((rank = 1; rank < NODES; rank++)); do
   fi
   if ! TRACKED_CIDS["$rank"]=$(parse_docker_run_container_id "$raw_id"); then
     unset "TRACKED_CIDS[$rank]"
-    echo "[cluster] ERROR: rank $rank docker run returned an invalid ID" >&2
+    error_line "rank $rank docker run returned an invalid ID"
     report_untracked_launch_container remote "$MODEL_NAME" "$rank" "$CONTAINER" "$host"
     cluster_abort "rank $rank docker run ID invalid"
     exit 1
   fi
-  echo "[cluster] rank $rank id=${TRACKED_CIDS[$rank]:0:12}"
+  log "rank $rank id=${TRACKED_CIDS[$rank]:0:12}"
 done
 
-echo "[cluster] starting rank 0 locally"
+log "starting rank 0 locally"
 HEAD_RUN=("${HEAD_CMD[@]}")
 HEAD_RUN[0]="$PULSAR_DOCKER"
 head_raw=""
@@ -231,14 +232,14 @@ if ! head_raw=$("${HEAD_RUN[@]}"); then
 fi
 if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
   unset 'TRACKED_CIDS[0]'
-  echo "[cluster] ERROR: rank 0 docker run returned an invalid ID" >&2
+  error_line "rank 0 docker run returned an invalid ID"
   report_untracked_launch_container head "$MODEL_NAME" 0 "$CONTAINER"
   cluster_abort "rank 0 docker run ID invalid"
   exit 1
 fi
-echo "[cluster] rank 0 id=${TRACKED_CIDS[0]:0:12}"
+log "rank 0 id=${TRACKED_CIDS[0]:0:12}"
 
-echo "[cluster] waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min)"
+log "waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min)"
 API_AUTH_ARGS=()
 api_auth_curl_args API_AUTH_ARGS
 for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
@@ -251,7 +252,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
         'import sys; print(f"{(int(sys.argv[2])-int(sys.argv[1]))/1e9:.3f}")' \
         "$STARTUP_STARTED_NS" "$STARTUP_HEALTHY_NS"
     )
-    echo "[cluster] healthy · first-health=${STARTUP_ELAPSED}s."
+    log "healthy · first-health=${STARTUP_ELAPSED}s."
     # Qualification/warmup belongs to the workbench; serving checks health only.
     "$REPO_DIR/scripts/observe-serving.sh" "$MODEL_NAME" --json >/dev/null || {
       cluster_abort "all-rank verification failed after health"
@@ -261,7 +262,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   fi
 
   if ! container_running_exact "$CONTAINER"; then
-    echo "[cluster] rank 0 container died; last logs:" >&2
+    error_line "rank 0 container died; last logs:"
     "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
     cluster_abort "rank 0 exited during health wait"
     exit 1
@@ -269,7 +270,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   for ((rank = 1; rank < NODES; rank++)); do
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
     if ! container_running_exact_remote "$host" "$CONTAINER"; then
-      echo "[cluster] rank $rank container died on $host; last logs:" >&2
+      error_line "rank $rank container died on $host; last logs:"
       "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
         "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
       cluster_abort "rank $rank exited during health wait"
@@ -279,11 +280,11 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   sleep "${WAIT_SECONDS:-10}"
 done
 
-echo "[cluster] timed out. Rank 0 logs:" >&2
+error_line "timed out waiting for health. Rank 0 logs:"
 "$PULSAR_DOCKER" logs --tail 120 "$CONTAINER" >&2 || true
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-  echo "[cluster] rank $rank logs ($host):" >&2
+  log "rank $rank logs ($host):" >&2
   "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
     "docker logs --tail 120 $(printf '%q' "$CONTAINER")" >&2 || true
 done

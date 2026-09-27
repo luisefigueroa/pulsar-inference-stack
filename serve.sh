@@ -8,6 +8,7 @@ set -euo pipefail
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$REPO_DIR"
 
+SCRIPT_NAME=serve
 # shellcheck disable=SC1091
 . "$REPO_DIR/scripts/lib.sh"
 
@@ -158,12 +159,12 @@ if [ "$REPLACE" = 1 ]; then
   stale_rc=0
   remove_stack_owned_single_at_resolved_node "$MODEL_NAME" || stale_rc=$?
   if [ "$stale_rc" -eq 2 ]; then
-    echo "[serve] ERROR: refusing to replace $CONTAINER on $(single_node_display) — ownership or physical node identity is not proven" >&2
-    echo "[serve] Inspect labels (${PULSAR_MANAGED_LABEL}/${PULSAR_CONF_LABEL}/${PULSAR_RANK_LABEL}/${PULSAR_NODE_ID_LABEL}) or remove manually if you intend to clobber it." >&2
+    error_line "refusing to replace $CONTAINER on $(single_node_display) — ownership or physical node identity is not proven"
+    log "Inspect labels (${PULSAR_MANAGED_LABEL}/${PULSAR_CONF_LABEL}/${PULSAR_RANK_LABEL}/${PULSAR_NODE_ID_LABEL}) or remove manually if you intend to clobber it." >&2
     exit 1
   fi
   if [ "$stale_rc" -ne 0 ]; then
-    echo "[serve] ERROR: failed while removing prior container $CONTAINER on $(single_node_display) (rc=$stale_rc)" >&2
+    error_line "failed while removing prior container $CONTAINER on $(single_node_display) (rc=$stale_rc)"
     exit 1
   fi
 fi
@@ -179,13 +180,13 @@ elif ! python3 -c "$port_probe" "$PORT" >/dev/null 2>&1; then
   die "port $PORT is unavailable on $(single_node_display); refusing launch"
 fi
 
-echo "[serve] $MODEL_NAME ($MODEL) on $(single_node_display), port $PORT, image $IMAGE container=$CONTAINER"
-echo "[serve] recipe is fixed by the selected spec"
-[ -n "${NOTES:-}" ] && echo "[serve] notes: $NOTES"
+log "$MODEL_NAME ($MODEL) on $(single_node_display), port $PORT, image $IMAGE container=$CONTAINER"
+log "recipe is fixed by the selected spec"
+[ -n "${NOTES:-}" ] && log "notes: $NOTES"
 if [ -n "$_api_key" ]; then
-  echo "[serve] API key auth enabled (VLLM_API_KEY/API_KEY)"
+  log "API key auth enabled (VLLM_API_KEY/API_KEY)"
 else
-  echo "[serve] API open (no VLLM_API_KEY) — lab network only"
+  log "API open (no VLLM_API_KEY) — lab network only"
 fi
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   remote_cmd=$(shell_join_q "${CMD[@]}")

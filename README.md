@@ -15,7 +15,6 @@ do not establish physical serving results for any model.
 ./pulsar help
 ./pulsar
 ./pulsar models
-./pulsar release list
 ./pulsar topology show
 ./pulsar contract --json
 ```
@@ -27,7 +26,7 @@ perform one explicit action. Select **Check now** to refresh a chosen entry.
 Acquiring files, restoring an archive, preparing copies and starting a
 service remain separate operations.
 
-Use `./pulsar gum` or bare `./pulsar` for the interactive menu. **Cluster
+Use bare `./pulsar` for the interactive menu. **Cluster
 topology** offers saved membership, live checks, discovery, explicit
 configuration and SSH trust. `./pulsar topology detect` discovers candidates
 without saving; `./pulsar topology configure` asks before saving membership.

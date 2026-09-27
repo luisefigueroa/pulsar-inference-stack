@@ -573,7 +573,7 @@ def main(argv: list[str] | None = None) -> int:
         files = _staged_files(repo_root) if args.staged else _working_tree_files(repo_root)
         count, findings = scan_files(files)
     except (OSError, PrivacyError, UnicodeError) as exc:
-        print(f"publishable privacy: ERROR: {exc}", file=sys.stderr)
+        print(f"error: publishable privacy: {exc}", file=sys.stderr)
         return 2
 
     if findings:

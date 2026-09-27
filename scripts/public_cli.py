@@ -69,7 +69,7 @@ def execute(script, args, *, json_result=False, env=None):
             print(redact_diagnostic(result.stdout), file=sys.stderr, end='')
         if result.returncode == USAGE_EXIT:
             lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
-            raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('ERROR: ', 1)[-1].split('error: ', 1)[-1])
+            raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('error: ', 1)[-1])
         raise RuntimeError((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
     if json_result:
         try:

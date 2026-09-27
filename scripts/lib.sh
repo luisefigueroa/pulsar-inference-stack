@@ -23,20 +23,19 @@ if [ "${PULSAR_SELFTEST:-0}" = 1 ] \
   case "$PULSAR_COLD_STORAGE_TEST_DOTENV" in
     /*) _pulsar_env_file="$PULSAR_COLD_STORAGE_TEST_DOTENV" ;;
     *)
-      printf '[%s] ERROR: PULSAR_COLD_STORAGE_TEST_DOTENV must be absolute\n' \
-        "${SCRIPT_NAME:-pulsar}" >&2
+      printf 'error: PULSAR_COLD_STORAGE_TEST_DOTENV must be absolute\n' >&2
       return 1 2>/dev/null || exit 1
       ;;
   esac
 fi
 if [ -e "$_pulsar_env_file" ] || [ -L "$_pulsar_env_file" ]; then
   if [ -L "$_pulsar_env_file" ]; then
-    printf '[%s] ERROR: .env must not be a symlink\n' "${SCRIPT_NAME:-pulsar}" >&2
+    printf 'error: .env must not be a symlink\n' >&2
     unset _pulsar_cold_root_process_defined _pulsar_cold_root_process_value
     return 1 2>/dev/null || exit 1
   fi
   if [ ! -f "$_pulsar_env_file" ]; then
-    printf '[%s] ERROR: .env is not a regular file\n' "${SCRIPT_NAME:-pulsar}" >&2
+    printf 'error: .env is not a regular file\n' >&2
     unset _pulsar_cold_root_process_defined _pulsar_cold_root_process_value
     return 1 2>/dev/null || exit 1
   fi
@@ -60,8 +59,7 @@ VLLM_IMAGE_MAINLINE="${VLLM_IMAGE_MAINLINE:-vllm/vllm-openai:v0.26.0}"
 HF_CACHE="${HF_CACHE:-$HOME/.cache/huggingface}"
 
 _platform_shell=$(python3 "$REPO_DIR/scripts/platform_reference.py" export-shell) || {
-  printf '[%s] ERROR: platform reference is unavailable\n' \
-    "${SCRIPT_NAME:-pulsar}" >&2
+  printf 'error: platform reference is unavailable\n' >&2
   unset _platform_shell
   return 1 2>/dev/null || exit 1
 }
@@ -74,8 +72,7 @@ unset _platform_shell
   && [ -n "${PULSAR_RDMA_VERBS_DEVICE:-}" ] \
   && [ -n "${PULSAR_COLD_START_FOOTPRINT_SLACK:-}" ] \
   || {
-    printf '[%s] ERROR: platform reference export is incomplete\n' \
-      "${SCRIPT_NAME:-pulsar}" >&2
+    printf 'error: platform reference export is incomplete\n' >&2
     return 1 2>/dev/null || exit 1
   }
 
@@ -85,7 +82,11 @@ HARD_FLOOR_AVAILABLE_GIB="${HARD_FLOOR_AVAILABLE_GIB:-$PULSAR_HARD_FLOOR_AVAILAB
 LAUNCH_SPIKE_GIB="${LAUNCH_SPIKE_GIB:-$PULSAR_LAUNCH_SPIKE_GIB}"
 OVERHEAD_GIB_DEFAULT="${OVERHEAD_GIB_DEFAULT:-$PULSAR_OVERHEAD_GIB_DEFAULT}"
 
-log()  { printf '[%s] %s\n' "${SCRIPT_NAME:-pulsar}" "$*"; }
+# Human messages: results and progress on stdout, "warning:" and "error:"
+# lines on stderr. The internal script tag is shown only with PULSAR_VERBOSE=1
+# (start --verbose); operators never typed those script names.
+_message_tag() { [ "${PULSAR_VERBOSE:-0}" != 1 ] || printf '[%s] ' "${SCRIPT_NAME:-pulsar}"; }
+log()  { printf '%s%s\n' "$(_message_tag)" "$*"; }
 # start_blocker CODE [--node NAME] [--rank N] [--detail TEXT]
 # Prints one BLOCKED line from the catalog in scripts/start_blockers.py and,
 # when PULSAR_START_BLOCKERS_FILE is set, records it for start --json. The fix
@@ -98,8 +99,9 @@ start_blocker() {
     --spec-file "${PULSAR_SPEC_FILE:-}" --override-file "${PULSAR_OVERRIDE_FILE:-}" \
     --memory-estimate-file "${MEMORY_ESTIMATE_FILE:-}" --memory-estimate-id "${MEMORY_ESTIMATE_ID:-}" "$@"
 }
-warn() { printf '[%s] warn: %s\n' "${SCRIPT_NAME:-pulsar}" "$*" >&2; }
-die()  { printf '[%s] ERROR: %s\n' "${SCRIPT_NAME:-pulsar}" "$1" >&2; exit "${2:-1}"; }
+warn() { printf '%swarning: %s\n' "$(_message_tag)" "$*" >&2; }
+error_line() { printf '%serror: %s\n' "$(_message_tag)" "$*" >&2; }
+die()  { error_line "$1"; exit "${2:-1}"; }
 # usage_die MESSAGE — a command-line mistake: exit 2, or PULSAR_USAGE_EXIT
 # when the public CLI asks for a distinct status so --json can report
 # usage_error instead of prerequisite_failed.

@@ -237,7 +237,7 @@ def main(argv=None):
         else:
             display(state)
     except (ValueError, OSError) as exc:
-        print(f'archive configuration: {exc}', file=sys.stderr)
+        print(f'error: archive configuration: {exc}', file=sys.stderr)
         return 2
     return 0
 

@@ -193,7 +193,7 @@ def main() -> int:
         print(json.dumps(result,sort_keys=True))
         return 0
     except (StorageError,OSError,ValueError,KeyError,TypeError) as exc:
-        print(f'model library: {exc}',file=sys.stderr)
+        print(f'error: model library: {exc}',file=sys.stderr)
         return 2
 
 if __name__=='__main__':

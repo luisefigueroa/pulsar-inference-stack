@@ -55,6 +55,8 @@ require_launch_operational_checks() { :; }
 container_ownership_inspect_local() { return 0; }
 single_node_display() { echo fixture; }
 start_blocker() { echo "BLOCKED $1"; }
+log() { echo "$*"; }
+error_line() { echo "error: $*" >&2; }
 remove_stack_owned_single_at_resolved_node() { touch "$REMOVE_MARKER"; return 2; }
 PULSAR_MANAGED_LABEL=managed PULSAR_CONF_LABEL=conf PULSAR_RANK_LABEL=rank PULSAR_NODE_ID_LABEL=node
 ''')
