@@ -171,7 +171,7 @@ require_cluster_nodes() {
   fi
   load_cluster_topology || return 1
   if [ "$CLUSTER_TOPOLOGY_COUNT" -lt "$required" ]; then
-    echo "topology: profile requires exactly $required active node(s), but only $CLUSTER_TOPOLOGY_COUNT confirmed." >&2
+    echo "topology: spec requires exactly $required active node(s), but only $CLUSTER_TOPOLOGY_COUNT confirmed." >&2
     if [ "$required" -gt 1 ] && [ ! -f "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo "  No confirmed topology manifest exists at $CLUSTER_TOPOLOGY_FILE." >&2
       echo "  HEAD_IP/WORKER_IP environment variables do not confirm membership." >&2
@@ -206,7 +206,7 @@ select_cluster_profile_fabric() {
   fi
   for ((rank = 0; rank < required; rank++)); do
     [ -n "${CLUSTER_PROFILE_HCAS[$rank]:-}" ] || {
-      echo "topology: rank $rank has no HCA in the selected profile fabric" >&2
+      echo "topology: rank $rank has no HCA in the spec's fabric" >&2
       return 1
     }
   done
@@ -224,7 +224,7 @@ require_profile_topology() {
   case "$topology_class" in
     roce-full-mesh) ;;
     *)
-      echo "topology: unsupported profile topology class '$topology_class'" >&2
+      echo "topology: unsupported spec topology class '$topology_class'" >&2
       return 1
       ;;
   esac
@@ -242,7 +242,7 @@ require_profile_topology() {
     for ((b = a + 1; b < required; b++)); do
       rails="${CLUSTER_PAIR_RAILS["$a:$b"]:-0}"
       if [ "$rails" -lt "$min_rails" ]; then
-        echo "topology: ranks $a/$b expose $rails shared RoCE rail(s); profile requires $min_rails" >&2
+        echo "topology: ranks $a/$b expose $rails shared RoCE rail(s); the spec requires $min_rails" >&2
         return 1
       fi
     done

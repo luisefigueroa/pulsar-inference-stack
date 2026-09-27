@@ -91,9 +91,9 @@ class StorageRendering(unittest.TestCase):
         self.assertNotIn('archive verified',flat.lower())
         proof=dict(kind='pulsar-archive-verification',snapshot_manifest_id=SNAPSHOT,verified=True,file_count=2,total_bytes=1024)
         _,flat=self.display(proof,'archive')
-        self.assertIn('Recovery archive verified',flat);self.assertIn('expected file hashes',flat)
+        self.assertIn('Archive verified',flat);self.assertIn('expected file hashes',flat)
         proof['verified']=False
-        _,flat=self.display(proof,'archive');self.assertNotIn('Recovery archive verified',flat)
+        _,flat=self.display(proof,'archive');self.assertNotIn('Archive verified',flat)
 
     def test_restore_and_movement_show_location_and_planned_route(self):
         _,flat=self.display(dict(home=HOME),'restore')

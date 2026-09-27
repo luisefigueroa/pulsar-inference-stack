@@ -97,7 +97,7 @@ if [ "$NODES" -eq 1 ]; then
   export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
 elif [ -n "$NODE_SELECTOR" ]; then
-  usage_die "--node is only valid for one-node profiles"
+  usage_die "--node is only valid for one-node specs"
 fi
 resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
@@ -110,7 +110,7 @@ if [ "${CONF_SOURCE:-conf}" = spec ]; then
   echo "│  overlay=${OVERLAY_SOURCE:-?}"
 fi
 echo "│  nodes=$NODES  served=$SERVED_NAME  port=$PORT"
-echo "│  weights=model library (hot staging)"
+echo "│  model files=home and prepared copies"
 if [ "$NODES" -eq 1 ]; then
   echo "│  placement=$(single_node_display)"
 fi
@@ -153,11 +153,11 @@ for row in (json.load(sys.stdin).get("ranks") or []):
 if [ "$NODES" -gt 1 ]; then
   if ! require_profile_topology \
       "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR"; then
-    echo "FAIL  topology  profile needs $NODES confirmed ranks"
+    echo "FAIL  topology  spec needs $NODES confirmed nodes"
     blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
     stop_if_blocked
   fi
-  echo "PASS  topology  profile=$NODES ranks  available=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
+  echo "PASS  topology  spec needs $NODES nodes  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 fi
 
 # --- image ---
@@ -228,7 +228,7 @@ if [ "$SKIP_W" != 1 ]; then
     blocked model_files_not_ready --detail "see the weights check above"
   fi
 else
-  echo "SKIP  weights"
+  echo "SKIP  model files"
 fi
 
 # --- memory ---

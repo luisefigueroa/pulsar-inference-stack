@@ -86,7 +86,7 @@ def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
 
 def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames) -> None:
     titles = {'acquire': 'Acquisition preview', 'prepare': 'Preparation preview',
-              'archive': 'Recovery archive preview', 'restore': 'Restoration preview',
+              'archive': 'Archive preview', 'restore': 'Restoration preview',
               'move': 'Home movement preview', 'pin': 'Pin preview', 'unpin': 'Unpin preview',
               'purge': 'Prepared-copy removal preview', 'remove': 'Home removal preview'}
     out.emit(titles.get(operation, 'Storage operation preview'))
@@ -152,7 +152,7 @@ def _observation(out: TerminalWriter, document: dict, names: NodeNames) -> None:
     archive_states = {'verified': 'contents verified against expected hashes in this check',
                       'present': 'directory present; contents not checked', 'missing': 'not found',
                       'unavailable': 'could not be checked', 'unknown': 'not established',
-                      'not-configured': 'recovery storage is not configured'}
+                      'not-configured': 'archive location is not configured'}
     out.field('Local files', local_states.get(observation.get('local_state'), 'not established'))
     out.field('Archive', archive_states.get(observation.get('archive_state'), 'not established'))
     prepared = observation.get('prepared') or {}
@@ -222,8 +222,8 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         out.emit('Start is a separate operation.')
         return
     if kind == 'pulsar-archive-verification' or (operation == 'archive' and 'verified' in document):
-        out.emit('Recovery archive verified' if document.get('verified') is True
-                 else 'Recovery archive verification not established')
+        out.emit('Archive verified' if document.get('verified') is True
+                 else 'Archive verification not established')
         _identity(out, document)
         _files(out, document)
         if document.get('verified') is True:

@@ -2,7 +2,7 @@
 # Start an exact N-node vLLM spec: remote headless ranks first,
 # then local rank 0 with the API. Every active rank is one GB10.
 #
-#   cluster/start-cluster.sh <model-name> [--spec-decode|--no-spec-decode]
+#   cluster/start-cluster.sh SPEC_ID [--spec-decode|--no-spec-decode]
 #                            [--skip-preflight] [--skip-warmup] [--dry-run]
 #
 # Backend: vLLM native --nnodes/--node-rank with the mp executor over RoCE.
@@ -19,7 +19,7 @@ case "${1:-}" in -h|--help)
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
   exit 0 ;;
 esac
-MODEL_NAME="${1:?usage: cluster/start-cluster.sh <model-name> [options]}"
+MODEL_NAME="${1:?usage: cluster/start-cluster.sh SPEC_ID [options]}"
 shift
 unset PULSAR_MEMORY_ESTIMATE_JSON
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
@@ -59,11 +59,11 @@ fi
 require_spec_launch_admission "$MODEL_NAME"
 acquire_model_library_hot_lock shared
 [ "$(model_source_kind)" = hf ] \
-  || die "non-HF model profiles are not servable (ADR 0006)"
+  || die "non-HF model specs are not servable (ADR 0006)"
 resolve_spec_decode "$SPEC_MODE"
 SPEC_DECODE_STATE=$([ "$SPEC_DECODE_ENABLED" = 1 ] && printf on || printf off)
 if [ "$NODES" -le 1 ]; then
-  echo "$MODEL_NAME is a single-node profile; use ./serve.sh" >&2
+  echo "spec ${MODEL_NAME:0:12} is a single-node spec; use ./pulsar start" >&2
   exit 1
 fi
 require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
@@ -77,8 +77,8 @@ resolve_library_hot_for_profile "$MODEL_NAME"
 WEIGHT_OWNER_ID="${LIBRARY_VIEW_HOME_NODE_ID}"
 WEIGHT_CONFIG_ID="${LIBRARY_VIEW_CONTENT_ID}"
 runtime_model="$LIBRARY_VIEW_CONTAINER_MODEL_PATH"
-log "exact profile: $MODEL_NAME · $NODES ranks · topology ${CLUSTER_TOPOLOGY_ID:0:12}"
-log "weights: model library · local hot staging · home=${WEIGHT_OWNER_ID:0:12} · identity=$LIBRARY_VIEW_IDENTITY_STATUS · revision=${LIBRARY_VIEW_REVISION:0:12}"
+log "exact spec: ${MODEL_NAME:0:12} · $NODES nodes · topology ${CLUSTER_TOPOLOGY_ID:0:12}"
+log "model files: prepared copies · home=${WEIGHT_OWNER_ID:0:12} · identity=$LIBRARY_VIEW_IDENTITY_STATUS · revision=${LIBRARY_VIEW_REVISION:0:12}"
 log "recipe is fixed by the selected spec"
 if [ "$SKIP_PREFLIGHT" = 0 ]; then
   cluster/preflight.sh "$MODEL_NAME" || {

@@ -17,6 +17,24 @@ refusals as `BLOCKED <code>: … Next: …` lines. `start --verbose`, or
 warning and error lines for debugging; check rows keep their layout. Deprecated aliases (`pulsar gum`, `pulsar wizard`,
 `pulsar release list`) print one warning naming the replacement.
 
+## Terms
+
+Human output, help, menus and these documents use one term per concept.
+Flags, environment variables, JSON fields and container labels keep their
+names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
+`configure archive-root` and the container label `conf`).
+
+| Term | Meaning |
+| --- | --- |
+| spec | The catalog entry you select, shown as its spec ID or a 12-character prefix. |
+| recipe | The spec's execution configuration: image, engine arguments, container and geometry. An override produces a modified recipe. |
+| model files | The model's bytes, verified against the spec's snapshot manifest. |
+| home | The one verified copy of a snapshot, on one serving node. |
+| prepared copies | The per-rank copies or bindings that serving reads. |
+| archive, archive location | The verified recovery copy, and the directory that holds archives. |
+| node | A confirmed machine, named by its hostname. |
+| rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
+
 ## Browse and check
 
 ```sh
@@ -80,7 +98,7 @@ remaining local storage for it with `--spec-file` and its retained document.
 
 Confirmed topology determines membership and physical node identity. On a
 terminal, `./pulsar` offers only the next bind step (confirm membership, enroll
-SSH trust, or select an archive directory) until this checkout is bound to the
+SSH trust, or select an archive location) until this checkout is bound to the
 cluster. That menu uses saved local files; it does not probe nodes. After the
 checkout is bound, open `./pulsar` and choose **Cluster topology**. The same
 actions are available directly:
@@ -144,7 +162,7 @@ nodes use prepared working copies. The library records their explicit
 locations; a snapshot manifest supplies the expected file list and hashes.
 Files on every participating node must match before serving starts.
 
-Select an existing recovery directory with:
+Select an existing archive location with:
 
 ```sh
 ./pulsar configure archive-root
@@ -301,7 +319,7 @@ bindings; working-copy files remain while any other recipe has a binding, even
 an unpinned one. The final binding can delete the working copy only after the
 usual ownership, container and incomplete-operation checks. Container references
 to a shared path, including stopped containers, still block purge. Before removing a catalog model's
-home, clear its dependent prepared copies and verify its recovery archive.
+home, clear its dependent prepared copies and verify its archive.
 An unpromoted model may be explicitly discarded without an archive after
 dependencies are cleared; private recipes and experiment results remain.
 All protections apply to the shared snapshot, not only the selected recipe.

@@ -256,7 +256,7 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node"]])
         self.assertIn("✓ Check now finished for", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
-        self.assertEqual(choices.count("Select a catalog recipe\n"), 2)
+        self.assertEqual(choices.count("Select a catalog spec\n"), 2)
         # The node picker names machines by hostname and passes the stable node_id.
         self.assertIn("Select a confirmed physical node\nfixture-host\n", choices)
         self.assertNotIn("fixture-node", choices)

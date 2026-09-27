@@ -55,7 +55,7 @@ def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observat
     if container_references(home, checked):
         blockers.append('a container still references the home, including stopped containers')
     if published and not archive_verified:
-        blockers.append('catalog home removal requires a fully verified recovery archive')
+        blockers.append('catalog home removal requires a fully verified archive')
     if not published and not archive_verified and not discard_unpromoted:
         blockers.append('unarchived lab model requires explicit discard-unpromoted')
     if published and discard_unpromoted:

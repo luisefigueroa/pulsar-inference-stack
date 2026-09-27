@@ -201,7 +201,7 @@ for row in json.load(sys.stdin)["entries"]:
  if len(model)>available:model=model[:available-3]+"..."
  print(model+suffix)
 ')
-    index=$(choose_index "Select a catalog recipe" "${labels[@]}" "Back") \
+    index=$(choose_index "Select a catalog spec" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$index" -lt "${#ids[@]}" ] || return 0
     recipe_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }

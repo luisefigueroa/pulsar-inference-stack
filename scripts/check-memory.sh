@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Memory preflight for conf (+ optional max-model-len note).
-#   scripts/check-memory.sh <model-name> [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]
+#   scripts/check-memory.sh SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]
 # exit 0=pass 1=fail 2=warn (tight)
 #
 # Cold start: require MemAvailable >= footprint + launch spike, residual buffer.
@@ -20,7 +20,7 @@ FORCE_COLD_START=0
 unset PULSAR_MEMORY_ESTIMATE_JSON
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 NAME="${1:-}"
-[ -n "$NAME" ] || die "usage: $0 <model-name> [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]"
+[ -n "$NAME" ] || die "usage: $0 SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]"
 shift || true
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,7 +51,7 @@ if [ "$NODES" -eq 1 ]; then
   resolve_single_node_placement "$NODE_SELECTOR" \
     || die "cannot resolve physical node placement '$NODE_SELECTOR'"
 elif [ -n "$NODE_SELECTOR" ]; then
-  die "--node is only valid for one-node profiles" 2
+  die "--node is only valid for one-node specs" 2
 fi
 weights=$(estimate_weights_ram_gib)
 kv=$(estimate_kv_gib)

@@ -31,7 +31,7 @@ Usage: pulsar model OPERATION [SPEC_ID] [options]
   check         Check known locations and save a catalog observation
   move          Move a home to an explicitly selected node
   restore       Restore the selected snapshot from its verified archive
-  archive create|verify   Save or verify a recovery archive
+  archive create|verify   Save or verify an archive
   pin|unpin     Protect or release prepared copies
   purge         Remove unpinned, unused prepared copies
   remove        Remove an unused home, preserving catalog recovery

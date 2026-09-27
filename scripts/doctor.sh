@@ -205,17 +205,17 @@ fi
 
 if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   if [ -z "${PULSAR_COLD_ROOT}" ]; then
-    record ok cold_storage "cold recovery storage is disabled"
+    record ok cold_storage "archives are disabled"
   elif [ ! -d "${PULSAR_COLD_ROOT}" ]; then
-    record fail cold_storage "cold recovery path is missing or not a directory"
+    record fail cold_storage "archive location is missing or not a directory (./pulsar configure archive-root)"
   elif [ ! -r "${PULSAR_COLD_ROOT}" ] || [ ! -x "${PULSAR_COLD_ROOT}" ]; then
     record fail cold_storage \
-      "cold recovery path is not readable and searchable"
+      "archive location is not readable and searchable"
   elif [ ! -w "${PULSAR_COLD_ROOT}" ]; then
     record warn cold_storage \
-      "cold recovery storage is configured · current write access unavailable"
+      "archive location is configured · current write access unavailable"
   else
-    record ok cold_storage "cold recovery storage is configured"
+    record ok cold_storage "archive location is configured"
   fi
 else
   record warn cold_storage \

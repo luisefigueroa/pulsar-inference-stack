@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fail-closed teardown for an exact N-rank profile or all stack-managed ranks.
-#   cluster/stop-cluster.sh <model-name|--all>
+#   cluster/stop-cluster.sh SPEC_ID|--all
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,7 +10,7 @@ SCRIPT_NAME=stop
 . "$REPO_DIR/scripts/lib.sh"
 
 ARG="${1:-}"
-[ -n "$ARG" ] || { echo "usage: $0 <model-name|--all>" >&2; exit 2; }
+[ -n "$ARG" ] || { echo "usage: $0 SPEC_ID|--all" >&2; exit 2; }
 acquire_model_library_lifecycle_lock exclusive
 
 if [ "$ARG" = --all ]; then
@@ -55,7 +55,7 @@ if [ "$ARG" = --all ]; then
       exit 0
       ;;
     2)
-      warn "some candidates were refused (unknown conf or rank placement)"
+      warn "some candidates were refused (unknown spec or rank placement)"
       ;;
     *)
       warn "managed cleanup reported an operational error"
@@ -73,7 +73,7 @@ require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
   || exit 1
 
 EXACT=$(container_name_for "$ARG" "$NODES")
-log "stopping exact profile=$ARG · $NODES ranks · container=$EXACT"
+log "stopping spec ${ARG:0:12} · $NODES nodes · container=$EXACT"
 rc=0
 remove_stack_owned_cluster "$ARG" "$EXACT" "$NODES" || rc=$?
 if [ "$rc" -eq 2 ]; then

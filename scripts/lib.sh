@@ -375,7 +375,7 @@ PY
 
 _finalize_loaded_profile() {
   local name="${1:?profile name required}" item recipe_nccl_qps=""
-  [ -n "$MODEL" ] || die "$name: MODEL unset in conf"
+  [ -n "$MODEL" ] || die "$name: MODEL is unset in the loaded spec"
   SERVED_NAME="${SERVED_NAME:-$name}"
   IMAGE="${IMAGE:-$VLLM_IMAGE_MAINLINE}"
   NODES="${NODES:-1}"
@@ -508,17 +508,17 @@ validate_profile_contract() {
     || die "$CONF_NAME: pipeline parallel size must be positive"
   world=$((tp * pp))
   if [ "$world" -ne "$NODES" ]; then
-    die "$CONF_NAME: exact profile mismatch: TP=$tp × PP=$pp = $world, but NODES=$NODES"
+    die "$CONF_NAME: exact spec mismatch: TP=$tp × PP=$pp = $world, but NODES=$NODES"
   fi
   if [ "$NODES" -gt 1 ]; then
     [ "$TOPOLOGY_CLASS" = roce-full-mesh ] \
-      || die "$CONF_NAME: multi-node profile requires TOPOLOGY_CLASS=roce-full-mesh"
+      || die "$CONF_NAME: multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh"
     [[ "$MIN_RAILS_PER_PAIR" =~ ^[1-9][0-9]*$ ]] \
       || die "$CONF_NAME: MIN_RAILS_PER_PAIR must be positive"
     [ "$(engine_arg_value --distributed-executor-backend "")" = mp ] \
-      || die "$CONF_NAME: validated multi-node profiles require --distributed-executor-backend mp"
+      || die "$CONF_NAME: multi-node specs require --distributed-executor-backend mp"
   elif [ "$TOPOLOGY_CLASS" != single ]; then
-    die "$CONF_NAME: single-node profile requires TOPOLOGY_CLASS=single"
+    die "$CONF_NAME: single-node spec requires TOPOLOGY_CLASS=single"
   fi
 }
 
@@ -1775,7 +1775,7 @@ container_ownership_refuse_reason() {
     return
   fi
   if [ -z "$conf" ] || [ -z "$rank" ]; then
-    echo "managed label set but conf/rank incomplete (conf='${conf}' rank='${rank}')"
+    echo "managed label set but the conf/rank labels are incomplete (conf label='${conf}' rank label='${rank}')"
     return
   fi
   if [ -n "$want_conf" ] && [ "$conf" != "$want_conf" ]; then
@@ -1798,7 +1798,7 @@ container_all_refuse_reason() {
     return
   fi
   if [ -z "$conf" ] || [ -z "$rank" ]; then
-    echo "managed label set but conf/rank incomplete (conf='${conf}' rank='${rank}')"
+    echo "managed label set but the conf/rank labels are incomplete (conf label='${conf}' rank label='${rank}')"
     return
   fi
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
@@ -1808,23 +1808,23 @@ container_all_refuse_reason() {
     fi
     nodes=$(container_world_size_field "$metadata")
     if ! [[ "$nodes" =~ ^[1-9][0-9]*$ ]] || [ "$nodes" -lt 2 ]; then
-      echo "retired conf '${conf}' with no usable world-size label"
+      echo "retired spec '${conf:0:12}' with no usable world-size label"
       return
     fi
     load_cluster_topology >/dev/null 2>&1 || true
     if [ "$nodes" -gt "${CLUSTER_TOPOLOGY_COUNT:-0}" ]; then
-      echo "retired conf ${conf} spans ${nodes} ranks but only ${CLUSTER_TOPOLOGY_COUNT:-0} confirmed — confirm topology before cleanup"
+      echo "retired spec ${conf:0:12} spans ${nodes} nodes but only ${CLUSTER_TOPOLOGY_COUNT:-0} confirmed — confirm topology before cleanup"
       return
     fi
-    echo "ownership not proven for retired conf '${conf}'"
+    echo "ownership not proven for retired spec '${conf:0:12}'"
     return
   fi
   if ! nodes=$(profile_nodes_for_conf "$conf"); then
-    echo "cannot read NODES for conf '${conf}'"
+    echo "cannot read NODES for spec '${conf:0:12}'"
     return
   fi
   if ! placement_rank_allowed "$conf" "$rank" "$placement"; then
-    echo "placement mismatch on ${placement}: conf=${conf} nodes=${nodes} rank=${rank}"
+    echo "placement mismatch on ${placement}: spec=${conf:0:12} nodes=${nodes} rank=${rank}"
     return
   fi
   if [ "$nodes" -eq 1 ] \
@@ -1835,7 +1835,7 @@ container_all_refuse_reason() {
   if [ "$nodes" -gt 1 ]; then
     load_cluster_topology >/dev/null 2>&1 || true
     if [ "$nodes" -gt "${CLUSTER_TOPOLOGY_COUNT:-0}" ]; then
-      echo "conf ${conf} spans ${nodes} ranks but only ${CLUSTER_TOPOLOGY_COUNT:-0} confirmed — confirm topology before cleanup"
+      echo "spec ${conf:0:12} spans ${nodes} nodes but only ${CLUSTER_TOPOLOGY_COUNT:-0} confirmed — confirm topology before cleanup"
       return
     fi
   fi
@@ -1893,7 +1893,7 @@ report_untracked_launch_container() {
   esac
 
   warn "docker run on ${where} returned invalid container id output — refusing arbitrary cleanup"
-  warn "a managed container for conf=${conf} may have been created and was deliberately left untouched"
+  warn "a managed container for spec ${conf:0:12} may have been created and was deliberately left untouched"
   warn "safe remediation: ./pulsar inventory   then   ./pulsar stop ${conf}"
 
   meta=""
@@ -2019,7 +2019,7 @@ remove_stack_owned_container_local() {
     return 2
   fi
 
-  log "removing $name id=$short (managed conf=${conf} rank=${rank})"
+  log "removing $name id=$short (managed spec=${conf:0:12} rank=${rank})"
   if ! "$PULSAR_DOCKER" rm -f "$id" >/dev/null; then
     warn "docker rm -f failed for $name id=$short"
     return 1
@@ -2073,7 +2073,7 @@ remove_stack_owned_container_remote() {
     return 2
   fi
 
-  log "removing $name on $host id=$short (managed conf=${conf} rank=${rank})"
+  log "removing $name on $host id=$short (managed spec=${conf:0:12} rank=${rank})"
   remote_rm="docker rm -f $(printf '%q' "$id") >/dev/null"
   if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_rm"; then
     warn "docker rm -f failed for $name id=$short on $host"
@@ -2251,7 +2251,7 @@ remove_safe_managed_id_on_node() {
     return 2
   fi
   short="${id:0:12}"
-  log "removing stack-managed id=$short conf=$conf rank=$rank on $(human_node_name "$index")"
+  log "removing stack-managed id=$short spec=${conf:0:12} rank=$rank on $(human_node_name "$index")"
   if [ "$index" -eq 0 ]; then
     if ! "$PULSAR_DOCKER" rm -f "$id" >/dev/null; then
       warn "docker rm -f failed for id=$short"
@@ -2293,7 +2293,7 @@ stop_named_service_by_labels() {
 
   for ((index = 0; index < count; index++)); do
     if ! list_managed_container_ids_on_node "$index" >/dev/null; then
-      warn "$(human_node_name "$index") is unobservable — not removing conf=$conf (an unobserved live rank could be stranded)"
+      warn "$(human_node_name "$index") is unobservable — not removing spec ${conf:0:12} (an unobserved live rank could be stranded)"
       return 1
     fi
   done
@@ -2301,7 +2301,7 @@ stop_named_service_by_labels() {
   for ((index = 0; index < count; index++)); do
     placement=$(single_node_key_for_index "$index") || return 1
     ids=$(list_managed_container_ids_on_node "$index") || {
-      warn "$(human_node_name "$index") is unobservable — not removing conf=$conf"
+      warn "$(human_node_name "$index") is unobservable — not removing spec ${conf:0:12}"
       return 1
     }
     for id in $ids; do
@@ -2312,14 +2312,14 @@ stop_named_service_by_labels() {
         continue
       fi
       if [ "$probe" -ne 0 ]; then
-        warn "$(human_node_name "$index") is unobservable — not removing conf=$conf"
+        warn "$(human_node_name "$index") is unobservable — not removing spec ${conf:0:12}"
         return 1
       fi
       IFS=$'\t' read -r _ _ _ have_conf rank < <(container_ownership_fields "$meta")
       [ "$have_conf" = "$conf" ] || continue
       if ! container_all_candidate_is_safe "$meta" "$placement"; then
         reason=$(container_all_refuse_reason "$meta" "$placement")
-        warn "refusing conf=$conf id=${id:0:12} on $(human_node_name "$index"): $reason"
+        warn "refusing spec ${conf:0:12} id=${id:0:12} on $(human_node_name "$index"): $reason"
         return 2
       fi
       found_indices+=("$index")
@@ -2392,7 +2392,7 @@ remove_all_stack_managed_local() {
     IFS=$'\t' read -r _ _ _ conf rank < <(container_ownership_fields "$meta")
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
-      warn "refusing managed candidate id=${id:0:12} on head: $reason"
+      warn "refusing managed candidate id=${id:0:12} on $(human_node_name 0): $reason"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -2409,11 +2409,11 @@ remove_all_stack_managed_local() {
     fi
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
-      warn "refusing id=$short on head after revalidation: $reason"
+      warn "refusing id=$short on $(human_node_name 0) after revalidation: $reason"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
-    log "removing stack-managed id=$short conf=$conf rank=$rank (head)"
+    log "removing stack-managed id=$short spec=${conf:0:12} rank=$rank on $(human_node_name 0)"
     if ! "$PULSAR_DOCKER" rm -f "$id" >/dev/null; then
       warn "docker rm -f failed for id=$short"
       rc=$(lifecycle_merge_rc "$rc" 1)
@@ -2446,7 +2446,7 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "worker error inspecting managed id=${id:0:12} on $host"
+      warn "Docker or SSH error inspecting managed id=${id:0:12} on $host"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
@@ -2464,7 +2464,7 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "worker error revalidating id=$short on $host"
+      warn "Docker or SSH error revalidating id=$short on $host"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
@@ -2474,7 +2474,7 @@ remove_all_stack_managed_remote() {
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
-    log "removing stack-managed on $host id=$short conf=$conf rank=$rank"
+    log "removing stack-managed on $host id=$short spec=${conf:0:12} rank=$rank"
     remote_rm="docker rm -f $(printf '%q' "$id") >/dev/null"
     if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_rm"; then
       warn "docker rm -f failed for id=$short on $host"
@@ -2534,7 +2534,7 @@ remove_stack_owned_cluster_pair() {
   fi
 
   if [ "$refuse" = 1 ]; then
-    warn "refusing cluster replacement for conf=$conf: prove ownership on every existing rank (no partial remove)"
+    warn "refusing cluster replacement for spec ${conf:0:12}: prove ownership on every existing rank (no partial remove)"
     return 2
   fi
 

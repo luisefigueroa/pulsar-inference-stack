@@ -270,7 +270,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         return f"Remove the home of {identity} on {where}? Files come back only through Restore or Download."
     if action == "archive":
         root = plan.get("archive_root")
-        return (f"Create a recovery archive of {identity}{' in ' + root if root else ''}? "
+        return (f"Create an archive of {identity}{' in ' + root if root else ''}? "
                 "An existing archive is never replaced.")
     if action == "start":
         where = place or f"{nodes} nodes"

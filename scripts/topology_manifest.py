@@ -645,7 +645,7 @@ def render(document: dict[str, Any], skipped_ssh: int = 0) -> None:
     field("Nodes", f"{len(nodes)} {display_name} {node_word}")
     if len(nodes) == 1:
         field("Fabric", "single node · no cluster links required")
-        field("Checks", "not needed · no other cluster nodes found")
+        field("Checks", "not needed · no other nodes found")
     else:
         field(
             "Fabric",
@@ -821,7 +821,7 @@ def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
     validate_manifest(topology, require_verified=True)
     if node_count < 1 or node_count > len(topology["nodes"]):
         fail(
-            f"profile node count {node_count} is outside confirmed capacity "
+            f"spec node count {node_count} is outside confirmed capacity "
             f"{len(topology['nodes'])}"
         )
 
@@ -849,7 +849,7 @@ def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
     for rank in range(node_count):
         endpoints = selected[rank]
         if not endpoints:
-            fail(f"rank {rank}: no RDMA HCA participates in selected profile")
+            fail(f"rank {rank}: no RDMA HCA participates in the selected spec")
         hcas = ",".join(hca for hca, _netdev in endpoints)
         netdevs = ",".join(dict.fromkeys(netdev for _hca, netdev in endpoints))
         print("\t".join([str(rank), hcas, netdevs]))

@@ -1,5 +1,6 @@
 """Human messages share one prefix convention; deprecated aliases warn once."""
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -46,6 +47,31 @@ class Prefixes(unittest.TestCase):
                                 text=True, capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 2)
         self.assertIn("[up] error: unknown argument: --bogus", result.stderr)
+
+
+# Words the glossary in docs/OPERATIONS.md#terms retired from human output.
+RETIRED = re.compile(r"\b[Pp]rofiles?\b|\bconf=|(?<!served-)model-name|[Hh]ot staging|[Cc]luster nodes?"
+                     r"|[Rr]ecovery archive|[Cc]old recovery|[Aa]rchive directory|[Aa]rchive root\b")
+MESSAGE = re.compile(r"\b(die|warn|error_line|usage_die|log|echo|print_hanging|field|emit|print|fail|ok|bad|record)\b"
+                     r"[^#]*[\"']")
+# Identifiers and legacy explanations, not operator wording.
+ALLOWED = {"scripts/model_identity.py", "model_library/migration_views.py", "scripts/release_consumer.py"}
+
+
+class Glossary(unittest.TestCase):
+    def test_retired_terms_stay_out_of_messages(self):
+        offenders = []
+        sources = [*ROOT.glob("scripts/*.sh"), *ROOT.glob("scripts/*.py"), *ROOT.glob("cluster/*.sh"),
+                   *ROOT.glob("model_library/*.py"), ROOT / "serve.sh", ROOT / "pulsar"]
+        for path in sources:
+            name = str(path.relative_to(ROOT))
+            if name in ALLOWED:
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                code = line.split(" #", 1)[0]
+                if MESSAGE.search(code) and RETIRED.search(code) and "--" + "skip" not in code:
+                    offenders.append(f"{name}:{number}: {line.strip()[:100]}")
+        self.assertEqual(offenders, [], "\n".join(offenders))
 
 
 class Deprecations(unittest.TestCase):
