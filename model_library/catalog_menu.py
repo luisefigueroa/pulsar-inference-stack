@@ -320,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"catalog menu: {exc}", file=sys.stderr)
+        print(f"error: catalog menu: {exc}", file=sys.stderr)
         return 2
 
 

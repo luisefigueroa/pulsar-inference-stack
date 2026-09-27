@@ -1338,7 +1338,7 @@ def main() -> int:
             atomic_write(extract_topology(load_json(args.document)), args.destination)
         return 0
     except TopologyError as exc:
-        print(f"topology: {exc}", file=sys.stderr)
+        print(f"error: topology: {exc}", file=sys.stderr)
         return 1
 
 

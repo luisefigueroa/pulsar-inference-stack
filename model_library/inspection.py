@@ -164,4 +164,4 @@ def main():
 if __name__=='__main__':
     try: raise SystemExit(main())
     except (StorageError,OSError,ValueError,KeyError) as exc:
-        print(f'inspection: {exc}',file=sys.stderr);raise SystemExit(2)
+        print(f'error: inspection: {exc}',file=sys.stderr);raise SystemExit(2)

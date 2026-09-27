@@ -257,7 +257,7 @@ def main(argv=None):
             render(rows, details=args.command == "show", names=NodeNames.saved(args.repo_root))
         return 0
     except (StorageError, ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"catalog: {exc}", file=sys.stderr)
+        print(f"error: catalog: {exc}", file=sys.stderr)
         return 2
 
 

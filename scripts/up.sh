@@ -102,7 +102,7 @@ fi
 resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
-[ "$VERBOSE" = 1 ] && export QUIET=0
+if [ "$VERBOSE" = 1 ]; then export QUIET=0 PULSAR_VERBOSE=1; fi
 
 echo "┌─ up  $NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ]; then

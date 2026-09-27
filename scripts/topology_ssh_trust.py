@@ -552,7 +552,7 @@ def main() -> int:
             render_human(report)
         return 0 if report["ok"] else 1
     except (TopologyError, OSError) as exc:
-        print(f"topology-ssh-trust: {exc}", file=sys.stderr)
+        print(f"error: topology-ssh-trust: {exc}", file=sys.stderr)
         return 2
 
 

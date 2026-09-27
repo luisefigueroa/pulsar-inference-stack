@@ -265,7 +265,7 @@ def main(argv=None):
             print('  Prepared copies and pins were not imported.')
             print('    Review ownership, then prepare and pin explicitly.')
     except (ValueError, OSError, subprocess.SubprocessError) as exc:
-        print(f'migration: {exc}', file=sys.stderr)
+        print(f'error: migration: {exc}', file=sys.stderr)
         return 2
     return 0
 

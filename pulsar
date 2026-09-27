@@ -3,6 +3,11 @@
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export PYTHONDONTWRITEBYTECODE=1
+# Deprecated aliases warn once on stderr; `pulsar contract --json` lists them
+# as deprecated_commands. They are removed in CLI contract 2.
+deprecated() {
+  printf 'warning: pulsar %s is deprecated; use %s. It is removed in CLI contract 2.\n' "$1" "$2" >&2
+}
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
@@ -26,14 +31,21 @@ case "$command" in
     ;;
 esac
 case "$command" in
-  ""|gum) exec "$REPO_DIR/scripts/home.sh" ;;
-  wizard) exec "$REPO_DIR/wizard.sh" "$@" ;;
+  "") exec "$REPO_DIR/scripts/home.sh" ;;
+  gum) deprecated gum pulsar; exec "$REPO_DIR/scripts/home.sh" ;;
+  wizard)
+    deprecated wizard "pulsar models"
+    # Like pulsar models: the menu on a terminal, otherwise the catalog list.
+    if [ -t 0 ]; then exec "$REPO_DIR/wizard.sh" "$@"; fi
+    exec "$REPO_DIR/scripts/model-storage.sh" list "$@" ;;
   models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
   contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
   spec) exec python3 "$REPO_DIR/scripts/document_cli.py" "$@" ;;
-  release) exec "$REPO_DIR/scripts/release.sh" "$@" ;;
+  release)
+    [ "${1:-}" != list ] || deprecated "release list" "pulsar models list"
+    exec "$REPO_DIR/scripts/release.sh" "$@" ;;
   topology) exec "$REPO_DIR/scripts/topology.sh" "$@" ;;
   ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
   configure)
@@ -50,7 +62,7 @@ w.emit('Pulsar Inference Stack')
 w.emit('Catalog, model storage, recovery and exact-spec serving.')
 for heading,rows in [
  ('Set up this checkout',[
-  ('pulsar','Open the workflow menu (also: pulsar gum); bind this checkout to the cluster before catalog actions.'),
+  ('pulsar','Open the workflow menu; bind this checkout to the cluster before catalog actions.'),
   ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
   ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),
   ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
@@ -72,7 +84,7 @@ for heading,rows in [
   ('pulsar memory verify --file FILE --spec-file SPEC','Validate an explicit estimate of resident weights for the exact spec.'),
   ('pulsar observe --service-id ID [--full] [--verification-jobs N] --json','Verify every rank; reuse file verification unless --full requests hashing.'),
   ('pulsar resources --service-id ID|--spec-file FILE --jsonl','Sample confirmed nodes before launch; wait for the matching owned container.'),
-  ('pulsar release list','Deprecated alias for reading catalog specs; retained through CLI contract 1.')]),
+  ('pulsar release list','Deprecated; use pulsar models list. Removed in CLI contract 2.')]),
 ]:
     w.blank()
     w.emit(heading)

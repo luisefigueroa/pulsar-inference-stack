@@ -287,7 +287,7 @@ def supervise_node(main, control_fd, token, *, lease=LEASE_SECONDS, grace=GRACE_
         state = 'confirmed' if confirmed else 'incomplete'
         receipt = 'cancelled' if confirmed else 'incomplete'
         print(f'pulsar-verifier:{token}:{receipt}', file=sys.stderr, flush=True)
-        print(f'verification cancelled: {reason}; worker cleanup {state}', file=sys.stderr, flush=True)
+        print(f'error: verification cancelled: {reason}; worker cleanup {state}', file=sys.stderr, flush=True)
         return 128 + (cancelled['signal'] or signal.SIGTERM) if confirmed else 4
 
 
@@ -593,7 +593,7 @@ def main():
         print(str(exc), file=sys.stderr)
         return exc.exit_code if exc.confirmed else 4
     except (OSError, ValueError, RuntimeError) as exc:
-        print(f'verification transport: {exc}', file=sys.stderr)
+        print(f'error: verification transport: {exc}', file=sys.stderr)
         return 2
 
 

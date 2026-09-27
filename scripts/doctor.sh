@@ -57,15 +57,15 @@ doctor_ready_line() {
     colors=$(tput colors 2>/dev/null || true)
     if [[ "$colors" =~ ^[0-9]+$ ]] && [ "$colors" -ge 8 ]; then
       if green=$(tput setaf 2 2>/dev/null) && reset=$(tput sgr0 2>/dev/null); then
-        printf '[doctor] %sREADY%s — %s\n' "$green" "$reset" "$message"
+        printf '%sREADY%s — %s\n' "$green" "$reset" "$message"
         return 0
       fi
     fi
   fi
-  print_hanging '[doctor] ' "$message"
+  print_hanging '' "$message"
 }
 
-[ "$JSON" = 1 ] || echo "[doctor] this node ($(hostname -s 2>/dev/null || hostname))"
+[ "$JSON" = 1 ] || echo "this node ($(hostname -s 2>/dev/null || hostname))"
 
 arch=$(uname -m)
 arch_ok=0
@@ -229,7 +229,7 @@ else
   record ok memory "MemAvailable ${avail} GiB"
 fi
 
-[ "$JSON" = 1 ] || echo "[doctor] confirmed topology"
+[ "$JSON" = 1 ] || echo "confirmed topology"
 if ! load_cluster_topology; then
   record fail topology "Confirmed topology or saved SSH identity configuration is invalid"
 elif [ "$CLUSTER_TOPOLOGY_COUNT" -lt 1 ] || [ -z "$CLUSTER_TOPOLOGY_ID" ]; then
@@ -317,7 +317,7 @@ else
       doctor_ready_line "host checks passed; selected-spec launch checks still apply"
     fi
   else
-    echo "[doctor] NOT READY — fix blocking issues above before serving"
+    echo "NOT READY — fix blocking issues above before serving"
   fi
 fi
 

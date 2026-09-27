@@ -49,7 +49,7 @@ def main(argv=None) -> int:
                 verify_summary(summary, spec, run)
             result['summary_verified'] = True
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f'evidence verification: {exc}', file=sys.stderr)
+        print(f'error: evidence verification: {exc}', file=sys.stderr)
         return 1
     if args.json:
         print(json.dumps(result, sort_keys=True))

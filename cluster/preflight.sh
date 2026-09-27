@@ -29,7 +29,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ "$EXPECTED_NODES" -gt 1 ] || {
-  echo "[preflight] profile must require more than one node" >&2
+  echo "error: profile must require more than one node" >&2
   exit 1
 }
 require_profile_topology \

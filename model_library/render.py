@@ -286,7 +286,7 @@ def main(argv: list[str] | None = None) -> int:
                names=NodeNames.saved())
         return 0
     except (ValueError, OSError, TypeError, KeyError) as exc:
-        print(f'storage display: {exc}', file=sys.stderr)
+        print(f'error: storage display: {exc}', file=sys.stderr)
         return 2
 
 
