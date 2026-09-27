@@ -849,7 +849,9 @@ def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
     for rank in range(node_count):
         endpoints = selected[rank]
         if not endpoints:
-            fail(f"rank {rank}: no RDMA HCA participates in the selected spec")
+            # Nodes are validated to be in rank order; name the machine with its slot.
+            host = topology["nodes"][rank].get("hostname") or "unnamed node"
+            fail(f"{host} (rank {rank}): no RDMA HCA participates in the selected spec")
         hcas = ",".join(hca for hca, _netdev in endpoints)
         netdevs = ",".join(dict.fromkeys(netdev for _hca, netdev in endpoints))
         print("\t".join([str(rank), hcas, netdevs]))

@@ -1106,9 +1106,9 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
     elif weight_source_missing and weight_sources:
         weight_source = "mixed"
     if weight_source_missing:
-        reasons.append("one or more ranks lack weight source")
+        reasons.append("one or more ranks lack the model-file source label")
     if len(weight_sources) > 1:
-        reasons.append("ranks disagree on weight source")
+        reasons.append("ranks disagree on the model-file source label")
     if weight_source == "local-files" and (
         weight_owner_missing
         or weight_config_missing
@@ -1117,7 +1117,7 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
     ):
         weight_owner = None
         weight_config = None
-        reasons.append("weight provenance labels are missing or inconsistent")
+        reasons.append("model-file provenance labels are missing or inconsistent")
     for label, values, missing, required in contract_fields:
         if len(values) > 1:
             reasons.append(f"ranks disagree on {label}")
