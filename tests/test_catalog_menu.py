@@ -30,6 +30,11 @@ def checked(**fields):
     return row(**{"checked_at": "2026-09-05T00:00:00Z", "observation_age_seconds": 7200, **fields})
 
 
+# Catalog fields for a spec whose recipe.container holds a serving guard.
+GUARDED = {"start_supported": False, "start_unsupported_reason": "guard_unsupported"}
+GUARD_REASON = "this Stack cannot run the spec's serving guard"
+
+
 def two_snapshots(target_home, draft_home):
     member = {"model_id": "org/model", "model_commit": "c" * 40, "archive": None}
     return {"target": {**member, "home": target_home}, "draft": {**member, "model_id": "org/draft", "home": draft_home}}
@@ -60,6 +65,26 @@ class Operations(unittest.TestCase):
             offered, _, _ = menu.operations(state, "not-configured")
             for action in ("check", "start", "stop", "status", "pin", "unpin", "purge"):
                 self.assertIn(action, offered)
+
+    def test_guarded_spec_leaves_out_start_and_keeps_everything_else(self):
+        for state in (row(**GUARDED), checked(home=HOME, local_state="ready", **GUARDED)):
+            offered, hidden, _ = menu.operations(state, "configured")
+            self.assertNotIn("start", offered)
+            self.assertEqual(hidden["start"], GUARD_REASON)
+            # A guarded service may have been started elsewhere.
+            for action in ("check", "stop", "status", "pin", "unpin", "purge"):
+                self.assertIn(action, offered)
+        offered, hidden, _ = menu.operations(checked(home=HOME, **GUARDED), "configured")
+        self.assertEqual(hidden, {"acquire": "a home is recorded", "restore": "a home is recorded",
+                                  "start": GUARD_REASON})
+        for action in ("prepare", "move", "archive", "verify", "remove"):
+            self.assertIn(action, offered)
+
+    def test_supported_or_unmarked_spec_offers_start(self):
+        for fields in ({}, {"start_supported": True, "start_unsupported_reason": None}):
+            offered, hidden, _ = menu.operations(checked(home=HOME, **fields), "configured")
+            self.assertIn("start", offered)
+            self.assertNotIn("start", hidden)
 
     def test_schema3_names_snapshots_and_offers_eligible_ones(self):
         state = row(snapshots=two_snapshots(HOME, None))
@@ -95,6 +120,24 @@ class Suggestion(unittest.TestCase):
         self.assertEqual(self.suggest(ready, after="stop")[0], "start")
         self.assertEqual(self.suggest(ready, after="check")[0], "start")
 
+    def test_guarded_spec_keeps_check_download_restore_and_nothing_toward_start(self):
+        self.assertEqual(self.suggest(row(**GUARDED)), ("check", "no saved check"))
+        self.assertEqual(self.suggest(checked(**GUARDED)), ("acquire", "no home recorded"))
+        self.assertEqual(self.suggest(checked(archive_state="verified", **GUARDED))[0], "restore")
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", **GUARDED), after="prepare"),
+                         ("check", "prepare ran after the last check"))
+        for local in ("ready", "missing", "changed", "unknown"):
+            for after in (None, "stop", "check"):
+                with self.subTest(local=local, after=after):
+                    self.assertIsNone(self.suggest(checked(home=HOME, local_state=local, **GUARDED), after))
+
+    def test_suggestion_never_starts_a_guarded_spec(self):
+        for state in (row(**GUARDED), checked(**GUARDED), checked(home=HOME, local_state="ready", **GUARDED),
+                      checked(home=HOME, local_state="changed", **GUARDED)):
+            for after in (None, "stop", "check", "prepare", "restore"):
+                result = self.suggest(state, after)
+                self.assertNotIn(result and result[0], {"start", "prepare"})
+
     def test_suggestion_never_stops_or_touches_storage(self):
         for state in (row(), checked(home=HOME, local_state="ready"), checked(home=HOME, local_state="missing")):
             for after in (None, "start", "stop", "purge"):
@@ -115,6 +158,16 @@ class View(unittest.TestCase):
         self.assertIn("option\tmain\tstart\tStart (suggested)", lines)
         self.assertIn("suggest\tstart", lines)
         self.assertTrue(all(len(line.split("\t", 1)[1]) <= 56 for line in lines if line.startswith("header\t")))
+
+    def test_guarded_view_explains_missing_start_without_a_suggestion(self):
+        lines = menu.view_lines(checked(home=HOME, local_state="ready", **GUARDED), "configured",
+                                width=60, names=NAMES)
+        text = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
+        self.assertIn(f"Not shown: Start ({GUARD_REASON})", text)
+        self.assertNotIn("Suggested:", text)
+        self.assertFalse([line for line in lines if line.startswith(("suggest\t", "option\tmain\tstart\t"))])
+        self.assertIn("option\tmain\tstop\tStop", lines)
+        self.assertIn("option\tmain\tstatus\tLive status", lines)
 
     def test_view_performs_no_probes(self):
         with patch("subprocess.run", side_effect=AssertionError("menu must not probe")):
@@ -155,6 +208,17 @@ class Question(unittest.TestCase):
                 read_data=json.dumps({"eligible": False, "blockers": ["pinned"]}))):
             self.assertEqual(menu.main(["confirm", "--spec-id", state["spec_id"], "--action", "purge",
                                         "--plan-file", "plan.json"]), 3)
+
+
+class Historical(unittest.TestCase):
+    def test_schema1_specs_are_not_startable_from_this_stack(self):
+        from model_library.catalog import start_support
+        self.assertEqual(start_support({"schema_version": 1}), (False, "historical_spec"))
+        state = checked(home=HOME, local_state="ready", start_supported=False, start_unsupported_reason="historical_spec")
+        offered, hidden, _ = menu.operations(state, "configured")
+        self.assertNotIn("start", offered)
+        self.assertEqual(hidden["start"], "historical schema-1 specs cannot be started")
+        self.assertIsNone(menu.suggestion(state, offered, "configured", None, NAMES))
 
 
 if __name__ == "__main__":

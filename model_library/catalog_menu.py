@@ -36,6 +36,17 @@ LABELS = {
 MUTATIONS = frozenset({"acquire", "restore", "prepare", "move", "archive", "pin", "unpin", "purge", "remove"})
 STALE_SECONDS = 24 * 3600
 ARCHIVE_LOCATION = {"configured", "disabled", "not-configured"}
+# Why Start is left out when the catalog says this Stack cannot start the spec,
+# by its start_unsupported_reason (a start blocker code).
+START_UNSUPPORTED = {"guard_unsupported": "this Stack cannot run the spec's serving guard",
+                     "historical_spec": "historical schema-1 specs cannot be started"}
+
+
+def start_unsupported(row: dict) -> str | None:
+    """The reason Start is left out, or None when this Stack can start the spec."""
+    if row.get("start_supported") is not False:
+        return None
+    return START_UNSUPPORTED.get(row.get("start_unsupported_reason"), "this Stack cannot start this spec")
 
 
 def members(row: dict) -> dict[str | None, dict]:
@@ -54,9 +65,12 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     """Return offered actions, left-out actions with reasons, and eligible snapshots.
 
     Only saved records that rule an operation out leave it out. Service state
-    is live, so start, stop and status are always offered. Pin, unpin and purge
-    also act on node records and incomplete staging that saved records do not
-    show, so they are always offered and their plan shows what they would do.
+    is live, so start, stop and status are offered, except that start is left
+    out for a spec this Stack cannot start (a serving guard); stop and status
+    stay because such a service may have been started elsewhere. Pin, unpin
+    and purge also act on node records and incomplete staging that saved
+    records do not show, so they are always offered and their plan shows what
+    they would do.
     """
     if archive_location not in ARCHIVE_LOCATION:
         raise ValueError("unknown archive location status")
@@ -82,6 +96,9 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     if not archives:
         hidden.setdefault("archive", _location_reason(archive_location))
         hidden["verify"] = _location_reason(archive_location)
+    unsupported = start_unsupported(row)
+    if unsupported:
+        hidden["start"] = unsupported
     offered = [action for action in MAIN + STORAGE if action not in hidden]
     eligible = {}
     if schema3:
@@ -98,7 +115,9 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
 
     ``after`` is the last operation that succeeded for this recipe in the
     current menu session. It covers what saved records cannot show: a mutation
-    makes the saved check out of date, and a started service is live.
+    makes the saved check out of date, and a started service is live. For a
+    spec this Stack cannot start, nothing after the Check, Download and
+    Restore rules is suggested: Prepare and Start would only lead to a start.
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
@@ -120,6 +139,8 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
             return "restore", "no home recorded; a verified archive is available"
         if "acquire" in offered:
             return "acquire", "no home recorded"
+        return None
+    if start_unsupported(row):
         return None
     local = row.get("local_state")
     if local in ("missing", "changed") and "prepare" in offered:

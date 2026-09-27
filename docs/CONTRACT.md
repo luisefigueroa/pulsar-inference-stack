@@ -222,6 +222,45 @@ For non-streaming `--json` operations, stdout is one envelope with schema versio
 logging goes to stderr. Errors have nonzero exit status. Do not parse human
 messages to make lifecycle decisions.
 
+### Error codes and exit statuses
+
+Branch on `ok` and `error.code`. Treat an unknown code as a failure: new, more
+specific codes may be added within CLI contract 1. `pulsar contract --json`
+publishes this table as `error_codes` and `exit_statuses`.
+
+| `error.code` | Exit | Meaning |
+| --- | --- | --- |
+| `usage_error` | 2 | The command line is invalid: an unknown command or missing or bad arguments. |
+| `file_error` | 2 | A file or directory named by the caller could not be read or written. |
+| `invalid_spec` | 2 | Spec or document content failed validation. |
+| `unsupported_spec_version` | 2 | The document's schema version is not supported. |
+| `invalid_stack_output` | 2 | A Stack script produced output that is not JSON. This is a Stack defect. |
+| `prerequisite_failed` | 3 | A Stack action exited unsuccessfully; message and details hold its diagnostics. |
+| `cancelled` | 128+signal | Interrupted; cleanup of the command and its node workers was confirmed. |
+| `cleanup_incomplete` | 128+signal | Interrupted; worker exit could not be confirmed. |
+
+Success exits 0. The table applies to `--json` output. Without `--json`,
+`start`, `stop`, `status` and `model` run their operator scripts directly: a
+failed action exits 1 and a usage error exits 2, while the same failure with
+`--json` exits 3 as `prerequisite_failed`.
+
+When `start --json` is refused, the error is `prerequisite_failed` and
+`details` holds one record per start blocker: `field` is `blocker`, plus
+`blocker` (a code from `start_blocker_codes` in the contract), `node` and `rank`
+(null when the blocker is not node-specific), `message` and `fix`, the one
+command to run next. `guard_unsupported` and `historical_spec` are the exceptions:
+no command resolves them, so their `fix` says what to use instead. Start runs every
+independent check before it reports, so one refusal can list several blockers.
+Branch on `blocker`; `message` and `fix` are for people.
+
+`stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
+owned service was stopped, `false` when none was running. For `stop --all`,
+`stopped` is `null` because the result is not established per spec.
+
+Change note, 2026-09-26: `usage_error`, `file_error` and `invalid_stack_output`
+were split out of `invalid_spec`, which previously covered every input failure.
+Exit statuses did not change.
+
 Resource streams have a versioned header, then rank samples or explicit error
 records. Unavailable workload measurements are null, never zero. Stopping a
 stream terminates only diagnostic processes, not model services. Resource

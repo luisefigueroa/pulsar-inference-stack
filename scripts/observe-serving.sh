@@ -12,12 +12,12 @@ while [ $# -gt 0 ]; do
     --json) ;;
     --full) OBSERVE_FULL=1 ;;
     --verification-jobs) OBSERVE_VERIFICATION_JOBS="${2:?verification jobs required}"; shift ;;
-    --*) die "unknown argument: $1" 2 ;;
-    *) [ -z "$NAME" ] || die "unexpected argument: $1"; NAME="$1" ;;
+    --*) usage_die "unknown argument: $1" ;;
+    *) [ -z "$NAME" ] || usage_die "unexpected argument: $1"; NAME="$1" ;;
   esac
   shift
 done
-[[ "$OBSERVE_VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || die "--verification-jobs requires a positive integer" 2
+[[ "$OBSERVE_VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || usage_die "--verification-jobs requires a positive integer"
 acquire_model_library_lifecycle_lock shared
 acquire_model_library_hot_lock shared
 OBS=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-observe.XXXXXX")
@@ -53,7 +53,7 @@ if [ "$NODES" = 1 ]; then
   load_cluster_topology || die "confirmed topology required"
   API_URL=$(single_node_api_base_url "$PORT")
 else
-  [ -z "$NODE_SELECTOR" ] || die "--node only applies to one-node specs" 2
+  [ -z "$NODE_SELECTOR" ] || usage_die "--node only applies to one-node specs"
   require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || die "required topology unavailable"
   API_URL="http://${CLUSTER_NODE_CONTROL_IPS[0]}:$PORT"
 fi

@@ -31,8 +31,13 @@ def locate(store, *, service_id=None, selected_spec_id=None):
         rows = [row] if row else []
     else:
         rows = [row for row in store.records('services') if row['selected_spec_id'] == selected_spec_id]
-    if len(rows) != 1:
-        raise ValueError('service not recorded or selector is ambiguous; select an exact service ID (historical services have no complete launch record)')
+    if len(rows) > 1:
+        raise ValueError(f'several services are recorded for spec {selected_spec_id[:12]}; '
+                         'select one with ./pulsar observe --service-id ID')
+    if not rows:
+        subject = 'with this service ID' if service_id else f'for spec {str(selected_spec_id)[:12]}'
+        raise ValueError(f'no running service is recorded {subject} '
+                         '(services started before launch records existed are found only by inventory)')
     plan = store.get('service-plans', rows[0]['plan_id'])
     validate_plan(plan)
     if plan['service_id'] != rows[0]['service_id']:

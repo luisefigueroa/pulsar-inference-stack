@@ -64,6 +64,29 @@ def combined_observation(members):
         'blockers':[name+': '+b for name,m in members.items() for b in m.get('blockers',[])]}
 
 
+# Why this Stack cannot start a spec, as the start blocker code a start would
+# report, and the human wording for it.
+START_UNSUPPORTED_LABELS = {"guard_unsupported": "serving guard", "historical_spec": "historical schema-1 spec"}
+
+
+def start_support(spec):
+    """Whether this Stack can start the spec, judged from the spec alone.
+
+    Returns (start_supported, start_unsupported_reason). A serving guard in
+    recipe.container needs enforcement this Stack does not implement, so every
+    launcher refuses it as the guard_unsupported start blocker. Historical
+    schema-1 specs have no launch compiler (historical_spec). This is not a
+    readiness check and never gates catalog membership.
+    """
+    if spec.get("schema_version") not in (2, 3):
+        return False, "historical_spec"
+    recipe = spec.get("recipe")
+    container = recipe.get("container") if isinstance(recipe, dict) else None
+    if isinstance(container, dict) and "guard" in container:
+        return False, "guard_unsupported"
+    return True, None
+
+
 def project(spec, store, *, now=None):
     spec_id = spec["spec_id"]
     manifest_id = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
@@ -110,11 +133,13 @@ def project(spec, store, *, now=None):
     if not isinstance(blockers, list) or any(not isinstance(x, str) for x in blockers):
         raise StorageError("saved blockers must be a list of explanations")
     checked_at = observed.get("checked_at")
+    start_supported, start_unsupported_reason = start_support(spec)
     return {"historical": spec.get("schema_version") not in (2,3), "spec_id": spec_id, "model_id": identity_fields(spec)["model_id"],
         "snapshot_revision": identity_fields(spec)["snapshot_revision"], "snapshot_manifest_id": manifest_id,
         "geometry": identity_fields(spec)["geometry"], "image": identity_fields(spec)["image"],
         "engine_args": identity_fields(spec)["engine_args"], "state": spec["state"],
         "review": spec["review"],
+        "start_supported": start_supported, "start_unsupported_reason": start_unsupported_reason,
         "local_state": local_state, "archive_state": archive_state,
         "checked_at": checked_at, "observation_age_seconds": age_seconds(checked_at, now),
         "blockers": blockers, "home": home, "prepared_copies": views,
@@ -165,12 +190,17 @@ def render(rows, *, details=False, writer=None, names=None):
             out.emit("Historical spec: create a schema-2 spec for future operations.")
         geometry = row["geometry"]
         out.field("Recipe", f"{geometry['nodes']} node(s); tensor parallel {geometry['tp']}; pipeline parallel {geometry['pp']}")
+        startable = row.get("start_supported") is not False
+        if not startable:
+            reason = row.get("start_unsupported_reason")
+            out.field("Start", f"not supported by this Stack ({START_UNSUPPORTED_LABELS.get(reason, reason)})")
         review = row.get("review") or {}
         out.field("State", row.get("state") or "not specified")
         out.field("Review", review.get("status") or "not specified")
         if review.get("status") == "withdrawn":
             out.field("Reason", review.get("reason", "No reason recorded"))
-            out.emit("Withdrawn recipes are not recommended. Exact serving remains possible when operational checks pass.")
+            out.emit("Withdrawn recipes are not recommended."
+                     + (" Exact serving remains possible when operational checks pass." if startable else ""))
         out.field("Files", LOCAL_LABELS[row["local_state"]])
         out.field("Archive", ARCHIVE_LABELS[row["archive_state"]])
         out.field("Checked", f"{row['checked_at']} ({age_text(row['observation_age_seconds'])})" if row["checked_at"] else "not observed")

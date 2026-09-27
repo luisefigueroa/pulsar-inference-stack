@@ -30,9 +30,17 @@ class Catalog(unittest.TestCase):
         self.store = Store(self.root / "state")
         self.now = datetime(2026, 9, 5, 1, tzinfo=timezone.utc)
 
-    def add_spec(self):
-        helper = runpy.run_path(str(ROOT / "tests/test_release_contribution.py"))["make_contribution"]
-        spec, _, _, _ = helper(self.root / "fixture")
+    def add_spec(self, guarded=False, historical=False):
+        from release_spec.tests.test_serving_guard import FIXTURES, guarded as with_guard
+        if historical:
+            # A schema-1 record: readable and stoppable, never started.
+            helper = runpy.run_path(str(ROOT / "tests/test_release_contribution.py"))["make_contribution"]
+            spec, _, _, _ = helper(self.root / "fixture")
+        else:
+            # A schema-2 spec; guarded adds a serving guard to recipe.container.
+            spec = json.loads((FIXTURES / "spec.json").read_text())
+            if guarded:
+                spec = with_guard(spec)
         (self.repo / "releases").mkdir(exist_ok=True)
         (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
         return spec
@@ -90,7 +98,7 @@ class Catalog(unittest.TestCase):
         self.assertNotIn("running", row)
 
     def test_known_home_and_archive_do_not_imply_current_health(self):
-        spec = self.add_spec(); manifest = spec["identity"]["snapshot_manifest"]["manifest_id"]
+        spec = self.add_spec(historical=True); manifest = spec["identity"]["snapshot_manifest"]["manifest_id"]
         home = {"schema_version": 1, "kind": "pulsar-home", "snapshot_manifest_id": manifest,
             "node_id": "node-a", "hub_path": "/nonexistent/home", "path": "/nonexistent/home/snapshot",
             "verification": {"snapshot_manifest_id": manifest}, "verified_at": "2026-09-05T00:00:00Z"}
@@ -108,13 +116,50 @@ class Catalog(unittest.TestCase):
 
     def test_withdrawal_reason_visible_without_hiding_recipe(self):
         spec = self.add_spec()
-        spec["review"].update(status="withdrawn", reason="Later testing found inconsistent answers.")
+        spec["review"] = {"status": "withdrawn", "reviewer": "example-reviewer",
+                          "reviewed_at": "2026-09-03T00:00:00Z", "reason": "Later testing found inconsistent answers."}
         (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
         rows = entries(self.repo, self.store)
         self.assertEqual(len(rows), 1)
         output = io.StringIO(); render(rows, writer=TerminalWriter(stream=output))
         self.assertIn("Later testing found inconsistent answers", output.getvalue())
         self.assertIn("Exact serving remains possible", output.getvalue())
+
+    def test_historical_spec_stays_listed_and_says_start_is_unsupported(self):
+        spec = self.add_spec(historical=True)
+        row = entries(self.repo, self.store)[0]
+        self.assertEqual((row["start_supported"], row["start_unsupported_reason"]), (False, "historical_spec"))
+        output = io.StringIO(); render([row], writer=TerminalWriter(stream=output))
+        self.assertIn("Start     not supported by this Stack (historical schema-1 spec)", output.getvalue())
+        self.assertEqual(row["spec_id"], spec["spec_id"])
+
+    def test_guarded_spec_stays_listed_and_says_start_is_unsupported(self):
+        ordinary = self.add_spec()
+        guarded = self.add_spec(guarded=True)
+        with patch("subprocess.run", side_effect=AssertionError("catalog must not probe")):
+            rows = {row["spec_id"]: row for row in entries(self.repo, self.store, now=self.now)}
+        self.assertEqual(set(rows), {ordinary["spec_id"], guarded["spec_id"]})
+        self.assertIs(rows[ordinary["spec_id"]]["start_supported"], True)
+        self.assertIsNone(rows[ordinary["spec_id"]]["start_unsupported_reason"])
+        self.assertIs(rows[guarded["spec_id"]]["start_supported"], False)
+        self.assertEqual(rows[guarded["spec_id"]]["start_unsupported_reason"], "guard_unsupported")
+        for details in (False, True):
+            output = io.StringIO()
+            render([rows[guarded["spec_id"]]], details=details, writer=TerminalWriter(stream=output))
+            self.assertIn("Start     not supported by this Stack (serving guard)", output.getvalue())
+            output = io.StringIO()
+            render([rows[ordinary["spec_id"]]], details=details, writer=TerminalWriter(stream=output))
+            self.assertNotIn("not supported by this Stack", output.getvalue())
+
+    def test_withdrawn_guarded_spec_does_not_claim_serving_remains_possible(self):
+        spec = self.add_spec(guarded=True)
+        spec["review"] = {"status": "withdrawn", "reviewer": "example-reviewer",
+                          "reviewed_at": "2026-09-03T00:00:00Z", "reason": "Superseded."}
+        (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+        output = io.StringIO()
+        render(entries(self.repo, self.store), writer=TerminalWriter(stream=output))
+        self.assertIn("Withdrawn recipes are not recommended.", output.getvalue())
+        self.assertNotIn("Exact serving remains possible", output.getvalue())
 
     def test_corrupt_observation_does_not_look_ready(self):
         spec = self.add_spec()
@@ -171,8 +216,8 @@ if "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
 raise SystemExit(int(os.environ.get("ACTION_RC","0")))
 """
 
-    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive"):
-        spec = self.add_spec()
+    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False):
+        spec = self.add_spec(guarded=guarded)
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
@@ -277,6 +322,16 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertIn("Suggested: Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
         self.assertIn("Not shown: Prepare, Move home, Create archive, Remove home (no home is recorded)", shown)
+
+    def test_guarded_spec_menu_leaves_out_start_and_explains_why(self):
+        _, result, actions, choices, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None, guarded=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
+                                 "Storage and archive…", "Show details", "Back"])
+        shown = " ".join(result.stdout.split())
+        self.assertIn("Not shown: Start (this Stack cannot run the spec's serving guard)", shown)
 
 
 if __name__ == "__main__": unittest.main()

@@ -54,6 +54,7 @@ load_docker_argv_from_plan() { local -n out=$3; out=(docker run fixture); }
 require_launch_operational_checks() { :; }
 container_ownership_inspect_local() { return 0; }
 single_node_display() { echo fixture; }
+start_blocker() { echo "BLOCKED $1"; }
 remove_stack_owned_single_at_resolved_node() { touch "$REMOVE_MARKER"; return 2; }
 PULSAR_MANAGED_LABEL=managed PULSAR_CONF_LABEL=conf PULSAR_RANK_LABEL=rank PULSAR_NODE_ID_LABEL=node
 ''')
@@ -62,6 +63,7 @@ PULSAR_MANAGED_LABEL=managed PULSAR_CONF_LABEL=conf PULSAR_RANK_LABEL=rank PULSA
                 ['bash',str(root/'serve.sh'),'a'*64],env=env,text=True,capture_output=True)
             self.assertNotEqual(refused.returncode,0)
             self.assertIn('--replace',refused.stderr)
+            self.assertIn('BLOCKED service_exists',refused.stdout)
             self.assertFalse(marker.exists())
             replacing=subprocess.run(
                 ['bash',str(root/'serve.sh'),'a'*64,'--replace'],env=env,
@@ -73,6 +75,7 @@ PULSAR_MANAGED_LABEL=managed PULSAR_CONF_LABEL=conf PULSAR_RANK_LABEL=rank PULSA
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);scripts=root/'scripts';scripts.mkdir()
             shutil.copyfile(ROOT/'scripts/up.sh',scripts/'up.sh')
+            shutil.copyfile(ROOT/'scripts/start_blockers.py',scripts/'start_blockers.py')
             marker=root/'image-pulled'
             (scripts/'lib.sh').write_text(r'''
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -88,6 +91,8 @@ single_node_api_base_url() { echo http://127.0.0.1:8000; }
 resolve_spec_decode() { SPEC_DECODE_ENABLED=0; }
 load_release_spec_projection() { :; }
 release_spec_enabled_cell() { echo -; }
+human_node_name() { echo fixture; }
+start_blocker() { local code="$1"; shift; python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" "$@"; }
 ''')
             (scripts/'check-image.sh').write_text(r'''#!/usr/bin/env bash
 case " $* " in *" --json "*) echo '{"state":"missing-on-head"}' ;; *) echo 'FAIL image missing' ;; esac
@@ -96,7 +101,10 @@ exit 1
             (scripts/'sync-image.sh').write_text(r'''#!/usr/bin/env bash
 touch "$IMAGE_PULL_MARKER"
 ''')
-            for path in (scripts/'check-image.sh',scripts/'sync-image.sh'):
+            # Files and memory pass, so --pull-image may stage the image.
+            for name in ('check-weights.sh','check-memory.sh'):
+                (scripts/name).write_text('#!/usr/bin/env bash\nexit 0\n')
+            for path in (scripts/'check-image.sh',scripts/'sync-image.sh',scripts/'check-weights.sh',scripts/'check-memory.sh'):
                 path.chmod(0o700)
             env={**os.environ,'IMAGE_PULL_MARKER':str(marker),
                  'PULSAR_MODEL_LIBRARY_DIR':str(root/'state'),

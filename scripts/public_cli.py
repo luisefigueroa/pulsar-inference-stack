@@ -13,8 +13,19 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from release_spec import serving
-from scripts.document_cli import CommandParser, emit, failure
+from scripts.document_cli import CommandParser, UsageError, emit, failure
 from model_library.verification_process import Cancelled, run_command
+
+
+class StackOutputError(Exception):
+    """A Stack script succeeded but its stdout was not the promised JSON."""
+
+
+class StartBlocked(RuntimeError):
+    """Start refused; envelope_details holds one record per start blocker."""
+    def __init__(self, message, blockers):
+        super().__init__(message)
+        self.envelope_details = blockers
 
 
 def redact_diagnostic(value):
@@ -36,7 +47,13 @@ def producer_provenance():
             'working_tree_dirty': bool(dirty.stdout) if dirty.returncode == 0 else None}
 
 
+# Private status the lifecycle scripts use for command-line mistakes (usage_die
+# in lib.sh) while --json is active, so they are reported as usage_error.
+USAGE_EXIT = 64
+
+
 def execute(script, args, *, json_result=False, env=None):
+    env = {**(os.environ if env is None else env), 'PULSAR_USAGE_EXIT': str(USAGE_EXIT)}
     try:
         result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
     except Cancelled as exc:
@@ -50,9 +67,15 @@ def execute(script, args, *, json_result=False, env=None):
     if result.returncode:
         if result.stdout:
             print(redact_diagnostic(result.stdout), file=sys.stderr, end='')
+        if result.returncode == USAGE_EXIT:
+            lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
+            raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('ERROR: ', 1)[-1].split('error: ', 1)[-1])
         raise RuntimeError((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
     if json_result:
-        return json.loads(result.stdout)
+        try:
+            return json.loads(result.stdout)
+        except json.JSONDecodeError as exc:
+            raise StackOutputError(f'{script} returned output that is not JSON; this is a Stack defect') from exc
     if result.stdout:
         print(result.stdout, file=sys.stderr, end='')
     return {'completed': True}
@@ -89,7 +112,7 @@ def measurement(args):
 def policy(args):
     from release_spec.baseline_policy import load_supported_policy, SUPPORTED_POLICY_DIGESTS
     if len(args) != 2 or args[0] != 'show' or args[1] not in SUPPORTED_POLICY_DIGESTS:
-        raise ValueError('usage: pulsar policy show baseline-v1|baseline-v2 --json')
+        raise UsageError('arguments', 'usage: pulsar policy show baseline-v1|baseline-v2 --json')
     document, digest = load_supported_policy(ROOT / 'policy' / (args[1] + '.json'))
     return {'policy': document, 'policy_digest': digest}
 
@@ -130,9 +153,19 @@ def dispatch(command, args):
         os.chdir(ROOT)
         os.execvp('bash',['bash',str(ROOT/'scripts/resources.sh'),*args])
     if command == 'start':
+        from scripts.start_blockers import read as read_blockers
         with tempfile.TemporaryDirectory(prefix='pulsar-start-result.') as temp:
-            path=Path(temp)/'result.json'
-            execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path)})
+            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'
+            try:
+                execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path),
+                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers)})
+            except Cancelled:
+                raise
+            except RuntimeError as exc:
+                recorded=read_blockers(blockers)
+                if recorded:
+                    raise StartBlocked(str(exc),recorded) from exc
+                raise
             return serving.load_json(path)
     if command == 'model':
         result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True)
@@ -144,7 +177,11 @@ def dispatch(command, args):
     if command == 'status':
         return execute('scripts/status.sh', [*args, '--json'], json_result=True)
     if command == 'stop':
-        return execute('scripts/down.sh', args)
+        with tempfile.TemporaryDirectory(prefix='pulsar-stop-result.') as temp:
+            path=Path(temp)/'result.json'
+            execute('scripts/down.sh',args,env={**os.environ,'PULSAR_STOP_RESULT_FILE':str(path)})
+            # stop --all reports per-service lines only; whether anything stopped is not established.
+            return {'completed':True,**(serving.load_json(path) if path.exists() else {'stopped':None})}
     if command == 'policy':
         return policy(args)
     if command == 'contribution' and args[:1] == ['verify']:
@@ -216,7 +253,7 @@ def dispatch(command, args):
         print(result.stdout+result.stderr,file=sys.stderr,end='')
         if result.returncode: raise ValueError('commit metadata privacy check failed')
         return {'checked':True}
-    raise ValueError('unsupported public command')
+    raise UsageError('command', 'unsupported public command')
 
 
 def main(argv=None):
@@ -225,7 +262,7 @@ def main(argv=None):
     argv=[arg for arg in argv if arg!='--json']
     try:
         if not argv:
-            raise ValueError('a public command is required')
+            raise UsageError('command', 'a public command is required')
         # Interpret artifact paths at the user's working directory before
         # entering Stack's implementation directory.
         path_flags={'--spec-file','--manifest','--manifest-out','--override-file','--overlay','--memory-estimate-file'}
@@ -241,6 +278,8 @@ def main(argv=None):
         result=dispatch(argv[0],argv[1:])
         emit(result,json_output=json_output)
         return 0
+    except StackOutputError as exc:
+        return failure(exc,json_output=json_output,code='invalid_stack_output')
     except (ValueError,OSError,TypeError,KeyError) as exc:
         return failure(exc,json_output=json_output)
     except Cancelled as exc:

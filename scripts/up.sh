@@ -34,7 +34,7 @@ case "${1:-}" in -h|--help) up_usage; exit 0 ;; esac
 NAME="${1:-}"
 unset PULSAR_OVERRIDE_FILE PULSAR_EFFECTIVE_SPEC_ID
 unset PULSAR_MEMORY_ESTIMATE_JSON
-[ -n "$NAME" ] || die "usage: pulsar start SPEC_ID [options]; see ./pulsar start --help"
+[ -n "$NAME" ] || usage_die "usage: pulsar start SPEC_ID [options]; see ./pulsar start --help"
 shift
 
 SPEC_MODE=auto SKIP_PF=0 SKIP_W=0 ACCEPT_MEM=0 PULL_IMG=0 REPLACE=0
@@ -42,15 +42,15 @@ DRY=0 VERBOSE=0 NODE_SELECTOR=""
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
-    --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
-    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-file requires a file" 2; MEMORY_ESTIMATE_FILE="$2"; shift ;;
-    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
+    --override-file) [ "$#" -ge 2 ] || usage_die "--override-file requires a JSON file"; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
+    --spec-file) [ "$#" -ge 2 ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || usage_die "--memory-estimate-file requires a file"; MEMORY_ESTIMATE_FILE="$2"; shift ;;
+    --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || usage_die "--memory-estimate-id requires a digest"; MEMORY_ESTIMATE_ID="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
     --no-spec-decode) set_spec_decode_mode SPEC_MODE off ;;
     --force) refuse_removed_force_flag ;;
     --skip-preflight) SKIP_PF=1 ;;
-    --skip-weights-check) die "model-file verification cannot be skipped" 2 ;;
+    --skip-weights-check) usage_die "model-file verification cannot be skipped" ;;
     --accept-memory-warn) ACCEPT_MEM=1 ;;
     --pull-image) PULL_IMG=1 ;;
     --replace) REPLACE=1 ;;
@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
       refuse_removed_weight_mode_flag
       ;;
     --node)
-      [ "$#" -ge 2 ] || die "--node requires a topology node id or hostname" 2
+      [ "$#" -ge 2 ] || usage_die "--node requires a topology node id or hostname"
       NODE_SELECTOR="$2"
       shift
       ;;
@@ -69,7 +69,7 @@ while [ $# -gt 0 ]; do
       up_usage
       exit 0
       ;;
-    *) die "unknown arg: $1" ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
@@ -92,9 +92,12 @@ if [ "$NODES" -eq 1 ]; then
     || die "cannot resolve physical node placement '$NODE_SELECTOR'"
   PLACEMENT_SELECTOR="${SINGLE_NODE_ID:-$SINGLE_NODE_KEY}"
   PLACEMENT_ARGS=(--node "$PLACEMENT_SELECTOR")
+  # Suggested commands name the node by hostname, which --node also accepts.
+  # Exported so serve.sh, which records service_exists, names the node too.
+  export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
 elif [ -n "$NODE_SELECTOR" ]; then
-  die "--node is only valid for one-node profiles" 2
+  usage_die "--node is only valid for one-node profiles"
 fi
 resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
@@ -124,16 +127,43 @@ echo "├─ checks"
 echo "INFO  spec-review $SPEC_REVIEW_CELL (display-only)"
 echo "PASS  recipe    exact spec contract parsed"
 
+# Every independent check runs before start reports. Each failure is one
+# recorded blocker; blockers that leave nodes unobservable end the checks.
+BLOCKER_COUNT=0
+blocked() {
+  BLOCKER_COUNT=$((BLOCKER_COUNT + 1))
+  start_blocker "$@"
+}
+stop_if_blocked() {
+  [ "$BLOCKER_COUNT" -eq 0 ] \
+    || die "start is blocked by $BLOCKER_COUNT blocker(s) above; nothing was launched"
+}
+# image_ranks STATE... — "rank<TAB>hostname" for image-check ranks in STATE.
+image_ranks() {
+  local rank index
+  while IFS=$'\t' read -r rank index; do
+    printf '%s\t%s\n' "$rank" "$(human_node_name "$index")"
+  done < <(printf '%s' "$img_json" | python3 -c '
+import json,sys
+for row in (json.load(sys.stdin).get("ranks") or []):
+    if row.get("state") in sys.argv[1:]: print(row["rank"], row["topology_index"], sep="\t")
+' "$@" 2>/dev/null)
+}
+
 if [ "$NODES" -gt 1 ]; then
   if ! require_profile_topology \
       "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR"; then
     echo "FAIL  topology  profile needs $NODES confirmed ranks"
-    die "confirm membership for this geometry with ./pulsar topology configure, then retry"
+    blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
+    stop_if_blocked
   fi
   echo "PASS  topology  profile=$NODES ranks  available=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 fi
 
 # --- image ---
+# With --pull-image a missing image is staged only after every other check
+# passes, so a start that is blocked anyway changes nothing.
+IMAGE_SYNC=""
 set +e
 if [ "$VERBOSE" = 1 ]; then
   "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}"
@@ -149,34 +179,36 @@ if [ "$img_rc" != 0 ]; then
   img_state=$(printf '%s' "$img_json" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || echo unknown)
   case "$img_state" in
     need-topology)
-      die "confirmed topology has fewer ranks than this profile requires"
+      blocked topology_incomplete --detail "the image check found fewer confirmed nodes than the spec needs"
+      stop_if_blocked
       ;;
-    missing-on-worker|missing-on-rank)
-      if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
-        "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes
-        QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
-          || die "image still missing after rank sync"
-      else
-        die "image missing on remote rank(s): $IMAGE — re-run with --pull-image to stage the pinned image"
+    worker-unreachable|rank-unreachable|target-unreachable|worker-docker-error|rank-docker-error|head-docker-error|target-docker-error)
+      # Name every affected node; later checks need every node observable.
+      while IFS=$'\t' read -r rank host; do
+        blocked node_unreachable --node "$host" --rank "$rank"
+      done < <(image_ranks unreachable)
+      while IFS=$'\t' read -r rank host; do
+        blocked docker_unavailable --node "$host" --rank "$rank"
+      done < <(image_ranks docker-error)
+      [ "$BLOCKER_COUNT" -gt 0 ] || blocked docker_unavailable --detail "image check state $img_state"
+      # Ranks already known to lack the image are reported now, not after repair.
+      missing_on=$(image_ranks missing | cut -f2 | paste -sd, - | sed 's/,/, /g')
+      if [ -n "$missing_on" ] && { [ "$DRY" = 1 ] || [ "$PULL_IMG" != 1 ]; }; then
+        blocked image_missing --detail "$IMAGE on $missing_on"
       fi
+      stop_if_blocked
       ;;
-    worker-unreachable|rank-unreachable|target-unreachable)
-      die "one or more required physical nodes are unreachable over BatchMode SSH — run ./pulsar topology check to see which node"
-      ;;
-    worker-docker-error|rank-docker-error|head-docker-error|target-docker-error)
-      die "Docker is unavailable on one or more required physical nodes"
-      ;;
-    missing-on-head|missing-on-target|missing-both|unknown|"")
+    missing-on-worker|missing-on-rank|missing-on-head|missing-on-target|missing-both|unknown|"")
+      missing_on=$(image_ranks missing | cut -f2 | paste -sd, - | sed 's/,/, /g')
       if [ "$DRY" != 1 ] && [ "$PULL_IMG" = 1 ]; then
-        "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
-        QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
-          || die "image still missing after sync"
+        IMAGE_SYNC="$img_state"
       else
-        die "image missing ($img_state): $IMAGE — re-run with --pull-image to stage the pinned image"
+        blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}"
       fi
       ;;
     *)
-      die "image check failed (state=$img_state)"
+      blocked docker_unavailable --detail "image check state $img_state"
+      stop_if_blocked
       ;;
   esac
 fi
@@ -193,7 +225,7 @@ if [ "$SKIP_W" != 1 ]; then
   fi
   set -e
   if [ "$w_rc" != 0 ]; then
-    die "model files are not ready — see the weights check above; run ./pulsar model prepare $NAME ${PLACEMENT_ARGS[*]:+${PLACEMENT_ARGS[*]} }--yes (acquire or restore first if no home exists)"
+    blocked model_files_not_ready --detail "see the weights check above"
   fi
 else
   echo "SKIP  weights"
@@ -213,10 +245,16 @@ else
   mem_rc=$?
 fi
 set -e
+# The per-node reason (available versus needed) comes from the JSON report,
+# requested only when memory blocks the start.
+memory_reason() {
+  QUIET=1 "$REPO_DIR/scripts/check-memory.sh" "$NAME" "${PLACEMENT_ARGS[@]}" "${MEMORY_ARGS[@]}" --json 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("reason","").strip().rstrip(";"))' 2>/dev/null || true
+}
 case "$mem_rc" in
   0) ;;
   1)
-    die "memory preflight FAILED — free memory or stop other GPU services (./pulsar inventory lists them), or choose a smaller spec; --verbose shows the calculation"
+    blocked memory_insufficient --detail "$(memory_reason)"
     ;;
   2)
     if [ "$DRY" = 1 ]; then
@@ -224,11 +262,27 @@ case "$mem_rc" in
     elif [ "$ACCEPT_MEM" = 1 ]; then
       echo "      (WARN accepted via --accept-memory-warn)"
     else
-      die "memory WARN — re-run with --accept-memory-warn to launch"
+      blocked memory_warning --detail "$(memory_reason)"
     fi
     ;;
   *)
-    die "memory preflight failed internally (exit=$mem_rc) — refusing launch"
+    blocked memory_check_failed --detail "exit $mem_rc"
+    ;;
+esac
+stop_if_blocked
+
+# --- deferred image staging (--pull-image) ---
+case "$IMAGE_SYNC" in
+  "") ;;
+  missing-on-worker|missing-on-rank)
+    "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes
+    QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
+      || die "image still missing after rank sync"
+    ;;
+  *)
+    "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
+    QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
+      || die "image still missing after sync"
     ;;
 esac
 
@@ -240,8 +294,10 @@ if [ "$NODES" -gt 1 ]; then
     else
       echo "│  running cluster preflight…"
       if [ "$VERBOSE" = 1 ]; then
-        "$REPO_DIR/cluster/preflight.sh" "$NAME" \
-          || die "cluster preflight failed"
+        if ! "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+          blocked preflight_failed --detail "see the preflight output above"
+          stop_if_blocked
+        fi
       else
         _pf_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-preflight.XXXXXX")
         # shellcheck disable=SC2064
@@ -253,7 +309,8 @@ if [ "$NODES" -gt 1 ]; then
         else
           echo "FAIL  preflight — see $_pf_log"
           tail -20 "$_pf_log" >&2 || true
-          die "cluster preflight failed"
+          blocked preflight_failed --detail "log: $_pf_log"
+          stop_if_blocked
         fi
       fi
     fi

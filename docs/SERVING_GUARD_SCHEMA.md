@@ -53,9 +53,12 @@ implementation. `pulsar contract` advertises `serving_guard_schema_versions`
 without adding guarded execution operations. The static launch-compatibility
 check reports guarded recipes unsupported. Ordinary launch entrypoints reject
 them, including guards introduced by explicit overrides, before image staging
-or service replacement. This execution-only refusal does not apply to observation
-or pre-launch resource sampling; their schema, platform and ownership checks
-still apply. Status, stop, storage and document validation retain their existing
+or service replacement, and report the refusal as the `guard_unsupported`
+start blocker. The catalog keeps guarded specs and marks them
+`start_supported: false`, so the catalog menu does not offer Start for them.
+This execution-only refusal does not apply to observation or pre-launch
+resource sampling; their schema, platform and ownership checks still apply.
+Status, stop, storage and document validation retain their existing
 boundaries.
 
 Experiment planning, probe selection, stage budgets, measurement sequencing,
