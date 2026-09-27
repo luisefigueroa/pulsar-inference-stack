@@ -71,7 +71,8 @@ changes to the agreed plan with the maintainer before implementing them.
 ## Terminology and naming
 
 Use plain, specific names that tell a reader what an object is or what an
-operation does. Use the same term for the same concept in Stack and Workbench,
+operation does. Human output follows the glossary in
+[docs/OPERATIONS.md](docs/OPERATIONS.md#terms). Use the same term for the same concept in Stack and Workbench,
 including function names, variables, CLI output, schema fields, documentation,
 tests, and diagrams. Qualify ambiguous names by their subject: `stack_commit`,
 `model_commit`, `schema_version`, `spec_id`, or `container_id`.

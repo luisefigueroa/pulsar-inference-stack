@@ -158,7 +158,7 @@ class IntegrityTests(unittest.TestCase):
         archive=hub/'operator-data'/'pulsar-snapshots'
         archive.mkdir(parents=True)
         recovery=archive/'keep.bin'; recovery.write_bytes(b'recovery data')
-        with self.assertRaisesRegex(StorageError, 'recovery archive'):
+        with self.assertRaisesRegex(StorageError, 'archive namespace'):
             remove_managed_hub(hub,self.base/'home',self.manifest,verification=stamp)
         self.assertEqual(recovery.read_bytes(),b'recovery data')
         self.assertTrue(payload(hub,self.manifest).is_dir())

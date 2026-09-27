@@ -39,13 +39,13 @@ def _decode(raw):
         if char == '#' and quote is None:
             break
         if quote != "'" and (char in '$`' or (quote is None and char in ';|&<>()')):
-            raise StorageError('archive root assignment must be a literal path; dynamic shell expressions are unsupported')
+            raise StorageError('archive location assignment must be a literal path; dynamic shell expressions are unsupported')
     try:
         words = shlex.split(raw, comments=True, posix=True)
     except ValueError as exc:
-        raise StorageError('archive root assignment has invalid quoting') from exc
+        raise StorageError('archive location assignment has invalid quoting') from exc
     if len(words) > 1:
-        raise StorageError('archive root assignment has trailing tokens; quote paths containing spaces')
+        raise StorageError('archive location assignment has trailing tokens; quote paths containing spaces')
     return words[0] if words else ''
 
 
@@ -79,9 +79,9 @@ def parse(data):
         if match:
             found.append((index, _decode(match.group(1))))
         elif MENTION.match(line):
-            raise StorageError('archive root assignment is malformed')
+            raise StorageError('archive location assignment is malformed')
     if len(found) > 1:
-        raise StorageError('archive root assignment is duplicated; resolve it explicitly')
+        raise StorageError('archive location assignment is duplicated; resolve it explicitly')
     return found[0] if found else (None, None)
 
 
@@ -108,7 +108,7 @@ def effective(repo, environ=None):
               'health': {'directory_exists': None, 'readable': None, 'writable': None}}
     if value:
         if not isinstance(value, str) or not Path(value).is_absolute() or '..' in Path(value).parts or any(c in value for c in '\0\n\r'):
-            raise StorageError('configured archive root must be an absolute literal path without parent traversal')
+            raise StorageError('configured archive location must be an absolute literal path without parent traversal')
         path = Path(value)
         result['health'] = {'directory_exists': path.is_dir(),
                             'readable': os.access(path, os.R_OK), 'writable': os.access(path, os.W_OK)}
@@ -136,9 +136,9 @@ def set_root(repo, value):
     repo = Path(repo).resolve()
     if value:
         if not Path(value).is_absolute() or '..' in Path(value).parts or any(c in value for c in '\0\n\r'):
-            raise StorageError('archive root must be an absolute path without parent traversal')
+            raise StorageError('archive location must be an absolute path without parent traversal')
         if not Path(value).is_dir():
-            raise StorageError('selected archive directory must already exist')
+            raise StorageError('selected archive location must already exist')
     with lock(repo, exclusive=True):
         data, mode = _read(repo)
         index, _ = parse(data)
@@ -182,9 +182,9 @@ def run_locked(repo, command, *, allow_unconfigured=False):
     with lock(repo):
         state = effective(repo)
         if not allow_unconfigured and state['status'] != 'configured':
-            raise StorageError('configure an archive root before using archive operations')
+            raise StorageError('configure an archive location (./pulsar configure archive-root) before using archive operations')
         if not allow_unconfigured and not state['health']['directory_exists']:
-            raise StorageError('configured archive directory is unavailable')
+            raise StorageError('configured archive location is unavailable')
         env = dict(os.environ)
         env[KEY] = state['path'] or ''
         env['PULSAR_ARCHIVE_CONFIG_LOCKED'] = '1'
@@ -192,7 +192,7 @@ def run_locked(repo, command, *, allow_unconfigured=False):
 
 
 def display(state):
-    print('Recovery archive location')
+    print('Archive location')
     print(f"  Status: {state['status']}\n  Source: {state['source']}")
     if state['path']:
         print(f"  Path:\n    {state['path']}")

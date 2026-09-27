@@ -131,7 +131,7 @@ class ConfigurationTests(unittest.TestCase):
     def test_disable_in_process_prevents_archive_child(self):
         config.set_root(self.repo, str(self.archive))
         with patch.dict(os.environ, {'PULSAR_COLD_ROOT': ''}), patch.object(config.subprocess, 'run') as run:
-            with self.assertRaisesRegex(StorageError, 'configure an archive root'):
+            with self.assertRaisesRegex(StorageError, 'configure an archive location'):
                 config.run_locked(self.repo, ['synthetic-operation'])
         run.assert_not_called()
 

@@ -156,7 +156,7 @@ if [ "$port_listening" = 1 ]; then
       mflag="${1:-}" conf_l="${2:-}" net="${3:-}"
       if [ "$mflag" = "true" ] && [ -n "$conf_l" ]; then
         if [ "$net" = "host" ] || [ "$net" = "default" ]; then
-          managed_hit="$cname conf=$conf_l net=$net"
+          managed_hit="$cname conf label=$conf_l net=$net"
           break
         fi
       fi
@@ -205,21 +205,21 @@ fi
 
 if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   if [ -z "${PULSAR_COLD_ROOT}" ]; then
-    record ok cold_storage "cold recovery storage is disabled"
+    record ok cold_storage "archives are disabled"
   elif [ ! -d "${PULSAR_COLD_ROOT}" ]; then
-    record fail cold_storage "cold recovery path is missing or not a directory"
+    record fail cold_storage "archive location is missing or not a directory (./pulsar configure archive-root)"
   elif [ ! -r "${PULSAR_COLD_ROOT}" ] || [ ! -x "${PULSAR_COLD_ROOT}" ]; then
     record fail cold_storage \
-      "cold recovery path is not readable and searchable"
+      "archive location is not readable and searchable"
   elif [ ! -w "${PULSAR_COLD_ROOT}" ]; then
     record warn cold_storage \
-      "cold recovery storage is configured · current write access unavailable"
+      "archive location is configured · current write access unavailable"
   else
-    record ok cold_storage "cold recovery storage is configured"
+    record ok cold_storage "archive location is configured"
   fi
 else
   record warn cold_storage \
-    "cold recovery storage is not configured (explicit PULSAR_COLD_ROOT required)"
+    "archive location is not configured (./pulsar configure archive-root)"
 fi
 
 avail=$(mem_available_gib_local)

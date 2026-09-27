@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Read-only preflight for an exact configured multi-node profile.
-#   cluster/preflight.sh <model-name>
+#   cluster/preflight.sh SPEC_ID
 set -uo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,7 +29,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ "$EXPECTED_NODES" -gt 1 ] || {
-  echo "error: profile must require more than one node" >&2
+  echo "error: spec must require more than one node" >&2
   exit 1
 }
 require_profile_topology \
@@ -52,7 +52,7 @@ node_exec() {
 }
 
 echo "[preflight] topology"
-ok "$EXPECTED_NODES active ranks · topology ${CLUSTER_TOPOLOGY_ID:0:12} · exact profile"
+ok "$EXPECTED_NODES active ranks · topology ${CLUSTER_TOPOLOGY_ID:0:12} · exact spec"
 for ((rank = 0; rank < EXPECTED_NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
   control_ip="${CLUSTER_NODE_CONTROL_IPS[$rank]}"
@@ -156,7 +156,7 @@ for ((rank = 0; rank < EXPECTED_NODES; rank++)); do
 done
 
 if [ -n "$PROFILE" ]; then
-  echo "[preflight] model $PROFILE"
+  echo "[preflight] spec ${PROFILE:0:12}"
   HFDIR="models--${MODEL//\//--}"
   for ((rank = 0; rank < EXPECTED_NODES; rank++)); do
     image_command="docker image inspect $(printf '%q' "$IMAGE") >/dev/null 2>&1"
@@ -165,7 +165,7 @@ if [ -n "$PROFILE" ]; then
       || bad "rank $rank: image $IMAGE not present"
   done
   if "$REPO_DIR/scripts/check-weights.sh" "$PROFILE" >/dev/null; then
-    ok "model files: ready library staging for $PROFILE"
+    ok "model files: prepared on every rank for ${PROFILE:0:12}"
   else
     bad "model files are not prepared — run: ./pulsar model prepare $PROFILE --yes"
   fi

@@ -342,7 +342,7 @@ collect_live_snapshot() {
   fi
   worker_ip=""
   worker_status="unset"
-  worker_reason="no other cluster nodes confirmed"
+  worker_reason="no other nodes confirmed"
   if [ "$topology_count" -gt 1 ]; then
     worker_ip="${CLUSTER_NODE_SSH_HOSTS[1]}"
     worker_status="ok"
@@ -380,7 +380,7 @@ collect_live_snapshot() {
     | parse_gpu_csv_to_json_lines head >>"$tmp_g" || true
 
   if [ "$topology_count" -le 1 ]; then
-    printf 'worker\t\tnull\tnull\tunset\tunset\tunset\tno other cluster nodes confirmed\t\t\t\t\n' \
+    printf 'worker\t\tnull\tnull\tunset\tunset\tunset\tno other nodes confirmed\t\t\t\t\n' \
       >>"$tmp_n"
   fi
 
@@ -749,7 +749,7 @@ def classify_container(c):
             return "mismatch", False, conf, None, reasons, profile
         if not rank_valid_for_profile(rank, profile):
             reasons.append(
-                f"rank '{rank}' inconsistent with profile {conf} "
+                f"rank '{rank}' inconsistent with spec {str(conf)[:12]} "
                 f"(expected {','.join(profile.get('expected_ranks') or [])})"
             )
             return "mismatch", False, conf, rank, reasons, profile
@@ -792,7 +792,7 @@ def classify_container(c):
         expected_name = profile.get("container_name")
         if expected_name and name and name != expected_name:
             reasons.append(
-                f"container name '{name}' differs from profile default '{expected_name}'"
+                f"container name '{name}' differs from the spec's default '{expected_name}'"
             )
             # Name drift is a warning; labels remain authoritative for ownership.
         return "managed", True, conf, rank, reasons, profile
@@ -835,7 +835,7 @@ def classify_container(c):
         rank = str(node_rank) if node_rank is not None else (
             "single" if profile.get("nodes") == 1 else None
         )
-        reasons.append("unlabeled; argv matched profile (legacy, not safe_to_stop)")
+        reasons.append("unlabeled; argv matched spec (legacy, not safe_to_stop)")
         return "legacy", False, conf, rank, reasons, profile
 
     if looks_like_vllm(c) or is_managed(labels):
@@ -1106,9 +1106,9 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
     elif weight_source_missing and weight_sources:
         weight_source = "mixed"
     if weight_source_missing:
-        reasons.append("one or more ranks lack weight source")
+        reasons.append("one or more ranks lack the model-file source label")
     if len(weight_sources) > 1:
-        reasons.append("ranks disagree on weight source")
+        reasons.append("ranks disagree on the model-file source label")
     if weight_source == "local-files" and (
         weight_owner_missing
         or weight_config_missing
@@ -1117,7 +1117,7 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
     ):
         weight_owner = None
         weight_config = None
-        reasons.append("weight provenance labels are missing or inconsistent")
+        reasons.append("model-file provenance labels are missing or inconsistent")
     for label, values, missing, required in contract_fields:
         if len(values) > 1:
             reasons.append(f"ranks disagree on {label}")
@@ -1409,10 +1409,10 @@ def node_label(name):
     if name == "head":
         return "this node"
     if name == "worker":
-        return "cluster node 2"
+        return "rank 1 node (hostname not recorded)"
     if name.startswith("rank-"):
         try:
-            return f"cluster node {int(name.split('-', 1)[1]) + 1}"
+            return f"rank {int(name.split('-', 1)[1])} node (hostname not recorded)"
         except ValueError:
             pass
     return name
@@ -1486,9 +1486,9 @@ def print_service(s):
     field("nodes", f"{nodes_e} required · {observed_count}/{expected_count} observed")
     weight_source = s.get("weight_source")
     if weight_source:
-        field("weights", weight_source)
+        field("model files", weight_source)
     elif verbose:
-        field("weights", "unlabeled legacy runtime")
+        field("model files", "unlabeled legacy runtime")
     field("estimate", fp_s)
     if verbose or obs_y != "complete":
         field("observe", obs_y)
@@ -1549,7 +1549,7 @@ if ws == "ok":
         remote_detail += f" · {placement_label('worker')} SSH {wip}"
     field("Nodes", f"OK · {remote_detail}", indent=0)
 elif ws == "unset":
-    field("Nodes", "no other cluster nodes confirmed", indent=0)
+    field("Nodes", "no other nodes confirmed", indent=0)
     if wr:
         field("reason", wr)
 else:

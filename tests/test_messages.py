@@ -1,5 +1,6 @@
 """Human messages share one prefix convention; deprecated aliases warn once."""
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -46,6 +47,63 @@ class Prefixes(unittest.TestCase):
                                 text=True, capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 2)
         self.assertIn("[up] error: unknown argument: --bogus", result.stderr)
+
+
+# Words the glossary in docs/OPERATIONS.md#terms retired from human output.
+RETIRED = re.compile(r"\b[Pp]rofiles?\b|\bconf=|(?<!served-)model-name|[Hh]ot staging|[Cc]luster nodes?"
+                     r"|[Rr]ecovery archive|[Cc]old recovery|[Aa]rchive directory|[Aa]rchive root\b"
+                     r"|[Ww]eight (source|provenance)")
+# Any quoted string on a non-comment line: messages are often built in tuples,
+# variables or continuation lines, away from the helper that prints them.
+STRING = re.compile(r"\"[^\"]*\"|'[^']*'")
+# Identifiers and legacy explanations, not operator wording.
+ALLOWED = {"scripts/model_identity.py", "model_library/migration_views.py", "scripts/release_consumer.py"}
+# Messages that explain a removed legacy concept by its old name.
+LEGACY_LINES = ("REMOVED_LIST_VALIDATED_MESSAGE=",)
+DOCSTRING = ('"' * 3, "'" * 3)
+
+
+class Glossary(unittest.TestCase):
+    def test_retired_terms_stay_out_of_messages(self):
+        offenders = []
+        sources = [*ROOT.glob("scripts/*.sh"), *ROOT.glob("scripts/*.py"), *ROOT.glob("cluster/*.sh"),
+                   *ROOT.glob("model_library/*.py"), ROOT / "serve.sh", ROOT / "pulsar"]
+        for path in sources:
+            name = str(path.relative_to(ROOT))
+            if name in ALLOWED:
+                continue
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                if line.lstrip().startswith(DOCSTRING) or any(marker in line for marker in LEGACY_LINES):
+                    continue
+                for text in STRING.findall(line.split(" # ", 1)[0]):
+                    # Sentences only: identifiers, keys and paths have no spaces,
+                    # and {...} inside an f-string is code, not wording.
+                    text = re.sub(r"\{[^}]*\}", "", text)
+                    if " " in text and RETIRED.search(text):
+                        offenders.append(f"{name}:{number}: {line.strip()[:100]}")
+                        break
+        self.assertEqual(offenders, [], "\n".join(offenders))
+
+
+class ConfLabels(unittest.TestCase):
+    def test_spec_ids_and_legacy_configurations_are_named_differently(self):
+        result = shell('conf_label_display ' + "ab" * 32 + '; echo; conf_label_display qwen-legacy-tp2')
+        self.assertEqual(result.stdout, "spec abababababab\nlegacy configuration 'qwen-legacy-tp2'")
+
+
+class RanksWithNodes(unittest.TestCase):
+    def test_fabric_error_names_the_node_with_its_rank(self):
+        sys.path.insert(0, str(ROOT / "tests"))
+        from test_transfer import topology
+        from scripts import topology_manifest
+        document = topology(2)
+        document["nodes"][0]["rdma"] = []
+        document["nodes"][0]["hostname"] = "spark-1"
+        document["topology_id"] = topology_manifest.topology_digest(document)
+        with self.assertRaisesRegex(topology_manifest.TopologyError, r"^spark-1 \(rank 0\): no RDMA HCA"):
+            topology_manifest.profile_fabric(document, 1)
 
 
 class Deprecations(unittest.TestCase):

@@ -66,7 +66,7 @@ for heading,rows in [
   ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
   ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),
   ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
-  ('pulsar configure archive-root','Select an existing archive directory.'),
+  ('pulsar configure archive-root','Select an existing archive location.'),
   ('pulsar doctor','Run explicit host and topology diagnostics.')]),
  ('Catalog and model files',[
   ('pulsar models','Browse catalog and saved storage observations.'),

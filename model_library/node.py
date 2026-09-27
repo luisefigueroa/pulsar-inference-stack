@@ -248,7 +248,7 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
             raise StorageError('archive location overlaps a managed home or working-copy namespace')
     if op == 'begin-archive':
         root=Path(request['archive_root'])
-        if not root.is_dir(): raise StorageError('configured archive directory must already exist')
+        if not root.is_dir(): raise StorageError('configured archive location must already exist')
         dest=location(root,manifest,archive=True)
         if dest.exists() or dest.is_symlink(): raise StorageError('archive destination already exists')
         stage=begin_staging(dest.parent,archive=True)
@@ -261,7 +261,7 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
     if op == 'archive':
         root = Path(request['archive_root'])
         if not root.is_dir():
-            raise StorageError('configured archive directory must already exist')
+            raise StorageError('configured archive location must already exist')
         hub,_stamp=copy_snapshot(Path(request['path']),root,manifest,archive=True)
         return {**verify_archive(root,manifest),'hub_path':str(hub)}
     if op == 'archive-verify':

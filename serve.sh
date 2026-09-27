@@ -95,7 +95,7 @@ resolve_single_node_placement "$NODE_SELECTOR" \
   || die "cannot resolve physical node placement '$NODE_SELECTOR'"
 
 [ "$(model_source_kind)" = hf ] \
-  || die "non-HF model profiles are not servable (ADR 0006)"
+  || die "non-HF model specs are not servable (ADR 0006)"
 LIBRARY_VIEW_HOME_NODE_ID=""
 LIBRARY_VIEW_CONTENT_ID=""
 # Prefer topology from placement when available

@@ -174,7 +174,7 @@ def _protect_nested_storage(hub: Path) -> None:
             for name in os.listdir(fd):
                 value = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 if name == 'pulsar-snapshots':
-                    raise StorageError('recovery archive namespace is nested in the removal target')
+                    raise StorageError('archive namespace is nested in the removal target')
                 if stat.S_ISDIR(value.st_mode):
                     if value.st_dev != device:
                         raise StorageError('managed removal cannot cross a filesystem boundary')

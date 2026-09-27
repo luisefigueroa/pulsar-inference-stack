@@ -1,7 +1,7 @@
 # Pulsar Inference Stack
 
 Serve exact model recipes on NVIDIA DGX Spark GB10 systems. This public
-repository owns the catalog, verified model files, recovery archives,
+repository owns the catalog, verified model files, archives,
 preparation and vLLM lifecycle commands. The separate private
 `pulsar-inference-workbench` owns model onboarding and experiments.
 
@@ -50,7 +50,7 @@ matching repository commits. See the [public contract](docs/CONTRACT.md).
 
 New specs freeze container settings as well as model/image/engine identity.
 Operators may explicitly override supported execution settings; Stack reports
-the resulting effective recipe separately from the selected catalog recipe.
+the resulting effective recipe separately from the selected catalog spec's recipe.
 Historical specs remain readable, and existing services are not restarted by
 code updates. New operations support spec schemas 2 and 3; schema 3 binds required
 draft checkpoints.

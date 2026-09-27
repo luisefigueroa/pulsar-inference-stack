@@ -9,7 +9,7 @@ are summarized here so operators do not need the predecessor repository.
   availability and does not grant catalog membership.
 - **ADR 0005 — no live NFS serving.** Homes and prepared views use supported
   node-local serving filesystems. Operator-selected network storage may hold
-  recovery archives but is never mounted into serving containers by Pulsar.
+  archives but is never mounted into serving containers by Pulsar.
 - **ADR 0006 — one model-library path.** Acquisition, preparation, and runtime
   model mounts use the model library; launch commands do not select a second
   weight-distribution mode.

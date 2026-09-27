@@ -105,7 +105,7 @@ prepared_snapshot_info() {
 
 require_archive_root() {
   [ -n "${PULSAR_COLD_ROOT:-}" ] || die "archive location is not configured; use ./pulsar configure archive-root"
-  [ -d "$PULSAR_COLD_ROOT" ] || die "configured archive directory must already exist"
+  [ -d "$PULSAR_COLD_ROOT" ] || die "configured archive location must already exist"
 }
 
 archive_snapshot_verify() {
