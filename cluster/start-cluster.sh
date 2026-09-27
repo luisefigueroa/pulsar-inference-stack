@@ -82,7 +82,7 @@ log "weights: model library · local hot staging · home=${WEIGHT_OWNER_ID:0:12}
 log "recipe is fixed by the selected spec"
 if [ "$SKIP_PREFLIGHT" = 0 ]; then
   cluster/preflight.sh "$MODEL_NAME" || {
-    log "preflight FAILED — not starting. (--skip-preflight to override at your own risk)" >&2
+    error_line "preflight failed — not starting (--skip-preflight overrides at your own risk)"
     exit 1
   }
 fi
@@ -156,7 +156,7 @@ declare -A TRACKED_CIDS=()
 # Best-effort teardown by immutable IDs created by this invocation only.
 cluster_abort() {
   local why="${1:-cluster start failed}" rank host
-  log "ABORT: $why — removing launch-tracked IDs only" >&2
+  error_line "$why — removing launch-tracked IDs only"
   if [ -n "${TRACKED_CIDS[0]:-}" ]; then
     log "abort: remove rank 0 id=${TRACKED_CIDS[0]:0:12}" >&2
     remove_container_id_local "${TRACKED_CIDS[0]}"
@@ -262,7 +262,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   fi
 
   if ! container_running_exact "$CONTAINER"; then
-    log "rank 0 container died; last logs:" >&2
+    error_line "rank 0 container died; last logs:"
     "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
     cluster_abort "rank 0 exited during health wait"
     exit 1
@@ -270,7 +270,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   for ((rank = 1; rank < NODES; rank++)); do
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
     if ! container_running_exact_remote "$host" "$CONTAINER"; then
-      log "rank $rank container died on $host; last logs:" >&2
+      error_line "rank $rank container died on $host; last logs:"
       "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
         "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
       cluster_abort "rank $rank exited during health wait"
@@ -280,7 +280,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
   sleep "${WAIT_SECONDS:-10}"
 done
 
-log "timed out. Rank 0 logs:" >&2
+error_line "timed out waiting for health. Rank 0 logs:"
 "$PULSAR_DOCKER" logs --tail 120 "$CONTAINER" >&2 || true
 for ((rank = 1; rank < NODES; rank++)); do
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"

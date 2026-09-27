@@ -33,9 +33,19 @@ class Prefixes(unittest.TestCase):
         offenders = []
         for path in [*ROOT.glob("scripts/*.sh"), *ROOT.glob("cluster/*.sh"), ROOT / "serve.sh"]:
             for number, line in enumerate(path.read_text().splitlines(), 1):
-                if "] ERROR:" in line or "] warn:" in line:
+                if "] ERROR:" in line or "] warn:" in line or 'log "WARNING' in line:
+                    offenders.append(f"{path.relative_to(ROOT)}:{number}")
+        for path in [*ROOT.glob("scripts/*.py"), *ROOT.glob("model_library/*.py"), *ROOT.glob("release_spec/*.py")]:
+            for number, line in enumerate(path.read_text().splitlines(), 1):
+                if "sys.stderr" in line and ": ERROR: {" in line:
                     offenders.append(f"{path.relative_to(ROOT)}:{number}")
         self.assertEqual(offenders, [])
+
+    def test_start_verbose_tags_even_argument_errors(self):
+        result = subprocess.run([str(ROOT / "pulsar"), "start", "ab" * 32, "--verbose", "--bogus"],
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("[up] error: unknown argument: --bogus", result.stderr)
 
 
 class Deprecations(unittest.TestCase):

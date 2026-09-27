@@ -55,10 +55,10 @@ if [ "$ARG" = --all ]; then
       exit 0
       ;;
     2)
-      log "WARNING: some candidates were refused (unknown conf or rank placement)" >&2
+      warn "some candidates were refused (unknown conf or rank placement)"
       ;;
     *)
-      log "WARNING: managed cleanup reported an operational error" >&2
+      warn "managed cleanup reported an operational error"
       ;;
   esac
   exit 1
@@ -77,11 +77,11 @@ log "stopping exact profile=$ARG · $NODES ranks · container=$EXACT"
 rc=0
 remove_stack_owned_cluster "$ARG" "$EXACT" "$NODES" || rc=$?
 if [ "$rc" -eq 2 ]; then
-  log "refused: ownership not proven for every existing rank of $EXACT" >&2
+  error_line "refused: ownership not proven for every existing rank of $EXACT"
   exit 1
 fi
 if [ "$rc" -ne 0 ]; then
-  log "failed (operational error; initial probe failed without fallback)" >&2
+  error_line "stop failed (operational error; initial probe failed without fallback)"
   exit 1
 fi
 
@@ -90,7 +90,7 @@ probe_rc=0
 container_ownership_inspect_local "$EXACT" >/dev/null 2>&1 && left=$((left + 1)) || {
   probe_rc=$?
   if [ "$probe_rc" -eq 1 ]; then
-    log "WARNING: local Docker error verifying rank 0" >&2
+    warn "local Docker error verifying rank 0"
     exit 1
   fi
 }
@@ -101,7 +101,7 @@ for ((rank = 1; rank < NODES; rank++)); do
     && left=$((left + 1)) || {
       probe_rc=$?
       if [ "$probe_rc" -eq 1 ]; then
-        log "WARNING: rank $rank error verifying $EXACT is gone" >&2
+        warn "rank $rank error verifying $EXACT is gone"
         exit 1
       fi
     }
@@ -112,5 +112,5 @@ if [ "$left" -eq 0 ]; then
   log "clean — $EXACT absent from all $NODES active ranks"
   exit 0
 fi
-log "WARNING: $EXACT remains on $left rank(s)" >&2
+warn "$EXACT remains on $left rank(s)"
 exit 1

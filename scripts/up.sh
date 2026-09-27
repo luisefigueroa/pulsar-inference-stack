@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
       ;;
     --dry-run) DRY=1 ;;
     --yes|-y) : ;;  # Compatibility acknowledgement; grants no extra action.
-    --verbose|-v) VERBOSE=1 ;;
+    --verbose|-v) VERBOSE=1; export PULSAR_VERBOSE=1 ;;
     -h|--help)
       up_usage
       exit 0

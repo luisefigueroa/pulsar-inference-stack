@@ -13,8 +13,8 @@ steps and final state. Stderr carries `warning: …` and `error: …` lines, eac
 leading with the affected object, and the phase lines of long storage
 operations. With `--json`, stdout carries only JSON. Start reports
 refusals as `BLOCKED <code>: … Next: …` lines. `start --verbose`, or
-`PULSAR_VERBOSE=1` for any command, adds the internal script name to each
-message for debugging. Deprecated aliases (`pulsar gum`, `pulsar wizard`,
+`PULSAR_VERBOSE=1` for any command, adds the internal script name to step,
+warning and error lines for debugging; check rows keep their layout. Deprecated aliases (`pulsar gum`, `pulsar wizard`,
 `pulsar release list`) print one warning naming the replacement.
 
 ## Browse and check

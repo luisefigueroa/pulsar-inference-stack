@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = fetch_inventory(args.model_id, args.selector)
     except Exception as exc:
-        print(f"hf-source-inventory: ERROR: {exc}", file=sys.stderr)
+        print(f"error: hf-source-inventory: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
     return 0
