@@ -40,6 +40,7 @@ restore_model() {
   require_cluster_nodes 1 >/dev/null || die "restoration requires confirmed topology"
   load_home || die "existing home registration cannot be inspected"
   previous="$HOME_JSON"
+  resolve_node_selector
   rank=$(model_physical_rank "${NODE:-0}")
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ] && [ "${NODES:-1}" -gt 1 ] && [ "$rank" -ge "$NODES" ]; then die "selected home node is outside exact serving geometry"; fi
   existing=$(find_source_homes) || die "all-node home presence is unobservable"

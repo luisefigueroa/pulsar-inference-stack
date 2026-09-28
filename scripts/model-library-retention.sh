@@ -127,6 +127,7 @@ move_home() {
   [ -n "$NODE" ] || die "move requires an explicit destination --node"
   local source_rank target_rank target_node views observations plan stage result dependencies source_state previous="$HOME_JSON" existing count route
   require_cluster_nodes 1 >/dev/null || die "move requires confirmed topology"
+  resolve_node_selector
   source_rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   target_rank=$(model_physical_rank "$NODE"); target_node="${CLUSTER_NODE_IDS[$target_rank]}"
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ] && [ "$NODES" -gt 1 ] && [ "$target_rank" -ge "$NODES" ]; then die "destination is outside the spec serving nodes"; fi

@@ -35,6 +35,7 @@ find_source_homes() {
 acquire_model() {
   local rank source existing count candidate result stage checked registered original_manifest="$MANIFEST_JSON"
   require_cluster_nodes 1 >/dev/null || die "acquisition requires confirmed topology"
+  resolve_node_selector
   rank=$(model_physical_rank "${NODE:-0}")
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ] && [ "${NODES:-1}" -gt 1 ] && [ "$rank" -ge "$NODES" ]; then die "selected home node is outside exact serving geometry"; fi
   [ -n "$MODEL_ID" ] && [ -n "$REVISION" ] || die "acquire needs a spec or --model-id and --revision"

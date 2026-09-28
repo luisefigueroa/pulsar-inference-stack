@@ -720,6 +720,64 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertFalse(Path(acquired["home"]["path"]).exists())
         self.success(f.run("prepare", "--yes", spec=True))
 
+    def test_home_operations_accept_the_hostname_that_output_shows(self):
+        f = self.fixture(nodes=2)
+        acquired = f.run("acquire", "--model-id", f.cfg["model_id"], "--revision", f.cfg["revision"],
+                         "--node", "rank-1", "--manifest-out", f.manifest_path, "--yes")
+        self.assertEqual(self.success(acquired)["home"]["node_id"], "node-1")
+        self.assertIn("[acquire 1/4] staging on rank-1", acquired.stderr)
+        manifest_id = f.candidate(2)["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.success(f.run("archive", "create", "--yes", spec=True))
+        moved = self.success(f.run("move", "--node", "rank-0", "--yes", spec=True))
+        # Records keep the node_id; the hostname only selected the node.
+        self.assertEqual(moved["home"]["node_id"], "node-0")
+        self.assertEqual(Store(f.state).home(manifest_id)["node_id"], "node-0")
+        self.success(f.run("remove", "--yes", spec=True))
+        f.cfg["hub_unavailable"] = True; f.save()
+        restored = self.success(f.run("restore", "--node", "rank-1", "--yes", spec=True))
+        self.assertEqual(restored["home"]["node_id"], "node-1")
+        self.assertEqual(Store(f.state).home(manifest_id)["node_id"], "node-1")
+        self.assertEqual(len(f.events("download")), 1)
+
+    def test_home_operations_refuse_a_node_selector_that_names_no_node_or_several(self):
+        f = self.fixture(nodes=2)
+        self.acquire_candidate(f, nodes=2, home=1)
+        # node-0's hostname is node-1's node_id: as an operator selector
+        # "node-1" names both nodes, while the home record still names node-1.
+        with open(f.env["BASH_ENV"], "a") as stream:
+            stream.write('eval "confirmed_$(declare -f load_cluster_topology)"\n'
+                         "load_cluster_topology() { confirmed_load_cluster_topology; CLUSTER_NODE_HOSTNAMES=(node-1 rank-1); }\n")
+        contacted = len(f.events("node-operation"))
+        for selector, reason in (("node-1", "node selector 'node-1' is ambiguous in the confirmed topology"),
+                                 ("spark-9", "node 'spark-9' is not present in the confirmed topology")):
+            for operation in ("acquire", "restore", "move"):
+                with self.subTest(operation=operation, selector=selector):
+                    result = f.run(operation, "--node", selector, "--plan", spec=True)
+                    self.failure(result, reason)
+                    self.assertIn(f"--node '{selector}' does not select exactly one confirmed node", result.stderr)
+        self.assertEqual(len(f.events("node-operation")), contacted)
+        plan = self.success(f.run("move", "--node", "rank-1", "--plan", spec=True))
+        self.assertEqual((plan["destination_node"], plan["transfer_route"]), ("node-1", "already-home"))
+        # Saved records are matched by node_id alone, so the ambiguous
+        # hostname does not affect operations that start from the home record.
+        archive = self.success(f.run("archive", "create", "--yes", spec=True))
+        self.assertTrue(archive["verified"])
+        manifest_id = f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.assertEqual(Store(f.state).home(manifest_id)["node_id"], "node-1")
+
+    def test_unconfirmed_overlay_placement_is_named_instead_of_node_option(self):
+        f = self.fixture()
+        self.acquire_candidate(f)
+        overlay = json.loads((f.root / "overlay.json").read_text())
+        overlay["defaults"]["placement"] = {"node_id": "node-9"}
+        (f.root / "overlay.json").write_text(json.dumps(overlay))
+        for operation in ("acquire", "restore", "move"):
+            with self.subTest(operation=operation):
+                result = f.run(operation, "--plan", spec=True)
+                self.failure(result, "overlay placement.node_id 'node-9' does not select exactly one confirmed "
+                                     "node; correct the placement in the deployment overlay")
+                self.assertNotIn("--node", result.stderr)
+
     def test_wrong_expected_git_sha256_never_publishes_a_home(self):
         f = self.fixture()
         files = [{"path": name, "size": len(base64.b64decode(row["data"])),
