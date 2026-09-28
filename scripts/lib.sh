@@ -87,17 +87,32 @@ OVERHEAD_GIB_DEFAULT="${OVERHEAD_GIB_DEFAULT:-$PULSAR_OVERHEAD_GIB_DEFAULT}"
 # (start --verbose); operators never typed those script names.
 _message_tag() { [ "${PULSAR_VERBOSE:-0}" != 1 ] || printf '[%s] ' "${SCRIPT_NAME:-pulsar}"; }
 log()  { printf '%s%s\n' "$(_message_tag)" "$*"; }
-# start_blocker CODE [--node NAME] [--rank N] [--detail TEXT]
-# Prints one BLOCKED line from the catalog in scripts/start_blockers.py and,
-# when PULSAR_START_BLOCKERS_FILE is set, records it for start --json. The fix
-# names START_BLOCKER_SPEC (default NAME) and START_BLOCKER_PLACEMENT (default
-# the placement arguments).
+# start_blocker CODE [--node NAME] [--node-id ID] [--rank N] [--detail TEXT] ...
+# Prints one BLOCKED line (FAILED after launch) from the catalog in
+# scripts/start_blockers.py and, when PULSAR_START_BLOCKERS_FILE is set, records
+# it for start --json. Suggested commands name START_BLOCKER_SPEC (default NAME)
+# and START_BLOCKER_PLACEMENT (default the placement arguments), and repeat the
+# operator's START_BLOCKER_START_FLAGS. After --replace removed the previous
+# service (LAUNCH_AFTER_REPLACE=1), the note says that nothing is running now.
 start_blocker() {
   local code="$1"; shift
-  python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" --spec "${START_BLOCKER_SPEC:-${NAME:-}}" \
-    --placement "${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" \
-    --spec-file "${PULSAR_SPEC_FILE:-}" --override-file "${PULSAR_OVERRIDE_FILE:-}" \
-    --memory-estimate-file "${MEMORY_ESTIMATE_FILE:-}" --memory-estimate-id "${MEMORY_ESTIMATE_ID:-}" "$@"
+  local -a options=()
+  [ "${LAUNCH_AFTER_REPLACE:-0}" != 1 ] || options+=(--after-replace)
+  # --option=VALUE keeps a value such as "--dry-run" from reading as an option.
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-command|--after-replace) options+=("$1") ;;
+      --*) options+=("$1=${2-}"); shift ;;
+      *) options+=("$1") ;;
+    esac
+    shift
+  done
+  python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" --spec="${START_BLOCKER_SPEC:-${NAME:-}}" \
+    --placement="${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" \
+    --spec-file="${PULSAR_SPEC_FILE:-}" --override-file="${PULSAR_OVERRIDE_FILE:-}" \
+    --memory-estimate-file="${MEMORY_ESTIMATE_FILE:-}" --memory-estimate-id="${MEMORY_ESTIMATE_ID:-}" \
+    --start-flags="${START_BLOCKER_START_FLAGS:-}" --home-node="${START_BLOCKER_HOME_NODE:-}" \
+    --state-root="${PULSAR_MODEL_LIBRARY_DIR:-}" ${options[@]+"${options[@]}"}
 }
 warn() { printf '%swarning: %s\n' "$(_message_tag)" "$*" >&2; }
 error_line() { printf '%serror: %s\n' "$(_message_tag)" "$*" >&2; }
@@ -189,6 +204,159 @@ require_cmd() {
 # the descriptor releases it for every holder. To start a process without a
 # held lock, close that descriptor in the command's redirections.
 
+# _lock_busy_message LOCK_PATH BUSY — one line naming who holds the lock, where
+# BUSY is the start of the sentence, such as "the model library is busy".
+# It reads /proc and writes nothing: a process holds the lock when one of its
+# descriptors for the file carries it (a waiter's or a released one does not).
+# The ./pulsar dispatcher exports PULSAR_COMMAND_LINE and PULSAR_COMMAND_PID, so
+# a holder is named by the operator command, or as a process that command left
+# behind after it exited.
+_lock_busy_message() {
+  python3 - "$1" "$2" <<'PY' 2>/dev/null \
+    || printf '%s. Wait for the other operation to finish, then retry.\n' "$2"
+import os, sys, time
+
+lock_path, busy = sys.argv[1:3]
+target = os.stat(lock_path)
+lock_id = f"{os.major(target.st_dev):02x}:{os.minor(target.st_dev):02x}:{target.st_ino}"
+real = os.path.realpath(lock_path)
+
+
+def read(path, mode="r"):
+    with open(path, mode) as stream:
+        return stream.read()
+
+
+def fields(pid):  # /proc/PID/stat from "state" on: [1] parent, [19] start in clock ticks
+    text = read(f"/proc/{pid}/stat")
+    return text[text.rindex(")") + 2:].split()
+
+
+def environ(pid):
+    try:
+        raw = read(f"/proc/{pid}/environ", "rb")
+    except OSError:
+        return {}
+    return dict(item.decode(errors="replace").split("=", 1) for item in raw.split(b"\0") if b"=" in item)
+
+
+def command_line(pid):
+    args = [arg.decode(errors="replace") for arg in read(f"/proc/{pid}/cmdline", "rb").rstrip(b"\0").split(b"\0")]
+    text = " ".join(" ".join(os.path.basename(a) if a.startswith("/") else a for a in args).split())
+    return text if len(text) <= 80 else text[:79] + "…"
+
+
+def holds(pid, fd):
+    try:
+        info = read(f"/proc/{pid}/fdinfo/{fd}")
+    except OSError:
+        return False
+    return any(line.startswith("lock:") and "->" not in line and line.split()[-3] == lock_id
+               for line in info.splitlines())
+
+
+holders, own = set(), {os.getpid(), os.getppid()}
+for entry in os.listdir("/proc"):
+    if not entry.isdigit() or int(entry) in own:
+        continue
+    try:
+        descriptors = os.listdir(f"/proc/{entry}/fd")
+    except OSError:
+        continue
+    for fd in descriptors:
+        try:
+            if os.readlink(f"/proc/{entry}/fd/{fd}") == real and holds(entry, fd):
+                holders.add(int(entry))
+                break
+        except OSError:
+            continue
+
+
+def inherited(pid):  # an ancestor also holds the lock and names this process tree
+    for _ in range(64):
+        try:
+            pid = int(fields(pid)[1])
+        except (OSError, ValueError, IndexError):
+            return False
+        if pid in holders:
+            return True
+        if pid <= 1:
+            return False
+    return False
+
+
+boot = next(int(line.split()[1]) for line in read("/proc/stat").splitlines() if line.startswith("btime "))
+
+
+def started(pid):
+    try:
+        seconds = time.time() - boot - int(fields(pid)[19]) / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError):
+        return "at an unknown time"
+    minutes = int(max(0, seconds) // 60)
+    if minutes < 1:
+        return "less than a minute ago"
+    if minutes < 120:
+        return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+    return f"{minutes // 60} hours ago"
+
+
+# One entry per running command; processes that a finished command left behind are grouped.
+described, commands, left_behind = [], set(), {}
+for pid in sorted(p for p in holders if not inherited(p)):
+    env = environ(pid)
+    command, command_pid = env.get("PULSAR_COMMAND_LINE"), env.get("PULSAR_COMMAND_PID", "")
+    if command and command_pid.isdigit():
+        running = environ(int(command_pid))
+        if (running.get("PULSAR_COMMAND_LINE"), running.get("PULSAR_COMMAND_PID")) == (command, command_pid):
+            if command_pid not in commands:
+                commands.add(command_pid)
+                described.append(f"{command} (pid {command_pid}, started {started(int(command_pid))})")
+        else:
+            left_behind.setdefault(command, []).append(pid)
+        continue
+    try:
+        described.append(f"{command or command_line(pid)} (pid {pid}, started {started(pid)})")
+    except OSError:
+        continue  # it exited meanwhile
+orphans = 0
+for command, pids in left_behind.items():
+    try:
+        what = command_line(pids[0])
+    except OSError:
+        continue
+    label = f"pid {pids[0]}" if len(pids) == 1 else "pids " + ", ".join(map(str, pids[:3]))
+    described.append(f"{label} ({what}), left behind by {command}")
+    orphans += 1
+if not described:
+    print(f"{busy}. Wait for the other operation to finish, then retry.")
+elif orphans == len(described):
+    print(f"{busy}: {'; '.join(described[:3])}. Stop it if it is no longer needed, then retry.")
+else:
+    print(f"{busy}: {'; '.join(described[:3])}. "
+          "Wait for it to finish, or interrupt it in its terminal, then retry.")
+PY
+}
+
+# release_model_library_locks — unlock and close the lifecycle and hot locks this
+# process holds. flock -u releases the lock even where a child still holds an
+# inherited copy of the descriptor.
+release_model_library_locks() {
+  local fd
+  if [ -n "${PULSAR_MODEL_LIBRARY_HOT_LOCK_FD:-}" ]; then
+    fd="$PULSAR_MODEL_LIBRARY_HOT_LOCK_FD"
+    flock -u "$fd" 2>/dev/null || true
+    eval "exec $fd>&-"
+    unset PULSAR_MODEL_LIBRARY_HOT_LOCK_FD PULSAR_MODEL_LIBRARY_HOT_LOCK_MODE
+  fi
+  if [ -n "${PULSAR_MODEL_LIBRARY_LOCK_FD:-}" ]; then
+    fd="$PULSAR_MODEL_LIBRARY_LOCK_FD"
+    flock -u "$fd" 2>/dev/null || true
+    eval "exec $fd>&-"
+    unset PULSAR_MODEL_LIBRARY_LOCK_FD PULSAR_MODEL_LIBRARY_LOCK_MODE
+  fi
+}
+
 # Serialize home changes against preparation and launch.
 acquire_model_library_lifecycle_lock() {
   local mode="${1:-shared}" timeout lock_dir lock_path lock_parent lock_fd
@@ -216,12 +384,12 @@ acquire_model_library_lifecycle_lock() {
   if [ "$mode" = exclusive ]; then
     flock -x -w "$timeout" "$lock_fd" || {
       exec {lock_fd}>&-
-      die "model library is busy; exclusive model-library mutation lock timed out"
+      die "$(_lock_busy_message "$lock_path" "the model library is busy")" "${PULSAR_LOCK_BUSY_EXIT:-1}"
     }
   else
     flock -s -w "$timeout" "$lock_fd" || {
       exec {lock_fd}>&-
-      die "durable-home removal is in progress; launch/library lock timed out"
+      die "$(_lock_busy_message "$lock_path" "the model library is busy")" "${PULSAR_LOCK_BUSY_EXIT:-1}"
     }
   fi
   PULSAR_MODEL_LIBRARY_LOCK_FD="$lock_fd"
@@ -257,12 +425,12 @@ acquire_model_library_hot_lock() {
   if [ "$mode" = exclusive ]; then
     flock -x -w "$timeout" "$lock_fd" || {
       exec {lock_fd}>&-
-      die "another hot mutation is in progress; hot lock timed out"
+      die "$(_lock_busy_message "$lock_path" "the prepared model files are busy")" "${PULSAR_LOCK_BUSY_EXIT:-1}"
     }
   else
     flock -s -w "$timeout" "$lock_fd" || {
       exec {lock_fd}>&-
-      die "hot preparation/pin/purge is in progress; hot read lock timed out"
+      die "$(_lock_busy_message "$lock_path" "the prepared model files are busy")" "${PULSAR_LOCK_BUSY_EXIT:-1}"
     }
   fi
   PULSAR_MODEL_LIBRARY_HOT_LOCK_FD="$lock_fd"
@@ -664,11 +832,14 @@ PY
 }
 
 
+# mem_available_gib_remote HOST — MemAvailable in GiB. Fails, printing nothing,
+# when the node cannot be read; an unreadable node is not a node with 0 GiB.
 mem_available_gib_remote() {
-  local host="${1:?}"
-  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-    "awk '/MemAvailable:/ {printf \"%.2f\", \$2/1048576}' /proc/meminfo" 2>/dev/null \
-    || echo "0"
+  local host="${1:?}" out
+  out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
+    "awk '/MemAvailable:/ {printf \"%.2f\", \$2/1048576}' /proc/meminfo" 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
 }
 
 disk_free_gib() {
@@ -2889,19 +3060,95 @@ container_exists_exact() {
   docker ps -a --format '{{.Names}}' 2>/dev/null | filter_exact_container_name "$want" | grep -q .
 }
 
-require_launch_operational_checks() {
+# The check scripts share one exit convention: 0 pass, 1 the condition failed,
+# 2 memory warning (memory check only), 3 the check could not run. A check
+# script calls check_exit_convention once and ends with check_result; any other
+# failing exit, such as a die in a shared helper, is reported as 3, so a caller
+# never reads a broken check as a missing image or a memory warning.
+_check_exit() {
+  local status=$?
+  [ "$status" = 0 ] || [ -n "$CHECK_RESULT_EXIT" ] || exit 3
+}
+check_exit_convention() { CHECK_RESULT_EXIT=""; trap _check_exit EXIT; }
+check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
+
+# Launch scripts recheck under their own locks just before launch. The image
+# recheck runs first; with --replace the old service is removed before the
+# memory recheck, which cannot count memory that service still holds.
+require_launch_image_check() {
+  local -a placement=()
+  if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  "$REPO_DIR/scripts/check-image.sh" "$CONF_NAME" "${placement[@]}" || die "image verification failed before launch"
+}
+
+# LAUNCH_AFTER_REPLACE=1 marks a launch that already removed the previous
+# service, so a refusal from here on says that nothing is running now.
+# scripts/start_blockers.py adds the same sentence to blocker notes.
+AFTER_REPLACE_NOTE="The previous service was already removed, so nothing is running for this spec now."
+refuse_launch() {
+  if [ "${LAUNCH_AFTER_REPLACE:-0}" = 1 ]; then die "$1. $AFTER_REPLACE_NOTE"; fi
+  die "$1"
+}
+
+require_launch_memory_check() {
   local rc=0
   local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
   if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
     memory_args+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
   fi
-  "$REPO_DIR/scripts/check-image.sh" "$CONF_NAME" "${placement[@]}" || die "image verification failed before launch"
   "$REPO_DIR/scripts/check-memory.sh" "$CONF_NAME" "${placement[@]}" "${memory_args[@]}" || rc=$?
   case "$rc" in
     0) ;;
-    2) [ "${PULSAR_ACCEPT_MEMORY_WARN:-0}" = 1 ] || die "memory warning requires --accept-memory-warn" ;;
-    *) die "memory verification failed before launch" ;;
+    1)
+      START_BLOCKER_SPEC="$CONF_NAME" start_blocker memory_insufficient
+      refuse_launch "memory verification failed before launch" ;;
+    2)
+      if [ "${PULSAR_ACCEPT_MEMORY_WARN:-0}" != 1 ]; then
+        START_BLOCKER_SPEC="$CONF_NAME" start_blocker memory_warning
+        refuse_launch "memory warning requires --accept-memory-warn"
+      fi ;;
+    *)
+      START_BLOCKER_SPEC="$CONF_NAME" start_blocker memory_check_failed
+      refuse_launch "the memory check could not complete before launch" ;;
   esac
   resolve_library_hot_for_profile "$CONF_NAME"
+}
+
+# port_free PORT [SSH_HOST] — 0 when PORT can be bound on the node.
+port_free() {
+  local port="${1:?}" host="${2:-}"
+  local probe='import socket,sys; s=socket.socket(); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()'
+  if [ -n "$host" ]; then
+    "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
+      "python3 -c $(printf '%q' "$probe") $(printf '%q' "$port")" >/dev/null 2>&1
+  else
+    python3 -c "$probe" "$port" >/dev/null 2>&1
+  fi
+}
+
+# container_state_exact NAME [SSH_HOST] — prints running, exited, absent, or
+# unknown when the node or Docker cannot be observed.
+container_state_exact() {
+  local ref="${1:?}" host="${2:-}" out remote
+  if [ -z "$host" ]; then
+    if out=$("$PULSAR_DOCKER" inspect --type container --format '{{.State.Running}}' "$ref" 2>/dev/null); then
+      [ "$out" = true ] && echo running || echo exited
+    elif "$PULSAR_DOCKER" info >/dev/null 2>&1; then
+      echo absent
+    else
+      echo unknown
+    fi
+    return 0
+  fi
+  remote="if out=\$(docker inspect --type container --format '{{.State.Running}}' $(printf '%q' "$ref") 2>/dev/null); then "
+  remote+="printf '%s\\n' \"\$out\"; elif docker info >/dev/null 2>&1; then printf '%s\\n' ABSENT; "
+  remote+="else printf '%s\\n' DOCKER_ERROR; fi"
+  out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote" 2>/dev/null | head -n1 | tr -d '\r') || out=""
+  case "$out" in
+    true) echo running ;;
+    false) echo exited ;;
+    ABSENT) echo absent ;;
+    *) echo unknown ;;
+  esac
 }

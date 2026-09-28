@@ -51,7 +51,11 @@ resolve_library_hot_for_profile() { LIBRARY_VIEW_CONTAINER_MODEL_PATH=/tmp/model
 container_name_for() { echo fixture-container; }
 write_launch_plan_file() { :; }
 load_docker_argv_from_plan() { local -n out=$3; out=(docker run fixture); }
-require_launch_operational_checks() { :; }
+require_launch_image_check() { :; }
+require_launch_memory_check() { :; }
+port_free() { return 0; }
+persist_launch_plan_file() { :; }
+release_model_library_locks() { :; }
 container_ownership_inspect_local() { return 0; }
 single_node_display() { echo fixture; }
 start_blocker() { echo "BLOCKED $1"; }
@@ -95,6 +99,10 @@ load_release_spec_projection() { :; }
 release_spec_enabled_cell() { echo -; }
 human_node_name() { echo fixture; }
 start_blocker() { local code="$1"; shift; python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" "$@"; }
+require_cluster_nodes() { CLUSTER_TOPOLOGY_COUNT=1; CLUSTER_TOPOLOGY_ID=fixture; }
+container_name_for() { echo fixture-container; }
+container_ownership_inspect_local() { return 3; }
+port_free() { return 0; }
 ''')
             (scripts/'check-image.sh').write_text(r'''#!/usr/bin/env bash
 case " $* " in *" --json "*) echo '{"state":"missing-on-head"}' ;; *) echo 'FAIL image missing' ;; esac

@@ -260,7 +260,7 @@ print(("ok" if p.get("arch") in sys.argv[2].split() else "fail")+"|arch|arch: "+
       while IFS='|' read -r level id message; do
         record "$level" "rank_${rank}_${id}" "$(human_node_name "$rank"): $message"
       done <<<"$probe_rows"
-      remote_available=$(mem_available_gib_remote "${CLUSTER_NODE_SSH_HOSTS[$rank]}")
+      remote_available=$(mem_available_gib_remote "${CLUSTER_NODE_SSH_HOSTS[$rank]}") || remote_available=""
       if awk -v a="$remote_available" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 >= f)}'; then
         record ok "rank_${rank}_memory" "$(human_node_name "$rank"): MemAvailable $remote_available GiB"
       else

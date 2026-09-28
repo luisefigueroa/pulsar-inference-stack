@@ -58,7 +58,7 @@ does not search arbitrary cache trees, download files or start a server.
 are separate:
 
 ```sh
-./pulsar status <spec-id> --node <confirmed-node-id> --json
+./pulsar status <spec-id> --node <node> --json
 ./pulsar inventory
 ```
 
@@ -262,14 +262,30 @@ missing image by implication. After inspecting the current service, pass
 when staging the selected digest-pinned image is also approved. Generic `--yes`
 does not grant either permission.
 
-Start runs every independent check (image, model files, memory) before it
-reports, and prints one line per blocker with the affected node and one next
-step, for example
+Start checks the topology first, then runs every independent check (image,
+existing service, model files, memory, port) before it reports. It prints one
+line per blocker with the affected node and one next step that can be pasted as
+written, for example
 `BLOCKED node_unreachable: spark-2 (rank 1): the node is unreachable over SSH. Next: ./pulsar topology check`.
-An incomplete topology, an unreachable node or unavailable Docker ends the
-checks early because later checks need every node. With `--pull-image`, the
+Suggested start commands keep the flags you used. An incomplete topology or
+fabric, an unreachable node, unavailable Docker or an existing service ends the
+checks early, because later checks need every node or would be distorted by
+the running service. A check that could not run is reported as such
+(`*_check_failed`), never as the condition it checks. With `--pull-image`, the
 image is staged only after every other check passes, so a start that is
-blocked anyway changes nothing. The same blockers appear in `start --json`
+blocked anyway changes nothing.
+
+With `--replace`, start rechecks the image, removes the previous service
+(ownership still proven), then rechecks memory and the port before launching.
+If a recheck or the launch then fails, nothing is running for the spec, and
+start says so. After launch, start releases its locks while the service loads,
+so `stop`, `status` and model-file work are not blocked; the containers'
+references protect their files. READY is printed only after a test completion
+succeeds. A launch failure prints a `FAILED` line (`smoke_test_failed`,
+`health_timeout`, `container_exited` or `service_stopped`) that says what
+remains: a failed test completion leaves the service running, a one-node
+service keeps its container for its logs, and a multi-node start that never
+became healthy removes its containers. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
 guard is refused before any check as `guard_unsupported`, which no command
 resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).

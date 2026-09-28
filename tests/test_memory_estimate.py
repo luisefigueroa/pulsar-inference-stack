@@ -197,7 +197,8 @@ mem_available_gib_remote() {
 load_conf "$TEST_SPEC_ID"
 select_memory_estimate "$TEST_ESTIMATE" "" ""
 resolve_library_hot_for_profile() { echo PREPARED_RECHECK; }
-require_launch_operational_checks
+require_launch_image_check
+require_launch_memory_check
 """
         for available, accepted, success in ((120, "0", True), (114.12, "0", False),
                                               (114.12, "1", True), (3.99, "1", False)):
@@ -208,6 +209,15 @@ require_launch_operational_checks
                 self.assertEqual(result.returncode == 0, success, result.stderr)
                 self.assertEqual("PREPARED_RECHECK" in result.stdout, success)
                 self.assertFalse((self.root / "mutations").exists())
+        # After --replace removed the previous service, the refusal says so.
+        env = {**self.env, "TEST_SPEC_ID": self.spec["spec_id"], "TEST_ESTIMATE": str(self.path),
+               "TEST_MEM_0": "3.99", "PULSAR_ACCEPT_MEMORY_WARN": "1", "LAUNCH_AFTER_REPLACE": "1"}
+        result = subprocess.run(["bash", "-c", script], env=env, cwd=ROOT, text=True, capture_output=True)
+        removed = "The previous service was already removed, so nothing is running for this spec now."
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"memory verification failed before launch. {removed}", result.stderr)
+        self.assertIn("BLOCKED memory_insufficient", result.stdout)
+        self.assertIn(f"or choose a smaller spec. {removed}", result.stdout)
 
     def test_public_verification_and_changed_id(self):
         command = [str(ROOT / "pulsar"), "memory", "verify", "--file", str(self.path),

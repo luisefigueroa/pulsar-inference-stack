@@ -3,6 +3,9 @@
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 export PYTHONDONTWRITEBYTECODE=1
+# A busy model-library lock names the operator command holding it by these;
+# every process this command starts inherits them.
+export PULSAR_COMMAND_LINE="pulsar${*:+ $*}" PULSAR_COMMAND_PID=$$
 # Deprecated aliases warn once on stderr; `pulsar contract --json` lists them
 # as deprecated_commands. They are removed in CLI contract 2.
 deprecated() {

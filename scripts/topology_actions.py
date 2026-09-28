@@ -52,7 +52,7 @@ def observation(path, directory=None):
     result = {"schema_version": 1, "kind": "pulsar-topology-observation",
               "status": "missing", "topology": None, "nodes": [], "issues": []}
     if not Path(path).exists():
-        result["issues"].append("No saved topology. Run pulsar topology detect, then explicitly configure membership.")
+        result["issues"].append("No saved topology. Run ./pulsar topology setup.")
         return result
     try:
         topology = saved(path)

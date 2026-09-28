@@ -53,7 +53,7 @@ load_cluster_topology() {{
 require_profile_topology() {{ load_cluster_topology; }}
 require_topology_ssh_trust() {{ load_cluster_topology; }}
 mem_available_gib_local() {{ if [ "$DIAG_MODE" = memory-low ]; then echo 0; else echo 120; fi; }}
-mem_available_gib_remote() {{ echo 120; }}
+mem_available_gib_remote() {{ [ "$DIAG_MODE" != remote-memory-unreadable ] || return 1; echo 120; }}
 profile_service_is_proven_running() {{ return 1; }}
 probe_node_json_for_rank() {{
  [ "$DIAG_MODE" != remote-probe-fail ] || return 1
@@ -113,6 +113,23 @@ ssh_node() {{
         result=self.run_tool('check-memory.sh',[self.spec['spec_id'],'--json'],'memory-low')
         self.assertEqual(result.returncode,1,result.stderr);self.assertEqual(json.loads(result.stdout)['result'],'fail')
 
+    def test_a_check_that_could_not_run_exits_3(self):
+        # 0 pass, 1 the condition failed, 2 memory warning, 3 the check could not run.
+        spec_id,wrong=self.spec['spec_id'],'f'*64
+        for name,args in (('check-image.sh',[wrong]),('check-memory.sh',[wrong]),('check-weights.sh',[wrong]),
+                          ('check-image.sh',[]),('check-memory.sh',[spec_id,'--bogus']),('check-weights.sh',[spec_id,'--node'])):
+            with self.subTest(name=name,args=args):
+                result=self.run_tool(name,args)
+                self.assertEqual(result.returncode,3,result.stderr)
+        # An unreadable node is a check that could not run, never a node with 0 GiB available.
+        result=self.run_tool('check-memory.sh',[spec_id,'--json'],'remote-memory-unreadable')
+        self.assertEqual(result.returncode,3,result.stderr)
+        self.assertIn('cannot read available memory on alias-1',result.stderr)
+        result=self.run_tool('doctor.sh',['--json'],'remote-memory-unreadable')
+        rows={c['id']:c for c in json.loads(result.stdout)['checks']}
+        self.assertEqual(rows['rank_1_memory']['level'],'fail')
+        self.assertIn('memory unavailable',rows['rank_1_memory']['message'])
+
     def test_image_preview_and_confirmation(self):
         for flags in (['--plan'],[]):
             result=self.run_tool('sync-image.sh',[self.spec['spec_id'],*flags],'missing-pull')
@@ -126,7 +143,14 @@ ssh_node() {{
         result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes'],'missing-ref-after-load')
         self.assertNotEqual(result.returncode,0)
         self.assertNotIn('pull',(self.root/'mutations').read_text())
-        self.assertIn('explicit --pull',result.stderr)
+        self.assertIn('rerun with --pull to pull the exact digest',result.stderr)
+
+    def test_start_pull_permission_pulls_the_digest_a_stream_lost(self):
+        result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes','--pull-if-stream-incomplete'],'missing-ref-after-load')
+        self.assertEqual(result.returncode,0,result.stderr)
+        mutations=(self.root/'mutations').read_text().splitlines()
+        # save and load run concurrently in one pipeline; the exact-digest pull follows them.
+        self.assertEqual((sorted(mutations[:2]),mutations[2:]),(['load 1','save 0'],['pull 1']))
 
     def raw_inventory(self):
         names=['head','worker','rank-2']

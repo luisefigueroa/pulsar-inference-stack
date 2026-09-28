@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# Explicit image staging; inspection never pulls and streaming never falls back.
+# Explicit image staging; inspection never pulls. Streaming falls back to pulling
+# the exact digest only with --pull-if-stream-incomplete, which start passes when
+# --pull-image grants pulling.
 set -euo pipefail
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: sync-image.sh SPEC [--spec-file FILE] [--node NODE] [--plan | --yes] [--pull]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: sync-image.sh SPEC [--spec-file FILE] [--node NODE] [--plan | --yes] [--pull | --pull-if-stream-incomplete]"; exit 0; fi
 SCRIPT_NAME=sync-image
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 NAME="${1:?spec id required}"; shift
-PULL=0 YES=0 PLAN=0 NODE_SELECTOR=""
+PULL=0 YES=0 PLAN=0 NODE_SELECTOR="" PULL_FALLBACK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --pull) PULL=1 ;;
+    --pull-if-stream-incomplete) PULL_FALLBACK=1 ;;
     --yes|-y) YES=1 ;;
     --plan) PLAN=1 ;;
     --node) NODE_SELECTOR="${2:?node required}"; shift ;;
@@ -42,8 +45,8 @@ if [ "$PLAN" = 1 ]; then
 fi
 [ "$YES" = 1 ] || die "image staging requires --yes after reviewing --plan" 2
 if [ "$PULL" = 0 ]; then
-  # Docker save/load can omit registry references. We deliberately do not pull
-  # after a failed stream; registry acquisition is a separate explicit mode.
+  # Docker save/load can omit registry references. A stream never falls back to
+  # a registry pull unless the caller passed --pull-if-stream-incomplete.
   "$PULSAR_DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 || die "controller lacks pinned image; choose --pull --yes or acquire it explicitly"
 fi
 mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
@@ -55,6 +58,18 @@ for physical in "${missing[@]}"; do
     "$PULSAR_DOCKER" save "$IMAGE" | ssh_node "$physical" 'docker load'
   fi
 done
-"$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null \
-  || die "staging did not establish pinned references on every rank; use explicit --pull if save/load omitted a digest reference"
+if ! "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null; then
+  if [ "$PULL" != 0 ] || [ "$PULL_FALLBACK" != 1 ]; then
+    die "staging did not establish the pinned digest on every node; rerun with --pull to pull the exact digest"
+  fi
+  report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json || true)
+  mapfile -t still < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]' 2>/dev/null)
+  for physical in "${still[@]}"; do
+    log "pulling the pinned image on $(human_node_name "$physical"); streaming did not keep its digest"
+    if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE"; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")"; fi \
+      || die "pulling $IMAGE failed on $(human_node_name "$physical"); check registry access on that node"
+  done
+  "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null \
+    || die "the pinned image is still missing after pulling it; run ./pulsar doctor"
+fi
 log "Pinned spec image verified on all $NODES serving ranks."

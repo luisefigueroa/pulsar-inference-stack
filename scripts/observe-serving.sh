@@ -44,7 +44,17 @@ load_conf "$NAME"
 require_spec_platform_admission "$NAME"
 recorded_node=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["ranks"][0]["node_id"])' "$OBS/plan.json")
 if [ "$NODES" = 1 ]; then
-  [ -z "$NODE_SELECTOR" ] || [ "$NODE_SELECTOR" = "$recorded_node" ] || die "node selector differs from recorded service"
+  if [ -n "$NODE_SELECTOR" ]; then
+    # --node accepts a hostname, SSH alias, position or node ID, as start does;
+    # the resolver's warning says why a selector matches no single node.
+    resolve_single_node_placement "$NODE_SELECTOR" \
+      || usage_die "--node '$NODE_SELECTOR' does not select exactly one confirmed node; use a hostname or node ID from ./pulsar topology show"
+    if [ "${SINGLE_NODE_ID:-}" != "$recorded_node" ]; then
+      resolve_single_node_placement "$recorded_node" >/dev/null 2>&1 \
+        || die "the service for this spec runs on node $recorded_node, which is no longer in the confirmed topology"
+      die "the service for this spec runs on $SINGLE_NODE_HOSTNAME, not on $NODE_SELECTOR"
+    fi
+  fi
   NODE_SELECTOR="$recorded_node"
 fi
 PORT=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$OBS/plan.json")

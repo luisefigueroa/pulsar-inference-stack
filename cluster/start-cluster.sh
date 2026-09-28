@@ -141,15 +141,7 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-require_launch_operational_checks
-# Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
-for ((rank = 1; rank < NODES; rank++)); do
-  build_docker_cmd "$rank"
-  REMOTE_COMMANDS["$rank"]="$(shell_join_q "${_DOCKER_CMD[@]}")"
-done
-build_docker_cmd 0
-HEAD_CMD=("${_DOCKER_CMD[@]}")
+require_launch_image_check
 
 declare -A TRACKED_CIDS=()
 
@@ -198,7 +190,26 @@ if [ "$REPLACE" = 1 ]; then
     error_line "failed while removing existing cluster ranks (rc=$stale_rc)"
     exit 1
   fi
+  # shellcheck disable=SC2034 # read by start_blocker and refuse_launch in lib.sh
+  [ "$existing" != 1 ] || LAUNCH_AFTER_REPLACE=1
 fi
+
+require_launch_memory_check
+# Rebuild from immediately rechecked files.
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
+for ((rank = 1; rank < NODES; rank++)); do
+  build_docker_cmd "$rank"
+  REMOTE_COMMANDS["$rank"]="$(shell_join_q "${_DOCKER_CMD[@]}")"
+done
+build_docker_cmd 0
+HEAD_CMD=("${_DOCKER_CMD[@]}")
+for cluster_port in "$PORT" "${MASTER_PORT:-29500}"; do
+  if ! port_free "$cluster_port"; then
+    START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "$(human_node_name 0)" \
+      --node-id "${CLUSTER_NODE_IDS[0]:-}" --detail "port $cluster_port"
+    refuse_launch "port $cluster_port is unavailable on $(human_node_name 0) (rank 0); refusing launch"
+  fi
+done
 
 STARTUP_STARTED_NS=$(date +%s%N)
 persist_launch_plan_file "$PLAN_FILE"
@@ -238,6 +249,8 @@ if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
   exit 1
 fi
 log "rank 0 id=${TRACKED_CIDS[0]:0:12}"
+# Every rank's container exists; its references protect its files from here.
+release_model_library_locks
 
 log "waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min)"
 API_AUTH_ARGS=()
@@ -254,28 +267,55 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
     )
     log "healthy · first-health=${STARTUP_ELAPSED}s."
     # Qualification/warmup belongs to the workbench; serving checks health only.
-    "$REPO_DIR/scripts/observe-serving.sh" "$MODEL_NAME" --json >/dev/null || {
-      cluster_abort "all-rank verification failed after health"
-      exit 1
-    }
+    # A busy model library defers this verification; it never aborts a healthy
+    # cluster. PULSAR_LOCK_BUSY_EXIT marks that case apart from a mismatch.
+    verify_rc=0
+    verify_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-verify.XXXXXX")
+    PULSAR_LOCK_BUSY_EXIT=75 PULSAR_MODEL_LIBRARY_LOCK_TIMEOUT_SECONDS="${PULSAR_POST_START_LOCK_WAIT_SECONDS:-120}" \
+      "$REPO_DIR/scripts/observe-serving.sh" "$MODEL_NAME" --json >/dev/null 2>"$verify_err" || verify_rc=$?
+    case "$verify_rc" in
+      0) ;;
+      75)
+        warn "all-rank verification was deferred because the model library is busy; run ./pulsar status ${MODEL_NAME:0:12} once it is free"
+        sed -nE 's/^(\[[^]]+\] )?error: /  /p' "$verify_err" >&2
+        ;;
+      *)
+        cat "$verify_err" >&2
+        rm -f "$verify_err"
+        cluster_abort "all-rank verification failed after health"
+        exit 1
+        ;;
+    esac
+    rm -f "$verify_err"
     exit 0
   fi
 
-  if ! container_running_exact "$CONTAINER"; then
-    error_line "rank 0 container died; last logs:"
-    "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
-    cluster_abort "rank 0 exited during health wait"
-    exit 1
-  fi
-  for ((rank = 1; rank < NODES; rank++)); do
-    host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-    if ! container_running_exact_remote "$host" "$CONTAINER"; then
-      error_line "rank $rank container died on $host; last logs:"
-      "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-        "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
-      cluster_abort "rank $rank exited during health wait"
-      exit 1
-    fi
+  for ((rank = 0; rank < NODES; rank++)); do
+    rank_host=""
+    [ "$rank" = 0 ] || rank_host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
+    case "$(container_state_exact "$CONTAINER" "$rank_host")" in
+      exited)
+        error_line "the rank $rank container on $(human_node_name "$rank") exited before the service became healthy; last logs:"
+        if [ "$rank" = 0 ]; then
+          "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
+        else
+          "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$rank_host" \
+            "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
+        fi
+        cluster_abort "rank $rank exited during health wait"
+        START_BLOCKER_SPEC="$MODEL_NAME" start_blocker container_exited --node "$(human_node_name "$rank")" \
+          --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --no-command \
+          --note "The cluster's containers were removed; the logs are shown above."
+        exit 1
+        ;;
+      absent)
+        error_line "the rank $rank container on $(human_node_name "$rank") was removed before the service became healthy"
+        cluster_abort "rank $rank was removed during health wait"
+        START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_stopped --node "$(human_node_name "$rank")" \
+          --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank"
+        exit 1
+        ;;
+    esac
   done
   sleep "${WAIT_SECONDS:-10}"
 done
@@ -289,4 +329,7 @@ for ((rank = 1; rank < NODES; rank++)); do
     "docker logs --tail 120 $(printf '%q' "$CONTAINER")" >&2 || true
 done
 cluster_abort "health wait timed out"
+START_BLOCKER_SPEC="$MODEL_NAME" start_blocker health_timeout --node "$(human_node_name 0)" \
+  --node-id "${CLUSTER_NODE_IDS[0]:-}" --no-command \
+  --note "The cluster's containers were removed; the logs are shown above."
 exit 1

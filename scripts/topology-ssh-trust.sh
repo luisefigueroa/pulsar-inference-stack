@@ -150,7 +150,7 @@ cmd_enroll() {
 
   require_cmd python3 "$PULSAR_SSH" "$PULSAR_DOCKER"
   [ -f "$CLUSTER_TOPOLOGY_FILE" ] \
-    || die "confirmed topology is missing; run pulsar topology configure"
+    || die "confirmed topology is missing; run ./pulsar topology setup"
   [ -r "$PROBE_TOOL" ] || die "missing node probe: $PROBE_TOOL"
   [ -x "$MANIFEST_TOOL" ] || die "missing topology helper: $MANIFEST_TOOL"
   [ -x "$TRUST_TOOL" ] || die "missing SSH trust helper: $TRUST_TOOL"

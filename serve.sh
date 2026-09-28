@@ -131,13 +131,11 @@ if [ "$DRY_RUN" = "1" ]; then
   exit 0
 fi
 
-require_launch_operational_checks
-# Rebuild from immediately rechecked files before any replacement.
-write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
-load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
+require_launch_image_check
 
-# Starting is non-replacing by default. Inspect the exact target first; only an
-# explicit --replace reaches the ownership-proven removal transaction.
+# Starting is non-replacing by default. Inspect the exact target before the
+# memory recheck, which a running service would fail; only an explicit
+# --replace reaches the ownership-proven removal transaction.
 existing_rc=0
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   container_ownership_inspect_remote "$SINGLE_NODE_SSH_HOST" "$CONTAINER" >/dev/null \
@@ -148,7 +146,8 @@ fi
 case "$existing_rc" in
   0)
     if [ "$REPLACE" != 1 ]; then
-      START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --node "$(single_node_display)" --detail "container $CONTAINER"
+      START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --node "${SINGLE_NODE_HOSTNAME:-}" \
+        --node-id "${SINGLE_NODE_ID:-}" --detail "container $CONTAINER"
       die "service $CONTAINER already exists on $(single_node_display); inspect it, then pass --replace only with explicit replacement approval"
     fi
     ;;
@@ -167,17 +166,21 @@ if [ "$REPLACE" = 1 ]; then
     error_line "failed while removing prior container $CONTAINER on $(single_node_display) (rc=$stale_rc)"
     exit 1
   fi
+  # shellcheck disable=SC2034 # read by start_blocker and refuse_launch in lib.sh
+  [ "$existing_rc" != 0 ] || LAUNCH_AFTER_REPLACE=1
 fi
 
-port_probe='import socket,sys; s=socket.socket(); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()'
-if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
-  port_cmd="python3 -c $(printf '%q' "$port_probe") $(printf '%q' "$PORT")"
-  if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$SINGLE_NODE_SSH_HOST" \
-      "$port_cmd" >/dev/null 2>&1; then
-    die "port $PORT is unavailable on $(single_node_display); refusing launch"
-  fi
-elif ! python3 -c "$port_probe" "$PORT" >/dev/null 2>&1; then
-  die "port $PORT is unavailable on $(single_node_display); refusing launch"
+require_launch_memory_check
+# Rebuild from immediately rechecked files.
+write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
+load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || echo 0)"
+
+port_host=""
+[ "$SINGLE_NODE_REMOTE" != 1 ] || port_host="$SINGLE_NODE_SSH_HOST"
+if ! port_free "$PORT" ${port_host:+"$port_host"}; then
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "${SINGLE_NODE_HOSTNAME:-}" \
+    --node-id "${SINGLE_NODE_ID:-}" --detail "port $PORT"
+  refuse_launch "port $PORT is unavailable on $(single_node_display); refusing launch"
 fi
 
 log "$MODEL_NAME ($MODEL) on $(single_node_display), port $PORT, image $IMAGE container=$CONTAINER"
@@ -188,12 +191,15 @@ if [ -n "$_api_key" ]; then
 else
   log "API open (no VLLM_API_KEY) — lab network only"
 fi
+# Hold the locks until the container exists; its references protect its files
+# afterwards, so they are released before anyone waits for health.
+persist_launch_plan_file "$PLAN_FILE"
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   remote_cmd=$(shell_join_q "${CMD[@]}")
-  persist_launch_plan_file "$PLAN_FILE"
-  exec "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- \
-    "$SINGLE_NODE_SSH_HOST" "$remote_cmd"
+  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$SINGLE_NODE_SSH_HOST" "$remote_cmd" \
+    || refuse_launch "docker run failed on $(single_node_display)"
+else
+  CMD[0]="$PULSAR_DOCKER"
+  "${CMD[@]}" || refuse_launch "docker run failed on $(single_node_display)"
 fi
-CMD[0]="$PULSAR_DOCKER"
-persist_launch_plan_file "$PLAN_FILE"
-exec "${CMD[@]}"
+release_model_library_locks
