@@ -181,14 +181,13 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1 (install it and retry)"
 }
 
-# Close-on-exec so background children (archive workers) cannot inherit a
-# held flock and deadlock on a second exclusive lock of the same file.
-_fd_cloexec() {
-  local fd="${1:-}"
-  [[ "$fd" =~ ^[0-9]+$ ]] || return 0
-  python3 -c 'import fcntl, sys; fcntl.fcntl(int(sys.argv[1]), fcntl.F_SETFD, fcntl.FD_CLOEXEC)' "$fd" \
-    || die "cannot mark lock fd $fd close-on-exec"
-}
+# Model-library locks are flock(2) locks on a descriptor this shell opens. Bash
+# has no close-on-exec control, so every process started while a lock is held
+# inherits the descriptor, including a command the script execs into, and the
+# lock stays held until each of them has closed it or exited. Closing only this
+# shell's descriptor leaves the lock with a child that still runs; flock -u on
+# the descriptor releases it for every holder. To start a process without a
+# held lock, close that descriptor in the command's redirections.
 
 # Serialize home changes against preparation and launch.
 acquire_model_library_lifecycle_lock() {
@@ -225,7 +224,6 @@ acquire_model_library_lifecycle_lock() {
       die "durable-home removal is in progress; launch/library lock timed out"
     }
   fi
-  _fd_cloexec "$lock_fd"
   PULSAR_MODEL_LIBRARY_LOCK_FD="$lock_fd"
   PULSAR_MODEL_LIBRARY_LOCK_MODE="$mode"
 }
@@ -267,7 +265,6 @@ acquire_model_library_hot_lock() {
       die "hot preparation/pin/purge is in progress; hot read lock timed out"
     }
   fi
-  _fd_cloexec "$lock_fd"
   PULSAR_MODEL_LIBRARY_HOT_LOCK_FD="$lock_fd"
   PULSAR_MODEL_LIBRARY_HOT_LOCK_MODE="$mode"
 }
