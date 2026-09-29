@@ -9,13 +9,13 @@ if [ $# = 0 ]; then
 fi
 if [ "$1" = --help ] || [ "$1" = -h ]; then
   python3 "$ROOT/scripts/terminal_format.py" <<'HELP'
-usage: pulsar status SPEC_ID [--node NODE_ID] [--spec-file FILE] [--json]
+usage: pulsar status SPEC_ID [--node NODE] [--spec-file FILE] [--json]
        pulsar status
 
 Observe the live service for the exact spec on every participating node.
 
-  --node NODE_ID    One-node spec: the node ID of its recorded service; the
-                    recorded node is used when omitted
+  --node NODE       One-node spec: the recorded service's node, by hostname or
+                    node ID; the recorded node is used when omitted
   --spec-file FILE  Name a workbench candidate; the service's recorded spec
                     is what status observes
   --json            Print the observation as JSON

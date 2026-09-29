@@ -75,8 +75,9 @@ class Help(unittest.TestCase):
             self.assertNotIn(internal, text)
 
     def test_status_help_names_node_spec_file_and_json(self):
-        text = self.run_help(("status", "--help"), 80)
-        for word in ("--node NODE_ID", "--spec-file FILE", "--json"):
+        text = " ".join(self.run_help(("status", "--help"), 80).split())
+        for word in ("--node NODE One-node spec: the recorded service's node, by hostname or node ID",
+                     "--spec-file FILE", "--json"):
             self.assertIn(word, text)
 
     def test_top_level_help_uses_spec_terms(self):

@@ -4,11 +4,12 @@ set -euo pipefail
 SCRIPT_NAME=down
 down_usage() {
   python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/terminal_format.py" <<'HELP'
-usage: pulsar stop SPEC_ID [--node NODE_ID] [--spec-file FILE]
+usage: pulsar stop SPEC_ID [--node NODE] [--spec-file FILE]
        pulsar stop --all
 
 Stop the owned service for the exact spec on every participating node.
-Model files, pins, archives and evidence are always retained.
+Model files, pins, archives and evidence are always retained. NODE is a
+confirmed node's hostname or node ID.
 HELP
 }
 case "${1:-}" in
