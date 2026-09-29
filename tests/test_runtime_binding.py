@@ -25,7 +25,7 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1')):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             for rank in range(nodes):
@@ -51,13 +51,15 @@ print(json.dumps(doc))
 ''');tool.chmod(0o755)
             # Fixture names rank roles; the shared double consumes rank indexes,
             # never hostname branches. Actual Bash observation loop is exercised.
+            # A --node selector runs the real placement resolver over the fixture topology.
+            placement_double='resolve_single_node_placement() { load_cluster_topology || return; SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=rank-0; SINGLE_NODE_SSH_HOST=local; SINGLE_NODE_CONTROL_IP=192.0.2.1; SINGLE_NODE_REMOTE=0; SINGLE_NODE_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID"; }'
             envfile=root/'env.sh';envfile.write_text(f'''
 . '{ROOT}/scripts/lib.sh'
 load_cluster_topology() {{
   [ "$FIXTURE_MODE" != no-topology ] || return 1
-  CLUSTER_TOPOLOGY_COUNT={nodes}; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_TOPOLOGY_LOADED=1
-  CLUSTER_NODE_IDS=(node-0 node-1)
-  CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1)
+  CLUSTER_TOPOLOGY_COUNT={topology_nodes or nodes}; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_TOPOLOGY_LOADED=1
+  CLUSTER_NODE_IDS=({' '.join(topology_ids)})
+  CLUSTER_NODE_HOSTNAMES=({' '.join(topology_hostnames)})
   CLUSTER_NODE_SSH_HOSTS=(local rank-1)
   CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2)
   CLUSTER_NODE_CONTROL_IFS=(eth0 eth0)
@@ -65,7 +67,7 @@ load_cluster_topology() {{
 }}
 require_profile_topology() {{ load_cluster_topology; }}
 runtime_context_for_rank() {{ printf '{{"architecture":"fixture","kernel_release":"fixture","gpu_driver":null,"container_runtime_version":null}}\n'; }}
-resolve_single_node_placement() {{ load_cluster_topology || return; SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=rank-0; SINGLE_NODE_SSH_HOST=local; SINGLE_NODE_CONTROL_IP=192.0.2.1; SINGLE_NODE_REMOTE=0; SINGLE_NODE_TOPOLOGY_ID="$CLUSTER_TOPOLOGY_ID"; }}
+{'' if node else placement_double}
 library_hot_info_for_profile() {{ printf '%s\\n' "${{PULSAR_OBSERVE_FULL:-0}}" >>"$FIXTURE_ROOT/verification-modes"; printf '%s\\n' "${{PULSAR_OBSERVE_VERIFICATION_JOBS:-}}" >>"$FIXTURE_ROOT/verification-jobs"; [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
 ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROOT/docker.py" $([ "${{1#docker image}}" != "$1" ] && echo image || echo inspect); }}
 ''')
@@ -74,7 +76,8 @@ ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROO
                 env['PULSAR_LAUNCH_RESULT_FILE']=str(root/'launch-result.json')
                 with envfile.open('a') as stream:
                     stream.write('''
-require_launch_operational_checks() { :; }
+require_launch_image_check() { :; }
+require_launch_memory_check() { :; }
 container_ownership_inspect_local() { return 0; }
 container_ownership_inspect_remote() { return 0; }
 verify_replacement_plan() {
@@ -106,6 +109,7 @@ library_hot_info_for_profile() {
             if public: command=[str(ROOT/'pulsar'),'observe','--service-id',plan['service_id'],'--json']
             if full: command += ['--full']
             if verification_jobs is not None: command += ['--verification-jobs',str(verification_jobs)]
+            if node: command += ['--node',node]
             result=subprocess.run(command,cwd=root if public else ROOT,env=env,text=True,capture_output=True)
             trace=root/'verification-modes'
             result.verification_modes=trace.read_text().splitlines() if trace.exists() else []
@@ -181,6 +185,29 @@ library_hot_info_for_profile() {
                 result=self.run_scenario(nodes,launcher=True,replacing=True)
                 self.assertEqual(result.returncode,78,result.stderr+result.stdout)
                 self.assertIn('replacement-plan-verified',result.stdout)
+
+    def test_single_node_selector_accepts_the_hostname_start_suggests(self):
+        result=self.run_scenario(1,node='rank-0',topology_nodes=2)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(len(json.loads(result.stdout)['ranks']),1)
+        result=self.run_scenario(1,node='rank-1',topology_nodes=2)
+        self.assertEqual(result.returncode,1,result.stdout)
+        self.assertIn('the service for this spec runs on rank-0, not on rank-1',result.stderr)
+        result=self.run_scenario(1,node='elsewhere',topology_nodes=2)
+        self.assertEqual(result.returncode,2,result.stdout)
+        self.assertIn("node 'elsewhere' is not present in the confirmed topology",result.stderr)
+        self.assertIn("--node 'elsewhere' does not select exactly one confirmed node; use a hostname or node ID "
+                      "from ./pulsar topology show",result.stderr)
+        # An ambiguous selector is not reported as absent.
+        result=self.run_scenario(1,node='rank-0',topology_nodes=2,topology_hostnames=('rank-0','rank-0'))
+        self.assertEqual(result.returncode,2,result.stdout)
+        self.assertIn("node selector 'rank-0' is ambiguous",result.stderr)
+        self.assertIn("--node 'rank-0' does not select exactly one confirmed node",result.stderr)
+        # The recorded node left the topology: it is named, not the selector's node.
+        result=self.run_scenario(1,node='rank-1',topology_nodes=2,topology_ids=('node-5','node-1'))
+        self.assertEqual(result.returncode,1,result.stdout)
+        self.assertIn('the service for this spec runs on node node-0, which is no longer in the confirmed topology',
+                      result.stderr)
 
     def test_refusals(self):
         for mode in ('rank-loss','restart','unowned','corrupt-files','missing-files','no-topology'):

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Memory preflight for conf (+ optional max-model-len note).
 #   scripts/check-memory.sh SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]
-# exit 0=pass 1=fail 2=warn (tight)
+# Exit: 0 pass · 1 fail · 2 warn (tight) · 3 the check could not run.
 #
 # Cold start: require MemAvailable >= footprint + launch spike, residual buffer.
 # Already serving this conf: only enforce hard floor + residual buffer (weights/KV
@@ -12,6 +12,7 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-memory.sh
 SCRIPT_NAME=check-memory
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+check_exit_convention
 
 JSON=0
 OVERRIDE_LEN=""
@@ -20,23 +21,23 @@ FORCE_COLD_START=0
 unset PULSAR_MEMORY_ESTIMATE_JSON
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 NAME="${1:-}"
-[ -n "$NAME" ] || die "usage: $0 SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]"
+[ -n "$NAME" ] || die "usage: $0 SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]" 3
 shift || true
 while [ $# -gt 0 ]; do
   case "$1" in
-    --spec-file) [ $# -ge 2 ] || die "--spec-file needs a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --spec-file) [ $# -ge 2 ] || die "--spec-file needs a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
     --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate file" 3; MEMORY_ESTIMATE_FILE="$2"; shift ;;
     --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate ID" 3; MEMORY_ESTIMATE_ID="$2"; shift ;;
     --memory-estimate-frozen) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing frozen memory estimate" 3; MEMORY_ESTIMATE_FROZEN="$2"; shift ;;
     --json) JSON=1 ;;
     --node)
-      [ "$#" -ge 2 ] || die "--node requires a topology node id or hostname" 2
+      [ "$#" -ge 2 ] || die "--node requires a topology node id or hostname" 3
       NODE_SELECTOR="$2"
       shift
       ;;
     --cold-start) FORCE_COLD_START=1 ;;
     --max-model-len) OVERRIDE_LEN="${2:-}"; shift ;;
-    *) die "unknown arg: $1" ;;
+    *) die "unknown argument: $1" 3 ;;
   esac
   shift
 done
@@ -45,13 +46,13 @@ load_conf "$NAME"
 if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
   select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID" 3
 fi
-require_cluster_nodes "$NODES" >/dev/null || die "confirmed topology lacks required serving nodes"
+require_cluster_nodes "$NODES" >/dev/null || die "confirmed topology lacks required serving nodes" 3
 if [ "$NODES" -eq 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" \
-    || die "cannot resolve physical node placement '$NODE_SELECTOR'"
+    || die "cannot resolve physical node placement '$NODE_SELECTOR'" 3
 elif [ -n "$NODE_SELECTOR" ]; then
-  die "--node is only valid for one-node specs" 2
+  die "--node is only valid for one-node specs" 3
 fi
 weights=$(estimate_weights_ram_gib)
 kv=$(estimate_kv_gib)
@@ -116,9 +117,14 @@ if [ "$FORCE_COLD_START" != 1 ] \
   already_how="proven stack-managed container $cname running with complete rank ownership"
 fi
 
+# An unreadable node means the check could not run, never "0 GiB available".
+remote_available_gib() {
+  mem_available_gib_remote "$1" || die "cannot read available memory on $1" 3
+}
+
 declare -a rank_avail=()
 if [ "$NODES" -eq 1 ] && [ "$SINGLE_NODE_REMOTE" = 1 ]; then
-  rank_avail[0]=$(mem_available_gib_remote "$SINGLE_NODE_SSH_HOST")
+  rank_avail[0]=$(remote_available_gib "$SINGLE_NODE_SSH_HOST")
 else
   rank_avail[0]=$(mem_available_gib_local)
 fi
@@ -127,19 +133,11 @@ reason=""
 mode="cold-start"
 topology_ready=1
 if [ "$NODES" -gt 1 ]; then
-  if ! require_cluster_nodes "$NODES"; then
-    topology_ready=0
-    result=fail
-    reason="confirmed topology has fewer than $NODES required ranks; "
-    for ((rank = 1; rank < NODES; rank++)); do
-      rank_avail[$rank]=0
-    done
-  else
-    for ((rank = 1; rank < NODES; rank++)); do
-      rank_avail[$rank]=$(mem_available_gib_remote \
-        "${CLUSTER_NODE_SSH_HOSTS[$rank]}")
-    done
-  fi
+  require_cluster_nodes "$NODES" >/dev/null \
+    || die "confirmed topology has fewer than $NODES required nodes" 3
+  for ((rank = 1; rank < NODES; rank++)); do
+    rank_avail[$rank]=$(remote_available_gib "${CLUSTER_NODE_SSH_HOSTS[$rank]}")
+  done
 fi
 head_avail="${rank_avail[0]}"
 worker_avail="${rank_avail[1]:-n/a}"
@@ -306,7 +304,7 @@ else
         else
           warn "memory is tight — start only if you accept risk (./pulsar start --accept-memory-warn)"
         fi
-        exit 2
+        check_result 2
         ;;
       fail)
         if [ "$already" = 1 ]; then
@@ -314,7 +312,7 @@ else
         else
           warn "free memory, stop other GPU jobs, or pick a smaller model/geometry"
         fi
-        exit 1
+        check_result 1
         ;;
     esac
   fi
@@ -322,6 +320,6 @@ fi
 
 case "$result" in
   pass) exit 0 ;;
-  warn) exit 2 ;;
-  *) exit 1 ;;
+  warn) check_result 2 ;;
+  *) check_result 1 ;;
 esac

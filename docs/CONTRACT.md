@@ -244,14 +244,34 @@ Success exits 0. The table applies to `--json` output. Without `--json`,
 failed action exits 1 and a usage error exits 2, while the same failure with
 `--json` exits 3 as `prerequisite_failed`.
 
-When `start --json` is refused, the error is `prerequisite_failed` and
-`details` holds one record per start blocker: `field` is `blocker`, plus
-`blocker` (a code from `start_blocker_codes` in the contract), `node` and `rank`
-(null when the blocker is not node-specific), `message` and `fix`, the one
-command to run next. `guard_unsupported` and `historical_spec` are the exceptions:
-no command resolves them, so their `fix` says what to use instead. Start runs every
-independent check before it reports, so one refusal can list several blockers.
-Branch on `blocker`; `message` and `fix` are for people.
+When `start --json` fails, the error is `prerequisite_failed` and `details`
+holds one record per start blocker: `field` is `blocker`, plus `blocker` (a
+code from `start_blocker_codes` in the contract), `stage`, `node` (hostname) and
+`node_id` (stable), `rank`, `message`, `fix`, `note` and `service_id`. Fields
+that do not apply are null.
+
+- `stage` is `check` when start refused before launching anything, and
+  `launch` when a launch was attempted after the checks passed:
+  `container_start_failed`, `smoke_test_failed`, `health_timeout`,
+  `container_exited` and `service_stopped`. `service_id` names that service.
+- `fix` is one command that can be run as written, or null when no command
+  resolves the blocker (`guard_unsupported`, `historical_spec`, and launch
+  records whose containers were confirmed removed). When removing a failed
+  launch's containers cannot be confirmed on every node, `fix` is
+  `./pulsar stop` and `note` names those nodes. `note` carries any
+  explanation. Suggested start commands repeat the flags start was given, such
+  as `--dry-run` or `--pull-image`, and add only the flag the fix is about.
+
+Start runs every independent check before it reports, so one refusal can list
+several blockers. Branch on `blocker` and `stage`; `message`, `fix` and `note`
+are for people.
+
+Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
+`service_id`; `fix` became a runnable command or null (it was prose for
+`guard_unsupported` and `historical_spec`); new codes `fabric_incomplete`,
+`image_check_failed`, `model_files_check_failed`, `port_in_use`,
+`container_start_failed`, `smoke_test_failed`, `health_timeout`,
+`container_exited` and `service_stopped`.
 
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,

@@ -79,8 +79,8 @@ class GuardLaunchAdmission(unittest.TestCase):
                 self.assertIn(spec['spec_id'][:12], result.stderr)
                 self.assertEqual(result.stdout.count('BLOCKED '), 1, result.stdout)
                 self.assertIn('BLOCKED guard_unsupported: this spec requires serving-guard enforcement '
-                              '(recipe.container.guard), which this Stack cannot run. Next: no start is '
-                              'possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md', result.stdout)
+                              '(recipe.container.guard), which this Stack cannot run. Note: No start is '
+                              'possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md.', result.stdout)
                 self.assertEqual(recorded, [start_blockers.blocker('guard_unsupported')])
                 self.assertFalse((self.base.root / 'mutations').exists())
 
@@ -101,11 +101,14 @@ class GuardLaunchAdmission(unittest.TestCase):
     def test_unguarded_spec_passes_launch_admission(self):
         spec = fixture(3)[0]
         self.base.path.write_text(json.dumps(spec))
+        # The topology check is the first one after admission; start silences
+        # its output, so the double leaves a marker instead.
+        marker = self.base.root / 'past-admission'
         with open(self.base.env['BASH_ENV'], 'a') as stream:
-            stream.write('\nrequire_profile_topology() { echo PAST_ADMISSION >&2; exit 67; }\n')
+            stream.write(f'\nrequire_cluster_nodes() {{ touch {str(marker)!r}; exit 67; }}\n')
         result, recorded = self.launch('scripts/up.sh', spec['spec_id'], '--yes')
         self.assertEqual(result.returncode, 67, result.stderr)
-        self.assertIn('PAST_ADMISSION', result.stderr)
+        self.assertTrue(marker.exists(), result.stderr)
         self.assertEqual(recorded, [])
 
     def test_guard_added_by_override_is_also_rejected(self):

@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # Read-only inspection of the pinned spec image on every selected physical node.
+# Exit: 0 pass · 1 the condition failed · 3 the check could not run.
 set -euo pipefail
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-image.sh SPEC [--spec-file FILE] [--node NODE] [--json]"; exit 0; fi
 SCRIPT_NAME=check-image
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-NAME="${1:?spec id required}"; shift
+check_exit_convention
+[ -n "${1:-}" ] || die "spec id required" 3
+NAME="$1"; shift
 JSON=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1 ;;
-    --node) NODE_SELECTOR="${2:?node required}"; shift ;;
-    --spec-file) export PULSAR_SPEC_FILE="${2:?spec file required}"; shift ;;
-    *) die "unknown argument: $1" 2 ;;
+    --node) [ -n "${2:-}" ] || die "--node requires a node" 3; NODE_SELECTOR="$2"; shift ;;
+    --spec-file) [ -n "${2:-}" ] || die "--spec-file requires a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
+    *) die "unknown argument: $1" 3 ;;
   esac
   shift
 done
@@ -21,10 +24,10 @@ topology_ready=1
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then topology_ready=0; fi
 if [ "$NODES" = 1 ] && [ "$topology_ready" = 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
-  resolve_single_node_placement "$NODE_SELECTOR" || die "selected node is not confirmed"
+  resolve_single_node_placement "$NODE_SELECTOR" || die "selected node is not confirmed" 3
   node_indices=("$SINGLE_NODE_INDEX")
 else
-  [ -z "$NODE_SELECTOR" ] || die "--node applies only to one-node specs" 2
+  [ -z "$NODE_SELECTOR" ] || die "--node applies only to one-node specs" 3
   for ((rank=0;rank<NODES;rank++)); do node_indices+=("$rank"); done
 fi
 verify_image_json() {
@@ -73,4 +76,4 @@ if [ "$JSON" = 1 ]; then printf '%s\n' "$report"; else
     print_hanging 'FAIL  image  ' "$state; inspect the required nodes before image staging."
   fi
 fi
-[ "$state" = ok ]
+[ "$state" = ok ] || check_result 1
