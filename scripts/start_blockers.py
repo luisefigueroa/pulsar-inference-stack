@@ -31,6 +31,7 @@ if str(ROOT) not in sys.path:
 CARRIED_START_FLAGS = ("--dry-run", "--pull-image", "--accept-memory-warn", "--replace", "--verbose",
                        "--skip-preflight")
 START = "./pulsar start {spec} {start_args}"
+STOP = "./pulsar stop {spec} {candidate}{placement}"
 # Added to a check-stage note when --replace already removed the previous
 # service; scripts/lib.sh uses the same sentence for launch refusals.
 AFTER_REPLACE_NOTE = "The previous service was already removed, so nothing is running for this spec now."
@@ -43,6 +44,9 @@ class Kind:
     note: str | None = None
     adds: str | None = None  # the start flag this fix adds
     stage: str = "check"
+    # A launch record that can say nothing runs once --replace removed the
+    # previous service; check-stage records always can.
+    nothing_runs: bool = False
 
 
 BLOCKERS = {
@@ -74,15 +78,14 @@ BLOCKERS = {
     "historical_spec": Kind("this is a historical schema-1 spec, which this Stack reads but cannot start", None,
                             note="No start is possible from this Stack; use a schema-2 or 3 spec for this model "
                                  "(see docs/OPERATIONS.md)."),
-    # After the checks passed and containers were started.
+    # After the checks passed, when containers were started.
+    "container_start_failed": Kind("the service container could not be started", "./pulsar doctor",
+                                   note="Docker's error is shown above.", stage="launch", nothing_runs=True),
     "smoke_test_failed": Kind("the service started and passed its health check, but the test completion failed; "
-                              "it is still running", "./pulsar stop {spec} {candidate}{placement}",
-                              stage="launch"),
-    "health_timeout": Kind("the service did not become healthy in time",
-                           "./pulsar stop {spec} {candidate}{placement}",
+                              "it is still running", STOP, stage="launch"),
+    "health_timeout": Kind("the service did not become healthy in time", STOP,
                            note="It is still running; its logs are shown above.", stage="launch"),
-    "container_exited": Kind("the service container exited before it became healthy",
-                             "./pulsar stop {spec} {candidate}{placement}",
+    "container_exited": Kind("the service container exited before it became healthy", STOP,
                              note="Stop clears the exited container; its logs are shown above.", stage="launch"),
     "service_stopped": Kind("the service was removed before it became healthy, for example by pulsar stop", None,
                             note="Nothing is running for this spec now.", stage="launch"),
@@ -136,7 +139,9 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
             memory_estimate_file: str | None = None, memory_estimate_id: str | None = None,
             start_flags: str = "", home_node: str | None = None, state_root: str | None = None,
             service_id: str | None = None, no_command: bool = False, note: str | None = None,
-            after_replace: bool = False) -> dict:
+            after_replace: bool = False, unconfirmed: str | None = None) -> dict:
+    """One blocker record. ``unconfirmed`` names nodes where removing a failed
+    launch's containers could not be confirmed; stop then becomes the fix."""
     if code not in BLOCKERS:
         raise ValueError(f"unknown start blocker: {code}")
     kind = BLOCKERS[code]
@@ -162,7 +167,10 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         fix = " ".join(fix.split())
     if note is not None:
         resolved_note = note
-    if after_replace and kind.stage == "check":
+    if unconfirmed:
+        fix = " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split())
+        resolved_note = f"Removing its containers could not be confirmed on {unconfirmed}; stop removes what remains."
+    elif after_replace and (kind.stage == "check" or kind.nothing_runs):
         resolved_note = f"{resolved_note} {AFTER_REPLACE_NOTE}" if resolved_note else AFTER_REPLACE_NOTE
     where = f"{node} (rank {rank})" if node and rank is not None else (node or "")
     message = f"{where}: {kind.summary}" if where else kind.summary
@@ -212,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--no-command", action="store_true")
     record.add_argument("--note")
     record.add_argument("--after-replace", action="store_true")
+    record.add_argument("--unconfirmed")
     for flag in ("--spec-file", "--override-file", "--memory-estimate-file", "--memory-estimate-id"):
         record.add_argument(flag)
     args = parser.parse_args(argv)
@@ -222,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
                     memory_estimate_id=args.memory_estimate_id or None, start_flags=args.start_flags,
                     home_node=args.home_node or None, state_root=args.state_root or None,
                     service_id=args.service_id or None, no_command=args.no_command, note=args.note,
-                    after_replace=args.after_replace)
+                    after_replace=args.after_replace, unconfirmed=args.unconfirmed or None)
     print(human(value))
     target = os.environ.get("PULSAR_START_BLOCKERS_FILE")
     if target:

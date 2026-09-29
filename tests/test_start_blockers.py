@@ -22,9 +22,9 @@ SPEC = "ab" * 32
 SERVICE_ID = "5e" * 32
 
 
-def lib_function(name):
-    """The real function from scripts/lib.sh, so the doubles keep its wiring."""
-    text = (ROOT / "scripts/lib.sh").read_text()
+def lib_function(name, path="scripts/lib.sh"):
+    """A real shell function (from lib.sh by default), so the doubles keep its wiring."""
+    text = (ROOT / path).read_text()
     return re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", text, re.S | re.M).group(0)
 
 
@@ -43,7 +43,12 @@ release_model_library_locks() { touch "$FIXTURE_DIR/locks-released"; }
 load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS=mesh; MIN_RAILS_PER_PAIR=2; }
 require_spec_launch_admission() { :; }
 spec_overlay_node_selector() { echo "$1"; }
-resolve_single_node_placement() { SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=spark-1; SINGLE_NODE_KEY=head; SINGLE_NODE_CONTROL_IP=127.0.0.1; SINGLE_NODE_REMOTE=0; }
+resolve_single_node_placement() {
+  # A selector needs a confirmed topology, whose only node is spark-1.
+  if [ -n "$1" ] && { [ "${FIXTURE_TOPOLOGY:-1}" = 0 ] || [ "$1" != spark-1 ]; }; then return 1; fi
+  SINGLE_NODE_INDEX=0; SINGLE_NODE_ID=node-0; SINGLE_NODE_HOSTNAME=spark-1; SINGLE_NODE_KEY=head; SINGLE_NODE_CONTROL_IP=127.0.0.1; SINGLE_NODE_REMOTE=0
+}
+select_memory_estimate() { :; }
 single_node_display() { echo fixture-host; }
 single_node_api_base_url() { echo http://127.0.0.1:8000; }
 resolve_spec_decode() { SPEC_DECODE_ENABLED=0; }
@@ -84,7 +89,8 @@ case " $* " in *" --json "*) echo '{"reason":"fixture-host: available 10 GiB << 
 [ "$FIXTURE_MEMORY_RC" != 3 ] || echo "error: cannot read available memory on spark-2" >&2
 exit "$FIXTURE_MEMORY_RC"
 '''
-LAUNCHER = '#!/usr/bin/env bash\necho "${0##*/} $*" >>"$FIXTURE_DIR/launched"\n'
+LAUNCHER = ('#!/usr/bin/env bash\necho "${0##*/} $*" >>"$FIXTURE_DIR/launched"\n'
+            'env | grep "^START_BLOCKER_MEMORY_ESTIMATE" | sort >>"$FIXTURE_DIR/launch-env" || true\n')
 CURL = r'''#!/usr/bin/env bash
 url="${*: -1}"
 case "$url" in
@@ -215,11 +221,53 @@ class Catalog(unittest.TestCase):
                                          "smaller spec. " + start_blockers.AFTER_REPLACE_NOTE)
         warning = start_blockers.blocker("memory_warning", spec=SPEC, after_replace=True)
         self.assertEqual(warning["note"], start_blockers.AFTER_REPLACE_NOTE)
-        # A launch-stage record describes the new service, which is still running.
+        # A launch-stage record describes the new service, which is still running,
+        # unless the container never started.
         timeout = start_blockers.blocker("health_timeout", spec=SPEC, after_replace=True)
         self.assertEqual(timeout["note"], "It is still running; its logs are shown above.")
+        failed = start_blockers.blocker("container_start_failed", spec=SPEC, after_replace=True)
+        self.assertEqual(failed["note"], "Docker's error is shown above. " + start_blockers.AFTER_REPLACE_NOTE)
         self.assertIn(f'AFTER_REPLACE_NOTE="{start_blockers.AFTER_REPLACE_NOTE}"',
                       (ROOT / "scripts/lib.sh").read_text())
+
+    def test_unconfirmed_cleanup_suggests_stop(self):
+        record = start_blockers.blocker("health_timeout", spec=SPEC, service_id=SERVICE_ID, no_command=True,
+                                        note="The cluster's containers were removed; the logs are shown above.",
+                                        unconfirmed="spark-2 (rank 1)", after_replace=True)
+        self.assertEqual(record["fix"], "./pulsar stop abababababab")
+        self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1); "
+                                         "stop removes what remains.")
+
+    def test_launcher_suggestions_keep_the_operator_estimate(self):
+        # The launchers reset their own estimate arguments; start exports the operator's.
+        script = (f"REPO_DIR={shlex.quote(str(ROOT))} NAME={SPEC} MEMORY_ESTIMATE_FILE='' MEMORY_ESTIMATE_ID=''\n"
+                  + lib_function("start_blocker") + "start_blocker memory_warning\n")
+        env = {**os.environ, "START_BLOCKER_MEMORY_ESTIMATE_FILE": "/tmp/estimate.json",
+               "START_BLOCKER_MEMORY_ESTIMATE_ID": "e" * 64}
+        env.pop("PULSAR_START_BLOCKERS_FILE", None)
+        result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+        self.assertIn("Next: ./pulsar start abababababab --memory-estimate-file /tmp/estimate.json "
+                      f"--memory-estimate-id {'e' * 64} --accept-memory-warn", result.stdout)
+
+    def test_every_launch_record_names_its_service(self):
+        launch = {code for code, kind in start_blockers.BLOCKERS.items() if kind.stage == "launch"}
+        found = 0
+        for path in ("scripts/up.sh", "serve.sh", "cluster/start-cluster.sh"):
+            lines = (ROOT / path).read_text().splitlines()
+            for index, line in enumerate(lines):
+                match = re.search(r"\b(?:start_blocker|blocked|cluster_failure) (\w+)", line)
+                if not match or match.group(1) not in launch:
+                    continue
+                call, end = line, index
+                while call.rstrip().endswith("\\"):
+                    end += 1
+                    call = call.rstrip()[:-1] + lines[end]
+                found += 1
+                with self.subTest(path=path, call=line.strip()):
+                    self.assertTrue("--service-id" in call or "cluster_failure" in call, call)
+        self.assertGreaterEqual(found, 12)
+        # cluster_failure passes the launch plan's service ID itself.
+        self.assertIn('--service-id "${SERVICE_ID:-}"', lib_function("cluster_failure", "cluster/start-cluster.sh"))
 
     def test_launch_failures_are_labeled_failed_not_blocked(self):
         for code, kind in start_blockers.BLOCKERS.items():
@@ -242,7 +290,8 @@ class StartScenarios(unittest.TestCase):
             (self.root / directory).mkdir()
         shutil.copyfile(ROOT / "scripts/up.sh", self.root / "scripts/up.sh")
         shutil.copyfile(ROOT / "scripts/start_blockers.py", self.root / "scripts/start_blockers.py")
-        (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker"))
+        (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
+                                                   + lib_function("launch_plan_service_id"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
                            ("scripts/check-memory.sh", MEMORY),
                            ("scripts/sync-image.sh", '#!/usr/bin/env bash\ntouch "$FIXTURE_DIR/synced"\n'),
@@ -324,6 +373,20 @@ class StartScenarios(unittest.TestCase):
         self.assertIn("(needs 1, confirmed 0). Next: ./pulsar topology setup", result.stdout)
         for check in ("image-checked", "weights-checked", "memory-checked"):
             self.assertFalse(self.ran(check), check)
+
+    def test_a_node_selector_without_a_topology_reports_the_topology(self):
+        result, codes = self.start("--node", "spark-1", topology=0)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(codes, ["topology_incomplete"])
+        self.assertIn("Next: ./pulsar topology setup", result.stdout)
+        self.assertIn("start is blocked by 1 blocker(s) above", result.stderr)
+        self.assertFalse(self.ran("image-checked"))
+        # With a topology, a selector that matches no node is the operator's to fix.
+        result, codes = self.start("--node", "elsewhere")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(codes, ["topology_incomplete"])  # from the first run only
+        self.assertIn("--node 'elsewhere' does not select exactly one confirmed node; use a hostname or node ID "
+                      "from ./pulsar topology show", result.stderr)
 
     def test_fabric_shortfall_names_its_reason(self):
         reason = "spark-1/spark-3 expose 1 shared RoCE rail; the spec requires 2"
@@ -423,6 +486,24 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("\nREADY\n", result.stdout)
 
+    def test_an_unobservable_container_at_the_timeout_is_not_called_running(self):
+        result, codes = self.start(image="ok", health="fail", container="unknown")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(codes, ["health_timeout"])
+        self.assertEqual(self.records[0]["note"],
+                         "Its state could not be observed when the wait ended, so it may still be running.")
+        self.assertEqual(self.records[0]["fix"], "./pulsar stop abababababab --node spark-1")
+        self.assertIn("could not be observed", result.stderr)
+        self.assertFalse(self.ran("docker-calls"))  # no logs are read from an unobservable node
+
+    def test_launchers_receive_the_operator_estimate_for_suggestions(self):
+        result, codes = self.start("--memory-estimate-file", "/tmp/estimate.json", "--memory-estimate-id", "e" * 64,
+                                   image="ok")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "launch-env").read_text().splitlines(),
+                         ["START_BLOCKER_MEMORY_ESTIMATE_FILE=/tmp/estimate.json",
+                          "START_BLOCKER_MEMORY_ESTIMATE_ID=" + "e" * 64])
+
     def test_health_wait_outcomes_are_recorded(self):
         for container, code, fix in (("running", "health_timeout", "./pulsar stop abababababab --node spark-1"),
                                      ("exited", "container_exited", "./pulsar stop abababababab --node spark-1"),
@@ -435,6 +516,57 @@ class StartScenarios(unittest.TestCase):
                 self.assertEqual(codes, [code])
                 self.assertEqual((self.records[0]["fix"], self.records[0]["service_id"]), (fix, SERVICE_ID))
                 self.assertIn(f"FAILED {code}: spark-1: ", result.stdout)
+
+
+class ClusterCleanup(unittest.TestCase):
+    """A multi-node launch failure says its containers were removed only when it
+    confirmed that on every node."""
+
+    def failure(self, states, *args, replaced=False):
+        with tempfile.TemporaryDirectory() as temp:
+            blockers = Path(temp) / "blockers.jsonl"
+            script = "\n".join([
+                f"REPO_DIR={shlex.quote(str(ROOT))} NODES=3 CONTAINER=fixture-container MODEL_NAME={SPEC}"
+                f" SERVICE_ID={SERVICE_ID}",
+                "CLUSTER_NODE_IDS=(node-0 node-1 node-2) CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2)",
+                'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+                # States by rank; rank 0 is observed without an SSH host.
+                'container_state_exact() { local states=($FIXTURE_STATES); echo "${states[${2#alias-}]:-${states[0]}}"; }',
+                lib_function("start_blocker"),
+                lib_function("cluster_failure", "cluster/start-cluster.sh"),
+                "cluster_failure " + " ".join(shlex.quote(arg) for arg in args),
+            ])
+            env = {**os.environ, "FIXTURE_STATES": states, "PULSAR_START_BLOCKERS_FILE": str(blockers),
+                   **({"LAUNCH_AFTER_REPLACE": "1"} if replaced else {})}
+            env.pop("START_BLOCKER_PLACEMENT", None)
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            (record,) = start_blockers.read(blockers)
+            return record
+
+    def test_removal_confirmed_on_every_node_keeps_the_removed_note(self):
+        note = "The cluster's containers were removed; the logs are shown above."
+        record = self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note)
+        self.assertEqual((record["fix"], record["note"]), (None, note))
+        self.assertEqual((record["node"], record["node_id"], record["rank"], record["service_id"]),
+                         ("spark-1", "node-0", 0, SERVICE_ID))
+
+    def test_an_unconfirmed_node_is_named_and_stop_is_suggested(self):
+        record = self.failure("absent unknown running", "container_exited", "1", "--no-command", "--note",
+                              "The cluster's containers were removed; the logs are shown above.")
+        self.assertEqual(record["fix"], "./pulsar stop abababababab")
+        self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1), "
+                                         "spark-3 (rank 2); stop removes what remains.")
+        self.assertEqual(record["service_id"], SERVICE_ID)
+
+    def test_a_start_failure_after_a_replacement_says_nothing_runs_only_when_confirmed(self):
+        note = "Docker's error is shown above. The cluster's containers were removed."
+        record = self.failure("absent absent absent", "container_start_failed", "2", "--note", note, replaced=True)
+        self.assertEqual(record["fix"], "./pulsar doctor")
+        self.assertEqual(record["note"], note + " " + start_blockers.AFTER_REPLACE_NOTE)
+        record = self.failure("running absent absent", "container_start_failed", "2", "--note", note, replaced=True)
+        self.assertEqual(record["fix"], "./pulsar stop abababababab")
+        self.assertNotIn(start_blockers.AFTER_REPLACE_NOTE, record["note"])
 
 
 class StatusWithoutService(unittest.TestCase):

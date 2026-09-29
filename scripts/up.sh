@@ -73,6 +73,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# The launchers receive only the frozen estimate; suggestions they record keep
+# the operator's own estimate arguments.
+export START_BLOCKER_MEMORY_ESTIMATE_FILE="$MEMORY_ESTIMATE_FILE" START_BLOCKER_MEMORY_ESTIMATE_ID="$MEMORY_ESTIMATE_ID"
 
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
@@ -88,8 +91,14 @@ acquire_model_library_hot_lock shared
 PLACEMENT_ARGS=()
 SERVICE_API_BASE="http://127.0.0.1:$PORT"
 if [ "$NODES" -eq 1 ]; then
-  resolve_single_node_placement "$NODE_SELECTOR" \
-    || die "cannot resolve physical node placement '$NODE_SELECTOR'"
+  if ! resolve_single_node_placement "$NODE_SELECTOR"; then
+    # Without a confirmed topology no node can be selected: report the topology.
+    if ! require_cluster_nodes 1 >/dev/null 2>&1; then
+      START_BLOCKER_PLACEMENT="" start_blocker topology_incomplete --detail "needs 1, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
+      die "start is blocked by 1 blocker(s) above; nothing was launched"
+    fi
+    die "--node '$NODE_SELECTOR' does not select exactly one confirmed node; use a hostname or node ID from ./pulsar topology show"
+  fi
   PLACEMENT_SELECTOR="${SINGLE_NODE_ID:-$SINGLE_NODE_KEY}"
   PLACEMENT_ARGS=(--node "$PLACEMENT_SELECTOR")
   # Suggested commands name the node by hostname, which --node also accepts.
@@ -502,7 +511,7 @@ if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
   launch_flags+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
 fi
 export PULSAR_ACCEPT_MEMORY_WARN="$ACCEPT_MEM"
-SERVICE_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["service_id"])' "$PLAN_FILE" 2>/dev/null || true)
+SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
 # The launch scripts take their own locks and recheck image, model files and
 # memory under them before creating containers, then release them. Start's own
 # locks are released here, so stop, status and model-file work are not blocked
@@ -531,13 +540,14 @@ else
     fi
   }
   log "waiting for ${SERVICE_API_BASE}/health on $(single_node_display) (cold load can take minutes)"
-  ok=0
+  ok=0 container_state=""
   for i in $(seq 1 "${WAIT_ATTEMPTS:-90}"); do
     if curl -fsS --max-time 3 "${api_auth_args[@]}" "${SERVICE_API_BASE}/health" >/dev/null 2>&1; then
       ok=1
       break
     fi
-    case "$(container_state_exact "$CONTAINER" "$state_host")" in
+    container_state=$(container_state_exact "$CONTAINER" "$state_host")
+    case "$container_state" in
       exited)
         error_line "the container $CONTAINER exited before it became healthy; last logs:"
         service_logs 80
@@ -553,9 +563,16 @@ else
     sleep "${WAIT_SECONDS:-5}"
   done
   if [ "$ok" != 1 ]; then
-    error_line "timed out waiting for health; last logs:"
-    service_logs 100
-    blocked health_timeout --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "$SERVICE_ID"
+    if [ "$container_state" = unknown ]; then
+      # Docker or SSH stopped answering: the service is not known to run.
+      error_line "timed out waiting for health; the container on $(single_node_display) could not be observed"
+      blocked health_timeout --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "$SERVICE_ID" \
+        --note "Its state could not be observed when the wait ended, so it may still be running."
+    else
+      error_line "timed out waiting for health; last logs:"
+      service_logs 100
+      blocked health_timeout --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "$SERVICE_ID"
+    fi
     exit 1
   fi
 fi

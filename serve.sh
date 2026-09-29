@@ -194,12 +194,20 @@ fi
 # Hold the locks until the container exists; its references protect its files
 # afterwards, so they are released before anyone waits for health.
 persist_launch_plan_file "$PLAN_FILE"
+SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
+launch_rc=0
 if [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   remote_cmd=$(shell_join_q "${CMD[@]}")
-  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$SINGLE_NODE_SSH_HOST" "$remote_cmd" \
-    || refuse_launch "docker run failed on $(single_node_display)"
+  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$SINGLE_NODE_SSH_HOST" "$remote_cmd" || launch_rc=$?
 else
   CMD[0]="$PULSAR_DOCKER"
-  "${CMD[@]}" || refuse_launch "docker run failed on $(single_node_display)"
+  "${CMD[@]}" || launch_rc=$?
+fi
+if [ "$launch_rc" != 0 ]; then
+  # In the foreground docker run returns when the container stops: pass it on.
+  [ -n "$DETACH" ] || exit "$launch_rc"
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker container_start_failed --node "${SINGLE_NODE_HOSTNAME:-}" \
+    --node-id "${SINGLE_NODE_ID:-}" --service-id "$SERVICE_ID" --detail "docker run exit $launch_rc"
+  refuse_launch "docker run failed on $(single_node_display)"
 fi
 release_model_library_locks

@@ -161,6 +161,27 @@ cluster_abort() {
   done
 }
 
+# cluster_failure CODE RANK [start_blocker options...]
+# Records a launch failure after cluster_abort. Removal failures are not
+# reported by cluster_abort, so each rank's container is looked up by name: the
+# record keeps its "removed" note only when every one is confirmed gone, and
+# otherwise names the nodes left and suggests stop. An unobservable node is left.
+cluster_failure() {
+  local code="$1" rank="$2" left="" other host
+  local -a unconfirmed=()
+  shift 2
+  for ((other = 0; other < NODES; other++)); do
+    host=""
+    [ "$other" = 0 ] || host="${CLUSTER_NODE_SSH_HOSTS[$other]}"
+    [ "$(container_state_exact "$CONTAINER" "$host")" = absent ] \
+      || left+="${left:+, }$(human_node_name "$other") (rank $other)"
+  done
+  [ -z "$left" ] || unconfirmed=(--unconfirmed "$left")
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(human_node_name "$rank")" \
+    --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" \
+    ${unconfirmed[@]+"${unconfirmed[@]}"}
+}
+
 existing=0
 existing_nodes=()
 for ((rank = 1; rank < NODES; rank++)); do
@@ -197,6 +218,7 @@ fi
 require_launch_memory_check
 # Rebuild from immediately rechecked files.
 write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
+SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
 for ((rank = 1; rank < NODES; rank++)); do
   build_docker_cmd "$rank"
   REMOTE_COMMANDS["$rank"]="$(shell_join_q "${_DOCKER_CMD[@]}")"
@@ -221,6 +243,8 @@ for ((rank = 1; rank < NODES; rank++)); do
   if ! raw_id=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
       "${REMOTE_COMMANDS[$rank]}"); then
     cluster_abort "rank $rank docker run failed"
+    cluster_failure container_start_failed "$rank" \
+      --note "Docker's error is shown above. The cluster's containers were removed."
     exit 1
   fi
   if ! TRACKED_CIDS["$rank"]=$(parse_docker_run_container_id "$raw_id"); then
@@ -228,6 +252,8 @@ for ((rank = 1; rank < NODES; rank++)); do
     error_line "rank $rank docker run returned an invalid ID"
     report_untracked_launch_container remote "$MODEL_NAME" "$rank" "$CONTAINER" "$host"
     cluster_abort "rank $rank docker run ID invalid"
+    cluster_failure container_start_failed "$rank" --detail "docker run returned an invalid container ID" \
+      --note "The cluster's containers were removed."
     exit 1
   fi
   log "rank $rank id=${TRACKED_CIDS[$rank]:0:12}"
@@ -239,6 +265,8 @@ HEAD_RUN[0]="$PULSAR_DOCKER"
 head_raw=""
 if ! head_raw=$("${HEAD_RUN[@]}"); then
   cluster_abort "rank 0 docker run failed"
+  cluster_failure container_start_failed 0 \
+    --note "Docker's error is shown above. The cluster's containers were removed."
   exit 1
 fi
 if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
@@ -246,6 +274,8 @@ if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
   error_line "rank 0 docker run returned an invalid ID"
   report_untracked_launch_container head "$MODEL_NAME" 0 "$CONTAINER"
   cluster_abort "rank 0 docker run ID invalid"
+  cluster_failure container_start_failed 0 --detail "docker run returned an invalid container ID" \
+    --note "The cluster's containers were removed."
   exit 1
 fi
 log "rank 0 id=${TRACKED_CIDS[0]:0:12}"
@@ -303,16 +333,13 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
             "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
         fi
         cluster_abort "rank $rank exited during health wait"
-        START_BLOCKER_SPEC="$MODEL_NAME" start_blocker container_exited --node "$(human_node_name "$rank")" \
-          --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --no-command \
-          --note "The cluster's containers were removed; the logs are shown above."
+        cluster_failure container_exited "$rank" --no-command --note "The cluster's containers were removed; the logs are shown above."
         exit 1
         ;;
       absent)
         error_line "the rank $rank container on $(human_node_name "$rank") was removed before the service became healthy"
         cluster_abort "rank $rank was removed during health wait"
-        START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_stopped --node "$(human_node_name "$rank")" \
-          --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank"
+        cluster_failure service_stopped "$rank"
         exit 1
         ;;
     esac
@@ -329,7 +356,5 @@ for ((rank = 1; rank < NODES; rank++)); do
     "docker logs --tail 120 $(printf '%q' "$CONTAINER")" >&2 || true
 done
 cluster_abort "health wait timed out"
-START_BLOCKER_SPEC="$MODEL_NAME" start_blocker health_timeout --node "$(human_node_name 0)" \
-  --node-id "${CLUSTER_NODE_IDS[0]:-}" --no-command \
-  --note "The cluster's containers were removed; the logs are shown above."
+cluster_failure health_timeout 0 --no-command --note "The cluster's containers were removed; the logs are shown above."
 exit 1

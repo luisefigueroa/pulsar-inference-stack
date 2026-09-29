@@ -281,11 +281,13 @@ If a recheck or the launch then fails, nothing is running for the spec, and
 start says so. After launch, start releases its locks while the service loads,
 so `stop`, `status` and model-file work are not blocked; the containers'
 references protect their files. READY is printed only after a test completion
-succeeds. A launch failure prints a `FAILED` line (`smoke_test_failed`,
-`health_timeout`, `container_exited` or `service_stopped`) that says what
-remains: a failed test completion leaves the service running, a one-node
-service keeps its container for its logs, and a multi-node start that never
-became healthy removes its containers. The same blockers appear in `start --json`
+succeeds. A launch failure prints a `FAILED` line (`container_start_failed`,
+`smoke_test_failed`, `health_timeout`, `container_exited` or
+`service_stopped`) that says what remains: a failed test completion leaves the
+service running, a one-node service keeps its container for its logs, and a
+multi-node start that never became healthy removes its containers. It says
+they were removed only after confirming it on every node; otherwise it names
+the nodes left and suggests `./pulsar stop`. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
 guard is refused before any check as `guard_unsupported`, which no command
 resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).

@@ -92,8 +92,10 @@ log()  { printf '%s%s\n' "$(_message_tag)" "$*"; }
 # scripts/start_blockers.py and, when PULSAR_START_BLOCKERS_FILE is set, records
 # it for start --json. Suggested commands name START_BLOCKER_SPEC (default NAME)
 # and START_BLOCKER_PLACEMENT (default the placement arguments), and repeat the
-# operator's START_BLOCKER_START_FLAGS. After --replace removed the previous
-# service (LAUNCH_AFTER_REPLACE=1), the note says that nothing is running now.
+# operator's START_BLOCKER_START_FLAGS. The launchers receive only the frozen
+# memory estimate; START_BLOCKER_MEMORY_ESTIMATE_FILE and _ID carry the
+# operator's estimate arguments into their suggestions. After --replace removed
+# the previous service (LAUNCH_AFTER_REPLACE=1), the note says nothing runs now.
 start_blocker() {
   local code="$1"; shift
   local -a options=()
@@ -110,7 +112,8 @@ start_blocker() {
   python3 "$REPO_DIR/scripts/start_blockers.py" record "$code" --spec="${START_BLOCKER_SPEC:-${NAME:-}}" \
     --placement="${START_BLOCKER_PLACEMENT-${PLACEMENT_ARGS[*]:-}}" \
     --spec-file="${PULSAR_SPEC_FILE:-}" --override-file="${PULSAR_OVERRIDE_FILE:-}" \
-    --memory-estimate-file="${MEMORY_ESTIMATE_FILE:-}" --memory-estimate-id="${MEMORY_ESTIMATE_ID:-}" \
+    --memory-estimate-file="${START_BLOCKER_MEMORY_ESTIMATE_FILE:-${MEMORY_ESTIMATE_FILE:-}}" \
+    --memory-estimate-id="${START_BLOCKER_MEMORY_ESTIMATE_ID:-${MEMORY_ESTIMATE_ID:-}}" \
     --start-flags="${START_BLOCKER_START_FLAGS:-}" --home-node="${START_BLOCKER_HOME_NODE:-}" \
     --state-root="${PULSAR_MODEL_LIBRARY_DIR:-}" ${options[@]+"${options[@]}"}
 }
@@ -1556,6 +1559,12 @@ PYCODE
 
 persist_launch_plan_file() {
   python3 "$REPO_DIR/scripts/service_state.py" save --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$1"
+}
+
+# launch_plan_service_id PLAN_FILE — the service ID a launch plan names, or
+# nothing when the plan cannot be read.
+launch_plan_service_id() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["service_id"])' "$1" 2>/dev/null || true
 }
 
 retire_stopped_service_indexes() {
