@@ -40,7 +40,7 @@ Usage: pulsar model OPERATION [SPEC_ID] [options]
 Options:
   --spec-file FILE       Explicit lab candidate spec
   --snapshot NAME       Select one declared snapshot for home/archive operations
-  --node NODE_ID         Confirmed destination or one-node placement
+  --node NODE            Home node or one-node placement: hostname or node ID
   --manifest FILE       Retained source manifest for lab storage
   --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
   --manifest-out FILE   Save the resulting verified source manifest

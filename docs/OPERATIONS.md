@@ -41,7 +41,7 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 ./pulsar models
 ./pulsar models list --json
 ./pulsar models show <spec-id>
-./pulsar models check <spec-id> --node <confirmed-node-id>
+./pulsar models check <spec-id> --node <node>
 ```
 
 The catalog includes every released recipe even when no local files are
@@ -183,11 +183,12 @@ into serving containers. Disabling this configuration does not delete archives.
 Each command below is an independent action. Select the confirmed physical
 node for single-node recipes; multi-node geometry comes from the spec and
 confirmed topology, never from inventing a recipe to use all discovered nodes.
+`--node` takes a confirmed node's hostname, as output shows it, or its node ID.
 
 ```sh
-./pulsar model acquire <spec-id> --node <confirmed-node-id> --yes
-./pulsar model prepare <spec-id> --node <confirmed-node-id> --yes
-./pulsar start <spec-id> --node <confirmed-node-id>
+./pulsar model acquire <spec-id> --node <node> --yes
+./pulsar model prepare <spec-id> --node <node> --yes
+./pulsar start <spec-id> --node <node>
 ```
 
 Acquisition resolves the exact source commit, checks the complete upstream
@@ -281,10 +282,10 @@ or launch. Gum and plain-terminal menus use the same actions.
 ## Move, archive and restore
 
 ```sh
-./pulsar model move <spec-id> --node <destination-node-id> --yes
+./pulsar model move <spec-id> --node <destination-node> --yes
 ./pulsar model archive create <spec-id> --yes
 ./pulsar model archive verify <spec-id>
-./pulsar model restore <spec-id> --node <confirmed-node-id> --yes
+./pulsar model restore <spec-id> --node <node> --yes
 ```
 
 Recipes using identical model bytes share one snapshot archive. Movement
@@ -306,7 +307,7 @@ should also be recorded in local catalog state.
 ## Stop and reclaim storage
 
 ```sh
-./pulsar stop <spec-id> --node <confirmed-node-id>
+./pulsar stop <spec-id> --node <node>
 ./pulsar model pin <spec-id> --yes
 ./pulsar model unpin <spec-id> --yes
 ./pulsar model purge <spec-id> --yes
@@ -428,11 +429,11 @@ exact commit through the existing acquisition command and retain separate source
 manifests. After freeze, schema-3 home operations select a named snapshot:
 
 ```sh
-./pulsar model acquire <spec-id> --snapshot draft --node <confirmed-node> --yes
+./pulsar model acquire <spec-id> --snapshot draft --node <node> --yes
 ./pulsar model archive create <spec-id> --snapshot target --yes
 ./pulsar model archive create <spec-id> --snapshot draft --yes
 ./pulsar model archive verify <spec-id>
-./pulsar model restore <spec-id> --snapshot draft --node <confirmed-node> --yes
+./pulsar model restore <spec-id> --snapshot draft --node <node> --yes
 ```
 
 For private specs, add `--spec-file <file>` to the same commands. `move` and

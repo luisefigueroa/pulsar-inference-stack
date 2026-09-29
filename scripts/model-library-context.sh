@@ -31,6 +31,25 @@ load_home() {
 
 require_home() { load_home || return 2; [ "$HOME_JSON" != null ] || die "no home is registered; acquire or restore the exact snapshot"; }
 
+# Acquire, restore and move place a home on NODE: the operator's --node or, for
+# a one-node spec without it, the deployment overlay's placement. Resolve it
+# once, by the rules prepare and start use (the hostname that output shows,
+# node ID, SSH host, control IP, rank key or rank number), to the node_id that
+# home records store. model_physical_rank then matches NODE exactly as it
+# matches a record. A value naming no node, or several, is refused before any
+# node is contacted; the resolver's warning says which.
+resolve_node_selector() {
+  local node_id source="--node '$NODE'" fix="use a hostname or node ID from ./pulsar topology show"
+  [ -n "$NODE" ] || return 0
+  if [ "$NODE" = "${OVERLAY_PLACEMENT_NODE_ID:-}" ]; then
+    source="overlay placement.node_id '$NODE'" fix="correct the placement in the deployment overlay"
+  fi
+  # The subshell leaves this shell's SINGLE_NODE_* placement variables untouched.
+  node_id=$(resolve_single_node_placement "$NODE" >/dev/null && printf '%s\n' "$SINGLE_NODE_ID") || node_id=""
+  [ -n "$node_id" ] || die "$source does not select exactly one confirmed node; $fix"
+  NODE="$node_id"
+}
+
 selected_nodes() {
   local rank
   require_cluster_nodes "${NODES:-1}" >/dev/null || die "confirmed topology is required"
