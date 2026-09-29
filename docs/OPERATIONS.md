@@ -78,8 +78,10 @@ cannot run; `models show` marks it `Start not supported by this Stack`, and no
 suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
 session; it is a starting point, not a readiness check. `models list` and
-`models show` print the same step as a command; a download or restore names
-`NODE_ID` for the operator to choose, as the menu asks for a node. The recipe
+`models show` print the same step as a command. A download or restore names
+the node the saved records already use; without one it leaves `--node` out and
+goes to the default destination (the deployment overlay's placement, or this
+node), while the menu asks for a node. The recipe
 list labels show the same short saved state. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
 model, nodes and consequence; a blocked plan ends without a question. Esc

@@ -351,14 +351,14 @@ class Catalog(unittest.TestCase):
         self.assert_suggestion(["./pulsar", "model", "prepare", prefix, "--node", "spark-1", "--yes"])
         self.observe(spec, local_state="ready", archive_state="present")
         self.assert_suggestion(["./pulsar", "start", prefix, "--node", "spark-1"])
-        # No home: the operator names the destination node, as the menu asks for one.
+        # No home and no record naming a node: the command's default destination.
         self.store.remove("homes", manifest)
         self.observe(spec, local_state="missing", archive_state="not-configured")
-        acquire = ["./pulsar", "model", "acquire", prefix, "--node", "NODE_ID", "--yes"]
+        acquire = ["./pulsar", "model", "acquire", prefix, "--yes"]
         self.assert_suggestion(acquire, location="not-configured")
         self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
                                               "verified_at": "2026-09-04T01:00:00Z"})
-        self.assert_suggestion(["./pulsar", "model", "restore", prefix, "--node", "NODE_ID", "--yes"])
+        self.assert_suggestion(["./pulsar", "model", "restore", prefix, "--yes"])
         self.assert_suggestion(acquire, location="disabled")
 
     def test_a_guarded_spec_gets_no_suggestion_toward_start(self):

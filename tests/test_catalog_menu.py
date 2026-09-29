@@ -194,14 +194,20 @@ class SuggestedCommand(unittest.TestCase):
                          ["./pulsar", "model", "prepare", "abababababab", "--yes"])
         self.assertEqual(self.command(checked(home=HOME, local_state="ready")), ["./pulsar", "start", "abababababab"])
 
-    def test_acquire_and_restore_leave_the_destination_to_the_operator(self):
-        self.assertEqual(self.command(checked()), ["./pulsar", "model", "acquire", "abababababab",
-                                                   "--node", "NODE_ID", "--yes"])
+    def test_acquire_and_restore_name_a_recorded_node_or_use_the_default(self):
+        # No saved record places the recipe: the command's default destination.
+        self.assertEqual(self.command(checked()), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
         self.assertEqual(self.command(checked(archive_state="verified")),
-                         ["./pulsar", "model", "restore", "abababababab", "--node", "NODE_ID", "--yes"])
+                         ["./pulsar", "model", "restore", "abababababab", "--yes"])
         state = checked(snapshots=two_snapshots(HOME, None))
         self.assertEqual(self.command(state), ["./pulsar", "model", "acquire", "abababababab",
-                                               "--snapshot", "draft", "--node", "NODE_ID", "--yes"])
+                                               "--snapshot", "draft", "--yes"])
+        # A one-node recipe keeps the node its other snapshot's home names.
+        one = {"geometry": {"nodes": 1, "tp": 1, "pp": 1}}
+        self.assertEqual(self.command(checked(snapshots=two_snapshots(HOME, None), **one)),
+                         ["./pulsar", "model", "acquire", "abababababab", "--snapshot", "draft",
+                          "--node", "spark-1", "--yes"])
+        self.assertEqual(self.command(checked(**one)), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
 
     def test_no_command_when_nothing_is_suggested(self):
         self.assertIsNone(self.command(checked(home=HOME, local_state="ready", **GUARDED)))

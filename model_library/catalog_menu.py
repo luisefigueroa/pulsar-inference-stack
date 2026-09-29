@@ -167,9 +167,10 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     """The suggested next step (see suggestion) as the command that runs it.
 
     One-node recipes name the node their saved records place them on, by
-    hostname when the saved topology knows it. Acquire and restore choose a
-    destination, so they carry a NODE_ID placeholder, as the menu asks for a
-    node. Returns None when nothing is suggested, as for a guarded spec.
+    hostname when the saved topology knows it. A download or restore that no
+    saved record places leaves --node out, so it goes to the command's default
+    destination: the deployment overlay's placement, or this node. Returns
+    None when nothing is suggested, as for a guarded spec.
     """
     names = names or NodeNames()
     offered, _, _ = operations(row, archive_location)
@@ -184,7 +185,7 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
         if isinstance(row.get("snapshots"), dict):
             without_home = [str(name) for name, member in row["snapshots"].items() if not member.get("home")]
             snapshot = ["--snapshot", without_home[0]] if without_home else []
-        return ["./pulsar", "model", action, spec, *snapshot, "--node", "NODE_ID", "--yes"]
+        return ["./pulsar", "model", action, spec, *snapshot, *placement, "--yes"]
     if action == "check":
         return ["./pulsar", "models", "check", spec, *placement]
     if action == "prepare":
