@@ -8,7 +8,7 @@ SERVICE_ID="" SPEC_FILE="" NODE_SELECTOR="" INTERVAL=0.25 OVERRIDE_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --service-id|--spec-file|--node|--interval|--override-file)
-      [ -n "${2:-}" ] || die "$1 requires a value" 2
+      case "${2:-}" in ""|-*) die "$1 requires a value" 2 ;; esac
       case "$1" in
         --service-id) SERVICE_ID="$2" ;;
         --spec-file) SPEC_FILE="$2" ;;

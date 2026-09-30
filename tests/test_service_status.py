@@ -348,6 +348,21 @@ class Envelope(unittest.TestCase):
             status = public_cli.main(["status", SPEC, "--json"])
         return status, json.loads(output.getvalue())["error"]
 
+    def test_an_unreadable_error_record_is_a_stack_defect(self):
+        def fail(content):
+            def run(command, env, cwd):
+                Path(env["PULSAR_STATUS_ERROR_FILE"]).write_text(content)
+                return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "error: fixture\n"})()
+            output = io.StringIO()
+            with patch.object(public_cli, "run_command", side_effect=run), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                status = public_cli.main(["status", SPEC, "--json"])
+            return status, json.loads(output.getvalue())["error"]["code"]
+        for content in ("not json", "{}", json.dumps({"code": "bogus", "message": "m", "details": []}),
+                        json.dumps({"code": "service_absent", "message": "m", "details": "none"})):
+            with self.subTest(content=content[:30]):
+                self.assertEqual(fail(content), (3, "invalid_stack_output"))
+
     def test_status_errors_keep_their_codes(self):
         for code in ("service_absent", "service_state_unknown", "invalid_stack_output"):
             details = [{"field": "node", "node": "spark-2", "node_id": "node-1", "message": "SSH timed out"}]

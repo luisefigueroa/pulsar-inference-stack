@@ -52,6 +52,12 @@ class ErrorCodes(unittest.TestCase):
                 self.assertEqual(status, 2)
                 self.assertEqual(response["error"]["code"], "usage_error", response)
 
+    def test_resource_options_do_not_take_the_next_flag(self):
+        # Stops at argument parsing, before any node is sampled.
+        result = subprocess.run(["bash", str(ROOT / "scripts/resources.sh"), "--interval", "--jsonl"],
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --interval requires a value"))
+
     def test_stop_without_a_selector_says_so(self):
         status, response = pulsar("stop")
         self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))

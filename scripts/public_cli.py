@@ -55,6 +55,22 @@ def producer_provenance():
             'working_tree_dirty': bool(dirty.stdout) if dirty.returncode == 0 else None}
 
 
+# Codes status.sh may record in its error file for the --json envelope.
+STATUS_ERROR_CODES = ('service_absent', 'service_state_unknown', 'invalid_stack_output')
+
+
+def status_error(path):
+    """status.sh's recorded error; an unreadable record is a Stack defect."""
+    try:
+        error = serving.load_json(path)
+        code, message, details = error['code'], error['message'], error['details']
+        if code not in STATUS_ERROR_CODES or not isinstance(message, str) or not isinstance(details, list):
+            raise ValueError('unsupported status error record')
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise StackOutputError('status wrote an unreadable error record; this is a Stack defect') from exc
+    return code, message, details
+
+
 # Private status the lifecycle scripts use for command-line mistakes (usage_die
 # in lib.sh) while --json is active, so they are reported as usage_error.
 USAGE_EXIT = 64
@@ -195,8 +211,7 @@ def dispatch(command, args):
                 raise
             except RuntimeError as exc:
                 if error_file.exists():
-                    error=serving.load_json(error_file)
-                    raise StatusFailed(error['code'],error['message'],error['details']) from exc
+                    raise StatusFailed(*status_error(error_file)) from exc
                 raise
     if command == 'stop':
         with tempfile.TemporaryDirectory(prefix='pulsar-stop-result.') as temp:
