@@ -15,6 +15,7 @@ PULSAR_STATUS_ERROR_FILE is set, written there for the --json envelope.
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,17 @@ STATE_WORDS = {
 }
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect is not this service's answer, and following it could carry the key elsewhere."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+# The probe goes straight to the service: no environment proxy, no redirects.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+
+
 class StatusError(Exception):
     def __init__(self, code: str, message: str, details: list[dict] | None = None):
         super().__init__(message)
@@ -55,9 +67,9 @@ def health(api_url: str | None) -> bool | None:
     if key:
         request.add_header("Authorization", f"Bearer {key}")
     try:
-        with urllib.request.urlopen(request, timeout=HEALTH_TIMEOUT_SECONDS) as response:
+        with _OPENER.open(request, timeout=HEALTH_TIMEOUT_SECONDS) as response:
             return 200 <= response.status < 300
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         return False
 
 
@@ -73,6 +85,8 @@ def inventory_api_url(service: dict, nodes: dict) -> str | None:
     ranks = sorted(service.get("ranks") or [], key=lambda rank: str(rank.get("rank") or "0"))
     node = nodes.get((ranks[0].get("node") if ranks else None) or "") or {}
     host = "127.0.0.1" if node.get("local") else node.get("control_ip")
+    if host and ":" in host and not host.startswith("["):
+        host = f"[{host}]"  # an IPv6 literal
     return f"http://{host}:{port}" if port and host else None
 
 
@@ -83,13 +97,19 @@ def unobserved_nodes(nodes: dict) -> list[dict]:
             if info.get("confirmed") and info.get("probe_status") not in ("ok", "unset")]
 
 
+def unnamed_node(reason: str) -> dict:
+    """A details entry for a node the inventory could not name."""
+    return {"field": "node", "node": None, "node_id": None, "message": reason}
+
+
 def from_inventory(spec_id: str, inventory: dict | None, observe_error: str) -> dict:
     """The result when the complete observation was unavailable."""
     shown = spec_id[:12]
     if inventory is None:
+        reason = "the service inventory could not run"
         raise StatusError("service_state_unknown",
-                          f"Service state for spec {shown} is unknown: the service inventory could not run. "
-                          "Run ./pulsar inventory for details")
+                          f"Service state for spec {shown} is unknown: {reason}. Run ./pulsar inventory for details",
+                          [unnamed_node(reason)])
     nodes = inventory.get("nodes") or {}
     services = [row for row in inventory.get("services") or [] if row.get("conf") == spec_id]
     if not services:
@@ -100,7 +120,7 @@ def from_inventory(spec_id: str, inventory: dict | None, observe_error: str) -> 
                 or worker.get("reason") or "a node could not be observed"
             raise StatusError("service_state_unknown",
                               f"Service state for spec {shown} is unknown: {reason}. Run ./pulsar topology check",
-                              missing or None)
+                              missing or [unnamed_node(reason)])
         raise StatusError("service_absent",
                           f"No service for spec {shown} exists on any node. Start it with ./pulsar start {shown}")
     service = services[0]
@@ -150,13 +170,17 @@ def human(result: dict, nodes: str, writer: TerminalWriter | None = None) -> Non
         out.emit(f"Remove it with ./pulsar stop {spec}")
 
 
-def load(path: str | None):
+def load(path: str | None, what: str):
+    """A JSON document a Stack script wrote; unreadable content is a Stack defect."""
     if not path:
         return None
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
+        value = None
+    if not isinstance(value, dict):
+        raise StatusError("invalid_stack_output", f"{what} is not a JSON document; this is a Stack defect")
+    return value
 
 
 def last_error(path: str | None) -> str:
@@ -177,12 +201,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--observe-error", help="stderr of the failed complete observation")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    observation, inventory = load(args.observation), None
+    inventory = None
     try:
+        observation = load(args.observation, "the complete observation")
         if observation is not None:
             result = verified(observation)
         else:
-            inventory = load(args.inventory)
+            inventory = load(args.inventory, "the service inventory")
             result = from_inventory(args.spec, inventory, last_error(args.observe_error))
     except StatusError as exc:
         target = os.environ.get("PULSAR_STATUS_ERROR_FILE")

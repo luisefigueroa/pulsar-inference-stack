@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -21,12 +22,17 @@ SPEC = "ab" * 32
 
 
 class Health:
-    """A local API whose /health answers with the given status."""
+    """A local API whose /health answers with the given status, or redirects."""
 
-    def __init__(self, code):
+    def __init__(self, code, location=None):
+        requests = self.requests = []
+
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+                requests.append((self.path, self.headers.get("Authorization")))
                 self.send_response(code if self.path == "/health" else 404)
+                if location:
+                    self.send_header("Location", location)
                 self.end_headers()
 
             def log_message(self, *args):
@@ -70,6 +76,35 @@ class Results(unittest.TestCase):
         self.assertIs(service_status.verified(observation(self.broken.url))["healthy"], False)
         self.assertIsNone(service_status.verified(observation(None))["healthy"])
 
+    def test_the_probe_goes_straight_to_the_service(self):
+        # An environment proxy would intercept the request and see the key.
+        with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1",
+                                     "API_KEY": "fixture-key"}):
+            self.assertIs(service_status.health(self.healthy.url), True)
+            # A redirect is not followed, so the key never reaches another origin.
+            elsewhere = Health(200); self.addCleanup(elsewhere.close)
+            moved = Health(302, location=f"{elsewhere.url}/health"); self.addCleanup(moved.close)
+            self.assertIs(service_status.health(moved.url), False)
+            self.assertEqual(elsewhere.requests, [])
+        self.assertEqual(self.healthy.requests, [("/health", "Bearer fixture-key")])
+
+    def test_a_malformed_reply_is_unhealthy_not_a_crash(self):
+        listener = socket.socket(); listener.bind(("127.0.0.1", 0)); listener.listen(1)
+        self.addCleanup(listener.close)
+
+        def reply():
+            connection, _ = listener.accept()
+            with connection:
+                connection.recv(1024)
+                connection.sendall(b"not http\r\n\r\n")
+        threading.Thread(target=reply, daemon=True).start()
+        self.assertIs(service_status.health(f"http://127.0.0.1:{listener.getsockname()[1]}"), False)
+
+    def test_an_ipv6_control_address_is_bracketed(self):
+        nodes = {"worker": {"hostname": "spark-2", "control_ip": "2001:db8::1", "local": False}}
+        self.assertEqual(service_status.inventory_api_url(service(port=8000, node="worker"), nodes),
+                         "http://[2001:db8::1]:8000")
+
     def test_the_inventory_view_is_not_verified_and_says_why(self):
         port = self.healthy.url.rsplit(":", 1)[1]
         result = service_status.from_inventory(SPEC, inventory([service(port=port)]), "no running service is recorded")
@@ -95,9 +130,16 @@ class Results(unittest.TestCase):
         self.assertEqual(unknown.exception.details,
                          [{"field": "node", "node": "spark-2", "node_id": "node-1", "message": "SSH timed out"}])
         self.assertIn("spark-2: SSH timed out. Run ./pulsar topology check", str(unknown.exception))
+        # Details stay node-shaped when the inventory cannot say which node.
+        with self.assertRaises(service_status.StatusError) as unnamed:
+            service_status.from_inventory(SPEC, {**inventory(worker_status="unreachable"),
+                                                 "worker": {"status": "unreachable", "reason": "rank 1 timed out"}}, "")
+        self.assertEqual(unnamed.exception.details,
+                         [{"field": "node", "node": None, "node_id": None, "message": "rank 1 timed out"}])
         with self.assertRaises(service_status.StatusError) as no_inventory:
             service_status.from_inventory(SPEC, None, "")
         self.assertEqual(no_inventory.exception.code, "service_state_unknown")
+        self.assertEqual(no_inventory.exception.details[0]["node"], None)
 
     def human(self, result, nodes="spark-1"):
         buffer = io.StringIO()
@@ -116,6 +158,18 @@ class Results(unittest.TestCase):
         self.assertEqual(" ".join(" ".join(self.human(stale)).split()),
                          "spec abababababab: exited (its containers exist, but none is running) on spark-1; "
                          "not verified (no running service is recorded) Remove it with ./pulsar stop abababababab")
+
+
+class Defects(unittest.TestCase):
+    def test_a_malformed_observation_is_a_stack_defect(self):
+        with tempfile.TemporaryDirectory() as temp:
+            observation, error = Path(temp) / "observation.json", Path(temp) / "error.json"
+            observation.write_text("not json")
+            with patch.dict(os.environ, {"PULSAR_STATUS_ERROR_FILE": str(error)}), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                status = service_status.main(["--spec", SPEC, "--observation", str(observation), "--json"])
+            self.assertEqual(status, 1)
+            self.assertEqual(json.loads(error.read_text())["code"], "invalid_stack_output")
 
 
 class Command(unittest.TestCase):
@@ -212,7 +266,7 @@ class Envelope(unittest.TestCase):
         return status, json.loads(output.getvalue())["error"]
 
     def test_status_errors_keep_their_codes(self):
-        for code in ("service_absent", "service_state_unknown"):
+        for code in ("service_absent", "service_state_unknown", "invalid_stack_output"):
             details = [{"field": "node", "node": "spark-2", "node_id": "node-1", "message": "SSH timed out"}]
             with self.subTest(code=code):
                 status, error = self.main({"code": code, "message": "fixture", "details": details})

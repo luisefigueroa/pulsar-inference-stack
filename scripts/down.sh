@@ -14,7 +14,11 @@ HELP
 }
 case "${1:-}" in
   -h|--help) down_usage; exit 0 ;;
-  "") down_usage >&2; exit "${PULSAR_USAGE_EXIT:-2}" ;;
+  "")
+    down_usage >&2
+    # The last line names the mistake; --json reports it as the usage error.
+    echo "error: stop requires a spec ID or --all" >&2
+    exit "${PULSAR_USAGE_EXIT:-2}" ;;
 esac
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 TARGET="$1"; shift

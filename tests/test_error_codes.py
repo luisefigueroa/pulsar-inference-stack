@@ -49,6 +49,11 @@ class ErrorCodes(unittest.TestCase):
                 self.assertEqual(status, 2)
                 self.assertEqual(response["error"]["code"], "usage_error", response)
 
+    def test_stop_without_a_selector_says_so(self):
+        status, response = pulsar("stop")
+        self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+        self.assertEqual(response["error"]["details"][0]["message"], "stop requires a spec ID or --all")
+
     def test_malformed_json_is_invalid_spec_not_a_file_error(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "spec.json"

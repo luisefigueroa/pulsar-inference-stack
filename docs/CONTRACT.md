@@ -332,8 +332,11 @@ owned service was stopped, `false` when none was running. For `stop --all`,
 
 When no service exists and every node was observed, the error is
 `service_absent`; when a node could not be observed, it is
-`service_state_unknown`, with those nodes in `details`. A missing spec ID is a
-`usage_error`, reported before any node is contacted.
+`service_state_unknown`. Each of its `details` entries names such a node in
+`node` and `node_id`, which are null when the inventory could not tell which
+node it was. A missing spec ID is a `usage_error`, reported before any node is
+contacted. `/health` is probed directly, never through an environment proxy or
+a redirect.
 
 Change note, 2026-09-29: status results gained `state`, `verified`, `healthy`
 and `reason`; `service_absent` and `service_state_unknown` replace
