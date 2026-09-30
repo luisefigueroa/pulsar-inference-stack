@@ -337,7 +337,9 @@ When no service exists and every node was observed, the error is
 `node` and `node_id`, which are null when the inventory could not tell which
 node it was. A missing spec ID is a `usage_error`, reported before any node is
 contacted. `/health` is probed directly, never through an environment proxy or
-a redirect.
+a redirect, and the API key is sent only to a verified or Stack-owned service.
+A verified result must name the requested spec and carry its ranks; anything
+else is `invalid_stack_output`.
 
 Change note, 2026-09-29: status results gained `state`, `verified`, `healthy`
 and `reason`; `service_absent` and `service_state_unknown` replace

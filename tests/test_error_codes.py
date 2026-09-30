@@ -43,6 +43,7 @@ class ErrorCodes(unittest.TestCase):
                      ["start", spec, "--force"], ["start", spec, "--weight-source", "copy"],
                      ["start", spec, "--spec-decode", "--no-spec-decode"],
                      ["model", "prepare", spec, "--backend", "other"], ["observe", "--service-id"],
+                     ["status", spec, "--node"], ["stop", spec, "--node"], ["observe", "--node", "--full"],
                      ["bogus"]):
             with self.subTest(args=args):
                 status, response = pulsar(*args)

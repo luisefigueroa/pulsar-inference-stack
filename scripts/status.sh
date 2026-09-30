@@ -34,10 +34,10 @@ while [ $# -gt 0 ]; do
     --json) JSON=1; observe_args+=("$1") ;;
     # --spec-file names a candidate for the spec ID; the recorded spec is what status observes.
     --spec-file)
-      if [ $# -lt 2 ] || [ -z "$2" ]; then usage_error "--spec-file requires a file"; fi
+      case "${2:-}" in ""|-*) usage_error "--spec-file requires a file" ;; esac
       shift ;;
     --node|--service-id|--verification-jobs)
-      if [ $# -lt 2 ] || [ -z "$2" ]; then usage_error "$1 requires a value"; fi
+      case "${2:-}" in ""|-*) usage_error "$1 requires a value" ;; esac
       observe_args+=("$1" "$2"); shift ;;
     -*) observe_args+=("$1") ;;
     *) [ -z "$SPEC" ] || usage_error "unexpected argument: $1"; SPEC="$1"; observe_args+=("$1") ;;

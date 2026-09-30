@@ -6,10 +6,10 @@ SCRIPT_NAME=observe-serving
 NAME="" SERVICE_ID="" NODE_SELECTOR="" OBSERVE_FULL=0 OBSERVE_VERIFICATION_JOBS=3
 while [ $# -gt 0 ]; do
   case "$1" in
-    --service-id) [ -n "${2:-}" ] || usage_die "--service-id requires a service ID"; SERVICE_ID="$2"; shift ;;
-    --node) [ -n "${2:-}" ] || usage_die "--node requires a node"; NODE_SELECTOR="$2"; shift ;;
+    --service-id) case "${2:-}" in ""|-*) usage_die "--service-id requires a service ID" ;; esac; SERVICE_ID="$2"; shift ;;
+    --node) case "${2:-}" in ""|-*) usage_die "--node requires a node" ;; esac; NODE_SELECTOR="$2"; shift ;;
     --spec-file)
-      [ -n "${2:-}" ] || usage_die "--spec-file requires a file"
+      case "${2:-}" in ""|-*) usage_die "--spec-file requires a file" ;; esac
       warn "pulsar observe --spec-file is deprecated: it is ignored because the recorded spec is authoritative. It is removed in CLI contract 2."
       shift ;;
     --json) ;;

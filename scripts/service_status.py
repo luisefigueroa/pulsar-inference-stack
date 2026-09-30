@@ -58,12 +58,15 @@ class StatusError(Exception):
         self.details = details or [{"field": "spec", "message": message}]
 
 
-def health(api_url: str | None) -> bool | None:
-    """True when GET /health answers 2xx, False when it does not; None without a URL."""
+def health(api_url: str | None, *, authenticate: bool) -> bool | None:
+    """True when GET /health answers 2xx, False when it does not; None without a URL.
+
+    The API key is sent only when authenticate says the service is Stack-owned.
+    """
     if not api_url:
         return None
     request = urllib.request.Request(api_url.rstrip("/") + "/health")
-    key = os.environ.get("VLLM_API_KEY") or os.environ.get("API_KEY")
+    key = (os.environ.get("VLLM_API_KEY") or os.environ.get("API_KEY")) if authenticate else None
     if key:
         request.add_header("Authorization", f"Bearer {key}")
     try:
@@ -76,7 +79,25 @@ def health(api_url: str | None) -> bool | None:
 def verified(observation: dict) -> dict:
     """The complete observation, with what status established about it."""
     return {**observation, "state": "running", "verified": True,
-            "healthy": health(observation.get("api_url")), "reason": None}
+            "healthy": health(observation.get("api_url"), authenticate=True), "reason": None}
+
+
+def check_observation(observation: dict, spec_id: str) -> dict:
+    """A complete observation of the requested spec, or a Stack defect."""
+    ranks = observation.get("ranks")
+    problems = [
+        observation.get("kind") != "pulsar-serving-observation" and "its kind",
+        observation.get("schema_version") not in (2, 3) and "its schema version",
+        observation.get("selected_spec_id") != spec_id and "the spec it names",
+        not isinstance(observation.get("spec_id"), str) and "its effective spec ID",
+        not isinstance(observation.get("api_url"), str) and "its API URL",
+        not (isinstance(ranks, list) and ranks and all(isinstance(rank, dict) for rank in ranks)) and "its ranks",
+    ]
+    problems = [problem for problem in problems if problem]
+    if problems:
+        raise StatusError("invalid_stack_output", "the complete observation is malformed (" + ", ".join(problems)
+                          + "); this is a Stack defect")
+    return observation
 
 
 def inventory_api_url(service: dict, nodes: dict) -> str | None:
@@ -135,7 +156,9 @@ def from_inventory(spec_id: str, inventory: dict | None, observe_error: str) -> 
         reason += f"; {len(services)} services match this spec"
     return {"schema_version": 1, "kind": "pulsar-service-status", "selected_spec_id": spec_id,
             "configuration_verified": False, "state": state, "verified": False,
-            "healthy": health(api_url), "reason": reason, "api_url": api_url, "services": services,
+            # Only a Stack-owned container receives the API key; a name match alone is not ownership.
+            "healthy": health(api_url, authenticate=service.get("ownership") == "managed"),
+            "reason": reason, "api_url": api_url, "services": services,
             "message": "Service inventory only; complete current-spec observation is unavailable."}
 
 
@@ -171,7 +194,8 @@ def human(result: dict, nodes: str, writer: TerminalWriter | None = None) -> Non
     if result.get("api_url"):
         out.emit(f"API: {result['api_url'].rstrip('/')}/v1")
     if state in ("stale", "stopped"):
-        out.emit(f"Remove it with ./pulsar stop {spec}")
+        # The complete ID: a prefix resolves only for specs in the current catalog.
+        out.emit(f"Remove it with ./pulsar stop {result.get('selected_spec_id') or spec}")
 
 
 def load(path: str | None, what: str):
@@ -209,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         observation = load(args.observation, "the complete observation")
         if observation is not None:
-            result = verified(observation)
+            result = verified(check_observation(observation, args.spec))
         else:
             inventory = load(args.inventory, "the service inventory")
             result = from_inventory(args.spec, inventory, last_error(args.observe_error))

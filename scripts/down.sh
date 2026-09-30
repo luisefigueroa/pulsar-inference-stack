@@ -25,8 +25,8 @@ TARGET="$1"; shift
 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --node) [ -n "${2:-}" ] || usage_die "--node requires a node"; NODE_SELECTOR="$2"; shift ;;
-    --spec-file) [ -n "${2:-}" ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
+    --node) case "${2:-}" in ""|-*) usage_die "--node requires a node" ;; esac; NODE_SELECTOR="$2"; shift ;;
+    --spec-file) case "${2:-}" in ""|-*) usage_die "--spec-file requires a file" ;; esac; export PULSAR_SPEC_FILE="$2"; shift ;;
     --retain-weights)
       warn "pulsar stop --retain-weights is deprecated: stop always retains model files. It is removed in CLI contract 2." ;;
     --pin-weights|--purge-hot) usage_die "stop retains files; use an explicit model pin or purge command" ;;

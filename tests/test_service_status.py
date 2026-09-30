@@ -81,12 +81,12 @@ class Results(unittest.TestCase):
     def test_the_probe_goes_straight_to_the_service(self):
         # An environment proxy would intercept the request and see the key.
         with patch.dict(os.environ, {"HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1",
-                                     "API_KEY": "fixture-key"}):
-            self.assertIs(service_status.health(self.healthy.url), True)
+                                     "API_KEY": "fixture-key", "VLLM_API_KEY": ""}):
+            self.assertIs(service_status.health(self.healthy.url, authenticate=True), True)
             # A redirect is not followed, so the key never reaches another origin.
             elsewhere = Health(200); self.addCleanup(elsewhere.close)
             moved = Health(302, location=f"{elsewhere.url}/health"); self.addCleanup(moved.close)
-            self.assertIs(service_status.health(moved.url), False)
+            self.assertIs(service_status.health(moved.url, authenticate=True), False)
             self.assertEqual(elsewhere.requests, [])
         self.assertEqual(self.healthy.requests, [("/health", "Bearer fixture-key")])
 
@@ -100,7 +100,19 @@ class Results(unittest.TestCase):
                 connection.recv(1024)
                 connection.sendall(b"not http\r\n\r\n")
         threading.Thread(target=reply, daemon=True).start()
-        self.assertIs(service_status.health(f"http://127.0.0.1:{listener.getsockname()[1]}"), False)
+        self.assertIs(service_status.health(f"http://127.0.0.1:{listener.getsockname()[1]}", authenticate=False),
+                      False)
+
+    def test_only_a_stack_owned_service_receives_the_key(self):
+        port = self.healthy.url.rsplit(":", 1)[1]
+        with patch.dict(os.environ, {"API_KEY": "fixture-key", "VLLM_API_KEY": ""}):
+            # A legacy match is a name or served-name guess, not established ownership.
+            for ownership, header in (("legacy", None), ("managed", "Bearer fixture-key")):
+                with self.subTest(ownership=ownership):
+                    self.healthy.requests.clear()
+                    service_status.from_inventory(SPEC, inventory([{**service(port=port), "ownership": ownership}]),
+                                                  "")
+                    self.assertEqual(self.healthy.requests, [("/health", header)])
 
     def test_the_probe_uses_the_port_the_container_runs_with(self):
         port = self.healthy.url.rsplit(":", 1)[1]
@@ -165,21 +177,29 @@ class Results(unittest.TestCase):
                                    "recipe and files verified")
         self.assertIn("Selected-recipe measurements are reference only.", lines)
         stale = service_status.from_inventory(SPEC, inventory([service("stale")]), "no running service is recorded")
+        # The complete ID: a prefix resolves only for specs in the current catalog.
         self.assertEqual(" ".join(" ".join(self.human(stale)).split()),
                          "spec abababababab: exited (its containers exist, but none is running) on spark-1; "
-                         "not verified (no running service is recorded) Remove it with ./pulsar stop abababababab")
+                         f"not verified (no running service is recorded) Remove it with ./pulsar stop {SPEC}")
 
 
 class Defects(unittest.TestCase):
-    def test_a_malformed_observation_is_a_stack_defect(self):
+    def status(self, content):
         with tempfile.TemporaryDirectory() as temp:
             observation, error = Path(temp) / "observation.json", Path(temp) / "error.json"
-            observation.write_text("not json")
+            observation.write_text(content)
             with patch.dict(os.environ, {"PULSAR_STATUS_ERROR_FILE": str(error)}), \
-                    contextlib.redirect_stderr(io.StringIO()):
+                    contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
                 status = service_status.main(["--spec", SPEC, "--observation", str(observation), "--json"])
-            self.assertEqual(status, 1)
-            self.assertEqual(json.loads(error.read_text())["code"], "invalid_stack_output")
+            return status, json.loads(error.read_text())["code"] if error.exists() else None
+
+    def test_a_malformed_observation_is_a_stack_defect(self):
+        # Unreadable, empty, or naming another spec: never reported as verified.
+        other = {**observation(None), "api_url": "http://127.0.0.1:1", "selected_spec_id": "cd" * 32}
+        for content in ("not json", "{}", json.dumps(other)):
+            with self.subTest(content=content[:20]):
+                self.assertEqual(self.status(content), (1, "invalid_stack_output"))
+        self.assertEqual(self.status(json.dumps(observation("http://127.0.0.1:1")))[1], None)
 
 
 class Command(unittest.TestCase):
@@ -227,8 +247,10 @@ esac
                 self.assertIn("status requires a spec ID", result.stderr)
         result = self.status("--json", PULSAR_USAGE_EXIT="64")
         self.assertEqual(result.returncode, 64)
-        result = self.status(SPEC, "--node")
-        self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --node requires a value"))
+        # A value-taking option never takes the next option, such as the appended --json.
+        for args in ((SPEC, "--node"), (SPEC, "--node", "--json")):
+            result = self.status(*args)
+            self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --node requires a value"))
         self.assertFalse(self.ran("observed"))
 
     def test_verified_results_carry_state_and_health(self):
