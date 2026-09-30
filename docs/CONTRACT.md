@@ -234,15 +234,54 @@ publishes this table as `error_codes` and `exit_statuses`.
 | `file_error` | 2 | A file or directory named by the caller could not be read or written. |
 | `invalid_spec` | 2 | Spec or document content failed validation. |
 | `unsupported_spec_version` | 2 | The document's schema version is not supported. |
-| `invalid_stack_output` | 2 | A Stack script produced output that is not JSON. This is a Stack defect. |
+| `invalid_stack_output` | 3 | A Stack script produced output that is not JSON. This is a Stack defect. |
 | `prerequisite_failed` | 3 | A Stack action exited unsuccessfully; message and details hold its diagnostics. |
+| `service_absent` | 3 | Status observed every node and found no service for the spec. |
+| `service_state_unknown` | 3 | Status could not observe every node, so whether a service exists is not established; details name the nodes. |
 | `cancelled` | 128+signal | Interrupted; cleanup of the command and its node workers was confirmed. |
 | `cleanup_incomplete` | 128+signal | Interrupted; worker exit could not be confirmed. |
 
-Success exits 0. The table applies to `--json` output. Without `--json`,
-`start`, `stop`, `status` and `model` run their operator scripts directly: a
-failed action exits 1 and a usage error exits 2, while the same failure with
-`--json` exits 3 as `prerequisite_failed`.
+Each exit status has one meaning, with or without `--json`:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Success. |
+| 1 | Without --json: the action was refused or failed. With --json the same outcome exits 3. |
+| 2 | The request was rejected before any action: a usage, file or document error. |
+| 3 | With --json: a prerequisite failed, the action was refused, or a Stack defect was found. |
+| 128+signal | Interrupted by the signal; see cancelled and cleanup_incomplete. |
+
+Without `--json`, `start`, `stop`, `status` and `model` run their operator
+scripts directly, so a refused or failed action exits 1 and a command-line
+mistake exits 2.
+
+Change note, 2026-09-29: `invalid_stack_output` exits 3 instead of 2. Without
+`--json`, refusals (a serving guard, a historical spec, another platform) exit
+1 instead of 2, so 2 always means nothing was attempted. More command-line
+mistakes report `usage_error`: `stop` without a spec, retired or conflicting
+flags, a bad `--backend`, an option without its value, `model` without an
+operation, and an unknown command under `--json`. `stop --retain-weights` and
+`observe --spec-file` warn and are listed in the new `deprecated_flags`.
+
+### The contract document
+
+`pulsar contract --json` describes this Stack's integration surface. Check it
+before relying on a command or format.
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version`, `kind` | This document's format, schema 2, and `pulsar-stack-integration-contract`. Added fields keep schema version 2; removing or changing a field needs a new one. |
+| `cli_contract_versions` | The CLI contracts this Stack serves: `[1]`. CLI contract 2 is reserved for breaking envelope or command changes, including removing `deprecated_commands`; it would be announced as `[1, 2]` for a transition period. |
+| `draft_schema_versions`, `spec_schema_versions`, `historical_spec_schema_versions` | Draft and spec schemas this Stack reads. Historical specs are readable but cannot start. |
+| `observation_schema_versions`, `measurement_schema_versions`, `run_record_schema_versions`, `memory_estimate_schema_versions`, `serving_guard_schema_versions` | The document schemas this Stack reads and writes. |
+| `operations` | Public operations callers may use. Only completed, tested operations are listed. |
+| `baseline_policies`, `baseline_policy_digest` | Supported baseline suites and their fixed policy digests. The legacy field names baseline-v1's digest. |
+| `catalog` | Catalog rules: the maintainer decides membership (`authority`), every member passes `required_checks`, and state, review, evidence and launch compatibility are not gates. |
+| `diagnostics` | Optional assessments; they never change catalog membership. |
+| `error_codes`, `exit_statuses` | The tables above. An `exit_status` is an integer, or the string `128+signal`. |
+| `start_blocker_codes` | The codes `start --json` reports in `error.details`, described below. |
+| `deprecated_commands` | Aliases that still work, warn on stderr and are removed in CLI contract 2, each with its `replacement`. |
+| `deprecated_flags` | Flags that still parse, warn on stderr and change nothing; each `note` says what to do instead. They are removed in CLI contract 2. |
 
 When `start --json` fails, the error is `prerequisite_failed` and `details`
 holds one record per start blocker: `field` is `blocker`, plus `blocker` (a
@@ -276,6 +315,35 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,
 `stopped` is `null` because the result is not established per spec.
+
+`status --json SPEC` reports what status established about the spec's service.
+`ok` is true whenever a service exists, whatever its state:
+
+- When every rank matches its launch record, the result is the serving
+  observation (`kind` `pulsar-serving-observation`) with `state` `running`,
+  `verified` `true` and `reason` null.
+- Otherwise it is `kind` `pulsar-service-status`, built from the service
+  inventory: `state` is the inventory's service state (`running`; `stale` when
+  its containers exist but none is running; `partial`; `degraded`), `verified`
+  is `false`, `reason` says why the complete observation was unavailable,
+  `api_url` is rank 0's API at the port its container runs with, or null when
+  that is not observed, and `services` holds the inventory rows.
+- `healthy` is the answer to one `GET /health` with a 3-second timeout: `true`
+  or `false` for a running service with a known API, otherwise null.
+
+When no service exists and every node was observed, the error is
+`service_absent`; when a node could not be observed, it is
+`service_state_unknown`. Each of its `details` entries names such a node in
+`node` and `node_id`, which are null when the inventory could not tell which
+node it was. A missing spec ID is a `usage_error`, reported before any node is
+contacted. `/health` is probed directly, never through an environment proxy or
+a redirect, and the API key is sent only to a verified or Stack-owned service.
+A verified result must name the requested spec and carry its ranks; anything
+else is `invalid_stack_output`.
+
+Change note, 2026-09-29: status results gained `state`, `verified`, `healthy`
+and `reason`; `service_absent` and `service_state_unknown` replace
+`prerequisite_failed` when status finds no service or cannot tell.
 
 Change note, 2026-09-26: `usage_error`, `file_error` and `invalid_stack_output`
 were split out of `invalid_spec`, which previously covered every input failure.

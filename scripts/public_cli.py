@@ -21,6 +21,14 @@ class StackOutputError(Exception):
     """A Stack script succeeded but its stdout was not the promised JSON."""
 
 
+class StatusFailed(RuntimeError):
+    """Status found no service, or could not establish whether one exists."""
+    def __init__(self, code, message, details):
+        super().__init__(message)
+        self.code = code
+        self.envelope_details = details
+
+
 class StartBlocked(RuntimeError):
     """Start refused; envelope_details holds one record per start blocker."""
     def __init__(self, message, blockers):
@@ -45,6 +53,22 @@ def producer_provenance():
     dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain'], text=True, capture_output=True)
     return {'stack_commit': commit.stdout.strip() if commit.returncode == 0 else None,
             'working_tree_dirty': bool(dirty.stdout) if dirty.returncode == 0 else None}
+
+
+# Codes status.sh may record in its error file for the --json envelope.
+STATUS_ERROR_CODES = ('service_absent', 'service_state_unknown', 'invalid_stack_output')
+
+
+def status_error(path):
+    """status.sh's recorded error; an unreadable record is a Stack defect."""
+    try:
+        error = serving.load_json(path)
+        code, message, details = error['code'], error['message'], error['details']
+        if code not in STATUS_ERROR_CODES or not isinstance(message, str) or not isinstance(details, list):
+            raise ValueError('unsupported status error record')
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        raise StackOutputError('status wrote an unreadable error record; this is a Stack defect') from exc
+    return code, message, details
 
 
 # Private status the lifecycle scripts use for command-line mistakes (usage_die
@@ -168,6 +192,9 @@ def dispatch(command, args):
                 raise
             return serving.load_json(path)
     if command == 'model':
+        if not args or args[0].startswith('-'):
+            raise UsageError('command', 'pulsar model needs an operation such as acquire, prepare, info or restore; '
+                                        'see ./pulsar model --help')
         result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True)
         if isinstance(result,dict) and result.get('kind')=='pulsar-archive-verification':
             from datetime import datetime,timezone
@@ -175,7 +202,17 @@ def dispatch(command, args):
                     'observed_at':datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),'verification':result}
         return result
     if command == 'status':
-        return execute('scripts/status.sh', [*args, '--json'], json_result=True)
+        with tempfile.TemporaryDirectory(prefix='pulsar-status-result.') as temp:
+            error_file=Path(temp)/'error.json'
+            try:
+                return execute('scripts/status.sh',[*args,'--json'],json_result=True,
+                               env={**os.environ,'PULSAR_STATUS_ERROR_FILE':str(error_file)})
+            except Cancelled:
+                raise
+            except RuntimeError as exc:
+                if error_file.exists():
+                    raise StatusFailed(*status_error(error_file)) from exc
+                raise
     if command == 'stop':
         with tempfile.TemporaryDirectory(prefix='pulsar-stop-result.') as temp:
             path=Path(temp)/'result.json'
@@ -253,7 +290,7 @@ def dispatch(command, args):
         print(result.stdout+result.stderr,file=sys.stderr,end='')
         if result.returncode: raise ValueError('commit metadata privacy check failed')
         return {'checked':True}
-    raise UsageError('command', 'unsupported public command')
+    raise UsageError('command', f'unknown command: {command}; see ./pulsar help')
 
 
 def main(argv=None):
@@ -285,6 +322,8 @@ def main(argv=None):
     except Cancelled as exc:
         return failure(exc,json_output=json_output,
                        code='cancelled' if exc.confirmed else 'cleanup_incomplete',exit_code=exc.exit_code)
+    except StatusFailed as exc:
+        return failure(exc,json_output=json_output,code=exc.code)
     except RuntimeError as exc:
         return failure(exc,json_output=json_output,code='prerequisite_failed',exit_code=3)
 

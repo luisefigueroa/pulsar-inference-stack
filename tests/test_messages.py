@@ -121,6 +121,42 @@ class Deprecations(unittest.TestCase):
                            f"It is removed in CLI contract {entry['removed_in_cli_contract']}.\n")
                 self.assertEqual(result.stderr.count(warning), 1, result.stderr)
 
+    def test_each_retired_flag_warns_once_and_matches_the_contract(self):
+        # Each invocation stops at an argument check, before any lock or node.
+        runs = {"stop --retain-weights": ["bash", str(ROOT / "scripts/down.sh"), "abc", "--retain-weights"],
+                "observe --spec-file": [str(ROOT / "pulsar"), "observe", "--spec-file", "/tmp/candidate.json",
+                                        "--verification-jobs", "0", "--json"]}
+        declared = integration_contract.contract()["deprecated_flags"]
+        self.assertEqual(set(declared), set(runs))
+        for flag, entry in declared.items():
+            with self.subTest(flag=flag):
+                result = subprocess.run(runs[flag], stdin=subprocess.DEVNULL, text=True, capture_output=True,
+                                        timeout=60)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                warning = (f"warning: pulsar {flag} is deprecated: {entry['note']}. "
+                           f"It is removed in CLI contract {entry['removed_in_cli_contract']}.\n")
+                self.assertEqual(result.stderr.count(warning), 1, result.stderr)
+
+    def test_release_list_warns_wherever_list_appears(self):
+        result = self.run_pulsar("release", "--json", "list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr.count("warning: pulsar release list is deprecated"), 1, result.stderr)
+
+    def test_menus_refuse_json_and_name_the_command_that_prints_it(self):
+        for args, hint in ((["models", "menu", "--json"], "./pulsar models list --json"),
+                           (["topology", "menu", "--json"], "./pulsar topology show --json"),
+                           (["configure", "archive-root", "menu", "--json"], "./pulsar configure archive-root show --json"),
+                           (["gum", "--json"], "./pulsar help")):
+            with self.subTest(args=args):
+                result = self.run_pulsar(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(f"is interactive; use {hint}", result.stderr)
+
+    def test_an_unknown_inventory_argument_is_a_usage_error(self):
+        result = self.run_pulsar("inventory", "--bogus")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("unknown argument: --bogus", result.stderr)
+
     def test_wizard_without_a_terminal_lists_like_models(self):
         wizard = self.run_pulsar("wizard")
         models = self.run_pulsar("models")

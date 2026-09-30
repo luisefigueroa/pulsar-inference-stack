@@ -206,7 +206,9 @@ command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
   "") if [ -t 0 ]; then browse; else catalog list; fi ;;
-  menu) browse ;;
+  menu)
+    [ $# -eq 0 ] || { echo "error: the catalog menu is interactive; use ./pulsar models list --json" >&2; exit 2; }
+    browse ;;
   list|show) catalog "$command" "$@" ;;
   check) exec "$REPO_DIR/scripts/model-library.sh" check "$@" ;;
   --json) catalog list --json "$@" ;;

@@ -37,12 +37,31 @@ class ErrorCodes(unittest.TestCase):
 
     def test_lifecycle_argument_mistakes_are_usage_errors(self):
         # Argument parsing happens before any lock, topology or node access.
-        for args in (["start", "ab" * 32, "--bogus"], ["stop", "ab" * 32, "--bogus"], ["stop", "abc"],
-                     ["model", "bogus-operation"], ["status", "ab" * 32, "--bogus"]):
+        spec = "ab" * 32
+        for args in (["start", spec, "--bogus"], ["stop", spec, "--bogus"], ["stop", "abc"], ["stop"],
+                     ["model", "bogus-operation"], ["model"], ["status", spec, "--bogus"], ["status"],
+                     ["start", spec, "--force"], ["start", spec, "--weight-source", "copy"],
+                     ["start", spec, "--spec-decode", "--no-spec-decode"],
+                     ["model", "prepare", spec, "--backend", "other"], ["observe", "--service-id"],
+                     ["status", spec, "--node"], ["stop", spec, "--node"], ["observe", "--node", "--full"],
+                     ["status", spec, "--service-id", spec], ["model", "prepare", spec, "--transport", "nope"],
+                     ["model", "prepare", spec, "--copy-streams", "3"],
+                     ["bogus"]):
             with self.subTest(args=args):
                 status, response = pulsar(*args)
                 self.assertEqual(status, 2)
                 self.assertEqual(response["error"]["code"], "usage_error", response)
+
+    def test_resource_options_do_not_take_the_next_flag(self):
+        # Stops at argument parsing, before any node is sampled.
+        result = subprocess.run(["bash", str(ROOT / "scripts/resources.sh"), "--interval", "--jsonl"],
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --interval requires a value"))
+
+    def test_stop_without_a_selector_says_so(self):
+        status, response = pulsar("stop")
+        self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+        self.assertEqual(response["error"]["details"][0]["message"], "stop requires a spec ID or --all")
 
     def test_malformed_json_is_invalid_spec_not_a_file_error(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -74,7 +93,7 @@ class ErrorCodes(unittest.TestCase):
     def test_non_json_stack_output_is_reported_as_a_stack_defect(self):
         with patch.object(public_cli, "run_command", return_value=Completed("not json")):
             status, response = self.main("status", "a" * 64)
-        self.assertEqual(status, 2)
+        self.assertEqual(status, 3)
         self.assertEqual(response["error"]["code"], "invalid_stack_output")
         self.assertIn("Stack defect", response["error"]["message"])
 
@@ -110,6 +129,22 @@ class Drift(unittest.TestCase):
         text = (ROOT / "docs/CONTRACT.md").read_text()
         for code, (status, _) in document_cli.ERROR_CODES.items():
             self.assertRegex(text, rf"\| `{code}` \| {re.escape(str(status))} \|")
+        for status, meaning in document_cli.EXIT_STATUSES.items():
+            self.assertIn(f"| {status} | {meaning} |", text)
+
+    def test_contract_document_describes_every_contract_field(self):
+        text = (ROOT / "docs/CONTRACT.md").read_text()
+        section = text.split("### The contract document", 1)[1].split("\n#", 1)[0]
+        for field in integration_contract.contract():
+            with self.subTest(field=field):
+                self.assertIn(f"`{field}`", section)
+
+    def test_an_unknown_command_under_json_gets_the_envelope(self):
+        for args in (["bogus", "--json"], ["--json"]):
+            with self.subTest(args=args):
+                result = subprocess.run([str(ROOT / "pulsar"), *args], text=True, capture_output=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(json.loads(result.stdout)["error"]["code"], "usage_error")
 
 
 if __name__ == "__main__":

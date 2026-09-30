@@ -25,43 +25,53 @@ status reports the service inventory instead and says so.
 HELP
   exit 0
 fi
-JSON=0
-for arg in "$@"; do [ "$arg" != --json ] || JSON=1; done
+# A command-line mistake exits 2, or the public CLI's private usage status.
+usage_error() { printf 'error: %s\n' "$1" >&2; exit "${PULSAR_USAGE_EXIT:-2}"; }
+JSON=0 SPEC=""
+observe_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) JSON=1; observe_args+=("$1") ;;
+    # --spec-file names a candidate for the spec ID; the recorded spec is what status observes.
+    --spec-file)
+      case "${2:-}" in ""|-*) usage_error "--spec-file requires a file" ;; esac
+      shift ;;
+    --service-id) usage_error "status selects a service by its spec ID; use ./pulsar observe --service-id ID" ;;
+    --node|--verification-jobs)
+      case "${2:-}" in ""|-*) usage_error "$1 requires a value" ;; esac
+      observe_args+=("$1" "$2"); shift ;;
+    -*) observe_args+=("$1") ;;
+    *) [ -z "$SPEC" ] || usage_error "unexpected argument: $1"; SPEC="$1"; observe_args+=("$1") ;;
+  esac
+  shift
+done
+[ -n "$SPEC" ] || usage_error "status requires a spec ID; run ./pulsar status to list the catalog specs"
+json_flag=()
+[ "$JSON" != 1 ] || json_flag=(--json)
+
+work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-status.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+# The complete observation reports its own usage mistakes with a private
+# status, so every other failure falls back to the service inventory.
 observe_rc=0
-observation=$("$ROOT/scripts/observe-serving.sh" "$@") || observe_rc=$?
-# A --json usage error is reported as such, not replaced by the inventory view.
-if [ -n "${PULSAR_USAGE_EXIT:-}" ] && [ "$observe_rc" = "$PULSAR_USAGE_EXIT" ]; then exit "$observe_rc"; fi
-if [ "$observe_rc" != 0 ]; then
-  inventory=$("$ROOT/scripts/inventory.sh" --json) || exit 1
-  observation=$(printf '%s' "$inventory" | python3 -c '
-import json,sys
-inventory=json.load(sys.stdin)
-services=[row for row in inventory.get("services",[]) if row.get("conf")==sys.argv[1]]
-if not services:
-    worker=inventory.get("worker") or {}
-    # Absence is established only when every remote node was observed.
-    if worker.get("status") not in ("ok","unset"):
-        reason=worker.get("reason") or "a node could not be observed"
-        raise SystemExit(f"Service state for spec {sys.argv[1][:12]} is unknown: {reason}. Run ./pulsar topology check")
-    raise SystemExit(f"No running service for spec {sys.argv[1][:12]} was observed. Start it with ./pulsar start {sys.argv[1][:12]}")
-print(json.dumps(dict(schema_version=1,kind="pulsar-service-status",selected_spec_id=sys.argv[1],
-    configuration_verified=False,services=services,
-    message="Service inventory only; complete current-spec observation is unavailable.")))
-' "$1") || exit 1
+PULSAR_USAGE_EXIT=64 "$ROOT/scripts/observe-serving.sh" "${observe_args[@]}" \
+  >"$work/observation.json" 2>"$work/observe.err" || observe_rc=$?
+case "$observe_rc" in
+  0)
+    cat "$work/observe.err" >&2
+    python3 "$ROOT/scripts/service_status.py" --spec "$SPEC" --observation "$work/observation.json" \
+      ${json_flag[@]+"${json_flag[@]}"}
+    exit
+    ;;
+  64)
+    cat "$work/observe.err" >&2
+    exit "${PULSAR_USAGE_EXIT:-2}"
+    ;;
+esac
+inventory_args=(--inventory "$work/inventory.json")
+if ! "$ROOT/scripts/inventory.sh" --json >"$work/inventory.json" 2>"$work/inventory.err"; then
+  cat "$work/inventory.err" >&2
+  inventory_args=()
 fi
-if [ "$JSON" = 1 ]; then printf '%s\n' "$observation"; else
-  printf '%s' "$observation" | python3 -c '
-import json,sys
-value=json.load(sys.stdin)
-if value.get("kind")=="pulsar-service-status":
- print(value["message"])
- for service in value["services"]: print("State:",service["state"],"Ownership:",service["ownership"])
-else:
- print("Serving recipe and files verified on all",len(value["ranks"]),"ranks.")
- print("Spec:",value["spec_id"])
- if not value["matches_selected_spec"]:
-  print("Modified recipe. Selected catalog spec:",value["selected_spec_id"])
-  print("Selected-recipe measurements are reference only.")
- print("API:",value["api_url"])
-'
-fi
+python3 "$ROOT/scripts/service_status.py" --spec "$SPEC" ${inventory_args[@]+"${inventory_args[@]}"} \
+  --observe-error "$work/observe.err" ${json_flag[@]+"${json_flag[@]}"}

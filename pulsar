@@ -11,6 +11,18 @@ export PULSAR_COMMAND_LINE="pulsar${*:+ $*}" PULSAR_COMMAND_PID=$$
 deprecated() {
   printf 'warning: pulsar %s is deprecated; use %s. It is removed in CLI contract 2.\n' "$1" "$2" >&2
 }
+# refuse_json_for_menu MENU HINT ARGS... — a menu is interactive; --json asks
+# for a command's JSON output instead.
+refuse_json_for_menu() {
+  local menu="$1" hint="$2" arg
+  shift 2
+  for arg in "$@"; do
+    if [ "$arg" = --json ]; then
+      printf 'error: %s is interactive; use %s\n' "$menu" "$hint" >&2
+      exit 2
+    fi
+  done
+}
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
@@ -35,11 +47,17 @@ case "$command" in
 esac
 case "$command" in
   "") exec "$REPO_DIR/scripts/home.sh" ;;
-  gum) deprecated gum pulsar; exec "$REPO_DIR/scripts/home.sh" ;;
+  gum)
+    deprecated gum pulsar
+    refuse_json_for_menu "the Pulsar menu" "./pulsar help" "$@"
+    exec "$REPO_DIR/scripts/home.sh" ;;
   wizard)
     deprecated wizard "pulsar models"
     # Like pulsar models: the menu on a terminal, otherwise the catalog list.
-    if [ -t 0 ]; then exec "$REPO_DIR/wizard.sh" "$@"; fi
+    if [ -t 0 ]; then
+      refuse_json_for_menu "the catalog menu" "./pulsar models list --json" "$@"
+      exec "$REPO_DIR/wizard.sh" "$@"
+    fi
     exec "$REPO_DIR/scripts/model-storage.sh" list "$@" ;;
   models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
@@ -47,7 +65,9 @@ case "$command" in
   contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
   spec) exec python3 "$REPO_DIR/scripts/document_cli.py" "$@" ;;
   release)
-    [ "${1:-}" != list ] || deprecated "release list" "pulsar models list"
+    for arg in "$@"; do
+      if [ "$arg" = list ]; then deprecated "release list" "pulsar models list"; break; fi
+    done
     exec "$REPO_DIR/scripts/release.sh" "$@" ;;
   topology) exec "$REPO_DIR/scripts/topology.sh" "$@" ;;
   ssh-trust) exec "$REPO_DIR/scripts/topology-ssh-trust.sh" "$@" ;;
@@ -98,5 +118,10 @@ w.blank()
 w.emit('SPEC is a catalog spec ID. People may type a unique prefix of at least 12 characters; the command prints the complete ID it selected. --json, --spec-file, model purge and model remove require the complete 64-character ID. Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. Most commands accept --help. See docs/OPERATIONS.md.')
 PY
     ;;
-  *) printf 'Unknown command: %s\nTry: ./pulsar help\n' "$command" >&2; exit 2 ;;
+  *)
+    # Under --json an unknown command gets the same envelope as any other mistake.
+    for arg in "$command" "$@"; do
+      [ "$arg" != --json ] || exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
+    done
+    printf 'Unknown command: %s\nTry: ./pulsar help\n' "$command" >&2; exit 2 ;;
 esac

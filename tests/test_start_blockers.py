@@ -574,21 +574,23 @@ class StatusWithoutService(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             scripts = Path(temp) / "scripts"; scripts.mkdir()
             shutil.copyfile(ROOT / "scripts/status.sh", scripts / "status.sh")
+            shutil.copyfile(ROOT / "scripts/service_status.py", scripts / "service_status.py")
             (scripts / "observe-serving.sh").write_text("#!/usr/bin/env bash\nexit 1\n")
+            head = {"hostname": "spark-1", "node_id": "node-0", "local": True, "confirmed": True, "probe_status": "ok"}
             (scripts / "inventory.sh").write_text("#!/usr/bin/env bash\necho '" + json.dumps(
-                {"services": [], "worker": worker}) + "'\n")
+                {"services": [], "worker": worker, "nodes": {"head": head}}) + "'\n")
             for name in ("observe-serving.sh", "inventory.sh"):
                 (scripts / name).chmod(0o700)
-            return subprocess.run(["bash", str(scripts / "status.sh"), SPEC], text=True,
-                                  capture_output=True, timeout=30)
+            return subprocess.run(["bash", str(scripts / "status.sh"), SPEC], text=True, capture_output=True,
+                                  env={**os.environ, "PYTHONPATH": str(ROOT)}, timeout=30)
 
     def test_start_is_suggested_only_when_absence_is_established(self):
         complete = self.status({"status": "ok"})
         self.assertEqual(complete.returncode, 1)
-        self.assertIn("Start it with ./pulsar start abababababab", complete.stderr)
+        self.assertIn("Start it with ./pulsar start abababababab", " ".join(complete.stderr.split()))
         unknown = self.status({"status": "unreachable", "reason": "spark-2 · SSH unreachable"})
         self.assertEqual(unknown.returncode, 1)
-        self.assertIn("is unknown: spark-2 · SSH unreachable", unknown.stderr)
+        self.assertIn("is unknown: spark-2 · SSH unreachable", " ".join(unknown.stderr.split()))
         self.assertNotIn("pulsar start", unknown.stderr)
 
 

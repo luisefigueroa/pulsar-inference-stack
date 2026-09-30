@@ -22,15 +22,19 @@ ERROR_CODES = {
     "file_error": (2, "A file or directory named by the caller could not be read or written."),
     "invalid_spec": (2, "Spec or document content failed validation."),
     "unsupported_spec_version": (2, "The document's schema version is not supported."),
-    "invalid_stack_output": (2, "A Stack script produced output that is not JSON. This is a Stack defect."),
+    "invalid_stack_output": (3, "A Stack script produced output that is not JSON. This is a Stack defect."),
     "prerequisite_failed": (3, "A Stack action exited unsuccessfully; message and details hold its diagnostics."),
+    "service_absent": (3, "Status observed every node and found no service for the spec."),
+    "service_state_unknown": (3, "Status could not observe every node, so whether a service exists is not "
+                                 "established; details name the nodes."),
     "cancelled": ("128+signal", "Interrupted; cleanup of the command and its node workers was confirmed."),
     "cleanup_incomplete": ("128+signal", "Interrupted; worker exit could not be confirmed."),
 }
 EXIT_STATUSES = {
     "0": "Success.",
-    "2": "The request was rejected before any action: usage, file, spec or Stack output error.",
-    "3": "A prerequisite or Stack action failed.",
+    "1": "Without --json: the action was refused or failed. With --json the same outcome exits 3.",
+    "2": "The request was rejected before any action: a usage, file or document error.",
+    "3": "With --json: a prerequisite failed, the action was refused, or a Stack defect was found.",
     "128+signal": "Interrupted by the signal; see cancelled and cleanup_incomplete.",
 }
 

@@ -487,7 +487,7 @@ spec_overlay_node_selector() {
       if ! selector_rank=$(single_node_index_for_selector "$selector") \
           || ! overlay_rank=$(single_node_index_for_selector "$OVERLAY_PLACEMENT_NODE_ID") \
           || [ "$selector_rank" != "$overlay_rank" ]; then
-        die "--node '$selector' differs from overlay placement.node_id '$OVERLAY_PLACEMENT_NODE_ID'" 2
+        usage_die "--node '$selector' differs from overlay placement.node_id '$OVERLAY_PLACEMENT_NODE_ID'"
       fi
     fi
     if [ -z "$selector" ] && [ -n "${OVERLAY_PLACEMENT_NODE_ID:-}" ]; then
@@ -503,9 +503,9 @@ require_spec_platform_admission() {
   local name="${1:-${CONF_NAME:-}}" active="${PULSAR_PLATFORM_ID:-dgx-spark-gb10}"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
   python3 -c 'from release_spec.serving import load_spec; import sys; load_spec(sys.argv[1])' "$CONF_PATH" \
-    || die "new serving operations require a valid spec using schema 2 or 3; historical services remain inspectable and stoppable" 2
+    || die "new serving operations require a valid spec using schema 2 or 3; historical services remain inspectable and stoppable"
   [ "${SPEC_PLATFORM_ID:-}" = "$active" ] \
-    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)" 2
+    || die "selected spec $name targets platform '${SPEC_PLATFORM_ID:-?}'; this stack is '$active' (refusing to launch outside the spec's frozen geometry)"
 }
 
 # Every launcher calls this immediately after loading its selected spec, before
@@ -518,7 +518,7 @@ require_spec_launch_admission() {
   local -a detail=()
   if [ "${CONF_SOURCE:-conf}" = spec ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("schema_version")==1 else 1)' "$CONF_PATH" 2>/dev/null; then
     START_BLOCKER_SPEC="$name" start_blocker historical_spec
-    die "spec ${name:0:12} is a historical schema-1 spec; historical services remain inspectable and stoppable" 2
+    die "spec ${name:0:12} is a historical schema-1 spec; historical services remain inspectable and stoppable"
   fi
   require_spec_platform_admission "$@"
   [ "${CONF_SOURCE:-conf}" = spec ] || return 0
@@ -534,11 +534,11 @@ if os.environ.get('PULSAR_OVERRIDE_FILE'):
         source='override'
 print(source)
 PY
-  ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched" 2
+  ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched"
   [ -n "$guard" ] || return 0
   [ "$guard" != override ] || detail=(--detail "added by --override-file")
   START_BLOCKER_SPEC="$name" start_blocker guard_unsupported ${detail[@]+"${detail[@]}"}
-  die "spec ${name:0:12}: guard execution is not supported by this Stack; nothing was launched" 2
+  die "spec ${name:0:12}: guard execution is not supported by this Stack; nothing was launched"
 }
 
 _finalize_loaded_profile() {
@@ -761,10 +761,10 @@ set_spec_decode_mode() {
   local -n mode_ref="$var_name"
   case "$requested" in
     on|off) ;;
-    *) die "invalid speculative-decode mode: $requested" ;;
+    *) usage_die "invalid speculative-decode mode: $requested" ;;
   esac
   if [ "$mode_ref" != "auto" ] && [ "$mode_ref" != "$requested" ]; then
-    die "--spec-decode and --no-spec-decode are mutually exclusive"
+    usage_die "--spec-decode and --no-spec-decode are mutually exclusive"
   fi
   mode_ref="$requested"
 }
@@ -773,7 +773,7 @@ set_spec_decode_mode() {
 # RECOMMENDED_SPEC is executable policy: 1 means the validated fast path is the
 # default. SPEC_DECODE_ENABLED and SPEC_DECODE_SOURCE are set for the caller.
 resolve_spec_decode() {
-  [ "${1:-auto}" = auto ] || die "recipe variants require a new candidate spec" 2
+  [ "${1:-auto}" = auto ] || usage_die "recipe variants require a new candidate spec"
   SPEC_DECODE_ENABLED=0
   SPEC_DECODE_SOURCE=profile-default
 }
@@ -1124,7 +1124,7 @@ PULSAR_SSH="${PULSAR_SSH:-ssh}"
 WEIGHT_MODE_FLAG_REMOVED_MESSAGE='--weight-source/--weight-mode were removed (ADR 0006): the model library is the only weight mechanism, so there is no mode to select. Drop the flag. Live NFS serving is retired (ADR 0005).'
 
 refuse_removed_weight_mode_flag() {
-  die "$WEIGHT_MODE_FLAG_REMOVED_MESSAGE" 2
+  usage_die "$WEIGHT_MODE_FLAG_REMOVED_MESSAGE"
 }
 
 # ADR 0008: deprecated public no-ops and aliases fail without fallback with a
@@ -1136,7 +1136,7 @@ REMOVED_LIST_VALIDATED_MESSAGE='--validated was removed (ADR 0008): profiles are
 REMOVED_CATALOG_VALIDATED_MESSAGE='--validated was removed (ADR 0008): drop the flag. --reviewed-identity is retired (ADR 0012). It does not mean ADR 0004 Validated.'
 REMOVED_ACTIVATE_MESSAGE='activate was removed (ADR 0008): use prepare.'
 refuse_removed_force_flag() {
-  die "$REMOVED_FORCE_MESSAGE" 2
+  usage_die "$REMOVED_FORCE_MESSAGE"
 }
 
 PULSAR_MODEL_LIBRARY_DIR="${PULSAR_MODEL_LIBRARY_DIR:-${MODEL_LIBRARY_DIR:-$REPO_DIR/.model-library}}"
@@ -1335,14 +1335,19 @@ single_node_display() {
   printf '%s%s\n' "${SINGLE_NODE_HOSTNAME:-unknown}" "$suffix"
 }
 
-single_node_api_host() {
-  local host="${SINGLE_NODE_CONTROL_IP:-}"
-  [ -n "$host" ] || host="${SINGLE_NODE_SSH_HOST:-127.0.0.1}"
-  host="${host#*@}"
+# url_host HOST — HOST as a URL authority: an IPv6 literal gets brackets.
+url_host() {
+  local host="${1:?host required}"
   if [[ "$host" == *:* ]] && [[ "$host" != \[*\] ]]; then
     host="[$host]"
   fi
   printf '%s\n' "$host"
+}
+
+single_node_api_host() {
+  local host="${SINGLE_NODE_CONTROL_IP:-}"
+  [ -n "$host" ] || host="${SINGLE_NODE_SSH_HOST:-127.0.0.1}"
+  url_host "${host#*@}"
 }
 
 single_node_api_base_url() {

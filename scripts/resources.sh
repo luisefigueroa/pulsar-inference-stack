@@ -7,11 +7,16 @@ SCRIPT_NAME=resources
 SERVICE_ID="" SPEC_FILE="" NODE_SELECTOR="" INTERVAL=0.25 OVERRIDE_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --service-id) SERVICE_ID="${2:?service id required}"; shift ;;
-    --spec-file) SPEC_FILE="${2:?spec file required}"; shift ;;
-    --node) NODE_SELECTOR="${2:?node required}"; shift ;;
-    --interval) INTERVAL="${2:?interval required}"; shift ;;
-    --override-file) OVERRIDE_FILE="${2:?override file required}"; shift ;;
+    --service-id|--spec-file|--node|--interval|--override-file)
+      case "${2:-}" in ""|-*) die "$1 requires a value" 2 ;; esac
+      case "$1" in
+        --service-id) SERVICE_ID="$2" ;;
+        --spec-file) SPEC_FILE="$2" ;;
+        --node) NODE_SELECTOR="$2" ;;
+        --interval) INTERVAL="$2" ;;
+        --override-file) OVERRIDE_FILE="$2" ;;
+      esac
+      shift ;;
     --jsonl) ;;
     --help|-h)
       echo 'usage: pulsar resources (--service-id ID | --spec-file FILE [--node NODE] [--override-file FILE]) [--interval SECONDS] --jsonl'
