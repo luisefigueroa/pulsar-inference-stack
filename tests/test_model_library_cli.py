@@ -195,6 +195,32 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(result['snapshots']['target'],result['snapshots']['draft'])
         self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')),2*manifest['total_bytes'])
 
+    def test_bundled_checkpoint_keeps_complete_verification_and_reuses_named_bytes(self):
+        from release_spec.serving import freeze
+        f = self.fixture(2)
+        f.cfg['files']['dflash/config.json'] = {'data': base64.b64encode(b'{"model_type":"synthetic-draft"}').decode(), 'lfs': False}
+        f.cfg['files']['dflash/model.safetensors'] = {'data': base64.b64encode(b'synthetic draft weights').decode(), 'lfs': True}
+        f.save()
+        self.acquire_candidate(f, nodes=2, home=1)
+        recipe = copy.deepcopy(f.spec['recipe'])
+        manifest = recipe['model'].pop('snapshot_manifest')
+        recipe['required_snapshots'] = {'draft': copy.deepcopy(recipe['model'])}
+        recipe['engine_args'] += ['--speculative_config.model', 'pulsar-snapshot:draft/dflash']
+        f.spec = freeze({'schema_version': 2, 'kind': 'pulsar-recipe-draft',
+                        'source': f.spec['source'], 'recipe': recipe}, {'target': manifest, 'draft': manifest})
+        f.spec_path.write_bytes(pretty_json_bytes(f.spec))
+        self.success(f.run('prepare', '--yes', spec=True))
+        f.cfg['trace_verification'] = True
+        f.save()
+        result = self.success(f.run('info', '--full', spec=True))
+        self.assertEqual(result['snapshots']['target'], result['snapshots']['draft'])
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')), 2*manifest['total_bytes'])
+        view = next(row for row in Store(f.state).views(spec_id=f.spec['spec_id']) if not row['is_home_view'])
+        path = Path(view['path'])/'weights.bin'
+        original = path.read_bytes()
+        path.write_bytes(b'x'*len(original))
+        self.failure(f.run('info', '--full', spec=True), 'SHA-256')
+
     def test_public_info_and_check_retain_remote_lease_failure_and_reap_peers(self):
         from model_library.verification_process import process_identity
         f=self.fixture(2);self.acquire_candidate(f,nodes=2,home=1)

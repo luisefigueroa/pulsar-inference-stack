@@ -212,11 +212,19 @@ def snapshot_engine_args(recipe: dict, paths: dict | None = None) -> list[str]:
     def resolve(value):
         if not isinstance(value, str) or not value.startswith("pulsar-snapshot:"):
             invalid("recipe.engine_args", "speculative model must reference a declared pulsar-snapshot:NAME")
-        name = value.removeprefix("pulsar-snapshot:")
+        name, separator, subdirectory = value.removeprefix("pulsar-snapshot:").partition("/")
         if name not in declared:
             invalid("recipe.engine_args", "unknown required snapshot: " + name)
+        if separator:
+            if (not subdirectory.isascii() or "\\" in subdirectory
+                    or any(ord(char) < 32 or ord(char) == 127 for char in subdirectory)
+                    or any(part in ("", ".", "..") for part in subdirectory.split("/"))):
+                invalid("recipe.engine_args", "snapshot subdirectory must be a canonical relative POSIX directory")
+            prefix = subdirectory + "/"
+            if not any(item["path"].startswith(prefix) for item in declared[name]["snapshot_manifest"]["files"]):
+                invalid("recipe.engine_args", "snapshot subdirectory has no manifest files: " + name + "/" + subdirectory)
         consumed.add(name)
-        return paths[name] if paths is not None else value
+        return paths[name] + ("/" + subdirectory if separator else "") if paths is not None else value
 
     for i, token in enumerate(args):
         flag = token.replace("--speculative_config", "--speculative-config", 1)

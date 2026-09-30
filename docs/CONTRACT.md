@@ -80,6 +80,18 @@ References in unrelated arguments and bare speculative checkpoint locators are
 rejected. Other model-loading argument families are not implemented by this
 binding rule. Non-checkpoint speculation can still use ordinary engine args.
 
+For a checkpoint bundled inside a snapshot, use
+`pulsar-snapshot:target/dflash` or `pulsar-snapshot:draft/dflash`. The optional
+suffix selects a canonical relative POSIX directory containing files in the
+declared snapshot's complete manifest. Empty or dot segments, absolute paths,
+backslashes, control characters, and non-ASCII paths are rejected. Suffixes are
+literal paths, never URL-decoded; a file path or a directory absent from the
+manifest is rejected. The complete snapshot remains required and verified on
+every rank; selecting a subdirectory does not narrow its manifest. A bundled
+checkpoint can reference `target` with an empty `required_snapshots` object,
+without adding another snapshot declaration or copy. Existing root references
+and spec identities retain their original behavior.
+
 Stack resolves each reference to the exact local snapshot path. The target
 keeps its existing mount convention; additional Hub directories mount read-only
 under `/pulsar/snapshots/<manifest-id>`, and the engine receives the child
