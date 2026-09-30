@@ -3,13 +3,15 @@
 # the exact digest only with --pull-if-stream-incomplete, which start passes when
 # --pull-image grants pulling.
 set -euo pipefail
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image stage SPEC [--spec-file FILE] [--node NODE] [--plan | --yes] [--pull | --pull-if-stream-incomplete | --export-tag TAG] [--json]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image stage SPEC [--spec-file FILE] [--node NODE | --placement-nodes LIST] [--plan | --yes] [--pull | --pull-if-stream-incomplete | --export-tag TAG] [--json]"; exit 0; fi
 SCRIPT_NAME=sync-image
+PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 NAME="${1:?spec id required}"; shift
 PULL=0 YES=0 PLAN=0 JSON=0 NODE_SELECTOR="" PULL_FALLBACK=0 EXPORT_TAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --pull) PULL=1 ;;
     --pull-if-stream-incomplete) PULL_FALLBACK=1 ;;
     --yes|-y) YES=1 ;;
@@ -26,6 +28,7 @@ done
 [ -z "$EXPORT_TAG" ] || { [ "$PULL" = 0 ] && [ "$PULL_FALLBACK" = 0 ]; } \
   || die "named export and registry pulling are separate modes" 2
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 export_image="$IMAGE"
 source_image_id=""
 verify_export_source() {
@@ -57,7 +60,10 @@ if [ "$NODES" = 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" || die "selected node is not confirmed"
   placement=(--node "${SINGLE_NODE_ID:-$SINGLE_NODE_INDEX}")
-elif [ -n "$NODE_SELECTOR" ]; then die "--node applies only to one-node specs" 2; fi
+else
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "selected serving nodes are not confirmed"
+  [ -z "$PLACEMENT_NODES" ] || placement=(--placement-nodes "$PLACEMENT_NODES")
+fi
 rc=0
 report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json) || rc=$?
 [ -n "$report" ] || die "image inspection failed"

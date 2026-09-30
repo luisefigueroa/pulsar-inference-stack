@@ -3,7 +3,7 @@
 set -euo pipefail
 SCRIPT_NAME=observe-serving
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-NAME="" SERVICE_ID="" NODE_SELECTOR="" OBSERVE_FULL=0 OBSERVE_VERIFICATION_JOBS=3
+NAME="" SERVICE_ID="" NODE_SELECTOR="" PLACEMENT_NODES="" OBSERVE_FULL=0 OBSERVE_VERIFICATION_JOBS=3
 while [ $# -gt 0 ]; do
   case "$1" in
     --service-id) case "${2:-}" in ""|-*) usage_die "--service-id requires a service ID" ;; esac; SERVICE_ID="$2"; shift ;;
@@ -67,13 +67,16 @@ if [ "$NODES" = 1 ]; then
   API_URL=$(single_node_api_base_url "$PORT")
 else
   [ -z "$NODE_SELECTOR" ] || usage_die "--node only applies to one-node specs"
+  PLACEMENT_NODES=$(python3 -c 'import json,sys; print(",".join(row["node_id"] for row in json.load(open(sys.argv[1]))["ranks"]))' "$OBS/plan.json")
+  resolve_serving_placement "" "$PLACEMENT_NODES" || die "recorded placement is no longer confirmed"
   require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || die "required topology unavailable"
-  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"
+  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[${SERVING_NODE_INDEXES[0]:-0}]}"):$PORT"
 fi
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required"
+[ "$CLUSTER_TOPOLOGY_ID" = "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["topology_id"])' "$OBS/plan.json")" ] || die "confirmed service topology changed"
 CONTAINER=$(container_name_for "$NAME" "$NODES")
 for ((rank=0; rank<NODES; rank++)); do
-  index="$rank"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
+  index="${SERVING_NODE_INDEXES[$rank]:-$rank}"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
   command=$(shell_join_q docker inspect --format '{{json .}}' "$CONTAINER")
   if [ "$index" = 0 ]; then
     "$PULSAR_DOCKER" inspect --format '{{json .}}' "$CONTAINER" >"$OBS/container-$rank.json"
@@ -98,10 +101,10 @@ SERVED_NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["s
 if [ "$NODES" = 1 ]; then
   API_URL=$(single_node_api_base_url "$PORT")
 else
-  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"
+  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[${SERVING_NODE_INDEXES[0]:-0}]}"):$PORT"
 fi
 for ((rank=0; rank<NODES; rank++)); do
-  index="$rank"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
+  index="${SERVING_NODE_INDEXES[$rank]:-$rank}"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
   command=$(shell_join_q docker inspect --format '{{json .}}' "$CONTAINER")
   if [ "$index" = 0 ]; then
     "$PULSAR_DOCKER" inspect --format '{{json .}}' "$CONTAINER" >"$OBS/after-$rank.json"

@@ -3,14 +3,15 @@
 # parent refreshes records, after the supplied verification workers are reaped.
 
 inspect_prepared() {
-  local work="$1" index slot request original candidate completed result outcome rc=0 batch_rc=0
+  local work="$1" physical index slot request original candidate completed result outcome rc=0 batch_rc=0
   local -a MODEL_NODE_COMMAND=()
   selected_nodes || return 2
-  model_ctl "$(model_json operation inspection-plan spec: "$SPEC_JSON" node_ids: "$NODE_IDS_JSON" topology_id "$CLUSTER_TOPOLOGY_ID" full: "$([ "$FULL" = 1 ] && echo true || echo false)" cache "${PREPARE_VERIFICATION_DIR:-}")" >"$work/plan.json" || return 2
+  model_ctl "$(model_json operation inspection-plan spec: "$SPEC_JSON" node_ids: "$NODE_IDS_JSON" confirmed_node_ids: "$(all_node_ids)" topology_id "$CLUSTER_TOPOLOGY_ID" full: "$([ "$FULL" = 1 ] && echo true || echo false)" cache "${PREPARE_VERIFICATION_DIR:-}")" >"$work/plan.json" || return 2
   python3 -m model_library.inspection jobs "$work" >"$work/jobs.tsv" || return $?
   while IFS=$'\t' read -r index slot <&3; do
     request=$(cat "$work/jobs/$index.request.json") || return 2
-    model_node_command "${SELECTED_RANKS[$slot]}" || return $?
+    physical=$(model_physical_rank "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["jobs"][int(sys.argv[2])]["record"]["node_id"])' "$work/plan.json" "$index")") || return 2
+    model_node_command "$physical" || return $?
     printf '%s' "$request" | python3 "$REPO_DIR/scripts/node-bundle.py" --supervised >"$work/jobs/$index.program" || return 2
     python3 - "$work" "$index" "$slot" python3 -m model_library.verification_process --owner "$$" -- "${MODEL_NODE_COMMAND[@]}" <<'PY' || return 2
 import json,sys

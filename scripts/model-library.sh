@@ -41,6 +41,7 @@ Options:
   --spec-file FILE       Explicit lab candidate spec
   --snapshot NAME       Select one declared snapshot for home/archive operations
   --node NODE            Home node or one-node placement: hostname or node ID
+  --placement-nodes LIST Ordered confirmed nodes for prepare/info/check
   --manifest FILE       Retained source manifest for lab storage
   --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
   --manifest-out FILE   Save the resulting verified source manifest
@@ -61,12 +62,12 @@ ARCHIVE_ACTION=""
 if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
 SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
-NODE="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
+NODE="" PLACEMENT_NODES="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
 VERIFICATION_JOBS=3
 PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--manifest-out|--verification-jobs)
+    --snapshot|--spec-file|--manifest|--model-id|--model-commit|--revision|--node|--placement-nodes|--manifest-out|--verification-jobs)
       [ $# -ge 2 ] || usage_die "$1 needs a value"
       case "$1" in
         --spec-file) SPEC_FILE="$2" ;;
@@ -75,6 +76,7 @@ while [ $# -gt 0 ]; do
         --model-id) MODEL_ID="$2" ;;
         --model-commit|--revision) REVISION="$2" ;;
         --node) NODE="$2" ;;
+        --placement-nodes) PLACEMENT_NODES="$2" ;;
         --manifest-out) MANIFEST_OUT="$2" ;;
         --verification-jobs) VERIFICATION_JOBS="$2" ;;
       esac; shift ;;
@@ -94,6 +96,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$OP" in help|-h|--help) usage; exit 0 ;; esac
+[ -z "$PLACEMENT_NODES" ] || case "$OP" in prepare|info|check) : ;; *) usage_die "--placement-nodes applies only to prepare, info and check" ;; esac
 [[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || usage_die "--verification-jobs requires a positive integer"
 [ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || usage_die "--plan and --yes are separate operations"
 case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) usage_die "unknown operation: $OP" ;; esac

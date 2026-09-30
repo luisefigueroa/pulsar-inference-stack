@@ -41,6 +41,15 @@ Image IDs alone do not establish a pinned reference. Named export and registry
 pulling are separate modes; an incomplete named stream never falls back to a
 pull. `--plan` observes only, while `--yes` applies the selected stage.
 
+An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
+not recipe data. It selects ordered confirmed members for preparation, file and
+image checks, guarded dry-run/run, and pre-launch resource sampling. Omission
+retains first-N placement; `--node` retains its one-node/home meaning. Selection
+does not change membership or `spec_id`. Existing launch-plan rank/node fields
+bind it and produce a distinct `service_id` for a different ordered placement.
+The verified snapshot home may be another confirmed member; complete source
+home verification and serving-copy coverage remain separate requirements.
+
 Generate an editable JSON draft rather than guessing defaults:
 
 ```sh

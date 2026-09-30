@@ -51,17 +51,8 @@ resolve_node_selector() {
 }
 
 selected_nodes() {
-  local rank
-  require_cluster_nodes "${NODES:-1}" >/dev/null || die "confirmed topology is required"
-  SELECTED_RANKS=() SELECTED_IDS=()
-  if [ "${NODES:-1}" -eq 1 ]; then
-    resolve_single_node_placement "$NODE" || die "cannot resolve selected placement"
-    SELECTED_RANKS=("$SINGLE_NODE_INDEX")
-  else
-    [ -z "$NODE" ] || die "--node selects a one-node placement only"
-    for ((rank=0; rank<NODES; rank++)); do SELECTED_RANKS+=("$rank"); done
-  fi
-  for rank in "${SELECTED_RANKS[@]}"; do SELECTED_IDS+=("${CLUSTER_NODE_IDS[$rank]}"); done
+  resolve_serving_placement "$NODE" "${PLACEMENT_NODES:-}" || die "cannot resolve confirmed serving placement"
+  SELECTED_RANKS=("${SERVING_NODE_INDEXES[@]}") SELECTED_IDS=("${SERVING_NODE_IDS[@]}")
   NODE_IDS_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${SELECTED_IDS[@]}")
 }
 

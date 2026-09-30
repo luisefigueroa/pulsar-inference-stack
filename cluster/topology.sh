@@ -183,14 +183,19 @@ require_cluster_nodes() {
 
 select_cluster_profile_fabric() {
   local required="${1:?required node count}"
-  local rank hcas rdma_ifs fabric_rows
+  local rank physical hcas rdma_ifs fabric_rows
+  local -a fabric_args=()
   require_cluster_nodes "$required" || return 1
 
   CLUSTER_PROFILE_NODE_COUNT=0
   CLUSTER_PROFILE_HCAS=()
   CLUSTER_PROFILE_RDMA_IFS=()
-  if ! fabric_rows=$(python3 "$_topology_repo/scripts/topology_manifest.py" \
-      profile-fabric "$CLUSTER_TOPOLOGY_FILE" "$required"); then
+  fabric_args=(profile-fabric "$CLUSTER_TOPOLOGY_FILE" "$required")
+  for ((rank=0;rank<required;rank++)); do
+    physical="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+    fabric_args+=(--node-id "${CLUSTER_NODE_IDS[$physical]}")
+  done
+  if ! fabric_rows=$(python3 "$_topology_repo/scripts/topology_manifest.py" "${fabric_args[@]}"); then
     echo "topology: cannot resolve RDMA fabric for $required selected ranks" >&2
     return 1
   fi
@@ -205,7 +210,8 @@ select_cluster_profile_fabric() {
     return 1
   fi
   for ((rank = 0; rank < required; rank++)); do
-    [ -n "${CLUSTER_PROFILE_HCAS[$rank]:-}" ] || {
+    physical="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+    [ -n "${CLUSTER_PROFILE_HCAS[$physical]:-}" ] || {
       echo "topology: ${CLUSTER_NODE_HOSTNAMES[$rank]:-unnamed node} (rank $rank) has no HCA in the spec's fabric" >&2
       return 1
     }
@@ -233,14 +239,17 @@ require_profile_topology() {
     return 1
   fi
 
-  local a b rails
+  local a b ai bi low high rails
   for ((a = 0; a < required; a++)); do
-    [ -n "${CLUSTER_NODE_HCAS[$a]:-}" ] || {
+    ai="${SERVING_NODE_INDEXES[$a]:-$a}"
+    [ -n "${CLUSTER_NODE_HCAS[$ai]:-}" ] || {
       echo "topology: rank $a has no active RDMA HCA" >&2
       return 1
     }
     for ((b = a + 1; b < required; b++)); do
-      rails="${CLUSTER_PAIR_RAILS["$a:$b"]:-0}"
+      bi="${SERVING_NODE_INDEXES[$b]:-$b}"
+      low="$ai" high="$bi"; if [ "$low" -gt "$high" ]; then low="$bi"; high="$ai"; fi
+      rails="${CLUSTER_PAIR_RAILS["$low:$high"]:-0}"
       if [ "$rails" -lt "$min_rails" ]; then
         echo "topology: ranks $a/$b expose $rails shared RoCE rail(s); the spec requires $min_rails" >&2
         return 1

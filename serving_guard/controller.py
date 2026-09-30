@@ -87,11 +87,11 @@ def activate(output, owner):
     write(output / "controller.json", {"run_id": plan["guard_run_id"], "owner": identity})
 
 
-def bundle(output, phase, rank):
+def bundle(output, phase, rank, *, local_head=False):
     record = json.loads(read_regular(output / "context.json"))
     plan = validate_plan(record["plan"])
     context = {"plan": plan, "rank": rank, "operation": phase,
-               "ready_file": str(output / "ready.json") if rank == 0 else None}
+               "ready_file": str(output / "ready.json") if rank == 0 and local_head else None}
     if phase == "execute":
         context["argv"] = docker_argv(plan, rank)
     archive = io.BytesIO()
@@ -116,12 +116,12 @@ def bundle(output, phase, rank):
     )
 
 
-def task(output, phase, rank, command):
+def task(output, phase, rank, command, *, local_head=False):
     directory = output / phase
     (directory / "jobs").mkdir(parents=True, exist_ok=True)
     source = directory / f"{rank}.program"
     with source.open("x") as out:
-        out.write(bundle(output, phase, rank))
+        out.write(bundle(output, phase, rank, local_head=local_head))
     write(directory / f"{rank}.task.json",
           {"index": rank, "node_slot": rank, "program": str(source), "command": command})
 
@@ -200,6 +200,7 @@ def main():
     parser.add_argument("--owner", type=int)
     parser.add_argument("--phase")
     parser.add_argument("--rank", type=int)
+    parser.add_argument("--local-head", action="store_true")
     argv = sys.argv[1:]
     command = []
     if "--" in argv:
@@ -211,7 +212,7 @@ def main():
     elif args.operation == "activate":
         activate(args.output, args.owner)
     elif args.operation == "task":
-        task(args.output, args.phase, args.rank, command)
+        task(args.output, args.phase, args.rank, command, local_head=args.local_head)
     elif args.operation == "tasks":
         tasks(args.output, args.phase)
     elif args.operation == "check":

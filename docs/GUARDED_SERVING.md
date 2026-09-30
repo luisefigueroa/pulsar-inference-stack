@@ -81,11 +81,23 @@ but an old spec cannot silently launch using a different installed guard hash.
 
 The memory estimate is optional and retains its existing contract. Any memory
 warning needs the explicit `--accept-memory-warn` decision. The runner uses the
-first N confirmed nodes selected by the normal multi-node serving plan, with
-the controller as rank 0. A two-node recipe can use a three-node installation;
-the complete topology identity and saved membership remain unchanged. Reordered,
-unconfirmed or insufficient selected nodes are rejected. Only participating
-ranks receive tasks. Its directory must not exist.
+first N confirmed nodes by default. For a multi-node recipe, pass the ordered
+`--placement-nodes NODE_ID,NODE_ID` list to `model prepare`, `model info`,
+`image check|stage`, `start --dry-run`, `guarded run` and pre-launch `resources`.
+The list must match the recipe's exact node count, contain unique confirmed
+nodes, and satisfy its fabric requirement. Its first node runs the API rank.
+The complete topology identity and saved membership remain unchanged. A storage
+home can remain on another confirmed member; Stack verifies it independently
+and requires complete working copies on every participating rank. Existing
+pinned views and their bytes are retained. Its output directory must not exist.
+
+Ordinary real start supports its existing default placement; a nondefault
+multi-node placement requires the guarded path. Stop that session through
+`guarded stop` with its exact run ID. Ordinary stop refuses a recorded
+nondefault guarded placement before removing containers. Recorded observation
+and service resource sampling use the saved rank/node bindings rather than a
+future selection or overlay. A remote API head does not write the controller's
+`ready.json`; use public status or observation to inspect readiness.
 The command stays active for the lifetime of the session. `--yes` acknowledges
 the reviewed start, not acquisition, replacement or publication.
 

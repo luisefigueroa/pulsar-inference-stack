@@ -77,8 +77,11 @@ def prepared_snapshots(spec, prepared, topology_id):
                 fail('prepared rank paths do not select the verified snapshot')
             if spec['schema_version'] == 3 and row.get('snapshot_manifest_id') != model['snapshot_manifest']['manifest_id']:
                 fail('prepared rank manifest differs: ' + name)
-        if len(set(ids)) != len(ids) or member.get('home_node_id') not in ids:
-            fail('snapshot home must belong to the exact serving nodes')
+        if len(set(ids)) != len(ids):
+            fail('snapshot repeats a serving node')
+        # Storage inspection independently verifies the registered home against
+        # complete confirmed membership; its owner need not run a serving rank.
+        text(member.get('home_node_id'), 'snapshot home node_id')
         if nodes is not None and nodes != ids: fail('required snapshots have different rank placement')
         nodes = ids
     return members

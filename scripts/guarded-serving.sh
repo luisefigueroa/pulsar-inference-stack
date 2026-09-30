@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_NAME=guarded-serving
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
-spec="" spec_id="" output="" approved=0
+spec="" spec_id="" output="" approved=0 placement_nodes=""
 declare -a admission=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -12,6 +12,7 @@ while [ "$#" -gt 0 ]; do
     --spec-id) spec_id="${2:?reviewed spec ID required}"; shift ;;
     --output-dir) output="${2:?fresh output directory required}"; shift ;;
     --memory-estimate-file|--memory-estimate-id) admission+=("$1" "${2:?value required}"); shift ;;
+    --placement-nodes) placement_nodes="${2:?ordered node list required}"; admission+=("$1" "$placement_nodes"); shift ;;
     --accept-memory-warn) admission+=("$1") ;;
     --yes) approved=1 ;;
     --help|-h)
@@ -19,7 +20,7 @@ while [ "$#" -gt 0 ]; do
 usage: pulsar guarded run --spec-file FILE --spec-id SHA256
        --output-dir NEW_DIR --yes [--json]
        [--memory-estimate-file FILE --memory-estimate-id ID]
-       [--accept-memory-warn]
+       [--accept-memory-warn] [--placement-nodes NODE_ID,NODE_ID]
 
 Foreground lease owner. No pulls, replacement or acquisition.
 Stop through guarded stop with the exact run ID.
@@ -50,16 +51,32 @@ PY
 )
 [ "$CLUSTER_TOPOLOGY_ID" = "${binding[0]}" ] && [ "$CLUSTER_TOPOLOGY_COUNT" -ge "${binding[1]}" ] || die 'guard requires unchanged complete confirmed membership'
 serving_ranks="${binding[1]}"
+serving_indexes=()
+expected_nodes=()
+if [ -n "$placement_nodes" ]; then
+  IFS=, read -r -a selectors <<<"$placement_nodes"
+  [ "${#selectors[@]}" = "$serving_ranks" ] || die 'guarded placement count differs'
+  for selector in "${selectors[@]}"; do
+    node_id=$(resolve_single_node_placement "$selector" >/dev/null && printf '%s' "$SINGLE_NODE_ID") || die 'guarded placement is not confirmed'
+    expected_nodes+=("$node_id")
+  done
+else
+  expected_nodes=("${CLUSTER_NODE_IDS[@]:0:$serving_ranks}")
+fi
 for ((rank=0;rank<serving_ranks;rank++)); do
-  [ "${CLUSTER_NODE_IDS[$rank]}" = "${binding[$((rank+2))]}" ] || die 'guarded rank placement differs'
+  [ "${expected_nodes[$rank]}" = "${binding[$((rank+2))]}" ] || die 'guarded rank placement differs'
+  index=$(model_physical_rank "${binding[$((rank+2))]}") || die 'guarded rank placement differs from confirmed membership'
+  serving_indexes+=("$index")
 done
 batch_pid="" finalized=0
 phase() {
   local action="$1" rank rc=0
-  local -a MODEL_NODE_COMMAND=() options=()
+  local -a MODEL_NODE_COMMAND=() options=() ready_args=()
   for ((rank=0;rank<serving_ranks;rank++)); do
-    model_node_command "$rank" || return $?
-    python3 -m serving_guard.controller task --output "$output" --phase "$action" --rank "$rank" -- \
+    model_node_command "${serving_indexes[$rank]}" || return $?
+    ready_args=()
+    [ "${serving_indexes[$rank]}" != 0 ] || ready_args=(--local-head)
+    python3 -m serving_guard.controller task --output "$output" --phase "$action" --rank "$rank" "${ready_args[@]}" -- \
       python3 -m model_library.verification_process --owner "$$" -- "${MODEL_NODE_COMMAND[@]}" || return $?
   done
   python3 -m serving_guard.controller tasks --output "$output" --phase "$action" || return $?

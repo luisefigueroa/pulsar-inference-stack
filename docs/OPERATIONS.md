@@ -29,7 +29,7 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 | spec | The serving specification you select: a catalog spec published under `releases/`, or a candidate passed with `--spec-file`. Shown as its spec ID or a 12-character prefix. |
 | recipe | The spec's execution configuration: image, engine arguments, container and geometry. An override produces a modified recipe. |
 | model files | The model's bytes, verified against the spec's snapshot manifest. |
-| home | The one verified copy of a snapshot, on one serving node. |
+| home | The one verified source copy of a snapshot, on a confirmed member. |
 | prepared copies | The per-rank copies or bindings that serving reads. |
 | archive, archive location | The verified recovery copy, and the directory that holds archives. |
 | node | A confirmed machine, named by its hostname. |
@@ -180,7 +180,7 @@ Topology and SSH files stay private in the selected stack checkout. Host and
 fabric diagnostics are also available through `./pulsar doctor`. Catalog
 browsing works before topology is configured.
 
-A **home** is the complete local copy of one exact snapshot. Other serving
+A **home** is the complete local copy of one exact snapshot on a confirmed member. Serving
 nodes use prepared working copies. The library records their explicit
 locations; a snapshot manifest supplies the expected file list and hashes.
 Files on every participating node must match before serving starts.
@@ -493,7 +493,7 @@ all declared archives, is read-only, and fails if any member does not verify.
 
 `prepare`, `info`, `check`, `pin`, `unpin`, and `purge` cover the complete recipe.
 Preparation checks combined storage capacity before mutation. Each snapshot's
-home must be on a selected serving node; different snapshots may have different
+home must belong to confirmed membership; different snapshots may have different
 homes. Every selected rank receives every required snapshot. A failed transfer
 retains its owned staging record; retry can reuse that staging and completed
 copies. Inconsistent or replaced staging requires explicit inspection.

@@ -8,6 +8,7 @@ import signal
 import select
 import subprocess
 import sys
+import time
 from unittest.mock import patch
 from types import SimpleNamespace
 from scripts import resource_sample as monitor
@@ -117,5 +118,53 @@ resolve_single_node_placement() {{ load_cluster_topology; SINGLE_NODE_INDEX=0; S
             try: process.communicate(timeout=6)
             except subprocess.TimeoutExpired:
                 os.killpg(process.pid,signal.SIGKILL);process.communicate()
+
+    def test_public_selected_prelaunch_stream_samples_only_the_ordered_remote_pair(self):
+        from tests.test_container_runtime import fixture
+        root=pathlib.Path(__file__).resolve().parents[1]
+        spec=fixture(2)[0];path=self.tmpdir/'selected-spec.json';path.write_text(json.dumps(spec))
+        environment=self.tmpdir/'selected-env.sh'
+        environment.write_text(f'''
+. '{root}/scripts/lib.sh'
+load_cluster_topology() {{
+ CLUSTER_TOPOLOGY_ID={'b'*64}; CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_LOADED=1
+ CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2)
+ CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2); CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
+ CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0)
+}}
+require_cluster_nodes() {{ load_cluster_topology; [ "$1" -le 3 ]; }}
+require_profile_topology() {{ load_cluster_topology; }}
+require_topology_ssh_trust() {{ return 0; }}
+ssh_node() {{
+ printf '%s\\n' "$1" >>'{self.tmpdir}/samplers'
+ python3 -u - "$@" <<'PY_SAMPLE'
+import json,sys,time
+rank=sys.argv[sys.argv.index('--rank-label')+1]
+while True:
+ print(json.dumps({{'schema_version':1,'kind':'pulsar-model-serving-resource-sample','rank':rank,'workload':None,'node':{{'mem_available_bytes':1024}}}}),flush=True)
+ time.sleep(.1)
+PY_SAMPLE
+}}
+''')
+        process=subprocess.Popen([str(root/'pulsar'),'resources','--spec-file',str(path),
+            '--placement-nodes','node-2,node-1','--jsonl'],cwd=self.tmpdir,
+            env={**os.environ,'BASH_ENV':str(environment),'PULSAR_MODEL_LIBRARY_DIR':str(self.tmpdir/'state')},
+            text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,start_new_session=True)
+        try:
+            self.assertTrue(select.select([process.stdout],[],[],8)[0])
+            header=json.loads(process.stdout.readline());self.assertEqual(header['ranks'], ['0','1'])
+            ranks=set()
+            deadline=time.monotonic()+8
+            while len(ranks)<2 and time.monotonic()<deadline:
+                if select.select([process.stdout],[],[],1)[0]:
+                    row=json.loads(process.stdout.readline())
+                    if row.get('kind')=='pulsar-model-serving-resource-sample':ranks.add(row['rank'])
+            self.assertEqual(ranks, {'0','1'})
+            self.assertCountEqual((self.tmpdir/'samplers').read_text().splitlines(), ['2','1'])
+            self.assertFalse((self.tmpdir/'state'/'services').exists())
+        finally:
+            if process.poll() is None:os.killpg(process.pid,signal.SIGTERM)
+            try:process.communicate(timeout=6)
+            except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.communicate()
 
 if __name__=='__main__':unittest.main()

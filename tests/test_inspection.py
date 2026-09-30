@@ -55,6 +55,41 @@ class Inspection(unittest.TestCase):
         self.assertEqual([r['job'] for r in value['members']['target']['ranks']],
                          [r['job'] for r in value['members']['draft']['ranks']])
 
+    def test_outside_job_homes_and_all_named_serving_copies_are_verified(self):
+        self.spec = fixture(2, speculative=True)[0]
+        self.store = Store(self.root/'selected-state')
+        for model in serving.required_snapshots(self.spec).values():
+            manifest = model['snapshot_manifest']
+            home = home_record(manifest, 'node-0', self.root/('home-'+manifest['manifest_id']),
+                               {'snapshot_manifest_id': manifest['manifest_id'], 'method': 'sha256'})
+            self.store.put('homes', manifest['manifest_id'], home)
+            for rank, node_id in enumerate(('node-2', 'node-1')):
+                copy_home = home_record(manifest, node_id, self.root/(node_id+'-'+manifest['manifest_id']),
+                                        {'snapshot_manifest_id': manifest['manifest_id'], 'method': 'sha256'})
+                row = prepared_record(copy_home, spec_id=self.spec['spec_id'], topology_id=self.topology,
+                                      rank=rank, is_home_view=False, schema_version=2, pinned=True)
+                self.store.put('views', view_record_key(row), row)
+        value = plan(self.store, self.spec, ['node-2', 'node-1'], self.topology,
+                     full=True, confirmed_node_ids=self.nodes)
+        self.assertEqual(len(value['jobs']), 6)
+        self.assertEqual([job['node_slot'] for job in value['jobs']], [0, 2, 1, 0, 2, 1])
+        for name in ('target', 'draft'):
+            self.assertEqual([row['record']['node_id'] for row in value['members'][name]['ranks']], ['node-2', 'node-1'])
+        (self.root/'jobs').mkdir()
+        for job in value['jobs']:
+            (self.root/'jobs'/f"{job['index']}.verified.json").write_text(json.dumps(job['record']))
+        statuses = [{'index': job['index'], 'returncode': 0} for job in value['jobs']]
+        self.assertEqual(assemble(value, self.root, {'results': statuses, 'first_error': None}), 0)
+        prepared = json.loads((self.root/'prepared.json').read_text())
+        for member in prepared['snapshots'].values():
+            self.assertEqual(member['home_node_id'], 'node-0')
+            self.assertEqual(len(member['ranks']), 2)
+        (self.root/'prepared.json').unlink()
+        statuses[value['members']['target']['home_job']]['returncode'] = 2
+        self.assertEqual(assemble(value, self.root, {'results': statuses, 'first_error': 0}), 2)
+        self.assertFalse((self.root/'prepared.json').exists())
+        self.assertFalse(plan(self.store, self.spec, ['node-2', 'node-1'], self.topology)['jobs'])
+
     def test_preparation_cache_changes_proof_only_and_keeps_metadata_validation(self):
         value=self.plan();record=value['jobs'][0]['record'];cache=self.root/'cache';cache.mkdir()
         cached={'verification':{**record['verification'],'method':'metadata'},'verified_at':'fixture-new-proof'}

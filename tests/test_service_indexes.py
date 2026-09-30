@@ -82,5 +82,26 @@ list_managed_container_ids_remote() { return 0; }
         self.assertEqual(json.loads(result.stdout)['result'],
                          {'completed':True,'spec_id':self.plan['selected_spec_id'],'stopped':False})
 
+    def test_ordinary_stop_refuses_nondefault_recorded_pair_before_mutation(self):
+        spec, facts, prepared, _, _, _ = fixture(2)
+        for slot, physical in enumerate((2, 1)):
+            facts['ranks'][slot].update(node_id=f'node-{physical}', hostname=f'rank-{physical}', ssh_host=f'rank-{physical}')
+            prepared['ranks'][slot]['node_id'] = f'node-{physical}'
+        plan = build_plan(spec, spec['spec_id'], facts, prepared)
+        save(self.store, plan)
+        marker = self.root/'stopped'
+        envfile = self.root/'nondefault-env.sh'
+        envfile.write_text(f". '{ROOT}/scripts/lib.sh'\n"+f'''
+load_cluster_topology() {{ CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_NODE_IDS=(node-0 node-1 node-2); }}
+stop_named_service_by_labels() {{ touch '{marker}'; }}
+''')
+        result = subprocess.run([str(ROOT/'pulsar'), 'stop', spec['spec_id'], '--json'],
+            env={**os.environ, 'BASH_ENV':str(envfile), 'PULSAR_MODEL_LIBRARY_DIR':str(self.store.root)},
+            text=True, capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('guarded stop', result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertIsNotNone(self.store.get('services', plan['service_id']))
+
 
 if __name__=='__main__': unittest.main()

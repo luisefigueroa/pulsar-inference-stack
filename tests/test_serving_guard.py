@@ -501,6 +501,12 @@ require_topology_ssh_trust() { return 0; }
 acquire_model_library_lifecycle_lock() { return 0; }
 shell_join_q() { printf '%q ' "$@"; }
 ssh_node_command() { SSH_NODE_COMMAND=(bash "$REPO_DIR/fake-ssh" "$1"); }
+resolve_single_node_placement() {
+ for ((i=0;i<CLUSTER_TOPOLOGY_COUNT;i++)); do
+  if [ "$1" = "${CLUSTER_NODE_IDS[$i]}" ]; then SINGLE_NODE_ID="${CLUSTER_NODE_IDS[$i]}"; SINGLE_NODE_INDEX="$i"; return 0; fi
+ done
+ return 1
+}
 ''')
         (self.root/'fake-ssh').write_text('export PULSAR_TEST_NODE="$1"\nshift\nexec bash -c "$1"\n')
         (self.root/'docker-state').mkdir()
@@ -537,6 +543,8 @@ def cleanup(plan,rank):
  return {**identity(plan,rank),'cleanup_verified':True}
 def execute(context,root):
  plan=context['plan'];rank=context['rank'];state=Path(os.environ['PULSAR_TEST_DOCKER_STATE'])
+ (state/f'dispatch-{rank}').write_text(os.environ.get('PULSAR_TEST_NODE','0'))
+ if rank==0 and os.environ.get('PULSAR_TEST_NODE','0')!='0' and context.get('ready_file') is not None:raise RuntimeError('remote head received controller readiness path')
  (state/f'guard-{rank}').write_text(plan['guard_run_id'])
  (state/f'started-{rank}').touch()
  try:
@@ -557,10 +565,10 @@ def execute(context,root):
             for stream in (p.stdout,p.stderr):
                 if stream:stream.close()
 
-    def start(self,extra=None):
+    def start(self,extra=None,placement=None):
         p=subprocess.Popen(['bash',str(self.root/'scripts/guarded-serving.sh'),
             '--spec-file',str(self.root/'guard-spec.json'),'--spec-id',self.spec_id,
-            '--output-dir',str(self.output),'--yes'],cwd=self.root,env={**self.env,**(extra or {})},
+            '--output-dir',str(self.output),'--yes', *(['--placement-nodes', placement] if placement else [])],cwd=self.root,env={**self.env,**(extra or {})},
             stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         self.processes.append(p);return p
 
@@ -598,6 +606,36 @@ def execute(context,root):
         self.assertEqual((self.root/'scripts/lib.sh').read_bytes(), before)
         self.assertFalse((self.root/'docker-state/started-2').exists())
         self.assertFalse((self.root/'docker-state/cleanup-2').exists())
+
+    def test_remote_quiet_pair_maps_dispatch_and_never_writes_controller_path(self):
+        with patch.object(program, 'ROOT', self.root):
+            spec, facts, prepared, _, *_ = guarded_fixture(nodes=2, subdirectory='dflash')
+            for slot, physical in enumerate((2, 1)):
+                facts['ranks'][slot].update(node_id=f'node-{physical}', hostname=f'rank-{physical}',
+                                          ssh_host=f'rank-{physical}', control_ip=f'192.0.2.{physical+1}')
+                for member in prepared['snapshots'].values():
+                    row = member['ranks'][slot]
+                    row['node_id'] = f'node-{physical}'
+                    row['hub_path'] = f'/var/tmp/synthetic-node-{physical}'
+                    row['path'] = row['hub_path']+'/snapshots/'+member['revision']
+            plan = runtime.build_plan(spec, spec['spec_id'], facts, prepared)
+        self.spec_id = spec['spec_id']; self.ranks = 2
+        (self.root/'guard-spec.json').write_text(json.dumps(spec))
+        (self.root/'fixture-plan.json').write_text(json.dumps(plan))
+        before = (self.root/'scripts/lib.sh').read_bytes()
+        process = self.start(placement='node-2,node-1')
+        self.wait_started(process)
+        active = json.loads((self.output/'active-plan.json').read_text())
+        controller.stop(self.output, active['guard_run_id'])
+        out, err = process.communicate(timeout=20)
+        self.assertEqual(process.returncode, 0, out+'\n'+err)
+        self.assertEqual((self.root/'docker-state/dispatch-0').read_text(), '2')
+        self.assertEqual((self.root/'docker-state/dispatch-1').read_text(), '1')
+        self.assertEqual(active['home_node_id'], 'node-0')
+        self.assertEqual(active['topology_id'], 'c'*64)
+        self.assertEqual((self.root/'scripts/lib.sh').read_bytes(), before)
+        self.assertFalse((self.output/'ready.json').exists())
+        self.assertEqual(json.loads((self.output/'result.json').read_text())['status'], 'stopped')
 
     def test_reordered_selected_nodes_are_refused_before_execution(self):
         self.select_two_ranks()

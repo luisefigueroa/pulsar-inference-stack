@@ -3,6 +3,7 @@
 # Exit: 0 pass · 1 files are not ready · 3 the check could not run.
 set -euo pipefail
 SCRIPT_NAME=check-weights
+PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 check_exit_convention
 [ -n "${1:-}" ] || die "spec id required" 3
@@ -10,6 +11,7 @@ NAME="$1"; shift
 NODE_SELECTOR="" JSON=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --node) [ -n "${2:-}" ] || die "--node requires a node" 3; NODE_SELECTOR="$2"; shift ;;
     --spec-file) [ -n "${2:-}" ] || die "--spec-file requires a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
     --json) JSON=1 ;;
@@ -21,12 +23,13 @@ done
 acquire_model_library_lifecycle_lock shared
 acquire_model_library_hot_lock shared
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 if [ "$NODES" = 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" || die "placement is not confirmed" 3
   load_cluster_topology || die "confirmed topology required" 3
 else
-  [ -z "$NODE_SELECTOR" ] || die "--node only applies to one-node specs" 3
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "placement is not confirmed" 3
   require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || die "required topology unavailable" 3
 fi
 # model-library info: 0 ready, 1 no ready copy, 2 a copy failed verification,

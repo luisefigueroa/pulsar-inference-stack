@@ -66,6 +66,10 @@ write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"}\n' 
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
 '''
+# Run the owning selector while keeping topology/transport boundaries synthetic.
+_source_lib = (ROOT/'scripts/lib.sh').read_text()
+LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
+                   _source_lib.index('resolve_single_node_placement() {')]
 IMAGE = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/image-checked"
 state="$FIXTURE_IMAGE"; [ ! -e "$FIXTURE_DIR/synced" ] || state=ok

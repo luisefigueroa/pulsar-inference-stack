@@ -63,8 +63,10 @@ load_cluster_topology() {{
  CLUSTER_TOPOLOGY_LOADED=1; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_SSH_TRUSTED=1
  CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2)
  CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2); CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
+ CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0); CLUSTER_PROFILE_HCAS=(mlx5_0 mlx5_0 mlx5_0)
 }}
 require_profile_topology() {{ load_cluster_topology; }}
+require_cluster_nodes() {{ load_cluster_topology; [ "$1" -le "$CLUSTER_TOPOLOGY_COUNT" ]; }}
 require_topology_ssh_trust() {{ load_cluster_topology; }}
 mem_available_gib_local() {{ if [ "$DIAG_MODE" = memory-low ]; then echo 0; else echo 120; fi; }}
 mem_available_gib_remote() {{ [ "$DIAG_MODE" != remote-memory-unreadable ] || return 1; echo 120; }}
@@ -200,6 +202,28 @@ ssh_node() {{
         self.assertCountEqual((self.root/'mutations').read_text().splitlines(), ['save 0', 'load 1'])
         self.assertEqual((self.root/'env.sh').read_bytes(), before)
 
+    def test_public_image_staging_and_memory_checks_use_ordered_remote_pair(self):
+        self.spec, self.path, *_ = fixture(self.root, 2)
+        tag = self.spec['source']['image_repository']+':staging-test'
+        selected = 'node-2,node-1'
+        result = subprocess.run([str(ROOT/'pulsar'), 'image', 'stage', self.spec['spec_id'],
+            '--export-tag', tag, '--placement-nodes', selected, '--yes', '--json'],
+            env={**self.env, 'DIAG_MODE': 'named-success'}, cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([row['topology_index'] for row in json.loads(result.stdout)['result']['ranks']], [2, 1])
+        self.assertEqual([row for row in (self.root/'mutations').read_text().splitlines() if row.startswith('load')], ['load 2', 'load 1'])
+        # Only the desktop/controller memory double is low; the selected pair is healthy.
+        checked = self.run_tool('check-memory.sh', [self.spec['spec_id'], '--placement-nodes', selected, '--cold-start', '--json'], 'memory-low')
+        self.assertEqual(checked.returncode, 0, checked.stderr+checked.stdout)
+        self.assertEqual([row['available_gib'] for row in json.loads(checked.stdout)['rank_available_gib']], [120.0, 120.0])
+
+    def test_ordinary_start_refuses_nondefault_pair_before_image_or_service_mutation(self):
+        self.spec, self.path, *_ = fixture(self.root, 2)
+        result = self.run_tool('up.sh', [self.spec['spec_id'], '--placement-nodes', 'node-2,node-1', '--yes'])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('requires guarded run', result.stderr)
+        self.assertFalse((self.root/'mutations').exists())
+
     def test_named_export_refuses_missing_peer_reference_without_pulling(self):
         tag = self.spec['source']['image_repository']+':staging-test'
         result = subprocess.run([str(ROOT/'pulsar'), 'image', 'stage', self.spec['spec_id'],
@@ -208,6 +232,35 @@ ssh_node() {{
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(json.loads(result.stdout)['ok'])
         self.assertNotIn('pull', (self.root/'mutations').read_text())
+
+    def test_guarded_dry_plan_admits_the_remote_head_and_checks_its_ports(self):
+        from tests.test_serving_guard import guarded_fixture
+        from scripts.container_runtime import validate_plan
+        spec, _, prepared, _, _, _ = guarded_fixture(nodes=2)
+        self.spec = spec; self.path.write_text(json.dumps(spec))
+        for slot, physical in enumerate((2, 1)):
+            prepared['ranks'][slot]['node_id'] = f'node-{physical}'
+        (self.root/'prepared.json').write_text(json.dumps(prepared))
+        with (self.root/'env.sh').open('a') as stream:
+            stream.write('''
+container_ownership_inspect_remote() { return 3; }
+container_ownership_inspect_local() { return 3; }
+library_hot_info_for_profile() { cat "$DIAG_ROOT/prepared.json"; }
+port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; return 0; }
+''')
+        plan_file = self.root/'dry-plan.json'
+        result = subprocess.run([str(ROOT/'pulsar'), 'start', spec['spec_id'], '--spec-file', str(self.path),
+            '--placement-nodes', 'node-2,node-1', '--dry-run'],
+            env={**self.env, 'PULSAR_LAUNCH_PLAN_OUT':str(plan_file), 'PULSAR_MODEL_LIBRARY_DIR':str(self.root/'library')},
+            cwd=ROOT, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+        plan = validate_plan(json.loads(plan_file.read_text()))
+        self.assertEqual([row['node_id'] for row in plan['ranks']], ['node-2','node-1'])
+        self.assertEqual(plan['home_node_id'], 'node-0')
+        self.assertEqual(plan['topology_id'], 'c'*64)
+        self.assertEqual(plan['lifecycle_action'], 'dry-run')
+        self.assertTrue(all(line.endswith('alias-2') for line in (self.root/'checked-ports').read_text().splitlines()))
+        self.assertFalse((self.root/'mutations').exists())
 
     def test_image_id_or_another_repository_does_not_establish_pinned_reference(self):
         for mode in ('legacy-image-id-only', 'wrong-repository'):

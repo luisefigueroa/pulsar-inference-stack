@@ -109,15 +109,18 @@ def preparation_candidates(*, spec: dict, home: dict, node_id: str, views: list[
 
 
 def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id: str,
-                     observations: list[dict], views: list[dict], budgets: dict[str, dict], snapshot: str = "target") -> dict:
+                     observations: list[dict], views: list[dict], budgets: dict[str, dict], snapshot: str = "target",
+                     confirmed_node_ids: list[str] | None = None) -> dict:
     from release_spec import verify_spec
     spec = verify_spec(spec)
     validate_home(home)
     manifest = required_snapshots(spec)[snapshot]['snapshot_manifest']
     if home['snapshot_manifest_id'] != manifest['manifest_id']:
         raise StorageError('home and spec manifests differ')
-    if len(node_ids) != identity_fields(spec)['geometry']['nodes'] or home['node_id'] not in node_ids:
-        raise StorageError('home must be on one of the exact serving nodes')
+    confirmed = node_ids if confirmed_node_ids is None else confirmed_node_ids
+    if (len(node_ids) != identity_fields(spec)['geometry']['nodes'] or len(set(confirmed)) != len(confirmed)
+            or not set(node_ids) <= set(confirmed) or home['node_id'] not in confirmed):
+        raise StorageError('serving nodes and snapshot home must belong to confirmed membership')
     checked = require_observations(node_ids, observations)
     blockers = []
     previous = {v['node_id']: validate_view(v) for v in views if v['spec_id'] == spec['spec_id'] and

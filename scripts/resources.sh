@@ -2,11 +2,13 @@
 # Read-only node/container sampling, including the interval before model launch.
 set -euo pipefail
 SCRIPT_NAME=resources
+PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 . "$REPO_DIR/scripts/model-library-common.sh"
 SERVICE_ID="" SPEC_FILE="" NODE_SELECTOR="" INTERVAL=0.25 OVERRIDE_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --service-id|--spec-file|--node|--interval|--override-file)
       case "${2:-}" in ""|-*) die "$1 requires a value" 2 ;; esac
       case "$1" in
@@ -19,7 +21,7 @@ while [ $# -gt 0 ]; do
       shift ;;
     --jsonl) ;;
     --help|-h)
-      echo 'usage: pulsar resources (--service-id ID | --spec-file FILE [--node NODE] [--override-file FILE]) [--interval SECONDS] --jsonl'
+      echo 'usage: pulsar resources (--service-id ID | --spec-file FILE [--node NODE | --placement-nodes LIST] [--override-file FILE]) [--interval SECONDS] --jsonl'
       echo 'Samples confirmed nodes before launch; container metrics remain unavailable until an exact owned recipe appears.'
       exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
@@ -27,7 +29,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$SERVICE_ID" ] || [ -n "$SPEC_FILE" ] || die 'select a service or spec' 2
-[ -z "$SERVICE_ID" ] || [ -z "$SPEC_FILE$OVERRIDE_FILE$NODE_SELECTOR" ] || die 'service and spec selectors are exclusive' 2
+[ -z "$SERVICE_ID" ] || [ -z "$SPEC_FILE$OVERRIDE_FILE$NODE_SELECTOR$PLACEMENT_NODES" ] || die 'service and spec selectors are exclusive' 2
 python3 - "$INTERVAL" <<'PY'
 import math,sys
 value=float(sys.argv[1])
@@ -91,10 +93,9 @@ PY
     resolve_single_node_placement "$NODE_SELECTOR" || die 'confirmed placement required'
     indexes=("$SINGLE_NODE_INDEX")
   else
-    [ -z "$NODE_SELECTOR" ] || die '--node only applies to one-node specs' 2
+    resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die 'confirmed placement required' 2
     require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || die 'confirmed recipe geometry unavailable'
-    indexes=()
-    for ((i=0;i<NODES;i++)); do indexes+=("$i"); done
+    indexes=("${SERVING_NODE_INDEXES[@]}")
   fi
   node_ids=()
   for index in "${indexes[@]}"; do node_ids+=("${CLUSTER_NODE_IDS[$index]}"); done

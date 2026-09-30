@@ -25,9 +25,10 @@ public contribution. The operator command is `./pulsar`.
   management SSH, rank placement, and ownership. Keep control traffic, model
   transfer, and inference traffic distinct. Never infer serving geometry from
   spare discovered nodes or silently change a transport.
-- The home belongs on one of the spec's selected serving nodes. Home movement is
-  explicit. A prepared home view references that home; other ranks have working
-  copies. Stop preserves files; purge respects pins and container references.
+- The home belongs to confirmed membership and may be outside the selected GPU
+  job. Verify that home separately and require complete prepared copies on every
+  serving rank. Home movement is explicit. Stop preserves files; purge respects
+  pins and container references.
 - Archives are separate verified copies shared by recipes using identical bytes.
   Restore uses the selected spec and archive, without old controller receipts.
   There is no archive-deletion command. Preserve unrelated storage contents.

@@ -170,11 +170,12 @@ def execute(context, root):
                     if rank == 0 and not ready and health_ready(plan, argv):
                         ready = True
                         process.stdin.write(b"H")
-                        # Only the local head writes the controller's readiness
-                        # record; this is API health, not a model-quality result.
-                        with Path(context["ready_file"]).open("x") as out:
-                            json.dump({**identity(plan, rank), "api_healthy": True,
-                                       "service_id": plan["service_id"]}, out)
+                        # A remote API head has no controller output directory.
+                        # Its readiness is inspected through public observation.
+                        if context.get("ready_file") is not None:
+                            with Path(context["ready_file"]).open("x") as out:
+                                json.dump({**identity(plan, rank), "api_healthy": True,
+                                           "service_id": plan["service_id"]}, out)
                     process.stdin.write(b".")
                     process.stdin.flush()
                 except BrokenPipeError:

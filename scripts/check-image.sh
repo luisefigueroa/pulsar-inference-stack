@@ -2,8 +2,9 @@
 # Read-only inspection of the pinned spec image on every selected physical node.
 # Exit: 0 pass · 1 the condition failed · 3 the check could not run.
 set -euo pipefail
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image check SPEC [--spec-file FILE] [--node NODE] [--json]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image check SPEC [--spec-file FILE] [--node NODE | --placement-nodes LIST] [--json]"; exit 0; fi
 SCRIPT_NAME=check-image
+PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 check_exit_convention
 [ -n "${1:-}" ] || die "spec id required" 3
@@ -11,6 +12,7 @@ NAME="$1"; shift
 JSON=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --json) JSON=1 ;;
     --node) [ -n "${2:-}" ] || die "--node requires a node" 3; NODE_SELECTOR="$2"; shift ;;
     --spec-file) [ -n "${2:-}" ] || die "--spec-file requires a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
   shift
 done
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 node_indices=() states=()
 topology_ready=1
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then topology_ready=0; fi
@@ -27,8 +30,8 @@ if [ "$NODES" = 1 ] && [ "$topology_ready" = 1 ]; then
   resolve_single_node_placement "$NODE_SELECTOR" || die "selected node is not confirmed" 3
   node_indices=("$SINGLE_NODE_INDEX")
 else
-  [ -z "$NODE_SELECTOR" ] || die "--node applies only to one-node specs" 3
-  for ((rank=0;rank<NODES;rank++)); do node_indices+=("$rank"); done
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "selected serving nodes are not confirmed" 3
+  node_indices=("${SERVING_NODE_INDEXES[@]}")
 fi
 verify_image_json() {
   python3 -c '
