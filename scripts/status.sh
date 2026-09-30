@@ -36,7 +36,8 @@ while [ $# -gt 0 ]; do
     --spec-file)
       case "${2:-}" in ""|-*) usage_error "--spec-file requires a file" ;; esac
       shift ;;
-    --node|--service-id|--verification-jobs)
+    --service-id) usage_error "status selects a service by its spec ID; use ./pulsar observe --service-id ID" ;;
+    --node|--verification-jobs)
       case "${2:-}" in ""|-*) usage_error "$1 requires a value" ;; esac
       observe_args+=("$1" "$2"); shift ;;
     -*) observe_args+=("$1") ;;

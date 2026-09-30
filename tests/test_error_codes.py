@@ -44,6 +44,8 @@ class ErrorCodes(unittest.TestCase):
                      ["start", spec, "--spec-decode", "--no-spec-decode"],
                      ["model", "prepare", spec, "--backend", "other"], ["observe", "--service-id"],
                      ["status", spec, "--node"], ["stop", spec, "--node"], ["observe", "--node", "--full"],
+                     ["status", spec, "--service-id", spec], ["model", "prepare", spec, "--transport", "nope"],
+                     ["model", "prepare", spec, "--copy-streams", "3"],
                      ["bogus"]):
             with self.subTest(args=args):
                 status, response = pulsar(*args)

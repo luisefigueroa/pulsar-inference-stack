@@ -18,6 +18,7 @@ import argparse
 import http.client
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import urllib.error
@@ -31,6 +32,8 @@ from model_library.node_names import NodeNames
 from scripts.terminal_format import TerminalWriter
 
 HEALTH_TIMEOUT_SECONDS = 3
+SPEC_ID = re.compile(r"[0-9a-f]{64}")
+STATES = {"running", "stale", "stopped", "partial", "degraded"}
 # Inventory service states in human terms; JSON keeps the inventory's values.
 STATE_WORDS = {
     "stale": "exited (its containers exist, but none is running)",
@@ -86,12 +89,13 @@ def check_inventory(inventory: dict) -> dict:
     """An inventory document with the structure status reads, or a Stack defect."""
     services, nodes, worker = inventory.get("services"), inventory.get("nodes"), inventory.get("worker")
     rows_ok = isinstance(services, list) and all(
-        isinstance(row, dict) and isinstance(row.get("ranks", []), list)
-        and all(isinstance(rank, dict) for rank in row.get("ranks") or []) for row in services)
+        isinstance(row, dict) and row.get("state") in STATES and isinstance(row.get("ranks"), list)
+        and all(isinstance(rank, dict) for rank in row["ranks"]) for row in services)
+    nodes_ok = isinstance(nodes, dict) and nodes and all(
+        isinstance(info, dict) and isinstance(info.get("probe_status"), str) for info in nodes.values())
     problems = [
         not rows_ok and "its services",
-        not (isinstance(nodes, dict) and nodes and all(isinstance(info, dict) for info in nodes.values()))
-        and "its nodes",
+        not nodes_ok and "its nodes",
         not (isinstance(worker, dict) and isinstance(worker.get("status"), str)) and "its node probe summary",
     ]
     problems = [problem for problem in problems if problem]
@@ -103,14 +107,16 @@ def check_inventory(inventory: dict) -> dict:
 
 def check_observation(observation: dict, spec_id: str) -> dict:
     """A complete observation of the requested spec, or a Stack defect."""
-    ranks = observation.get("ranks")
+    ranks, api_url = observation.get("ranks"), observation.get("api_url")
     problems = [
         observation.get("kind") != "pulsar-serving-observation" and "its kind",
         observation.get("schema_version") not in (2, 3) and "its schema version",
         observation.get("selected_spec_id") != spec_id and "the spec it names",
-        not isinstance(observation.get("spec_id"), str) and "its effective spec ID",
-        not isinstance(observation.get("api_url"), str) and "its API URL",
-        not (isinstance(ranks, list) and ranks and all(isinstance(rank, dict) for rank in ranks)) and "its ranks",
+        not SPEC_ID.fullmatch(str(observation.get("spec_id"))) and "its effective spec ID",
+        not (isinstance(api_url, str) and re.fullmatch(r"https?://[^/\s]+/?", api_url)) and "its API URL",
+        not (isinstance(ranks, list) and ranks and all(
+            isinstance(rank, dict) and type(rank.get("rank")) is int and rank.get("running") is True
+            and rank.get("owned") is True for rank in ranks)) and "its ranks",
     ]
     problems = [problem for problem in problems if problem]
     if problems:
@@ -186,11 +192,26 @@ def joined(names) -> str:
     return ", ".join(unique) or "its nodes"
 
 
+def recorded_node_ids(service_id) -> list[str]:
+    """The node of each rank in a service's recorded launch plan; empty when unreadable."""
+    try:
+        from model_library.state import Store
+        root = os.environ.get("PULSAR_MODEL_LIBRARY_DIR") or os.environ.get("MODEL_LIBRARY_DIR") \
+            or ROOT / ".model-library"
+        store = Store(root)
+        plan = store.get("service-plans", store.get("services", service_id)["plan_id"])
+        return [str(rank["node_id"]) for rank in plan["ranks"]]
+    except Exception:  # noqa: BLE001 - names are a courtesy; the result stands without them
+        return []
+
+
 def where(result: dict, inventory: dict | None) -> str:
     """The nodes a result covers, by hostname."""
     if result.get("verified"):
         names = NodeNames.saved()
-        return joined(names(rank.get("node_id")) for rank in result.get("ranks") or [])
+        count = len(result.get("ranks") or [])
+        found = joined(names(node) for node in recorded_node_ids(result.get("service_id")))
+        return found if found != "its nodes" else f"{count} rank{'' if count == 1 else 's'}"
     nodes = (inventory or {}).get("nodes") or {}
     return joined((nodes.get(rank.get("node") or "") or {}).get("hostname") or rank.get("node")
                   for service in result.get("services") or [] for rank in service.get("ranks") or [])

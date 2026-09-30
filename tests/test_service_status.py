@@ -19,6 +19,8 @@ sys.path[:0] = [str(ROOT)]
 from scripts import public_cli, service_status
 
 SPEC = "ab" * 32
+SERVICE_ID = "5e" * 32
+PLAN_ID = "7a" * 32
 
 
 class Health:
@@ -47,9 +49,18 @@ class Health:
 
 
 def observation(api_url, matches=True):
+    """A serving observation shaped like observe-serving's: ranks carry no node identity."""
     return {"schema_version": 2, "kind": "pulsar-serving-observation", "selected_spec_id": SPEC,
             "spec_id": SPEC if matches else "cd" * 32, "matches_selected_spec": matches, "api_url": api_url,
-            "ranks": [{"rank": 0, "node_id": "node-0"}]}
+            "service_id": SERVICE_ID, "ranks": [{"rank": 0, "running": True, "owned": True, "spec_id": SPEC}]}
+
+
+def record_service(root):
+    """The service's index and launch plan, where status finds each rank's node."""
+    for namespace, key, value in (("services", SERVICE_ID, {"plan_id": PLAN_ID}),
+                                  ("service-plans", PLAN_ID, {"ranks": [{"node_id": "node-0"}]})):
+        (root / namespace).mkdir(parents=True, exist_ok=True)
+        (root / namespace / f"{key}.json").write_text(json.dumps(value))
 
 
 def inventory(services=(), nodes=None, worker_status="unset"):
@@ -212,16 +223,20 @@ class Defects(unittest.TestCase):
 
     def test_a_malformed_inventory_is_a_stack_defect_not_absence(self):
         good = inventory([service("stale")])
-        for broken in ({**good, "nodes": {}}, {**good, "nodes": []}, {**good, "services": ["row"]},
-                       {**good, "services": [{"conf": SPEC, "ranks": "0"}]}, {**good, "worker": None}):
+        for broken in ({**good, "nodes": {}}, {**good, "nodes": []}, {**good, "nodes": {"head": {}}},
+                       {**good, "services": ["row"]}, {**good, "services": [{"conf": SPEC, "ranks": []}]},
+                       {**good, "services": [{"conf": SPEC, "state": "stale", "ranks": "0"}]},
+                       {**good, "worker": None}):
             with self.subTest(broken=json.dumps(broken)[:60]):
                 self.assertEqual(self.inventory_status(broken), (1, "invalid_stack_output"))
         self.assertEqual(self.inventory_status(good), (0, None))
 
     def test_a_malformed_observation_is_a_stack_defect(self):
         # Unreadable, empty, or naming another spec: never reported as verified.
-        other = {**observation(None), "api_url": "http://127.0.0.1:1", "selected_spec_id": "cd" * 32}
-        for content in ("not json", "{}", json.dumps(other)):
+        valid = observation("http://127.0.0.1:1")
+        broken = [{**valid, "selected_spec_id": "cd" * 32}, {**valid, "spec_id": ""}, {**valid, "api_url": ""},
+                  {**valid, "ranks": [{}]}, {**valid, "ranks": []}]
+        for content in ("not json", "{}", *map(json.dumps, broken)):
             with self.subTest(content=content[:20]):
                 self.assertEqual(self.status(content), (1, "invalid_stack_output"))
         self.assertEqual(self.status(json.dumps(observation("http://127.0.0.1:1")))[1], None)
@@ -250,8 +265,9 @@ esac
             (scripts / name).write_text(body); (scripts / name).chmod(0o700)
         topology = self.root / "topology.json"
         topology.write_text(json.dumps({"nodes": [{"node_id": "node-0", "hostname": "spark-1"}]}))
+        record_service(self.root / "library")
         self.env = {**os.environ, "PYTHONPATH": str(ROOT), "FIXTURE_DIR": str(self.root),
-                    "CLUSTER_TOPOLOGY_FILE": str(topology)}
+                    "CLUSTER_TOPOLOGY_FILE": str(topology), "PULSAR_MODEL_LIBRARY_DIR": str(self.root / "library")}
         self.env.pop("PULSAR_USAGE_EXIT", None)
         self.healthy = Health(200); self.addCleanup(self.healthy.close)
         (self.root / "observation.json").write_text(json.dumps(observation(self.healthy.url)))
@@ -272,11 +288,21 @@ esac
                 self.assertIn("status requires a spec ID", result.stderr)
         result = self.status("--json", PULSAR_USAGE_EXIT="64")
         self.assertEqual(result.returncode, 64)
+        # status selects a service by its spec; a service ID could name another spec's service.
+        result = self.status(SPEC, "--service-id", SERVICE_ID)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("use ./pulsar observe --service-id ID", result.stderr)
         # A value-taking option never takes the next option, such as the appended --json.
         for args in ((SPEC, "--node"), (SPEC, "--node", "--json")):
             result = self.status(*args)
             self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --node requires a value"))
         self.assertFalse(self.ran("observed"))
+
+    def test_a_verified_service_is_named_by_its_recorded_nodes(self):
+        shutil.rmtree(self.root / "library")
+        result = self.status(SPEC)
+        self.assertEqual(result.stdout.splitlines()[0],
+                         "spec abababababab: running and healthy on 1 rank; recipe and files verified")
 
     def test_verified_results_carry_state_and_health(self):
         result = self.status(SPEC, "--json")
