@@ -68,6 +68,13 @@ is running. Live service checks are separate:
 ./pulsar inventory
 ```
 
+`status` leads with its answer, for example `spec 139908cf23bb: running and
+healthy on spark-1; recipe and files verified`. It asks the service's API
+`/health` once. When the complete observation is unavailable, such as for a
+service started before launch records existed, it reports the inventory's view
+and says it is not verified, and why. It tells "no service exists" apart from
+"a node could not be observed".
+
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with a
 one-line result. It lists operations in lifecycle order and keeps storage

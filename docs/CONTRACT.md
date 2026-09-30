@@ -236,6 +236,8 @@ publishes this table as `error_codes` and `exit_statuses`.
 | `unsupported_spec_version` | 2 | The document's schema version is not supported. |
 | `invalid_stack_output` | 2 | A Stack script produced output that is not JSON. This is a Stack defect. |
 | `prerequisite_failed` | 3 | A Stack action exited unsuccessfully; message and details hold its diagnostics. |
+| `service_absent` | 3 | Status observed every node and found no service for the spec. |
+| `service_state_unknown` | 3 | Status could not observe every node, so whether a service exists is not established; details name the nodes. |
 | `cancelled` | 128+signal | Interrupted; cleanup of the command and its node workers was confirmed. |
 | `cleanup_incomplete` | 128+signal | Interrupted; worker exit could not be confirmed. |
 
@@ -276,6 +278,29 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,
 `stopped` is `null` because the result is not established per spec.
+
+`status --json SPEC` reports what status established about the spec's service.
+`ok` is true whenever a service exists, whatever its state:
+
+- When every rank matches its launch record, the result is the serving
+  observation (`kind` `pulsar-serving-observation`) with `state` `running`,
+  `verified` `true` and `reason` null.
+- Otherwise it is `kind` `pulsar-service-status`, built from the service
+  inventory: `state` is the inventory's service state (`running`; `stale` when
+  its containers exist but none is running; `partial`; `degraded`), `verified`
+  is `false`, `reason` says why the complete observation was unavailable,
+  `api_url` is the API found or null, and `services` holds the inventory rows.
+- `healthy` is the answer to one `GET /health` with a 3-second timeout: `true`
+  or `false` for a running service with a known API, otherwise null.
+
+When no service exists and every node was observed, the error is
+`service_absent`; when a node could not be observed, it is
+`service_state_unknown`, with those nodes in `details`. A missing spec ID is a
+`usage_error`, reported before any node is contacted.
+
+Change note, 2026-09-29: status results gained `state`, `verified`, `healthy`
+and `reason`; `service_absent` and `service_state_unknown` replace
+`prerequisite_failed` when status finds no service or cannot tell.
 
 Change note, 2026-09-26: `usage_error`, `file_error` and `invalid_stack_output`
 were split out of `invalid_spec`, which previously covered every input failure.

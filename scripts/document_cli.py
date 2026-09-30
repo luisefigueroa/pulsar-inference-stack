@@ -24,6 +24,9 @@ ERROR_CODES = {
     "unsupported_spec_version": (2, "The document's schema version is not supported."),
     "invalid_stack_output": (2, "A Stack script produced output that is not JSON. This is a Stack defect."),
     "prerequisite_failed": (3, "A Stack action exited unsuccessfully; message and details hold its diagnostics."),
+    "service_absent": (3, "Status observed every node and found no service for the spec."),
+    "service_state_unknown": (3, "Status could not observe every node, so whether a service exists is not "
+                                 "established; details name the nodes."),
     "cancelled": ("128+signal", "Interrupted; cleanup of the command and its node workers was confirmed."),
     "cleanup_incomplete": ("128+signal", "Interrupted; worker exit could not be confirmed."),
 }

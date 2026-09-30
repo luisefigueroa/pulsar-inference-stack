@@ -21,6 +21,14 @@ class StackOutputError(Exception):
     """A Stack script succeeded but its stdout was not the promised JSON."""
 
 
+class StatusFailed(RuntimeError):
+    """Status found no service, or could not establish whether one exists."""
+    def __init__(self, code, message, details):
+        super().__init__(message)
+        self.code = code
+        self.envelope_details = details
+
+
 class StartBlocked(RuntimeError):
     """Start refused; envelope_details holds one record per start blocker."""
     def __init__(self, message, blockers):
@@ -175,7 +183,18 @@ def dispatch(command, args):
                     'observed_at':datetime.now(timezone.utc).isoformat().replace('+00:00','Z'),'verification':result}
         return result
     if command == 'status':
-        return execute('scripts/status.sh', [*args, '--json'], json_result=True)
+        with tempfile.TemporaryDirectory(prefix='pulsar-status-result.') as temp:
+            error_file=Path(temp)/'error.json'
+            try:
+                return execute('scripts/status.sh',[*args,'--json'],json_result=True,
+                               env={**os.environ,'PULSAR_STATUS_ERROR_FILE':str(error_file)})
+            except Cancelled:
+                raise
+            except RuntimeError as exc:
+                if error_file.exists():
+                    error=serving.load_json(error_file)
+                    raise StatusFailed(error['code'],error['message'],error['details']) from exc
+                raise
     if command == 'stop':
         with tempfile.TemporaryDirectory(prefix='pulsar-stop-result.') as temp:
             path=Path(temp)/'result.json'
@@ -285,6 +304,8 @@ def main(argv=None):
     except Cancelled as exc:
         return failure(exc,json_output=json_output,
                        code='cancelled' if exc.confirmed else 'cleanup_incomplete',exit_code=exc.exit_code)
+    except StatusFailed as exc:
+        return failure(exc,json_output=json_output,code=exc.code)
     except RuntimeError as exc:
         return failure(exc,json_output=json_output,code='prerequisite_failed',exit_code=3)
 
