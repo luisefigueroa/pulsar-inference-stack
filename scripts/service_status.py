@@ -82,6 +82,25 @@ def verified(observation: dict) -> dict:
             "healthy": health(observation.get("api_url"), authenticate=True), "reason": None}
 
 
+def check_inventory(inventory: dict) -> dict:
+    """An inventory document with the structure status reads, or a Stack defect."""
+    services, nodes, worker = inventory.get("services"), inventory.get("nodes"), inventory.get("worker")
+    rows_ok = isinstance(services, list) and all(
+        isinstance(row, dict) and isinstance(row.get("ranks", []), list)
+        and all(isinstance(rank, dict) for rank in row.get("ranks") or []) for row in services)
+    problems = [
+        not rows_ok and "its services",
+        not (isinstance(nodes, dict) and nodes and all(isinstance(info, dict) for info in nodes.values()))
+        and "its nodes",
+        not (isinstance(worker, dict) and isinstance(worker.get("status"), str)) and "its node probe summary",
+    ]
+    problems = [problem for problem in problems if problem]
+    if problems:
+        raise StatusError("invalid_stack_output", "the service inventory is malformed (" + ", ".join(problems)
+                          + "); this is a Stack defect")
+    return inventory
+
+
 def check_observation(observation: dict, spec_id: str) -> dict:
     """A complete observation of the requested spec, or a Stack defect."""
     ranks = observation.get("ranks")
@@ -236,6 +255,8 @@ def main(argv: list[str] | None = None) -> int:
             result = verified(check_observation(observation, args.spec))
         else:
             inventory = load(args.inventory, "the service inventory")
+            if inventory is not None:
+                check_inventory(inventory)
             result = from_inventory(args.spec, inventory, last_error(args.observe_error))
     except StatusError as exc:
         target = os.environ.get("PULSAR_STATUS_ERROR_FILE")

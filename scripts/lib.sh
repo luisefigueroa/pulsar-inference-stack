@@ -1335,14 +1335,19 @@ single_node_display() {
   printf '%s%s\n' "${SINGLE_NODE_HOSTNAME:-unknown}" "$suffix"
 }
 
-single_node_api_host() {
-  local host="${SINGLE_NODE_CONTROL_IP:-}"
-  [ -n "$host" ] || host="${SINGLE_NODE_SSH_HOST:-127.0.0.1}"
-  host="${host#*@}"
+# url_host HOST — HOST as a URL authority: an IPv6 literal gets brackets.
+url_host() {
+  local host="${1:?host required}"
   if [[ "$host" == *:* ]] && [[ "$host" != \[*\] ]]; then
     host="[$host]"
   fi
   printf '%s\n' "$host"
+}
+
+single_node_api_host() {
+  local host="${SINGLE_NODE_CONTROL_IP:-}"
+  [ -n "$host" ] || host="${SINGLE_NODE_SSH_HOST:-127.0.0.1}"
+  url_host "${host#*@}"
 }
 
 single_node_api_base_url() {

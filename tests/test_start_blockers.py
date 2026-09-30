@@ -576,8 +576,9 @@ class StatusWithoutService(unittest.TestCase):
             shutil.copyfile(ROOT / "scripts/status.sh", scripts / "status.sh")
             shutil.copyfile(ROOT / "scripts/service_status.py", scripts / "service_status.py")
             (scripts / "observe-serving.sh").write_text("#!/usr/bin/env bash\nexit 1\n")
+            head = {"hostname": "spark-1", "node_id": "node-0", "local": True, "confirmed": True, "probe_status": "ok"}
             (scripts / "inventory.sh").write_text("#!/usr/bin/env bash\necho '" + json.dumps(
-                {"services": [], "worker": worker}) + "'\n")
+                {"services": [], "worker": worker, "nodes": {"head": head}}) + "'\n")
             for name in ("observe-serving.sh", "inventory.sh"):
                 (scripts / name).chmod(0o700)
             return subprocess.run(["bash", str(scripts / "status.sh"), SPEC], text=True, capture_output=True,

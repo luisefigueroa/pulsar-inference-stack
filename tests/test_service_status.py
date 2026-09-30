@@ -122,6 +122,14 @@ class Results(unittest.TestCase):
         result = service_status.from_inventory(SPEC, inventory([service(configured=port)]), "")
         self.assertEqual((result["api_url"], result["healthy"]), (None, None))
 
+    def test_url_hosts_bracket_ipv6_literals(self):
+        script = f". {ROOT}/scripts/lib.sh\nurl_host 2001:db8::1; url_host 192.0.2.1; url_host '[2001:db8::2]'"
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.stdout.split(), ["[2001:db8::1]", "192.0.2.1", "[2001:db8::2]"])
+        # The verified cluster API URL is built with it.
+        self.assertEqual((ROOT / "scripts/observe-serving.sh").read_text().count(
+            'API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"'), 2)
+
     def test_an_ipv6_control_address_is_bracketed(self):
         nodes = {"worker": {"hostname": "spark-2", "control_ip": "2001:db8::1", "local": False}}
         self.assertEqual(service_status.inventory_api_url(service(port=8000, node="worker"), nodes),
@@ -192,6 +200,23 @@ class Defects(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
                 status = service_status.main(["--spec", SPEC, "--observation", str(observation), "--json"])
             return status, json.loads(error.read_text())["code"] if error.exists() else None
+
+    def inventory_status(self, document):
+        with tempfile.TemporaryDirectory() as temp:
+            path, error = Path(temp) / "inventory.json", Path(temp) / "error.json"
+            path.write_text(json.dumps(document))
+            with patch.dict(os.environ, {"PULSAR_STATUS_ERROR_FILE": str(error)}), \
+                    contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                status = service_status.main(["--spec", SPEC, "--inventory", str(path), "--json"])
+            return status, json.loads(error.read_text())["code"] if error.exists() else None
+
+    def test_a_malformed_inventory_is_a_stack_defect_not_absence(self):
+        good = inventory([service("stale")])
+        for broken in ({**good, "nodes": {}}, {**good, "nodes": []}, {**good, "services": ["row"]},
+                       {**good, "services": [{"conf": SPEC, "ranks": "0"}]}, {**good, "worker": None}):
+            with self.subTest(broken=json.dumps(broken)[:60]):
+                self.assertEqual(self.inventory_status(broken), (1, "invalid_stack_output"))
+        self.assertEqual(self.inventory_status(good), (0, None))
 
     def test_a_malformed_observation_is_a_stack_defect(self):
         # Unreadable, empty, or naming another spec: never reported as verified.

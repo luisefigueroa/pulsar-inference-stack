@@ -68,7 +68,7 @@ if [ "$NODES" = 1 ]; then
 else
   [ -z "$NODE_SELECTOR" ] || usage_die "--node only applies to one-node specs"
   require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || die "required topology unavailable"
-  API_URL="http://${CLUSTER_NODE_CONTROL_IPS[0]}:$PORT"
+  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"
 fi
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required"
 CONTAINER=$(container_name_for "$NAME" "$NODES")
@@ -98,7 +98,7 @@ SERVED_NAME=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["s
 if [ "$NODES" = 1 ]; then
   API_URL=$(single_node_api_base_url "$PORT")
 else
-  API_URL="http://${CLUSTER_NODE_CONTROL_IPS[0]}:$PORT"
+  API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"
 fi
 for ((rank=0; rank<NODES; rank++)); do
   index="$rank"; [ "$NODES" != 1 ] || index="$SINGLE_NODE_INDEX"
