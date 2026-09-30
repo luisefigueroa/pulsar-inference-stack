@@ -56,7 +56,7 @@ class Fixture:
             PULSAR_DOCKER=str(binary/'docker'), PULSAR_SELFTEST='1',
             PULSAR_MODEL_LIBRARY_DIR=str(root/'model-library'),
             PULSAR_COLD_STORAGE_TEST_DOTENV=str(root/'absent-env'),
-            PYTHONDONTWRITEBYTECODE='1', GUM='0', COLUMNS='48', TERM='dumb')
+            PYTHONDONTWRITEBYTECODE='1', COLUMNS='48', TERM='dumb')
 
     def run(self, *args, **kwargs):
         return subprocess.run([str(ROOT/'pulsar'), *args], env=self.env, text=True, capture_output=True, timeout=30, **kwargs)
@@ -82,16 +82,23 @@ def double_main():
     if tool == 'avahi-browse':
         return 0
     if tool == 'gum':
-        lines = sys.stdin.read().splitlines()
-        if 'choose' in args:
+        calls = [json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
+        if args[:1] == ['choose']:
+            lines = sys.stdin.read().splitlines()
             header = args[args.index('--header')+1]
             # A comma-separated choice list answers successive visits to one menu.
             choices = os.environ.get('TOPOLOGY_GUM_HOME' if header == 'Pulsar Inference Stack' else 'TOPOLOGY_GUM_CHOICE', '0').split(',')
-            visits = sum(1 for line in (root/'calls.jsonl').read_text().splitlines()
-                         if json.loads(line)[0] == 'gum' and header in json.loads(line)[1]) - 1
+            visits = sum(1 for name, logged in calls if name == 'gum' and header in logged) - 1
             print(lines[int(choices[min(visits, len(choices)-1)])])
             return 0
-        return int(os.environ.get('TOPOLOGY_CONFIRM_RC', '1'))
+        if args[:1] == ['style']:
+            sys.stdout.write(sys.stdin.read())
+            return 0
+        # Confirm reads keys from the terminal, never stdin. A comma-separated
+        # exit-status list answers successive confirmations.
+        answers = os.environ.get('TOPOLOGY_CONFIRM_RC', '1').split(',')
+        visits = sum(1 for name, logged in calls if name == 'gum' and logged[:1] == ['confirm']) - 1
+        return int(answers[min(visits, len(answers)-1)])
     rank, action = 0, tool
     if tool == 'ssh':
         separator = args.index('--'); alias = args[separator+1]

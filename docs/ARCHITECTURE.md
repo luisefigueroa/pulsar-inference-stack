@@ -109,10 +109,11 @@ with saved observations of known managed files and archives. Reading the
 catalog does not inspect arbitrary caches or contact serving nodes. Observation
 age is explicit and unobserved state stays unknown.
 
-Check now refreshes operational observations. Start independently rechecks
-identity, recipe, geometry, image, capacity, placement and ownership. A previous
-successful check does not authorize a later action. A live service observation
-is separate from both catalog review and prepared-file state.
+`models check` (**Check now** in the menu) refreshes operational observations.
+Start independently rechecks identity, recipe, geometry, image, capacity,
+placement and ownership. A previous successful check does not authorize a
+later action. A live service observation is separate from both catalog review
+and prepared-file state.
 
 ## Qualification and contribution
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Orchestrate checks then launch serve.sh or start-cluster.sh.
-#   pulsar start SPEC_ID [--spec-file FILE] [--node NODE_ID]
+#   pulsar start SPEC_ID [--spec-file FILE] [--node NODE]
 #                [--dry-run] [--yes] [--verbose]
 set -euo pipefail
 SCRIPT_NAME=up
@@ -8,7 +8,7 @@ SCRIPT_NAME=up
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
 up_usage() {
-  cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; w=TerminalWriter(); [w.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
+  python3 "$REPO_DIR/scripts/terminal_format.py" <<'HELP'
 usage: pulsar start SPEC_ID [options]
 
   --spec-file FILE       Use an explicit workbench candidate
@@ -17,7 +17,7 @@ usage: pulsar start SPEC_ID [options]
   --memory-estimate-id ID      Require the previously reviewed estimate digest
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
-  --node NODE_ID        Select a confirmed node for a one-node spec
+  --node NODE           Select a confirmed node, by hostname or node ID, for a one-node spec
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service

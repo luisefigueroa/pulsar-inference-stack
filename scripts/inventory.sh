@@ -23,7 +23,7 @@ VERBOSE=0
 FROM_FIXTURE=""
 
 usage() {
-  cat <<'EOF'
+  python3 "$REPO_DIR/scripts/terminal_format.py" <<'EOF'
 usage: pulsar inventory [--json] [--verbose] [--from-fixture path]
 
   Read-only inventory of vLLM-related containers on this node and every other

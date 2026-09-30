@@ -1,7 +1,7 @@
 """Catalog projection from published specs and saved managed-file observations.
 
 Reading this module never probes hardware, scans cache directories or mutates
-controller state. Only an explicit Check now refreshes operational observations.
+controller state. Only an explicit models check refreshes operational observations.
 """
 from __future__ import annotations
 
@@ -10,13 +10,15 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
+import shlex
 import sys
 
 from release_spec import load_spec
 from .integrity import StorageError
 from .node_names import NodeNames
 from .state import Store, checked_id
-from scripts.terminal_format import TerminalWriter
+from scripts.terminal_format import TerminalWriter, emit_help
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -165,64 +167,281 @@ def entries(repo, store, *, spec_id=None, now=None):
     ))
 
 
-LOCAL_LABELS = {"unknown": "unknown; choose Check now", "missing": "required files missing at last check",
-    "ready": "files prepared at last check", "changed": "files changed; verification is required"}
-ARCHIVE_LABELS = {"unknown": "unknown", "missing": "not found at last check",
-    "present": "present; verify before restore",
-    "verified": "verified at last check", "unavailable": "could not be checked",
-    "not-configured": "storage is not configured"}
+# Human wording for saved observations. Saved records show their age; a spec
+# that was never checked is unknown, never absent.
+FILE_STATES = {"ready": "prepared on every rank", "missing": "not prepared on every rank",
+    "changed": "changed since verification", "unknown": "unknown"}
+SNAPSHOT_FILE_STATES = {"ready": "prepared", "missing": "not prepared", "changed": "changed",
+    "unknown": "unknown"}
+# A flag token: one or two dashes and a letter, so "-1" can still be a value.
+FLAG = re.compile(r"^--?[A-Za-z]")
+LIST_LABEL_WIDTH = 11
+DETAILS_LABEL_WIDTH = 13
 
 
-def render(rows, *, details=False, writer=None, names=None):
+def _checked(age):
+    return f"checked {age_text(age)}" if age is not None else "check time unknown"
+
+
+def _verified(age):
+    return f"verified {age_text(age)}" if age is not None else "verified (age unknown)"
+
+
+def files_text(row):
+    """The saved preparation state of the complete recipe with the check's age."""
+    if not row.get("checked_at"):
+        return "unknown: never checked"
+    return f"{FILE_STATES[row['local_state']]} ({_checked(row.get('observation_age_seconds'))})"
+
+
+def archive_fact(state, check_age, record, record_age, *, checked=True):
+    """The strongest established archive fact as (kind, age, wording).
+
+    ``state`` is the saved check's archive_state and ``check_age`` its age;
+    ``record`` is the archive verification record and ``record_age`` the age
+    of its verified_at. A verification outranks a check that only saw the
+    archive present or learned nothing, and any check older than it. An older
+    verification stays visible next to what a later check found. Unobserved
+    state is unknown, never absent.
+    """
+    newer = (record is not None and record_age is not None and check_age is not None
+             and record_age < check_age)
+    if record is not None and (state in ("verified", "present", "unknown") or newer or not checked):
+        age = record_age
+        if state == "verified" and check_age is not None and (age is None or check_age < age):
+            age = check_age
+        return "verified", age, _verified(age)
+    if state == "verified":
+        return "verified", check_age, _verified(check_age)
+    before = f" ({_verified(record_age)} before that)" if record is not None else ""
+    if state == "present":
+        return "present", check_age, "present at last check, not verified"
+    if state == "missing":
+        return "missing", check_age, "not found at last check" + before
+    if state == "unavailable":
+        return "unavailable", check_age, "unavailable at last check" + before
+    if state == "not-configured":
+        return "not-configured", check_age, "archive location not configured at last check" + before
+    if not checked:
+        return "unknown", None, "unknown: never checked"
+    return "unknown", check_age, f"unknown ({_checked(check_age)})"
+
+
+def archive_facts(row, now=None):
+    """The archive fact of every required snapshot; schema 2 has one unnamed snapshot."""
+    checked = bool(row.get("checked_at"))
+    check_age = row.get("observation_age_seconds")
+    if not isinstance(row.get("snapshots"), dict):
+        return {None: archive_fact(row.get("archive_state", "unknown"), check_age, row.get("archive"),
+                                   row.get("archive_age_seconds"), checked=checked)}
+    facts = {}
+    for name, member in row["snapshots"].items():
+        observation = member.get("observation") or {}
+        record = member.get("archive")
+        record_age = age_seconds(record.get("verified_at"), now) if record else None
+        facts[name] = archive_fact(observation.get("archive_state", "unknown"), check_age, record,
+                                   record_age, checked=checked and bool(observation))
+    return facts
+
+
+def archive_text(row, now=None):
+    """One archive line for the recipe; snapshots that differ are named."""
+    facts = archive_facts(row, now)
+    wordings = [text for _, _, text in facts.values()]
+    if len(set(wordings)) == 1:
+        return wordings[0]
+    if all(kind == "verified" for kind, _, _ in facts.values()):
+        ages = [age for _, age, _ in facts.values()]
+        # The oldest verification is the weakest link.
+        return _verified(None if None in ages else max(ages))
+    return "; ".join(f"{name} {text}" for name, (_, _, text) in facts.items())
+
+
+def recipe_text(geometry):
+    nodes = geometry["nodes"]
+    text = f"{nodes} node{'' if nodes == 1 else 's'} · tensor parallel {geometry['tp']}"
+    if geometry.get("pp", 1) != 1:
+        text += f" · pipeline parallel {geometry['pp']}"
+    return text
+
+
+def archive_location_status(environ=None):
+    """Archive location status as model-storage.sh reports it from PULSAR_COLD_ROOT."""
+    environ = os.environ if environ is None else environ
+    if "PULSAR_COLD_ROOT" not in environ:
+        return "not-configured"
+    return "configured" if environ["PULSAR_COLD_ROOT"] else "disabled"
+
+
+def argument_groups(tokens):
+    """Shell-quoted tokens with each --flag paired with its value."""
+    tokens = [str(token) for token in tokens]
+    groups, index = [], 0
+    while index < len(tokens):
+        token = tokens[index]
+        if (FLAG.match(token) and "=" not in token and index + 1 < len(tokens)
+                and not FLAG.match(tokens[index + 1])):
+            groups.append(f"{shlex.quote(token)} {shlex.quote(tokens[index + 1])}")
+            index += 2
+        else:
+            groups.append(shlex.quote(token))
+            index += 1
+    return groups
+
+
+def group_lines(groups, first_width, next_width):
+    """Fill lines with whole groups: a flag and its value share a line."""
+    lines = []
+    for group in groups:
+        width = first_width if not lines else next_width
+        if lines and len(lines[-1]) + 1 + len(group) <= width:
+            lines[-1] += " " + group
+        else:
+            lines.append(group)
+    return lines
+
+
+def _groups_field(out, label, groups, *, label_width):
+    prefix = "  " + label.ljust(label_width)
+    pad = " " * len(prefix)
+    available = max(1, out.width - len(prefix))
+    first = True
+    for line in group_lines(groups, available, available):
+        # Only a group longer than a whole line breaks, at the width.
+        for start in range(0, len(line), available):
+            print((prefix if first else pad) + line[start:start + available], file=out.stream)
+            first = False
+
+
+def _command_field(out, label, tokens, *, label_width):
+    """A pasteable command; a wrapped line ends with a shell continuation."""
+    prefix = "  " + label.ljust(label_width)
+    continuation = " " * (len(prefix) + 2)
+    lines = group_lines(argument_groups(tokens), out.width - len(prefix) - 2,
+                        out.width - len(continuation) - 2)
+    for index, line in enumerate(lines):
+        end = " \\" if index < len(lines) - 1 else ""
+        print((prefix if index == 0 else continuation) + line + end, file=out.stream)
+
+
+def _heading(out, row):
+    title = f"{row['model_id']}   spec {row['spec_id'][:12]}"
+    if len(title) <= out.width:
+        out.emit(title)
+    else:
+        out.emit(row["model_id"], break_on_hyphens=True)
+        out.emit(f"spec {row['spec_id'][:12]}", initial_indent="  ")
+
+
+def _details(out, row, names, label_width):
+    def field(label, value):
+        out.field(label, value, indent=2, label_width=label_width)
+
+    pad = " " * (2 + label_width)
+    field("Spec ID", row["spec_id"])
+    field("Model commit", row["snapshot_revision"])
+    field("Manifest", row["snapshot_manifest_id"])
+    out.emit("Image", initial_indent="  ")
+    # An identifier to copy whole: never wrapped, even past the width.
+    print("    " + str(row["image"].get("digest")), file=out.stream)
+    _groups_field(out, "Arguments", argument_groups(row["engine_args"]), label_width=label_width)
+    snapshots = row["snapshots"] if isinstance(row.get("snapshots"), dict) else {}
+    homes = ([(f"{name}: ", member.get("home")) for name, member in snapshots.items()]
+             or [("", row.get("home"))])
+    if not any(home for _, home in homes):
+        field("Home", "none recorded")
+    else:
+        for index, (name, home) in enumerate(homes):
+            where = name + (names(home["node_id"]) if home else "none recorded")
+            if index == 0:
+                field("Home", where)
+            else:
+                out.emit(where, initial_indent=pad, subsequent_indent=pad)
+            if home:
+                out.emit(home["path"], initial_indent=pad, subsequent_indent=pad)
+    copies = sorted(row.get("prepared_copies") or [], key=lambda view: view["rank"])
+    if not copies:
+        out.field("Prepared copies", "none recorded", indent=2, label_width=label_width)
+        return
+    out.emit("Prepared copies", initial_indent="  ")
+    snapshot_names = {member["snapshot_manifest_id"]: name for name, member in snapshots.items()}
+    for view in copies:
+        parts = [names(view["node_id"])]
+        if view.get("snapshot_manifest_id") in snapshot_names:
+            parts.append(snapshot_names[view["snapshot_manifest_id"]])
+        parts.append("pinned" if view.get("pinned") else "not pinned")
+        rank = f"rank {view['rank']}  "
+        hanging = " " * (4 + len(rank))
+        out.emit(" · ".join(parts), initial_indent="    " + rank, subsequent_indent=hanging)
+        out.emit(view["path"], initial_indent=hanging, subsequent_indent=hanging)
+
+
+def render(rows, *, details=False, writer=None, names=None, location=None, now=None):
+    """One compact block per spec that leads with saved state.
+
+    ``location`` is the archive location status (configured, disabled or
+    not-configured; default from PULSAR_COLD_ROOT) that decides the suggested
+    next step. Details add identity, arguments, homes and prepared copies.
+    """
+    from .catalog_menu import suggested_command
     out = writer or TerminalWriter()
     names = names or NodeNames()
+    location = location or archive_location_status()
+    label_width = DETAILS_LABEL_WIDTH if details else LIST_LABEL_WIDTH
+
+    def field(label, value):
+        out.field(label, value, indent=2, label_width=label_width)
+
     if not rows:
         out.emit("The catalog is empty.")
-        out.emit("A spec enters the catalog when the maintainer publishes it under releases/. Interactive ./pulsar confirms cluster membership first. ./pulsar models still lists the catalog without topology.")
+        out.emit("Specs appear when the maintainer publishes them under releases/.")
         return
-    out.emit("Catalog review, prepared files and running service are separate states.")
-    out.emit("These are saved observations. Start rechecks its prerequisites.")
-    for row in rows:
-        out.blank()
-        out.emit(row["model_id"])
-        out.field("Spec", row["spec_id"] if details else row["spec_id"][:12])
-        if row.get("historical"):
-            out.emit("Historical spec: create a schema-2 spec for future operations.")
-        geometry = row["geometry"]
-        out.field("Recipe", f"{geometry['nodes']} node(s); tensor parallel {geometry['tp']}; pipeline parallel {geometry['pp']}")
+    for number, row in enumerate(rows):
+        if number:
+            out.blank()
+        _heading(out, row)
+        field("Recipe", recipe_text(row["geometry"]))
         startable = row.get("start_supported") is not False
         if not startable:
             reason = row.get("start_unsupported_reason")
-            out.field("Start", f"not supported by this Stack ({START_UNSUPPORTED_LABELS.get(reason, reason)})")
+            field("Start", f"not supported by this Stack ({START_UNSUPPORTED_LABELS.get(reason, reason)})")
+        if row.get("historical"):
+            out.emit("Historical spec: create a schema-2 spec for future operations.",
+                     initial_indent="  ", subsequent_indent="  ")
         review = row.get("review") or {}
-        out.field("State", row.get("state") or "not specified")
-        out.field("Review", review.get("status") or "not specified")
+        if row.get("state"):
+            field("State", row["state"])
+        if review.get("status"):
+            field("Review", review["status"])
         if review.get("status") == "withdrawn":
-            out.field("Reason", review.get("reason", "No reason recorded"))
+            field("Reason", review.get("reason") or "No reason recorded")
             out.emit("Withdrawn recipes are not recommended."
-                     + (" Exact serving remains possible when operational checks pass." if startable else ""))
-        out.field("Files", LOCAL_LABELS[row["local_state"]])
-        out.field("Archive", ARCHIVE_LABELS[row["archive_state"]])
-        out.field("Checked", f"{row['checked_at']} ({age_text(row['observation_age_seconds'])})" if row["checked_at"] else "not observed")
-        if row["archive"]:
-            out.field("Last archive verification", f"{row['archive'].get('verified_at', 'unknown')} ({age_text(row['archive_age_seconds'])})")
-        for name, member in row.get('snapshots',{}).items():
-            status=member.get('observation',{})
-            out.field('Snapshot '+name, member['model_id']+' @ '+member['model_commit'][:12])
-            out.field('Files / archive',status.get('local_state','unknown')+' / '+status.get('archive_state','unknown'),indent=2)
+                     + (" Exact serving remains possible when operational checks pass." if startable else ""),
+                     initial_indent="  ", subsequent_indent="  ")
+        field("Files", files_text(row))
+        field("Archive", archive_text(row, now))
+        if details and isinstance(row.get("snapshots"), dict):
+            facts = archive_facts(row, now)
+            out.emit("Snapshots", initial_indent="  ")
+            for name, member in row["snapshots"].items():
+                files = SNAPSHOT_FILE_STATES[(member.get("observation") or {}).get("local_state", "unknown")]
+                out.emit(f"{name} snapshot {member['model_id']} @ {str(member['model_commit'])[:8]}: "
+                         f"files {files} · archive {facts[name][2]}",
+                         initial_indent="    ", subsequent_indent="      ", break_on_hyphens=True)
         if details:
-            out.field("Commit", row["snapshot_revision"])
-            out.field("Snapshot", row["snapshot_manifest_id"])
-            out.field("Image", row["image"]["digest"])
-            out.field("Arguments", " ".join(row["engine_args"]))
-            home = row["home"]
-            out.field("Home record", f"{names(home['node_id'])}: {home['path']}" if home else "none recorded")
-            out.field("Copy records", str(len(row["prepared_copies"])))
-            for view in sorted(row["prepared_copies"], key=lambda v: v["rank"]):
-                out.field(f"Rank {view['rank']}", f"{names(view['node_id'])}; {'pinned' if view['pinned'] else 'not pinned'}; {view['path']}")
             for blocker in row["blockers"]:
-                out.field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
-            out.emit("Saved location records describe known managed files; they are not proof that those files are currently intact.")
+                field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
+        command = suggested_command(row, location, names)
+        if command:
+            _command_field(out, "Suggested", command, label_width=label_width)
+        if details:
+            _details(out, row, names, label_width)
+    out.blank()
+    if details and len(rows) == 1:
+        out.emit("Saved records: locations are not proof that files are intact now. "
+                 f"./pulsar models check {rows[0]['spec_id'][:12]} refreshes them; start rechecks everything.")
+    else:
+        out.emit("Saved records. ./pulsar models check SPEC refreshes them; start rechecks everything.")
 
 
 def prefix_hint(repo, spec_id):
@@ -237,13 +456,37 @@ def prefix_hint(repo, spec_id):
                        + ", ".join(matches))
 
 
+HELP = """\
+usage: pulsar models [list|menu] [--json]
+       pulsar models show SPEC [--json]
+       pulsar models check SPEC [--node NODE]
+
+Browse catalog specs with their saved file and archive state; only check contacts nodes.
+
+  list        Every catalog spec: recipe, files, archive and the suggested next step
+  show SPEC   One spec in detail: identity, image, engine arguments, home, prepared copies and blockers
+  check SPEC  Check the spec's managed files and archive and save the result; see pulsar model --help
+  menu        Open the catalog menu; it needs an interactive terminal with Gum
+  --json      Print list or show as JSON
+
+Without a command, a terminal opens the menu and other callers get the list. SPEC is a catalog spec ID; people may type a unique prefix of at least 12 characters.
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="pulsar models", description="Read catalog specs and saved storage observations")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if "-h" in argv or "--help" in argv:
+        emit_help(HELP)
+        return 0
+    parser = argparse.ArgumentParser(prog="pulsar models", usage="pulsar models [list|show SPEC] [--json]",
+                                     add_help=False)
     parser.add_argument("command", choices=("list", "show"), nargs="?", default="list")
     parser.add_argument("spec_id", nargs="?")
     parser.add_argument("--json", action="store_true")
-    parser.add_argument("--repo-root", default=ROOT)
-    parser.add_argument("--state-root", default=os.environ.get("PULSAR_MODEL_LIBRARY_DIR", os.environ.get("MODEL_LIBRARY_DIR", str(ROOT / ".model-library"))))
+    # Internal: model-storage.sh and tests select the catalog and state roots.
+    parser.add_argument("--repo-root", default=ROOT, help=argparse.SUPPRESS)
+    parser.add_argument("--state-root", default=os.environ.get("PULSAR_MODEL_LIBRARY_DIR", os.environ.get("MODEL_LIBRARY_DIR", str(ROOT / ".model-library"))),
+                        help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if args.command == "show" and not args.spec_id:

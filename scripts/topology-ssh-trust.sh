@@ -11,7 +11,7 @@ TRUST_TOOL="$REPO_DIR/scripts/topology_ssh_trust.py"
 PROBE_TOOL="$REPO_DIR/scripts/probe-node.py"
 
 usage() {
-  cat <<'EOF'
+  python3 "$REPO_DIR/scripts/terminal_format.py" <<'EOF'
 usage:
   pulsar ssh-trust enroll [--yes] [--accept-key-change]
   pulsar ssh-trust check [--json]
@@ -144,8 +144,11 @@ cmd_enroll() {
     shift
   done
 
-  if [ "$yes" = 0 ] && [ ! -t 0 ]; then
-    die "SSH enrollment needs an interactive confirmation or explicit --yes"
+  if [ "$yes" = 0 ]; then
+    # The confirmation draws with Gum; check before probing any node.
+    . "$REPO_DIR/scripts/ui.sh"
+    gum_available \
+      || die "SSH enrollment asks for confirmation in an interactive terminal with Gum; to enroll without the question, use: pulsar ssh-trust enroll --yes"
   fi
 
   require_cmd python3 "$PULSAR_SSH" "$PULSAR_DOCKER"
@@ -187,7 +190,6 @@ cmd_enroll() {
   print_hanging "  Effect    " \
     "Saves confirmed SSH identities and endpoint configuration. If topology identity changes, prepare the selected model again before serving."
   if [ "$yes" = 0 ]; then
-    . "$REPO_DIR/scripts/ui.sh"
     if ! confirm 'Enroll these SSH identities?'; then
       log "not enrolled"
       return 0

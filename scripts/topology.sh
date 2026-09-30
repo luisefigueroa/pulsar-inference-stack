@@ -14,7 +14,7 @@ for command, description in [
     ("check [--json]", "Check all saved nodes and fabric without saving."),
     ("detect [--json] [--candidate HOST ...]", "Discover without changing membership or SSH trust."),
     ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys]", "Review and explicitly save membership; no model actions."),
-    ("menu", "Open the Gum/plain topology menu without probing."),
+    ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
     writer.emit(command, initial_indent="  ", subsequent_indent="    ")
     writer.emit(description, initial_indent="    ", subsequent_indent="    ")
@@ -43,10 +43,9 @@ case "$action" in
       esac
       shift
     done
-    if [ ! -t 0 ]; then
-      echo 'First-use setup is interactive. Use topology configure and ssh-trust enroll separately with explicit approval.' >&2
-      exit 2
-    fi
+    # Its confirmations draw with Gum; without it, run the steps separately.
+    . "$REPO_DIR/scripts/ui.sh"
+    require_gum "guided setup" "pulsar topology detect, then topology configure --yes and ssh-trust enroll --yes after review"
     . "$REPO_DIR/scripts/lib.sh"
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo 'No saved membership. Detecting candidates without saving first.'
@@ -77,6 +76,7 @@ case "$action" in
   menu)
     [ $# = 0 ] || { usage >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"
+    require_gum "the topology menu" "pulsar topology show | check | setup | detect | configure"
     # Each action runs as a child and returns here; Back leaves this menu.
     while true; do
       choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \

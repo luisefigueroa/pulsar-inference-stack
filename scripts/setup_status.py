@@ -26,8 +26,11 @@ from scripts.topology_manifest import extract_topology, topology_has_ssh_trust
 KIND = "pulsar-setup-status"
 SCHEMA_VERSION = 1
 SPEC_FILENAME = re.compile(r"^[0-9a-f]{64}\.json$")
+# The next setup step. Without saved membership, guided topology setup
+# confirms membership and enrolls SSH trust in one step; trust alone is
+# enrolled when membership is already saved.
 ACTIONS = {
-    "confirm-membership": "Confirm cluster membership",
+    "set-up-topology": "Set up cluster membership and SSH trust",
     "enroll-ssh-trust": "Enroll SSH trust",
     "select-archive": "Select archive location",
 }
@@ -89,7 +92,7 @@ def build(repo: str | Path, environ: Mapping[str, str] | None = None) -> dict[st
     archives = _archive_status(repo, env)
     specs = catalog_spec_count(repo)
     if topology["status"] != "confirmed":
-        action = "confirm-membership"
+        action = "set-up-topology"
     elif topology["trust"] == "not-enrolled":
         action = "enroll-ssh-trust"
     elif archives == "not-configured":
@@ -140,7 +143,7 @@ def render_text(
     catalog = (
         "empty (no specs published yet)"
         if specs == 0
-        else ("1 recipe" if specs == 1 else f"{specs} recipes")
+        else ("1 spec" if specs == 1 else f"{specs} specs")
     )
     if document["complete"]:
         out.emit("Cluster")

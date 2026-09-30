@@ -45,17 +45,23 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 ```
 
 The catalog includes every released recipe even when no local files are
-present. It separates the spec's review status, local file preparation and
-archive observations. Details include exact identity, known home location,
-per-rank prepared copies, pins and blockers. A **rank** is this job's slot in
-the serving group; rank 0 provides the API and need not hold the home.
+present. Each spec is one block that leads with its saved state: recipe
+geometry, files, archive and, when saved records point to one, the
+**Suggested** next step as a command to paste. State and review rows appear
+only when the spec sets them. The archive line reconciles the last check with
+the archive verification record and shows the strongest fact with its age,
+such as `verified 13 hours ago` or `not found at last check (verified 19 days
+ago before that)`. Details add exact identity, the image digest, engine
+arguments, the home, per-rank prepared copies, pins and blockers. A **rank** is
+this job's slot in the serving group; rank 0 provides the API and need not
+hold the home.
 
 Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
-launch will work. **Check now** checks the selected managed locations; it
-does not search arbitrary cache trees, download files or start a server.
-**Files prepared** does not mean a service is running. Live service checks
-are separate:
+launch will work. `models check` (**Check now** in the menu) checks the
+selected managed locations; it does not search arbitrary cache trees, download
+files or start a server. Files prepared on every rank does not mean a service
+is running. Live service checks are separate:
 
 ```sh
 ./pulsar status <spec-id> --node <node> --json
@@ -71,7 +77,12 @@ saved records rule it out, and a **Not shown** line names it and the reason.
 cannot run; `models show` marks it `Start not supported by this Stack`, and no
 suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
-session; it is a starting point, not a readiness check. Storage mutations show
+session; it is a starting point, not a readiness check. `models list` and
+`models show` print the same step as a command. A download or restore names
+the node the saved records already use; without one it leaves `--node` out and
+goes to the default destination (the deployment overlay's placement, or this
+node), while the menu asks for a node. The recipe
+list labels show the same short saved state. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
 model, nodes and consequence; a blocked plan ends without a question. Esc
 steps back one level. Ctrl-C at a prompt leaves the menu; during an operation
@@ -97,11 +108,14 @@ remaining local storage for it with `--spec-file` and its retained document.
 ## Configure topology and storage
 
 Confirmed topology determines membership and physical node identity. On a
-terminal, `./pulsar` offers only the next bind step (confirm membership, enroll
-SSH trust, or select an archive location) until this checkout is bound to the
-cluster. That menu uses saved local files; it does not probe nodes. After the
-checkout is bound, open `./pulsar` and choose **Cluster topology**. The same
-actions are available directly:
+terminal, `./pulsar` offers the next setup step (**Set up cluster membership
+and SSH trust**, which runs `./pulsar topology setup`; **Enroll SSH trust**
+when membership is already saved; or **Select archive location**), read-only
+catalog browsing (`./pulsar models list`) and Exit until this checkout is bound
+to the cluster. A step that fails reports that it did not complete before the
+menu returns. That menu uses saved local files; it does not probe nodes. After
+the checkout is bound, open `./pulsar` and choose **Cluster topology**. The
+same actions are available directly:
 
 ```sh
 ./pulsar topology setup
@@ -116,11 +130,13 @@ Start with `setup` on a fresh checkout. It guides membership configuration,
 checks SSH enrollment, offers missing enrollment with a separate key-confirmation
 prompt, and finishes with a topology readiness check. Healthy existing setup is
 reused. Cancellation or failed enrollment cannot report success. This applies
-to single-node clusters too. The menu exposes the same **First-use setup** action.
+to single-node clusters too. The first-run menu's setup step and the topology
+menu's **First-use setup** run this same command.
 Initial key-based SSH login must already work; this flow verifies and records
 host identities, rather than installing remote login keys. No step starts or
 stops a model. For noninteractive agents, use configuration and SSH enrollment
-as separate explicitly approved commands; guided setup itself requires a terminal.
+as separate explicitly approved commands; guided setup itself requires an
+interactive terminal with Gum.
 
 `show` reads saved membership without probing. `check` checks every saved node's
 identity, confirmed control endpoint, platform readiness and pairwise fabric
@@ -147,8 +163,8 @@ by the proposed topology. The report is advisory and read-only; saving membershi
 does not silently move, purge, unpin, or rewrite model-library records.
 
 Show, check and detection support `--json`. `./pulsar topology menu` opens just
-this menu; opening either menu performs no probes. Gum and plain terminal modes
-use the same commands. Low-level manifest utilities remain available under
+this menu; opening either menu performs no probes. Every menu choice runs one of
+the commands above. Low-level manifest utilities remain available under
 `pulsar topology` with their existing arguments. From the private workbench,
 invoke the configured public Stack executable by absolute path; Workbench creates no
 second topology implementation.
@@ -295,7 +311,7 @@ resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks
 for confirmation before mutations and never chains restoration into preparation
-or launch. Gum and plain-terminal menus use the same actions.
+or launch. The menu needs Gum; every action is also a command.
 
 ## Move, archive and restore
 
@@ -376,9 +392,14 @@ Use Python 3.11 or newer, Bash, Git and util-linux `flock`. Serving nodes need
 Docker with NVIDIA GPU access. Inter-node operations use OpenSSH, rsync and
 iproute2 with confirmed control and RoCE endpoints. Acquisition requires a
 modern `hf` CLI on the selected node; its own local authentication is used.
-The optional Gum executable is included for the terminal menus; `GUM=0` uses
-plain prompts. Diagnostic output reports missing prerequisites instead of
-silently choosing other tools or transport.
+Menus and confirmation prompts draw with Gum: the repository bundles it for the
+arm64 Linux nodes (`third_party/gum/`); elsewhere install `gum` from the
+package manager or point `GUM_BIN` at it. `NO_COLOR` or
+`PULSAR_COLOR=never` draws them without color. Without Gum or an interactive
+terminal, a menu opens nothing: it names the equivalent commands and exits
+with status 2, and a command that would ask for confirmation names its `--yes`
+form. Diagnostic output reports missing prerequisites instead of silently
+choosing other tools or transport.
 
 Operator overrides `PULSAR_HOME_ROOT` and `PULSAR_HOT_ROOT` select storage roots;
 a spec's deployment-overlay `cache_root` selects its home acquisition root.
