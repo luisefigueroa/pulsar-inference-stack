@@ -74,7 +74,7 @@ class GuardLaunchAdmission(unittest.TestCase):
                 spec = guarded(fixture(nodes)[0])
                 self.base.path.write_text(json.dumps(spec))
                 result, recorded = self.launch(script, spec['spec_id'], *flags)
-                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn('guard execution is not supported', result.stderr)
                 self.assertIn(spec['spec_id'][:12], result.stderr)
                 self.assertEqual(result.stdout.count('BLOCKED '), 1, result.stdout)
@@ -120,7 +120,7 @@ class GuardLaunchAdmission(unittest.TestCase):
             'restart_policy': 'no', 'restart_max_retries': 0, 'healthcheck': None}}))
         result, recorded = self.launch('scripts/up.sh', spec['spec_id'], '--override-file', str(override),
                                        '--yes', '--replace', '--pull-image')
-        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn('guard execution is not supported', result.stderr)
         self.assertEqual([row['blocker'] for row in recorded], ['guard_unsupported'])
         self.assertIn('(added by --override-file)', recorded[0]['message'])

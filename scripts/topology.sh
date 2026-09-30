@@ -74,7 +74,7 @@ case "$action" in
     echo 'Saved membership was not changed. Review discovery before explicit topology configure.'
     exit 1 ;;
   menu)
-    [ $# = 0 ] || { usage >&2; exit 2; }
+    [ $# = 0 ] || { echo "error: the topology menu is interactive; use ./pulsar topology show --json" >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "the topology menu" "pulsar topology show | check | setup | detect | configure"
     # Each action runs as a child and returns here; Back leaves this menu.

@@ -48,7 +48,7 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     -h|--help) usage; exit 0 ;;
-    *) die "unknown arg: $1" ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done

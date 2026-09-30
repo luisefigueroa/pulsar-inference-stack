@@ -84,7 +84,7 @@ while [ $# -gt 0 ]; do
     --full) FULL=1 ;;
     --for-launch) ;;
     --discard-unpromoted) DISCARD=1 ;;
-    --backend) [ "${2:-}" = copy ] || die "only local-file preparation is supported"; shift ;;
+    --backend) [ "${2:-}" = copy ] || usage_die "--backend accepts only copy (local-file preparation)"; shift ;;
     --transport) [ "${2:-}" = ssh-roce ] || die "bulk copies require confirmed ssh-roce"; shift ;;
     --copy-streams) [ "${2:-}" = 8 ] || die "bulk copies use eight streams"; shift ;;
     -h|--help) usage; exit 0 ;;

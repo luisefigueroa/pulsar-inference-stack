@@ -14,7 +14,7 @@ HELP
 }
 case "${1:-}" in
   -h|--help) down_usage; exit 0 ;;
-  "") down_usage >&2; exit 2 ;;
+  "") down_usage >&2; exit "${PULSAR_USAGE_EXIT:-2}" ;;
 esac
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 TARGET="$1"; shift
@@ -23,7 +23,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --node) [ -n "${2:-}" ] || usage_die "--node requires a node"; NODE_SELECTOR="$2"; shift ;;
     --spec-file) [ -n "${2:-}" ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
-    --retain-weights) ;;
+    --retain-weights)
+      warn "pulsar stop --retain-weights is deprecated: stop always retains model files. It is removed in CLI contract 2." ;;
     --pin-weights|--purge-hot) usage_die "stop retains files; use an explicit model pin or purge command" ;;
     *) usage_die "unknown argument: $1" ;;
   esac

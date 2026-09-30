@@ -30,6 +30,10 @@ if [ "$command_name" != menu ]; then
   if [ "$#" -eq 0 ]; then set -- show; fi
   exec python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"
 fi
+if [ "$#" -gt 1 ]; then
+  echo "error: the archive storage menu is interactive; use ./pulsar configure archive-root show --json" >&2
+  exit 2
+fi
 # shellcheck source=ui.sh
 . "${PULSAR_HOME_UI:-$STACK_ROOT/scripts/ui.sh}"
 require_gum "the archive storage menu" "pulsar configure archive-root show | set PATH --yes | disable --yes"

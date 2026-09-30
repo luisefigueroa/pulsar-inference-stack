@@ -63,6 +63,13 @@ def contract() -> dict:
             'release list': {'replacement': 'pulsar models list', 'removed_in_cli_contract': 2},
             'wizard': {'replacement': 'pulsar models', 'removed_in_cli_contract': 2},
         },
+        # Flags that still parse, warn on stderr, change nothing and are removed
+        # in CLI contract 2.
+        'deprecated_flags': {
+            'observe --spec-file': {'note': 'it is ignored because the recorded spec is authoritative',
+                                    'removed_in_cli_contract': 2},
+            'stop --retain-weights': {'note': 'stop always retains model files', 'removed_in_cli_contract': 2},
+        },
     }
 
 

@@ -83,7 +83,7 @@ if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_ID" ]; then
   select_memory_estimate "$MEMORY_ESTIMATE_FILE" "" "$MEMORY_ESTIMATE_ID"
 fi
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
-  die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)" 2
+  usage_die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)"
 fi
 require_spec_launch_admission "$NAME"
 NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")

@@ -176,6 +176,9 @@ def dispatch(command, args):
                 raise
             return serving.load_json(path)
     if command == 'model':
+        if not args or args[0].startswith('-'):
+            raise UsageError('command', 'pulsar model needs an operation such as acquire, prepare, info or restore; '
+                                        'see ./pulsar model --help')
         result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True)
         if isinstance(result,dict) and result.get('kind')=='pulsar-archive-verification':
             from datetime import datetime,timezone
@@ -272,7 +275,7 @@ def dispatch(command, args):
         print(result.stdout+result.stderr,file=sys.stderr,end='')
         if result.returncode: raise ValueError('commit metadata privacy check failed')
         return {'checked':True}
-    raise UsageError('command', 'unsupported public command')
+    raise UsageError('command', f'unknown command: {command}; see ./pulsar help')
 
 
 def main(argv=None):
