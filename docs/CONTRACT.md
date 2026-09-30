@@ -33,6 +33,14 @@ launch still rejects guarded recipes, and static launch compatibility reports
 that limitation separately. `start --dry-run` can plan a guarded recipe without
 launching it; its retained guard program must match the recorded hash.
 
+`image.check` and `image.stage` inspect or explicitly stage a recipe's pinned
+image on its selected confirmed ranks. A local named export uses an explicit
+same-repository `--export-tag`, binds it to the pinned digest and image ID,
+refuses destination tag conflicts, and requires exact repository/digest readback.
+Image IDs alone do not establish a pinned reference. Named export and registry
+pulling are separate modes; an incomplete named stream never falls back to a
+pull. `--plan` observes only, while `--yes` applies the selected stage.
+
 Generate an editable JSON draft rather than guessing defaults:
 
 ```sh

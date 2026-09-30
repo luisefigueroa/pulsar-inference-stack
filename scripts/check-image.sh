@@ -2,7 +2,7 @@
 # Read-only inspection of the pinned spec image on every selected physical node.
 # Exit: 0 pass · 1 the condition failed · 3 the check could not run.
 set -euo pipefail
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-image.sh SPEC [--spec-file FILE] [--node NODE] [--json]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image check SPEC [--spec-file FILE] [--node NODE] [--json]"; exit 0; fi
 SCRIPT_NAME=check-image
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 check_exit_convention
@@ -37,11 +37,11 @@ try:
  d=json.load(sys.stdin)
  if isinstance(d,list) and len(d)==1:d=d[0]
  if not isinstance(d,dict) or not d.get("Id"):raise ValueError("image identity missing")
- if not any(value.endswith("@"+sys.argv[1]) for value in d.get("RepoDigests",[])):raise ValueError("image digest differs")
+ if sys.argv[1] not in d.get("RepoDigests",[]):raise ValueError("image repository/digest reference differs")
  if d.get("Architecture")!="arm64":raise ValueError("image architecture is not arm64")
 except (ValueError,TypeError,AttributeError) as exc:
  print(str(exc),file=sys.stderr);raise SystemExit(1)
-' "${IMAGE##*@}"
+' "$IMAGE"
 }
 for ((rank=0;rank<NODES;rank++)); do
   if [ "$topology_ready" != 1 ]; then states+=(need-topology); continue; fi

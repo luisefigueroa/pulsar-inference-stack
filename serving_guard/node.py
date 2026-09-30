@@ -71,7 +71,7 @@ def preflight(plan, rank):
     image = json.loads(docker("image", "inspect", reference).stdout)[0]
     if (image.get("Architecture") != "arm64" or image.get("Os") != "linux"
             or image.get("Config", {}).get("Entrypoint") != guard["entrypoint"]
-            or not any(ref.endswith("@" + recipe["image_digest"]) for ref in image.get("RepoDigests", []))):
+            or reference not in image.get("RepoDigests", [])):
         raise RuntimeError("pinned ARM64 image or guarded entrypoint unavailable")
     if inspect_named(plan) is not None:
         raise RuntimeError("serving container name occupied; replacement is not supported")

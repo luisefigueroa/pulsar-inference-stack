@@ -7,6 +7,14 @@ confirmed placement, image validation, model mounts and serving observation.
 It never acquires weights, pulls an image, replaces a service or qualifies a
 model implicitly.
 
+Stage the recipe's exact image before the trial through the public
+`pulsar image check|stage` commands. For a local image with a verified tag in
+the pinned repository, review `image stage SPEC --spec-file FILE --export-tag
+TAG --plan --json`, then apply the same selection with `--yes`. Named exports
+verify the source tag and digest, refuse destination tag conflicts, and verify
+the exact repository/digest reference after loading. They never pull from a
+registry. Image staging and guard execution remain separate actions.
+
 ## Author the guard
 
 Obtain the pinned image's entrypoint from image inspection, then generate a

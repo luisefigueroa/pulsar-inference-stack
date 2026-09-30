@@ -161,6 +161,16 @@ def evaluate(args):
 
 
 def dispatch(command, args):
+    if command == 'image':
+        if not args or args in (['--help'], ['-h']):
+            return {'check': 'image check SPEC [--spec-file FILE] [--json]',
+                    'stage': 'image stage SPEC [--spec-file FILE] (--plan | --yes) [--export-tag TAG] [--json]',
+                    'scope': 'Exact images on selected confirmed serving ranks; named exports never pull.'}
+        if args[0] == 'check':
+            return execute('scripts/check-image.sh', [*args[1:], '--json'], json_result=True)
+        if args[0] == 'stage':
+            return execute('scripts/sync-image.sh', [*args[1:], '--json'], json_result=True)
+        raise UsageError('command', 'usage: pulsar image check|stage --help')
     if command == 'guarded':
         if not args or args in (['--help'], ['-h']):
             return {'template': 'guarded template --entrypoint-json ARRAY [--json]',
@@ -353,6 +363,11 @@ def main(argv=None):
                 not json_output or any(a in ('--help', '-h') for a in argv[2:])):
             os.chdir(ROOT)
             os.execvp('bash', ['bash', str(ROOT/'scripts/guarded-serving.sh'), *argv[2:]])
+        if argv[0] == 'image' and argv[1:2] in (['check'], ['stage']) and (
+                not json_output or any(a in ('--help', '-h') for a in argv[2:])):
+            script = 'check-image.sh' if argv[1] == 'check' else 'sync-image.sh'
+            os.chdir(ROOT)
+            os.execvp('bash', ['bash', str(ROOT/'scripts'/script), *argv[2:]])
         if argv[0] in human_scripts and (not json_output or any(a in ('--help','-h') for a in argv[1:])):
             command=['bash',str(ROOT/human_scripts[argv[0]]),*argv[1:]]
             os.chdir(ROOT)
