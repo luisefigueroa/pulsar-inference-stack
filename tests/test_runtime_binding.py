@@ -25,7 +25,7 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1'),selection=None):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1'),selection=None,head_ip=None):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             if selection is not None:
@@ -38,7 +38,7 @@ class ObservationShell(unittest.TestCase):
                 members = prepared['snapshots'].values() if spec['schema_version'] == 3 else [prepared]
                 for slot, index in enumerate(selection):
                     facts['ranks'][slot].update(node_id=f'node-{index}', hostname=f'rank-{index}',
-                        ssh_host=f'rank-{index}', control_ip=f'192.0.2.{index+1}')
+                        ssh_host=f'rank-{index}', control_ip=head_ip if slot==0 and head_ip else f'192.0.2.{index+1}')
                     for member in members:
                         row = member['ranks'][slot]
                         row['node_id'] = f'node-{index}'
@@ -88,7 +88,7 @@ load_cluster_topology() {{
   CLUSTER_NODE_IDS=({' '.join(topology_ids)})
   CLUSTER_NODE_HOSTNAMES=({' '.join(topology_hostnames)})
   CLUSTER_NODE_SSH_HOSTS=(local rank-1 rank-2)
-  CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
+  CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 {head_ip or '192.0.2.3'})
   CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0)
   CLUSTER_PROFILE_HCAS=('mlx5_0,mlx5_1' 'mlx5_0,mlx5_1' 'mlx5_0,mlx5_1')
 }}
@@ -209,6 +209,13 @@ library_hot_info_for_profile() {
                          ['192.0.2.3', '192.0.2.2'])
         self.assertEqual(observed['served_name'], 'example')
         self.assertTrue(all(row['owned'] and row['files_verified'] for row in observed['ranks']))
+
+    def test_observer_brackets_a_recorded_remote_ipv6_api_head(self):
+        result = self.run_scenario(2, selection=(2, 1), head_ip='2001:db8::3', public=True)
+        self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+        observed = json.loads(result.stdout)['result']
+        self.assertEqual(observed['api_url'], 'http://[2001:db8::3]:8000')
+        self.assertEqual(observed['ranks'][0]['container_configuration']['environment']['VLLM_HOST_IP'], '2001:db8::3')
 
     def test_low_level_dry_run_uses_spec_and_distinct_mounts(self):
         for nodes in (1,2):
