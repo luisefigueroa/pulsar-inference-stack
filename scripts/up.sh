@@ -19,7 +19,7 @@ usage: pulsar start SPEC_ID [options]
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE           Select a confirmed node, by hostname or node ID, for a one-node spec
-  --placement-nodes LIST Ordered confirmed nodes for guarded dry-run planning
+  --placement-nodes LIST  Ordered confirmed nodes for guarded dry-run planning
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service

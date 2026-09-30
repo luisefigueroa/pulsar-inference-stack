@@ -143,9 +143,11 @@ physical fit still require a separately approved hardware trial.
 
 ## Observe and stop
 
-`active-plan.json` records the service/run identities before execution. Rank 0
-writes `ready.json` after authenticated `/health` succeeds; this is API health,
-not output correctness or qualification. Use the ordinary public `status`,
+`active-plan.json` records the service/run identities before execution. A local
+API rank writes `ready.json` after authenticated `/health` succeeds. A remote
+API rank reports health through public status or observation and does not write
+the controller's readiness file. API health is not output correctness or
+qualification. Use the ordinary public `status`,
 `inventory`, `observe` and resource sampling operations to inspect the service.
 The guard uses its own startup deadline instead of the ordinary launcher retry
 count. Whole-session time continues through smoke and observation.

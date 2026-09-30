@@ -829,7 +829,7 @@ def profile_fabric(topology: dict[str, Any], node_count: int, node_ids: list[str
     if node_ids is not None:
         confirmed = {node['node_id']: node['rank'] for node in topology['nodes']}
         if len(node_ids) != node_count or len(set(node_ids)) != node_count or not set(node_ids) <= set(confirmed):
-            fail('profile nodes must be an exact unique confirmed selection')
+            fail('serving nodes must be an exact unique confirmed selection')
         indexes = [confirmed[node_id] for node_id in node_ids]
     selected: dict[int, list[tuple[str, str]]] = {rank: [] for rank in indexes}
 
