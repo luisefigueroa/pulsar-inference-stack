@@ -59,8 +59,10 @@ def inventory(services=(), nodes=None, worker_status="unset"):
                          "probe_status": "ok"}}}
 
 
-def service(state="running", port=None, node="head"):
-    return {"conf": SPEC, "state": state, "api_port": port, "ranks": [{"rank": "0", "node": node}]}
+def service(state="running", port=None, node="head", configured=None):
+    """An inventory row; port is what rank 0's container runs with, configured is today's setting."""
+    return {"conf": SPEC, "state": state, "api_port": configured,
+            "ranks": [{"rank": "0", "node": node, "observed_api_port": int(port) if port else None}]}
 
 
 class Results(unittest.TestCase):
@@ -99,6 +101,14 @@ class Results(unittest.TestCase):
                 connection.sendall(b"not http\r\n\r\n")
         threading.Thread(target=reply, daemon=True).start()
         self.assertIs(service_status.health(f"http://127.0.0.1:{listener.getsockname()[1]}"), False)
+
+    def test_the_probe_uses_the_port_the_container_runs_with(self):
+        port = self.healthy.url.rsplit(":", 1)[1]
+        # Today's configured port may belong to another listener; it is never probed.
+        result = service_status.from_inventory(SPEC, inventory([service(port=port, configured=1)]), "")
+        self.assertEqual((result["api_url"], result["healthy"]), (self.healthy.url, True))
+        result = service_status.from_inventory(SPEC, inventory([service(configured=port)]), "")
+        self.assertEqual((result["api_url"], result["healthy"]), (None, None))
 
     def test_an_ipv6_control_address_is_bracketed(self):
         nodes = {"worker": {"hostname": "spark-2", "control_ip": "2001:db8::1", "local": False}}

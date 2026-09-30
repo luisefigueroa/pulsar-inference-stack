@@ -326,7 +326,8 @@ owned service was stopped, `false` when none was running. For `stop --all`,
   inventory: `state` is the inventory's service state (`running`; `stale` when
   its containers exist but none is running; `partial`; `degraded`), `verified`
   is `false`, `reason` says why the complete observation was unavailable,
-  `api_url` is the API found or null, and `services` holds the inventory rows.
+  `api_url` is rank 0's API at the port its container runs with, or null when
+  that is not observed, and `services` holds the inventory rows.
 - `healthy` is the answer to one `GET /health` with a 3-second timeout: `true`
   or `false` for a running service with a known API, otherwise null.
 

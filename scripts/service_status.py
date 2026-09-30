@@ -80,9 +80,13 @@ def verified(observation: dict) -> dict:
 
 
 def inventory_api_url(service: dict, nodes: dict) -> str | None:
-    """The API of rank 0 from inventory facts, or None when they do not say."""
-    port = service.get("api_port")
+    """Rank 0's API from the port its container runs with, or None when that is not observed.
+
+    The service's api_port is today's configuration, which may differ from a
+    running service's port; probing it could reach another listener.
+    """
     ranks = sorted(service.get("ranks") or [], key=lambda rank: str(rank.get("rank") or "0"))
+    port = ranks[0].get("observed_api_port") if ranks else None
     node = nodes.get((ranks[0].get("node") if ranks else None) or "") or {}
     host = "127.0.0.1" if node.get("local") else node.get("control_ip")
     if host and ":" in host and not host.startswith("["):

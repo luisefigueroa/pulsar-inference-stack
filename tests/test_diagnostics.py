@@ -170,6 +170,8 @@ ssh_node() {{
         self.assertTrue(service['safe_to_stop']);self.assertTrue(service['complete'])
         self.assertFalse(service['recipe_verified'])
         self.assertNotIn('model_seal_id',service)
+        # Each rank reports the port its container runs with, apart from today's configuration.
+        self.assertEqual({rank['observed_api_port'] for rank in service['ranks']},{8000})
 
     def test_inventory_wrong_physical_identity_and_unknown_rank(self):
         for mode in ('wrong-node','unknown-node'):

@@ -593,6 +593,12 @@ def cmd_value(cmd, flag):
         return None
 
 
+def observed_port(cmd):
+    """The API port a container was started with, from its own command."""
+    value = cmd_value(cmd, "--port")
+    return int(value) if value is not None and str(value).isdigit() else None
+
+
 def short_id(cid):
     if not cid:
         return ""
@@ -1252,6 +1258,8 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
             "safe_to_stop": r.get("safe_to_stop"),
             "labels": r.get("labels") or {},
             "api_port": r.get("api_port"),
+            # api_port is today's configuration; this is the port the container runs with.
+            "observed_api_port": observed_port(r.get("_cmd")),
             "mem_available_gib": r.get("mem_available_gib"),
             "mem_status": r.get("mem_status"),
             "mem_source": r.get("mem_source"),
