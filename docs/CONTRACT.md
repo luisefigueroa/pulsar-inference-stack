@@ -26,9 +26,12 @@ and their original `snapshot_revision` field and hashing for storage reuse.
 Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.md).
 `contract` advertises its supported document versions through
 `serving_guard_schema_versions`. Guard metadata participates in recipe identity
-and can be validated for catalog and evidence purposes. This does not advertise
-guarded execution: ordinary launch rejects guarded recipes until enforcement
-is supported, and static launch compatibility reports that limitation separately.
+and can be validated for catalog and evidence purposes. The separate
+`guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+operations provide [bounded foreground serving](GUARDED_SERVING.md). Ordinary
+launch still rejects guarded recipes, and static launch compatibility reports
+that limitation separately. `start --dry-run` can plan a guarded recipe without
+launching it; its retained guard program must match the recorded hash.
 
 Generate an editable JSON draft rather than guessing defaults:
 

@@ -71,10 +71,10 @@ BLOCKERS = {
     "port_in_use": Kind("the service port is already in use", "./pulsar inventory",
                         note="Free the port, or change the deployment port."),
     "preflight_failed": Kind("the multi-node preflight failed", START, adds="--verbose"),
-    # No ./pulsar command resolves these two; the note says what to use instead.
+    # Ordinary start cannot resolve these; the note explains the supported path.
     "guard_unsupported": Kind("this spec requires serving-guard enforcement (recipe.container.guard), "
-                              "which this Stack cannot run", None,
-                              note="No start is possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md."),
+                              "which ordinary start cannot enforce", None,
+                              note="Use an explicitly scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md."),
     "historical_spec": Kind("this is a historical schema-1 spec, which this Stack reads but cannot start", None,
                             note="No start is possible from this Stack; use a schema-2 or 3 spec for this model "
                                  "(see docs/OPERATIONS.md)."),

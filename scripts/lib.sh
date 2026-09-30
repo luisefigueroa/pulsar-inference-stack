@@ -511,7 +511,7 @@ require_spec_platform_admission() {
 # Every launcher calls this immediately after loading its selected spec, before
 # staging an image or replacing a service. Read-only commands do not call it.
 # A serving guard in the effective recipe, including one an override adds, is
-# refused as the guard_unsupported start blocker: this Stack cannot run it.
+# refused as guard_unsupported by ordinary start; dry-run planning stays read-only.
 # Historical schema-1 specs are refused as historical_spec.
 require_spec_launch_admission() {
   local name="${1:-${CONF_NAME:-}}" guard
@@ -536,9 +536,12 @@ print(source)
 PY
   ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched"
   [ -n "$guard" ] || return 0
+  # The public guarded runner reuses read-only prerequisite planning. Ordinary
+  # start still cannot execute a guard, even with image/replacement authority.
+  [ "${2:-start}" != dry-run ] || return 0
   [ "$guard" != override ] || detail=(--detail "added by --override-file")
   START_BLOCKER_SPEC="$name" start_blocker guard_unsupported ${detail[@]+"${detail[@]}"}
-  die "spec ${name:0:12}: guard execution is not supported by this Stack; nothing was launched"
+  die "spec ${name:0:12}: guard execution is not supported by ordinary start; nothing was launched"
 }
 
 _finalize_loaded_profile() {

@@ -39,7 +39,7 @@ STALE_SECONDS = 24 * 3600
 ARCHIVE_LOCATION = {"configured", "disabled", "not-configured"}
 # Why Start is left out when the catalog says this Stack cannot start the spec,
 # by its start_unsupported_reason (a start blocker code).
-START_UNSUPPORTED = {"guard_unsupported": "this Stack cannot run the spec's serving guard",
+START_UNSUPPORTED = {"guard_unsupported": "ordinary start cannot enforce the spec's serving guard",
                      "historical_spec": "historical schema-1 specs cannot be started"}
 
 

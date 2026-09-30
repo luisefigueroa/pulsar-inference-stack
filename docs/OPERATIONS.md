@@ -312,8 +312,10 @@ multi-node start that never became healthy removes its containers. It says
 they were removed only after confirming it on every node; otherwise it names
 the nodes left and suggests `./pulsar stop`. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
-guard is refused before any check as `guard_unsupported`, which no command
-resolves; see [the serving guard schema](SERVING_GUARD_SCHEMA.md).
+guard is refused by ordinary start before any check as `guard_unsupported`.
+Use the separately owned [bounded guarded serving](GUARDED_SERVING.md) path
+for an explicitly scoped foreground trial. Read-only `start --dry-run` remains
+available for its prerequisite planning.
 
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks

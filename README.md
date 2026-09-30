@@ -60,7 +60,9 @@ omits it. Preparation needs the model files first: `./pulsar model acquire` or
 `./pulsar model restore`, as the catalog's suggested step shows.
 
 Use [Operations](docs/OPERATIONS.md) for the complete operator workflow,
-storage configuration and recovery. [Architecture](docs/ARCHITECTURE.md)
+storage configuration and recovery. [Bounded guarded serving](docs/GUARDED_SERVING.md)
+describes foreground trials with enforced limits and owned cleanup.
+[Architecture](docs/ARCHITECTURE.md)
 explains the boundaries between specs, files, serving and qualification.
 [Contribution review](docs/CONTRIBUTIONS.md) describes the independent public
 checks and the limits of compact evidence.

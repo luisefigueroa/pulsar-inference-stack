@@ -85,7 +85,11 @@ fi
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
   usage_die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)"
 fi
-require_spec_launch_admission "$NAME"
+if [ "$DRY" = 1 ]; then
+  require_spec_launch_admission "$NAME" dry-run
+else
+  require_spec_launch_admission "$NAME"
+fi
 NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
 acquire_model_library_hot_lock shared
 PLACEMENT_ARGS=()

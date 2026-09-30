@@ -32,7 +32,7 @@ def checked(**fields):
 
 # Catalog fields for a spec whose recipe.container holds a serving guard.
 GUARDED = {"start_supported": False, "start_unsupported_reason": "guard_unsupported"}
-GUARD_REASON = "this Stack cannot run the spec's serving guard"
+GUARD_REASON = "ordinary start cannot enforce the spec's serving guard"
 
 
 def two_snapshots(target_home, draft_home):

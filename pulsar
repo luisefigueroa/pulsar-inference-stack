@@ -41,7 +41,7 @@ case "$command" in
   start|stop|status|model)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
-  observe|resources|policy|evidence|privacy|selftest|contribution|memory)
+  observe|resources|policy|evidence|privacy|selftest|contribution|memory|guarded)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
 esac
