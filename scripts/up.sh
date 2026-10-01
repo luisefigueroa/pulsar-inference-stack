@@ -4,6 +4,7 @@
 #                [--dry-run] [--yes] [--verbose]
 set -euo pipefail
 SCRIPT_NAME=up
+PLACEMENT_NODES=""
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 
@@ -18,6 +19,7 @@ usage: pulsar start SPEC_ID [options]
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE           Select a confirmed node, by hostname or node ID, for a one-node spec
+  --placement-nodes LIST  Ordered confirmed nodes for guarded dry-run planning
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service
@@ -42,6 +44,7 @@ DRY=0 VERBOSE=0 NODE_SELECTOR=""
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_ID=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --override-file) [ "$#" -ge 2 ] || usage_die "--override-file requires a JSON file"; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || usage_die "--spec-file requires a file"; export PULSAR_SPEC_FILE="$2"; shift ;;
     --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || usage_die "--memory-estimate-file requires a file"; MEMORY_ESTIMATE_FILE="$2"; shift ;;
@@ -79,13 +82,18 @@ export START_BLOCKER_MEMORY_ESTIMATE_FILE="$MEMORY_ESTIMATE_FILE" START_BLOCKER_
 
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_ID" ]; then
   select_memory_estimate "$MEMORY_ESTIMATE_FILE" "" "$MEMORY_ESTIMATE_ID"
 fi
 if [ "${CONF_SOURCE:-conf}" = spec ] && [ "$SPEC_MODE" != auto ]; then
   usage_die "selected spec $NAME: --spec-decode/--no-spec-decode are refused (the identity is fixed)"
 fi
-require_spec_launch_admission "$NAME"
+if [ "$DRY" = 1 ]; then
+  require_spec_launch_admission "$NAME" dry-run
+else
+  require_spec_launch_admission "$NAME"
+fi
 NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
 acquire_model_library_hot_lock shared
 PLACEMENT_ARGS=()
@@ -105,8 +113,14 @@ if [ "$NODES" -eq 1 ]; then
   # Exported so serve.sh, which records service_exists, names the node too.
   export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
-elif [ -n "$NODE_SELECTOR" ]; then
-  usage_die "--node is only valid for one-node specs"
+else
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
+  [ -z "$PLACEMENT_NODES" ] || PLACEMENT_ARGS=(--placement-nodes "$PLACEMENT_NODES")
+  if [ "$DRY" != 1 ] && [ -n "$PLACEMENT_NODES" ]; then
+    for ((slot=0;slot<NODES;slot++)); do
+      [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || usage_die "nondefault multi-node placement requires guarded run; ordinary start cannot launch a remote head"
+    done
+  fi
 fi
 resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
@@ -282,9 +296,9 @@ for ((rank = 0; rank < NODES; rank++)); do
       container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
     fi
   else
-    index="$rank"
-    if [ "$rank" -gt 0 ]; then
-      container_ownership_inspect_remote "${CLUSTER_NODE_SSH_HOSTS[$rank]}" "$CONTAINER" >/dev/null || probe_rc=$?
+    index="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+    if [ "$index" -gt 0 ]; then
+      container_ownership_inspect_remote "${CLUSTER_NODE_SSH_HOSTS[$index]}" "$CONTAINER" >/dev/null || probe_rc=$?
     else
       container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
     fi
@@ -396,11 +410,12 @@ else
   if [ "$NODES" -eq 1 ]; then
     port_rows=("${SINGLE_NODE_INDEX:-0}:$PORT")
   else
-    port_rows=("0:$PORT" "0:${MASTER_PORT:-29500}")
+    head_index="${SERVING_NODE_INDEXES[0]:-0}"
+    port_rows=("$head_index:$PORT" "$head_index:${MASTER_PORT:-29500}")
   fi
   for row in "${port_rows[@]}"; do
     index="${row%%:*}" checked_port="${row#*:}" port_host=""
-    if [ "$NODES" -eq 1 ] && [ "${SINGLE_NODE_REMOTE:-0}" = 1 ]; then port_host="$SINGLE_NODE_SSH_HOST"; fi
+    if [ "$index" -gt 0 ]; then port_host="${CLUSTER_NODE_SSH_HOSTS[$index]}"; fi
     if port_free "$checked_port" ${port_host:+"$port_host"}; then
       continue
     fi

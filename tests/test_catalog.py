@@ -525,7 +525,7 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
                                  "Storage and archive…", "Show details", "Back"])
         shown = " ".join(result.stdout.split())
-        self.assertIn("Not shown: Start (this Stack cannot run the spec's serving guard)", shown)
+        self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
 
 
 if __name__ == "__main__": unittest.main()

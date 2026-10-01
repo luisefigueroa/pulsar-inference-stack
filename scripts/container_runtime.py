@@ -6,16 +6,18 @@ execution. Shell lifecycle code supplies verified placement and prepared files.
 from __future__ import annotations
 
 import copy
+import json
 from datetime import datetime, timezone
 import os
 from pathlib import PurePosixPath
 import re
+import secrets
 
 from release_spec import serving
 from release_spec.memory_estimate import validate_frozen as validate_memory_estimate
 from release_spec.normalize import canonical_json_digest
 
-PLAN_SCHEMA_VERSION = 5
+PLAN_SCHEMA_VERSION = 6
 SELECTED_SPEC_LABEL = "io.pulsar.gb10.selected-spec-id"
 SPEC_LABEL = "io.pulsar.gb10.spec-id"
 PLAN_LABEL = "io.pulsar.gb10.launch-plan"
@@ -75,8 +77,11 @@ def prepared_snapshots(spec, prepared, topology_id):
                 fail('prepared rank paths do not select the verified snapshot')
             if spec['schema_version'] == 3 and row.get('snapshot_manifest_id') != model['snapshot_manifest']['manifest_id']:
                 fail('prepared rank manifest differs: ' + name)
-        if len(set(ids)) != len(ids) or member.get('home_node_id') not in ids:
-            fail('snapshot home must belong to the exact serving nodes')
+        if len(set(ids)) != len(ids):
+            fail('snapshot repeats a serving node')
+        # Storage inspection independently verifies the registered home against
+        # complete confirmed membership; its owner need not run a serving rank.
+        text(member.get('home_node_id'), 'snapshot home node_id')
         if nodes is not None and nodes != ids: fail('required snapshots have different rank placement')
         nodes = ids
     return members
@@ -150,16 +155,29 @@ def build_plan(spec, selected_spec_id, facts, prepared, *, selected_spec=None):
     if "memory_estimate" in facts:
         plan["memory_estimate"] = validate_memory_estimate(facts["memory_estimate"], spec)
         plan["schema_version"] = 5
+    guard = spec["recipe"]["container"].get("guard")
+    if guard:
+        from serving_guard.program import digest as guard_digest, program
+        source = facts.get("guard_program")
+        if source is None:
+            source = program()
+        if not isinstance(source, str) or len(source) > 120000 or guard_digest(source) != guard["program_sha256"]:
+            fail("guard program differs from the reviewed recipe")
+        run_id = facts.get("guard_run_id", secrets.token_hex(32))
+        if not isinstance(run_id, str) or not re.fullmatch("[0-9a-f]{64}", run_id):
+            fail("invalid guard invocation identity")
+        plan.update(schema_version=6, guard_program=source, guard_run_id=run_id)
     plan["service_id"] = service_identifier(selected_spec_id,topology,[rank['node_id'] for rank in ranks])
     plan["plan_id"] = canonical_json_digest(plan)
     return plan
 
 
 def validate_plan(plan):
-    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] not in (3, 4, 5):
+    if not isinstance(plan, dict) or type(plan.get("schema_version")) is not int or plan["schema_version"] not in (3, 4, 5, 6):
         fail("unsupported launch-plan schema")
     spec = serving.verify_spec(plan["spec"])
-    expected_version = 5 if "memory_estimate" in plan else spec["schema_version"] + 1
+    expected_version = (6 if spec["recipe"]["container"].get("guard") else
+                        5 if "memory_estimate" in plan else spec["schema_version"] + 1)
     if plan["schema_version"] != expected_version:
         fail("launch-plan schema differs from spec schema")
     if plan.get("spec_id") != spec["spec_id"]:
@@ -217,6 +235,8 @@ def rank_spec(plan, rank):
               PREFIX + "weight-owner": plan["home_node_id"], PREFIX + "weight-config": manifest["manifest_id"][:12],
               PREFIX + "model-revision": model["model_commit"], PREFIX + "model-identity-status": "manifest-verified",
               SELECTED_SPEC_LABEL: plan["selected_spec_id"], SPEC_LABEL: plan["spec_id"], PLAN_LABEL: plan["plan_id"]}
+    if recipe["container"].get("guard"):
+        labels[PREFIX + "guard-run"] = plan["guard_run_id"]
     mounts = [{"source": row["hub_path"], "target": target, "mode": "ro"}]
     paths = {'target':target + '/snapshots/' + model['model_commit']}
     for name, item in recipe.get('required_snapshots', {}).items():
@@ -243,8 +263,13 @@ def docker_argv(plan, rank, *, detach=False, include_secrets=True):
     spec = rank_spec(plan, rank)
     recipe = plan["spec"]["recipe"]
     c = recipe["container"]
+    guard = c.get("guard")
     args = ["docker", "run", "--name", plan["container_name"]]
-    if detach or len(plan["ranks"]) > 1:
+    if guard:
+        args += ["--rm", "-i", "--sig-proxy=false", "--cgroupns", "private",
+                 "--pids-limit", "512", "--pull", "never", "--entrypoint", "python3",
+                 "--mount", "type=bind,src=/proc/meminfo,dst=/pulsar-guard-host-meminfo,readonly"]
+    elif detach or len(plan["ranks"]) > 1:
         args.append("-d")
     for key, value in spec["labels"].items():
         args += ["--label", f"{key}={value}"]
@@ -257,7 +282,7 @@ def docker_argv(plan, rank, *, detach=False, include_secrets=True):
         args += ["--ulimit", f"{name}={limit['soft']}:{limit['hard']}"]
     if c["memory_limit_bytes"]:
         args += ["--memory", str(c["memory_limit_bytes"]),
-                 "--memory-swap", str(c['memory_limit_bytes'] * 2)]
+                 "--memory-swap", str(c['memory_limit_bytes'] * (1 if guard else 2))]
     if c["cpu_limit_nanos"]:
         from decimal import Decimal
         args += ["--cpus", format(Decimal(c["cpu_limit_nanos"]) / 1000000000, "f")]
@@ -297,6 +322,16 @@ def docker_argv(plan, rank, *, detach=False, include_secrets=True):
         if not key:
             fail("API authentication was requested but its configured credential is unavailable")
         args += ["--api-key", key]
+    if guard:
+        image_ref = plan["spec"]["source"]["image_repository"] + "@" + recipe["image_digest"]
+        offset = args.index(image_ref) + 1
+        context = {"rank": rank, "run_id": plan["guard_run_id"], "spec_id": plan["spec_id"],
+                   "limits": {"memory_bytes": c["memory_limit_bytes"],
+                              **{k: guard[k] for k in ("min_host_available_bytes", "startup_timeout_seconds", "timeout_seconds")}}}
+        if guard["schema_version"] == 2:
+            context["limits"]["max_host_swap_growth_bytes"] = guard["max_host_swap_growth_bytes"]
+        args[offset:] = ["-I", "-S", "-u", "-c", plan["guard_program"], json.dumps(context, sort_keys=True),
+                         *guard["entrypoint"], *args[offset:]]
     return args
 
 
@@ -338,7 +373,12 @@ def observe_rank(plan, rank, container, image):
         fail(f"rank {rank}: actual image differs")
     if not any(ref.endswith("@" + recipe["image_digest"]) for ref in image.get("RepoDigests") or []):
         fail(f"rank {rank}: actual image digest differs from recipe")
-    if config.get("Entrypoint") != (image.get("Config") or {}).get("Entrypoint"):
+    guard = recipe["container"].get("guard")
+    image_entrypoint = (image.get("Config") or {}).get("Entrypoint")
+    expected_entrypoint = ["python3"] if guard else image_entrypoint
+    if guard and image_entrypoint != guard["entrypoint"]:
+        fail(f"rank {rank}: pinned image entrypoint differs from guard policy")
+    if config.get("Entrypoint") != expected_entrypoint:
         fail(f"rank {rank}: entrypoint differs from pinned image")
     args = docker_argv(plan, rank, include_secrets=False)
     image_ref = plan["spec"]["source"]["image_repository"] + "@" + recipe["image_digest"]
@@ -361,6 +401,16 @@ def observe_rank(plan, rank, container, image):
     if len(actual) != len(actual_items) or actual != env:
         fail(f"rank {rank}: environment differs")
     mounts = container.get("Mounts") or []
+    if guard:
+        if any(m.get('Destination') in ('/', '/proc', '/sys', '/sys/fs', '/sys/fs/cgroup')
+               or str(m.get('Destination', '')).startswith('/sys/fs/cgroup/') for m in mounts):
+            fail(f'rank {rank}: mount shadows guard resource counters')
+        guard_mounts = [m for m in mounts if m.get('Destination') == '/pulsar-guard-host-meminfo']
+        if (len(guard_mounts) != 1 or guard_mounts[0].get('Type') != 'bind'
+                or guard_mounts[0].get('Source') != '/proc/meminfo'
+                or guard_mounts[0].get('RW') is not False):
+            fail(f'rank {rank}: host memory guard mount differs')
+        mounts = [m for m in mounts if m not in guard_mounts]
     matching = []
     targets = {mount['target'] for mount in expected['mounts']}
     for mount in expected['mounts']:
@@ -385,9 +435,12 @@ def observe_rank(plan, rank, container, image):
     if (host.get('CpuPeriod',0) not in (0,100000) or host.get('CpuShares',0) not in (0,1024)
             or host.get('CpusetCpus') or host.get('CpusetMems') or host.get('CpuRealtimeRuntime')
             or host.get('MemoryReservation') or host.get('MemorySwappiness') is not None
-            or host.get('OomKillDisable') or host.get('PidsLimit') not in (None,0,-1)):
+            or host.get('OomKillDisable') or host.get('PidsLimit') not in ((512,) if guard else (None,0,-1))):
         fail(f'rank {rank}: unsupported additional resource constraints')
-    expected_swap=c['memory_limit_bytes']*2
+    if guard and (host.get('CgroupnsMode') != 'private' or not host.get('AutoRemove')
+                  or not config.get('OpenStdin') or host.get('PidMode')):
+        fail(f'rank {rank}: guard lifetime or cgroup isolation differs')
+    expected_swap=c['memory_limit_bytes']*(1 if guard else 2)
     if expected_swap:
         if observed['memory_swap_limit_bytes']!=expected_swap:
             fail(f'rank {rank}: memory swap limit differs')
@@ -443,6 +496,8 @@ def observe_rank(plan, rank, container, image):
     portable['ulimits'] = observed['ulimits']
     portable['accelerator_access'] = 'all'  # All-device request was checked above.
     portable['devices'] = ['infiniband'] if devices else []
+    if guard:
+        portable['guard'] = copy.deepcopy(guard)
     if health:
         from urllib.parse import urlparse
         raw_health=observed['healthcheck']

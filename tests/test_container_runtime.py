@@ -11,12 +11,22 @@ from scripts import container_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def fixture(nodes=1, speculative=False):
+def fixture(nodes=1, speculative=False, subdirectory=None):
     draft = serving.example(nodes)
     draft['recipe']['model'] = {'model_id': 'example/model', 'model_commit': 'a'*40}
     draft['recipe']['image_digest'] = 'sha256:'+'b'*64
     manifest = json.loads((ROOT/'tests/fixtures/contracts/manifest.json').read_text())
-    spec = serving.freeze(draft, manifest)
+    if subdirectory is not None:
+        from release_spec import build_snapshot_manifest
+        manifest = build_snapshot_manifest(model_id=manifest['model_id'],
+            snapshot_revision=manifest['snapshot_revision'], files=[*manifest['files'],
+                {'path': subdirectory+'/config.json', 'sha256': 'd'*64, 'size': 3}])
+        draft['schema_version'] = 2
+        draft['recipe']['required_snapshots'] = {}
+        if not speculative:
+            draft['recipe']['engine_args'] += ['--speculative-config', json.dumps({
+                'model': 'pulsar-snapshot:target/'+subdirectory, 'method': 'dflash'})]
+    spec = serving.freeze(draft, {'target': manifest} if subdirectory is not None else manifest)
     ranks = [dict(rank=i, node_id=f'node-{i}', hostname=f'rank-{i}', ssh_host='local' if i==0 else f'rank-{i}',
                   control_ip=f'192.0.2.{i+1}', control_if='eth0', hcas='' if nodes==1 else 'mlx5_0') for i in range(nodes)]
     prepared = dict(schema_version=1, kind='pulsar-prepared-set', spec_id=spec['spec_id'],
@@ -29,7 +39,8 @@ def fixture(nodes=1, speculative=False):
         second=copy.deepcopy(manifest);second['snapshot_revision']='e'*40
         second['manifest_id']=snapshot_manifest_id(second)
         draft['recipe']['required_snapshots']={'draft':{'model_id':second['model_id'],'model_commit':second['snapshot_revision']}}
-        draft['recipe']['engine_args'] += ['--speculative_config.model','pulsar-snapshot:draft']
+        draft['recipe']['engine_args'] += ['--speculative_config.model',
+            'pulsar-snapshot:draft'+('/'+subdirectory if subdirectory is not None else '')]
         spec=serving.freeze(draft,{'target':manifest,'draft':second})
         members={}
         for name,model in serving.required_snapshots(spec).items():
@@ -41,6 +52,12 @@ def fixture(nodes=1, speculative=False):
             members[name]=member
         prepared={'schema_version':2,'kind':'pulsar-prepared-set','spec_id':spec['spec_id'],
                   'topology_id':prepared['topology_id'],'snapshots':members}
+    elif subdirectory is not None:
+        for row in prepared['ranks']:
+            row['snapshot_manifest_id'] = manifest['manifest_id']
+        prepared = {'schema_version': 2, 'kind': 'pulsar-prepared-set',
+                    'spec_id': spec['spec_id'], 'topology_id': prepared['topology_id'],
+                    'snapshots': {'target': prepared}}
     facts = dict(port=8000,served_name='example',topology_id='c'*64,ranks=ranks)
     with patch.dict('os.environ', {'API_KEY':'','VLLM_API_KEY':''}):
         plan = runtime.build_plan(spec, spec['spec_id'], facts, prepared)
@@ -69,6 +86,33 @@ def fixture(nodes=1, speculative=False):
 
 
 class ContainerRuntime(unittest.TestCase):
+    def test_checkpoint_subdirectories_keep_exact_readonly_mounts_on_every_rank(self):
+        for nodes in (1, 2):
+            for named in (False, True):
+                with self.subTest(nodes=nodes, named=named):
+                    spec, facts, prepared, plan, containers, images = fixture(nodes, speculative=named, subdirectory='dflash')
+                    name = 'draft' if named else 'target'
+                    model = serving.required_snapshots(spec)[name]
+                    root = ('/pulsar/snapshots/'+model['snapshot_manifest']['manifest_id'] if named else
+                            '/root/.cache/huggingface/hub/models--'+model['model_id'].replace('/', '--'))
+                    path = root+'/snapshots/'+model['model_commit']+'/dflash'
+                    for rank in range(nodes):
+                        expected = runtime.rank_spec(plan, rank)
+                        self.assertEqual(len(expected['mounts']), 2 if named else 1)
+                        self.assertTrue(all(mount['mode'] == 'ro' for mount in expected['mounts']))
+                        self.assertIn(path, ' '.join(expected['engine_args']))
+                        observed = runtime.observe_rank(plan, rank, containers[rank], images[rank])
+                        self.assertEqual(set(observed['snapshots']), {'target', 'draft'} if named else {'target'})
+                        changed = copy.deepcopy(containers[rank])
+                        mount = expected['mounts'][-1]
+                        changed['Mounts'].append({'Source': mount['source'],
+                            'Destination': path, 'RW': False})
+                        with self.assertRaisesRegex(ValueError, 'mount'):
+                            runtime.observe_rank(plan, rank, changed, images[rank])
+                    del prepared['snapshots'][name]['ranks'][-1]
+                    with self.assertRaises(ValueError):
+                        runtime.build_plan(spec, spec['spec_id'], facts, prepared)
+
     def test_required_snapshots_mount_exact_commits_on_all_ranks(self):
         for nodes in (1,2):
             spec,facts,prepared,plan,containers,images=fixture(nodes,speculative=True)

@@ -66,6 +66,10 @@ write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"}\n' 
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
 '''
+# Run the owning selector while keeping topology/transport boundaries synthetic.
+_source_lib = (ROOT/'scripts/lib.sh').read_text()
+LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
+                   _source_lib.index('resolve_single_node_placement() {')]
 IMAGE = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/image-checked"
 state="$FIXTURE_IMAGE"; [ ! -e "$FIXTURE_DIR/synced" ] || state=ok
@@ -153,14 +157,14 @@ class Catalog(unittest.TestCase):
                 else:
                     self.assert_runnable(record["fix"])
 
-    def test_guard_blocker_says_no_start_is_possible(self):
+    def test_guard_blocker_requires_explicit_foreground_ownership(self):
         record = start_blockers.blocker("guard_unsupported", spec=SPEC, placement="--node spark-2",
                                         detail="added by --override-file")
         self.assertIsNone(record["node"])
         self.assertEqual(start_blockers.human(record),
                          "BLOCKED guard_unsupported: this spec requires serving-guard enforcement "
-                         "(recipe.container.guard), which this Stack cannot run (added by --override-file). "
-                         "Note: No start is possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md.")
+                         "(recipe.container.guard), which ordinary start cannot enforce (added by --override-file). "
+                         "Note: Use an explicitly scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md.")
 
     def test_record_names_node_rank_and_fills_spec_and_placement(self):
         record = start_blockers.blocker("model_files_not_ready", spec=SPEC, placement="--node spark-2")

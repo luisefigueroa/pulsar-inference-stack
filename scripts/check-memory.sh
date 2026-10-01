@@ -10,6 +10,7 @@ set -euo pipefail
 # shellcheck disable=SC2034  # read by lib.sh log/warn/die
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-memory.sh SPEC [--spec-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--node NODE] [--cold-start] [--json]"; exit 0; fi
 SCRIPT_NAME=check-memory
+PLACEMENT_NODES=""
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 check_exit_convention
@@ -25,6 +26,7 @@ NAME="${1:-}"
 shift || true
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --spec-file) [ $# -ge 2 ] || die "--spec-file needs a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
     --memory-estimate-file) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate file" 3; MEMORY_ESTIMATE_FILE="$2"; shift ;;
     --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "missing memory estimate ID" 3; MEMORY_ESTIMATE_ID="$2"; shift ;;
@@ -43,6 +45,7 @@ while [ $# -gt 0 ]; do
 done
 
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
   select_memory_estimate "$MEMORY_ESTIMATE_FILE" "$MEMORY_ESTIMATE_FROZEN" "$MEMORY_ESTIMATE_ID" 3
 fi
@@ -51,8 +54,8 @@ if [ "$NODES" -eq 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" \
     || die "cannot resolve physical node placement '$NODE_SELECTOR'" 3
-elif [ -n "$NODE_SELECTOR" ]; then
-  die "--node is only valid for one-node specs" 3
+else
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "placement is not confirmed" 3
 fi
 weights=$(estimate_weights_ram_gib)
 kv=$(estimate_kv_gib)
@@ -125,6 +128,8 @@ remote_available_gib() {
 declare -a rank_avail=()
 if [ "$NODES" -eq 1 ] && [ "$SINGLE_NODE_REMOTE" = 1 ]; then
   rank_avail[0]=$(remote_available_gib "$SINGLE_NODE_SSH_HOST")
+elif [ "$NODES" -gt 1 ] && [ "${SERVING_NODE_INDEXES[0]:-0}" != 0 ]; then
+  rank_avail[0]=$(remote_available_gib "${CLUSTER_NODE_SSH_HOSTS[${SERVING_NODE_INDEXES[0]}]}")
 else
   rank_avail[0]=$(mem_available_gib_local)
 fi
@@ -136,7 +141,10 @@ if [ "$NODES" -gt 1 ]; then
   require_cluster_nodes "$NODES" >/dev/null \
     || die "confirmed topology has fewer than $NODES required nodes" 3
   for ((rank = 1; rank < NODES; rank++)); do
-    rank_avail[$rank]=$(remote_available_gib "${CLUSTER_NODE_SSH_HOSTS[$rank]}")
+    index="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+    if [ "$index" = 0 ]; then rank_avail[$rank]=$(mem_available_gib_local); else
+      rank_avail[$rank]=$(remote_available_gib "${CLUSTER_NODE_SSH_HOSTS[$index]}")
+    fi
   done
 fi
 head_avail="${rank_avail[0]}"
@@ -144,7 +152,7 @@ worker_avail="${rank_avail[1]:-n/a}"
 # People read hostnames; a one-node spec runs on its selected placement.
 memory_node_name() {
   if [ "$NODES" -eq 1 ]; then printf '%s\n' "${SINGLE_NODE_HOSTNAME:-$(human_node_name 0)}"
-  else printf '%s (rank %s)\n' "$(human_node_name "$1")" "$1"; fi
+  else printf '%s (rank %s)\n' "$(human_node_name "${SERVING_NODE_INDEXES[$1]:-$1}")" "$1"; fi
 }
 availability_summary=""
 for ((rank = 0; rank < NODES; rank++)); do

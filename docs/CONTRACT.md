@@ -26,9 +26,29 @@ and their original `snapshot_revision` field and hashing for storage reuse.
 Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.md).
 `contract` advertises its supported document versions through
 `serving_guard_schema_versions`. Guard metadata participates in recipe identity
-and can be validated for catalog and evidence purposes. This does not advertise
-guarded execution: ordinary launch rejects guarded recipes until enforcement
-is supported, and static launch compatibility reports that limitation separately.
+and can be validated for catalog and evidence purposes. The separate
+`guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+operations provide [bounded foreground serving](GUARDED_SERVING.md). Ordinary
+launch still rejects guarded recipes, and static launch compatibility reports
+that limitation separately. `start --dry-run` can plan a guarded recipe without
+launching it; its retained guard program must match the recorded hash.
+
+`image.check` and `image.stage` inspect or explicitly stage a recipe's pinned
+image on its selected confirmed ranks. A local named export uses an explicit
+same-repository `--export-tag`, binds it to the pinned digest and image ID,
+refuses destination tag conflicts, and requires exact repository/digest readback.
+Image IDs alone do not establish a pinned reference. Named export and registry
+pulling are separate modes; an incomplete named stream never falls back to a
+pull. `--plan` observes only, while `--yes` applies the selected stage.
+
+An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
+not recipe data. It selects ordered confirmed members for preparation, file and
+image checks, guarded dry-run/run, and pre-launch resource sampling. Omission
+retains first-N placement; `--node` retains its one-node/home meaning. Selection
+does not change membership or `spec_id`. Existing launch-plan rank/node fields
+bind it and produce a distinct `service_id` for a different ordered placement.
+The verified snapshot home may be another confirmed member; complete source
+home verification and serving-copy coverage remain separate requirements.
 
 Generate an editable JSON draft rather than guessing defaults:
 
@@ -79,6 +99,18 @@ revision. Every additional declaration must have a supported engine reference.
 References in unrelated arguments and bare speculative checkpoint locators are
 rejected. Other model-loading argument families are not implemented by this
 binding rule. Non-checkpoint speculation can still use ordinary engine args.
+
+For a checkpoint bundled inside a snapshot, use
+`pulsar-snapshot:target/dflash` or `pulsar-snapshot:draft/dflash`. The optional
+suffix selects a canonical relative POSIX directory containing files in the
+declared snapshot's complete manifest. Empty or dot segments, absolute paths,
+backslashes, control characters, and non-ASCII paths are rejected. Suffixes are
+literal paths, never URL-decoded; a file path or a directory absent from the
+manifest is rejected. The complete snapshot remains required and verified on
+every rank; selecting a subdirectory does not narrow its manifest. A bundled
+checkpoint can reference `target` with an empty `required_snapshots` object,
+without adding another snapshot declaration or copy. Existing root references
+and spec identities retain their original behavior.
 
 Stack resolves each reference to the exact local snapshot path. The target
 keeps its existing mount convention; additional Hub directories mount read-only

@@ -41,7 +41,7 @@ case "$command" in
   start|stop|status|model)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
-  observe|resources|policy|evidence|privacy|selftest|contribution|memory)
+  observe|resources|policy|evidence|privacy|selftest|contribution|memory|guarded|image)
     exec python3 "$REPO_DIR/scripts/public_cli.py" "$command" "$@"
     ;;
 esac
@@ -97,7 +97,9 @@ for heading,rows in [
   ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),
   ('pulsar model --help','Acquire, restore, move, prepare, pin, purge and archive.')]),
  ('Serve',[
+  ('pulsar image check|stage SPEC','Inspect or explicitly stage the exact image on selected serving ranks.'),
   ('pulsar start SPEC','Recheck prerequisites and start the exact selected spec.'),
+  ('pulsar guarded template|validate|run|stop','Author, inspect and own a bounded foreground serving trial.'),
   ('pulsar status SPEC','Observe the live service on all participating nodes.'),
   ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
   ('pulsar inventory','Inspect service ownership and current resource use.')]),

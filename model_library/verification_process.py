@@ -383,9 +383,11 @@ def run_transport(command, program, *, owners=(), heartbeat=HEARTBEAT_SECONDS):
         return subprocess.CompletedProcess(command, code, output, diagnostic)
 
 
-def run_batch(tasks, directory, *, jobs=3, owners=()):
+def run_batch(tasks, directory, *, jobs=3, owners=(), keep_going=False):
     """Schedule supplied transports; one per node, no new work after failure.
 
+    Cleanup batches may keep going after a peer fails; cancellation always
+    stops all tasks. Verification retains its fail-fast default.
     Bash supplies every argv and framed program. Per-job files contain data;
     live ownership receipts bypass those files so an interrupted outer command
     still knows which remote workers require confirmed cleanup.
@@ -420,9 +422,10 @@ def run_batch(tasks, directory, *, jobs=3, owners=()):
         nonlocal first_error, deadline
         if first_error is None:
             first_error = index
-            failure.touch(exist_ok=False)
-            deadline = time.monotonic() + GRACE_SECONDS + 2
-            cancel_peers()
+            if not keep_going:
+                failure.touch(exist_ok=False)
+                deadline = time.monotonic() + GRACE_SECONDS + 2
+                cancel_peers()
         results[index] = {'index': index, 'returncode': code, 'error': error}
 
     try:
@@ -568,10 +571,12 @@ def main():
         parser = argparse.ArgumentParser(description='Run an invocation-owned verification batch')
         parser.add_argument('batch'); parser.add_argument('--tasks', required=True)
         parser.add_argument('--directory', required=True); parser.add_argument('--jobs', type=int, default=3)
+        parser.add_argument('--keep-going', action='store_true', help='attempt all cleanup tasks after a peer failure')
         args = parser.parse_args()
         owners = [process_identity(os.getppid())]
         if OWNER_ENV in os.environ: owners.append(json.loads(os.environ[OWNER_ENV]))
-        return run_batch(json.loads(Path(args.tasks).read_text()), args.directory, jobs=args.jobs, owners=owners)
+        return run_batch(json.loads(Path(args.tasks).read_text()), args.directory, jobs=args.jobs,
+                         owners=owners, keep_going=args.keep_going)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--owner', type=int, required=True)
     parser.add_argument('command', nargs=argparse.REMAINDER)

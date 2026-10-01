@@ -511,7 +511,7 @@ require_spec_platform_admission() {
 # Every launcher calls this immediately after loading its selected spec, before
 # staging an image or replacing a service. Read-only commands do not call it.
 # A serving guard in the effective recipe, including one an override adds, is
-# refused as the guard_unsupported start blocker: this Stack cannot run it.
+# refused as guard_unsupported by ordinary start; dry-run planning stays read-only.
 # Historical schema-1 specs are refused as historical_spec.
 require_spec_launch_admission() {
   local name="${1:-${CONF_NAME:-}}" guard
@@ -536,9 +536,12 @@ print(source)
 PY
   ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched"
   [ -n "$guard" ] || return 0
+  # The public guarded runner reuses read-only prerequisite planning. Ordinary
+  # start still cannot execute a guard, even with image/replacement authority.
+  [ "${2:-start}" != dry-run ] || return 0
   [ "$guard" != override ] || detail=(--detail "added by --override-file")
   START_BLOCKER_SPEC="$name" start_blocker guard_unsupported ${detail[@]+"${detail[@]}"}
-  die "spec ${name:0:12}: guard execution is not supported by this Stack; nothing was launched"
+  die "spec ${name:0:12}: guard execution is not supported by ordinary start; nothing was launched"
 }
 
 _finalize_loaded_profile() {
@@ -1245,6 +1248,38 @@ single_node_index_for_key() {
   esac
 }
 
+resolve_serving_placement() {
+  local single="${1:-}" selection="${2:-}" selector index seen="" slot
+  local -a selectors=()
+  require_cluster_nodes "$NODES" >/dev/null || return 1
+  SERVING_NODE_INDEXES=() SERVING_NODE_IDS=()
+  if [ "$NODES" = 1 ]; then
+    [ -z "$selection" ] || usage_die "--placement-nodes is only valid for multi-node specs; use --node"
+    resolve_single_node_placement "$single" || return 1
+    SERVING_NODE_INDEXES=("$SINGLE_NODE_INDEX")
+  else
+    [ -z "$single" ] || usage_die "--node is only valid for one-node specs"
+    if [ -z "$selection" ]; then
+      for ((slot=0;slot<NODES;slot++)); do SERVING_NODE_INDEXES+=("$slot"); done
+    else
+      case "$selection" in ,*|*,|*,,*) usage_die "--placement-nodes requires an ordered comma-separated node list" ;; esac
+      IFS=, read -r -a selectors <<<"$selection"
+      [ "${#selectors[@]}" = "$NODES" ] || usage_die "--placement-nodes must select exactly $NODES confirmed nodes"
+      for selector in "${selectors[@]}"; do
+        index=$(resolve_single_node_placement "$selector" >/dev/null && printf '%s' "$SINGLE_NODE_INDEX") \
+          || usage_die "placement node '$selector' does not select exactly one confirmed node"
+        case " $seen " in *" $index "*) usage_die "--placement-nodes contains a duplicate physical node" ;; esac
+        seen+=" $index"
+        SERVING_NODE_INDEXES+=("$index")
+      done
+    fi
+  fi
+  for index in "${SERVING_NODE_INDEXES[@]}"; do SERVING_NODE_IDS+=("${CLUSTER_NODE_IDS[$index]}"); done
+  if [ -n "$selection" ] && [ "$NODES" -gt 1 ]; then
+    require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || return 1
+  fi
+}
+
 resolve_single_node_placement() {
   local selector="${1:-}" index=-1 rank local_host
   load_cluster_topology || return 1
@@ -1389,6 +1424,8 @@ library_hot_info_for_profile() {
   [ -z "${PULSAR_OBSERVE_VERIFICATION_JOBS:-}" ] || args+=(--verification-jobs "$PULSAR_OBSERVE_VERIFICATION_JOBS")
   if [ "${NODES:-1}" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then
     args+=(--node "$SINGLE_NODE_ID")
+  elif [ -n "${PLACEMENT_NODES:-}" ]; then
+    args+=(--placement-nodes "$PLACEMENT_NODES")
   fi
   "$REPO_DIR/scripts/model-library.sh" "${args[@]}"
 }
@@ -1477,7 +1514,7 @@ load_docker_argv_from_plan() {
 # Build a validated launch-plan JSON file from the currently loaded profile,
 # confirmed topology, and resolved model-library instance. Not a permit.
 write_launch_plan_file() {
-  local dest="${1:?destination required}" action="${2:-start}" ranks_json
+  local dest="${1:?destination required}" action="${2:-start}" ranks_json index
   [ -n "${CONF_PATH:-}" ] || die "launch plan requires a selected spec"
   [ -n "${CLUSTER_TOPOLOGY_ID:-}" ] || die "launch plan requires confirmed topology"
   [ -z "${VLLM_EXTRA_ARGS:-}" ] && [ -z "${EXTRA_ENV:-}" ] \
@@ -1501,14 +1538,15 @@ write_launch_plan_file() {
         "${CLUSTER_PROFILE_HCAS[${SINGLE_NODE_INDEX:-0}]:-}"
     else
       for ((rank = 0; rank < NODES; rank++)); do
+        index="${SERVING_NODE_INDEXES[$rank]:-$rank}"
         printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$rank" \
-          "${CLUSTER_NODE_IDS[$rank]}" \
-          "${CLUSTER_NODE_HOSTNAMES[$rank]}" \
-          "${CLUSTER_NODE_SSH_HOSTS[$rank]}" \
-          "${CLUSTER_NODE_CONTROL_IPS[$rank]}" \
-          "${CLUSTER_NODE_CONTROL_IFS[$rank]}" \
-          "${CLUSTER_PROFILE_HCAS[$rank]}"
+          "${CLUSTER_NODE_IDS[$index]}" \
+          "${CLUSTER_NODE_HOSTNAMES[$index]}" \
+          "${CLUSTER_NODE_SSH_HOSTS[$index]}" \
+          "${CLUSTER_NODE_CONTROL_IPS[$index]}" \
+          "${CLUSTER_NODE_CONTROL_IFS[$index]}" \
+          "${CLUSTER_PROFILE_HCAS[$index]}"
       done | python3 -c '
 import json,sys
 ranks=[]
@@ -3030,24 +3068,25 @@ profile_service_is_stack_owned() {
 # Strict loaded-state proof for memory exemptions. Unlike the transition
 # classifier above, this accepts labels only; argv resemblance is insufficient.
 profile_service_is_proven_running() {
-  local conf="$1" selector="${2:-}" cname head_meta remote_meta host role
-  local head_rc=0 remote_rc=0 rank
+  local conf="$1" selector="${2:-}" cname head_meta remote_meta rank_meta host role
+  local head_rc=0 remote_rc=0 rank index
   cname=$(container_name_for "$conf" "$NODES")
 
   if [ "$NODES" -gt 1 ]; then
-    container_running_exact "$cname" || return 1
-    head_meta=$(container_ownership_inspect_local "$cname") || head_rc=$?
-    [ "$head_rc" -eq 0 ] || return 1
-    container_ownership_is_proven "$head_meta" "$conf" 0 || return 1
     require_cluster_nodes "$NODES" || return 1
-    for ((rank = 1; rank < NODES; rank++)); do
-      host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-      container_running_exact_remote "$host" "$cname" || return 1
-      remote_rc=0
-      remote_meta=$(container_ownership_inspect_remote "$host" "$cname") \
-        || remote_rc=$?
-      [ "$remote_rc" -eq 0 ] || return 1
-      container_ownership_is_proven "$remote_meta" "$conf" "$rank" || return 1
+    for ((rank = 0; rank < NODES; rank++)); do
+      # Logical ranks follow the selected placement, which can have a remote
+      # head or a local worker. An identical service elsewhere is not loaded
+      # capacity on these nodes.
+      index="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+      if [ "$index" -eq 0 ]; then
+        container_running_exact "$cname" || return 1
+      else
+        host="${CLUSTER_NODE_SSH_HOSTS[$index]}"
+        container_running_exact_remote "$host" "$cname" || return 1
+      fi
+      rank_meta=$(container_ownership_inspect_on_node "$index" "$cname") || return 1
+      container_removal_is_proven "$rank_meta" "$conf" "$rank" "$index" || return 1
     done
     return 0
   fi

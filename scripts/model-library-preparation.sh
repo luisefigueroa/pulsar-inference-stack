@@ -26,7 +26,7 @@ prepare_snapshot() {
   local home_node home_rank observations existing transactions ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp candidates candidate reuse_view
   home_node=$(json_fields "$HOME_JSON" node_id)
   home_rank=$(model_physical_rank "$home_node")
-  case " ${SELECTED_IDS[*]} " in *" $home_node "*) ;; *) die "home is outside the selected serving nodes; move it explicitly first" ;; esac
+  [ "$home_rank" -lt "$CLUSTER_TOPOLOGY_COUNT" ] || die "snapshot home is outside confirmed membership"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
   existing=$(merged_views snapshot) || die "node and controller preparation records cannot be reconciled"
@@ -61,7 +61,7 @@ prepare_snapshot() {
   done
   observations=$(printf '%s' "$observations" | python3 -c 'import json,sys; all=json.load(sys.stdin); selected=[json.loads(x) for x in open(sys.argv[1])]; print(json.dumps([{**next(o for o in all if o["node_id"]==v["node_id"]),**v} for v in selected]))' "$ranks_tmp")
   budget=$(python3 -c 'import json,sys; print(json.dumps({r["node_id"]:r["budget"] for r in map(json.loads,open(sys.argv[1]))}))' "$budgets_tmp")
-  plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget")") || die "could not build preparation plan"
+  plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" confirmed_node_ids: "$(all_node_ids)" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget")") || die "could not build preparation plan"
   rm -f "$ranks_tmp" "$budgets_tmp"
   if [ "$PLAN" -eq 1 ]; then rm -f "$views_tmp"; emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"

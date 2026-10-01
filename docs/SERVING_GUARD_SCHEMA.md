@@ -36,9 +36,10 @@ This example is data to include in a complete draft:
 ```
 
 The example hash is synthetic. A real recipe records the exact program hash
-and entrypoint used by its separately reviewed execution implementation.
-Schema validation checks the hash's format; it does not fetch a program, verify
-installed code, or execute the declared policy.
+and entrypoint used by its execution implementation. Obtain the installed
+program hash from `pulsar guarded template` and check a frozen spec with
+`pulsar guarded validate`. Schema validation alone checks the hash's format;
+it does not fetch a program or execute the declared policy.
 
 ## Catalog and execution support
 
@@ -48,22 +49,25 @@ packages. Catalog checks still require a schema-valid regular spec file,
 matching filename/spec ID, and publication privacy. No catalog classification
 follows from a guard or from passing measurements.
 
-This Stack version supports the guard document but has no guard execution
-implementation. `pulsar contract` advertises `serving_guard_schema_versions`
-without adding guarded execution operations. The static launch-compatibility
-check reports guarded recipes unsupported. Ordinary launch entrypoints reject
+`pulsar contract` advertises `serving_guard_schema_versions` and the separate
+`guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+operations. [Bounded guarded serving](GUARDED_SERVING.md) owns a foreground
+lease, enforces the recorded policy, and verifies owned cleanup. The static
+ordinary-launch compatibility check reports guarded recipes unsupported.
+Ordinary launch entrypoints reject
 them, including guards introduced by explicit overrides, before image staging
 or service replacement, and report the refusal as the `guard_unsupported`
 start blocker. The catalog keeps guarded specs and marks them
 `start_supported: false`, so the catalog menu does not offer Start for them.
-This execution-only refusal does not apply to observation or pre-launch
+Read-only `start --dry-run` can create a guarded plan after checking its
+prerequisites and installed program hash. This execution-only refusal does not apply to observation or pre-launch
 resource sampling; their schema, platform and ownership checks still apply.
 Status, stop, storage and document validation retain their existing
 boundaries.
 
 Experiment planning, probe selection, stage budgets, measurement sequencing,
 observation cadence and interpretation belong to Workbench skill guidance.
-A future execution implementation must enforce the recorded policy in tested
-code; skill instructions alone cannot provide memory limits or cleanup after
-the agent or controller disappears. Publishing the schema does not select that
-implementation's ownership or introduce another runner into Stack.
+Guard enforcement uses tested code rather than skill instructions: an independent
+container wrapper enforces memory, host-swap, deadlines and controller loss.
+Neither schema acceptance nor synthetic tests establish physical model fit or
+qualification.

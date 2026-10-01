@@ -34,6 +34,22 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+if [ "$TARGET" != --all ]; then
+  [[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || usage_die "stop requires the complete 64-character spec id (./pulsar models list --json)"
+fi
+load_cluster_topology || die "confirmed topology is required for safe stop"
+if ! python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$TARGET" "${CLUSTER_NODE_IDS[@]}" <<'PY_STOP'
+import sys
+from model_library.state import Store
+from scripts.container_runtime import validate_plan
+store=Store(sys.argv[1]);target=sys.argv[2];confirmed=sys.argv[3:]
+for row in store.records('services'):
+    if target!='--all' and row['selected_spec_id']!=target:continue
+    plan=validate_plan(store.get('service-plans',row['plan_id']))
+    if len(plan['ranks'])>1 and [rank['node_id'] for rank in plan['ranks']]!=confirmed[:len(plan['ranks'])]:
+        raise SystemExit('ordinary stop cannot address a nondefault guarded placement; use guarded stop with its exact output directory and run ID')
+PY_STOP
+then die "no service was stopped; reconcile the recorded guarded invocation first"; fi
 if [ "$TARGET" = --all ]; then
   [ -z "$NODE_SELECTOR" ] || usage_die "--node cannot be used with --all"
   # The delegated command acquires the lock once for all confirmed ranks.

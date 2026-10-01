@@ -816,7 +816,7 @@ def rows(topology: dict[str, Any]) -> None:
         )
 
 
-def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
+def profile_fabric(topology: dict[str, Any], node_count: int, node_ids: list[str] | None = None) -> None:
     """Emit per-rank HCAs restricted to links inside an exact profile."""
     validate_manifest(topology, require_verified=True)
     if node_count < 1 or node_count > len(topology["nodes"]):
@@ -825,9 +825,13 @@ def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
             f"{len(topology['nodes'])}"
         )
 
-    selected: dict[int, list[tuple[str, str]]] = {
-        rank: [] for rank in range(node_count)
-    }
+    indexes = list(range(node_count))
+    if node_ids is not None:
+        confirmed = {node['node_id']: node['rank'] for node in topology['nodes']}
+        if len(node_ids) != node_count or len(set(node_ids)) != node_count or not set(node_ids) <= set(confirmed):
+            fail('serving nodes must be an exact unique confirmed selection')
+        indexes = [confirmed[node_id] for node_id in node_ids]
+    selected: dict[int, list[tuple[str, str]]] = {rank: [] for rank in indexes}
 
     def add_endpoint(rank: int, endpoint: dict[str, Any]) -> None:
         item = (endpoint["hca"], endpoint["netdev"])
@@ -835,18 +839,18 @@ def profile_fabric(topology: dict[str, Any], node_count: int) -> None:
             selected[rank].append(item)
 
     if node_count == 1:
-        for rdma in topology["nodes"][0].get("rdma") or []:
-            add_endpoint(0, rdma)
+        for rdma in topology["nodes"][indexes[0]].get("rdma") or []:
+            add_endpoint(indexes[0], rdma)
     else:
         for link in topology["links"]:
             a, b = link["ranks"]
-            if a >= node_count or b >= node_count:
+            if a not in selected or b not in selected:
                 continue
             for rail in link["rails"]:
                 add_endpoint(a, rail["a"])
                 add_endpoint(b, rail["b"])
 
-    for rank in range(node_count):
+    for rank in indexes:
         endpoints = selected[rank]
         if not endpoints:
             # Nodes are validated to be in rank order; name the machine with its slot.
@@ -1254,6 +1258,7 @@ def parse_args() -> argparse.Namespace:
     trust_write_parser.add_argument("topology_destination")
     trust_write_parser.add_argument("config_destination")
     profile_parser = sub.add_parser("profile-fabric")
+    profile_parser.add_argument("--node-id", action="append")
     profile_parser.add_argument("document")
     profile_parser.add_argument("nodes", type=int)
 
@@ -1277,7 +1282,7 @@ def main() -> int:
             rows(extract_topology(load_json(args.document)))
         elif args.command == "profile-fabric":
             profile_fabric(
-                extract_topology(load_json(args.document)), args.nodes
+                extract_topology(load_json(args.document)), args.nodes, args.node_id
             )
         elif args.command == "ping-plan":
             ping_plan(extract_topology(load_json(args.document)))

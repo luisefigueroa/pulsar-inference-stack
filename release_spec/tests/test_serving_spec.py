@@ -59,6 +59,69 @@ class ServingSpec(unittest.TestCase):
                                    separators=(',',':'),ensure_ascii=False).encode()
                 self.assertEqual(spec['spec_id'],hashlib.sha256(payload).hexdigest())
 
+    def checkpoint_subdirectory(self, locator, *, named=False, dotted=False):
+        from release_spec import build_snapshot_manifest
+        manifest = build_snapshot_manifest(model_id=self.manifest['model_id'],
+            snapshot_revision=self.manifest['snapshot_revision'], files=[
+                *self.manifest['files'],
+                {'path': 'dflash/config.json', 'sha256': 'd'*64, 'size': 3},
+                {'path': 'dflash/checkpoint/model.safetensors', 'sha256': 'e'*64, 'size': 5}])
+        draft = copy.deepcopy(self.draft)
+        draft['schema_version'] = 2
+        draft['recipe']['required_snapshots'] = {'draft': copy.deepcopy(draft['recipe']['model'])} if named else {}
+        draft['recipe']['engine_args'] += (['--speculative_config.model', locator] if dotted else
+            ['--speculative-config', json.dumps({'model': locator, 'method': 'dflash'})])
+        manifests = {'target': manifest, **({'draft': manifest} if named else {})}
+        return draft, manifests
+
+    def test_checkpoint_subdirectories_use_complete_bound_manifests(self):
+        for named in (False, True):
+            name = 'draft' if named else 'target'
+            for dotted in (False, True):
+                for suffix in ('dflash', 'dflash/checkpoint'):
+                    with self.subTest(named=named, dotted=dotted, suffix=suffix):
+                        locator = 'pulsar-snapshot:' + name + '/' + suffix
+                        draft, manifests = self.checkpoint_subdirectory(locator, named=named, dotted=dotted)
+                        spec = serving.freeze(draft, manifests)
+                        self.assertEqual(serving.verify_spec(spec), spec)
+                        self.assertEqual(spec['recipe']['model']['snapshot_manifest'], manifests['target'])
+                        paths = {'target': '/bound/target', 'draft': '/bound/draft'}
+                        resolved = serving.snapshot_engine_args(spec['recipe'], paths)
+                        actual = resolved[-1] if dotted else json.loads(resolved[-1])['model']
+                        self.assertEqual(actual, paths[name] + '/' + suffix)
+                        if named:
+                            self.assertEqual(spec['recipe']['required_snapshots']['draft']['snapshot_manifest'], manifests['target'])
+
+    def test_checkpoint_subdirectories_reject_unsafe_or_unbound_paths(self):
+        suffixes = ('', '/dflash', 'dflash/', 'dflash//checkpoint', '.', '..',
+                    'dflash/.', 'dflash/..', '../dflash', 'dflash/../checkpoint',
+                    'dflash\\checkpoint', 'dflash\x00', 'dflash\n', 'dflash\x7f',
+                    'dflash/\u00e9', '%2e%2e', 'dflash/%2e%2e', '%2Fdflash',
+                    'missing', 'dflash-other', 'config.json', 'dflash/config.json')
+        for suffix in suffixes:
+            for dotted in (False, True):
+                with self.subTest(suffix=suffix, dotted=dotted):
+                    draft, manifests = self.checkpoint_subdirectory('pulsar-snapshot:target/' + suffix, dotted=dotted)
+                    with self.assertRaises(ValueError):
+                        serving.freeze(draft, manifests)
+        draft, manifests = self.checkpoint_subdirectory('pulsar-snapshot:missing/dflash')
+        with self.assertRaisesRegex(ValueError, 'unknown required snapshot'):
+            serving.freeze(draft, manifests)
+
+    def test_checkpoint_subdirectory_is_not_a_manifest_subset_or_snapshot_alias(self):
+        draft, manifests = self.checkpoint_subdirectory('pulsar-snapshot:target/dflash', named=True)
+        with self.assertRaisesRegex(ValueError, 'snapshot has no supported engine reference'):
+            serving.freeze(draft, manifests)
+        draft, manifests = self.checkpoint_subdirectory('pulsar-snapshot:target/dflash')
+        spec = serving.freeze(draft, manifests)
+        changed = copy.deepcopy(draft)
+        changed['recipe']['engine_args'][-1] = json.dumps({'model': 'pulsar-snapshot:target/dflash/checkpoint', 'method': 'dflash'})
+        self.assertNotEqual(serving.freeze(changed, manifests)['spec_id'], spec['spec_id'])
+        del changed['recipe']['engine_args'][-2:]
+        changed['recipe']['engine_args'] += ['--other', 'pulsar-snapshot:target/dflash']
+        with self.assertRaisesRegex(ValueError, 'outside a supported model field'):
+            serving.freeze(changed, manifests)
+
     def test_golden_identity_binds_only_schema_and_complete_recipe(self):
         payload = json.dumps({"schema_version": 2, "recipe": self.spec["recipe"]},
                              sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()

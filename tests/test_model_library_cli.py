@@ -195,6 +195,32 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(result['snapshots']['target'],result['snapshots']['draft'])
         self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')),2*manifest['total_bytes'])
 
+    def test_bundled_checkpoint_keeps_complete_verification_and_reuses_named_bytes(self):
+        from release_spec.serving import freeze
+        f = self.fixture(2)
+        f.cfg['files']['dflash/config.json'] = {'data': base64.b64encode(b'{"model_type":"synthetic-draft"}').decode(), 'lfs': False}
+        f.cfg['files']['dflash/model.safetensors'] = {'data': base64.b64encode(b'synthetic draft weights').decode(), 'lfs': True}
+        f.save()
+        self.acquire_candidate(f, nodes=2, home=1)
+        recipe = copy.deepcopy(f.spec['recipe'])
+        manifest = recipe['model'].pop('snapshot_manifest')
+        recipe['required_snapshots'] = {'draft': copy.deepcopy(recipe['model'])}
+        recipe['engine_args'] += ['--speculative_config.model', 'pulsar-snapshot:draft/dflash']
+        f.spec = freeze({'schema_version': 2, 'kind': 'pulsar-recipe-draft',
+                        'source': f.spec['source'], 'recipe': recipe}, {'target': manifest, 'draft': manifest})
+        f.spec_path.write_bytes(pretty_json_bytes(f.spec))
+        self.success(f.run('prepare', '--yes', spec=True))
+        f.cfg['trace_verification'] = True
+        f.save()
+        result = self.success(f.run('info', '--full', spec=True))
+        self.assertEqual(result['snapshots']['target'], result['snapshots']['draft'])
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')), 2*manifest['total_bytes'])
+        view = next(row for row in Store(f.state).views(spec_id=f.spec['spec_id']) if not row['is_home_view'])
+        path = Path(view['path'])/'weights.bin'
+        original = path.read_bytes()
+        path.write_bytes(b'x'*len(original))
+        self.failure(f.run('info', '--full', spec=True), 'SHA-256')
+
     def test_public_info_and_check_retain_remote_lease_failure_and_reap_peers(self):
         from model_library.verification_process import process_identity
         f=self.fixture(2);self.acquire_candidate(f,nodes=2,home=1)
@@ -584,6 +610,54 @@ class ModelLibraryCLI(unittest.TestCase):
         f.cfg["hub_unavailable"] = True; f.save()
         self.success(f.run("restore", "--node", "node-1", "--yes", spec=True))
         self.success(f.run("prepare", "--yes", spec=True))
+
+    def test_selected_quiet_pair_retains_controller_home_and_pinned_history(self):
+        from release_spec.serving import freeze
+        f = self.fixture(nodes=3)
+        f.cfg['files']['dflash/config.json'] = {'data': base64.b64encode(b'{"model_type":"synthetic-draft"}').decode(), 'lfs': False}
+        f.save()
+        self.acquire_candidate(f, nodes=2, home=0)
+        recipe = copy.deepcopy(f.spec['recipe'])
+        manifest = recipe['model'].pop('snapshot_manifest')
+        recipe['required_snapshots'] = {}
+        recipe['engine_args'] += ['--speculative-config', '{"model":"pulsar-snapshot:target/dflash","method":"dflash"}']
+        f.spec = freeze({'schema_version': 2, 'kind': 'pulsar-recipe-draft', 'source': f.spec['source'], 'recipe': recipe}, {'target': manifest})
+        f.spec_path.write_bytes(pretty_json_bytes(f.spec))
+        self.success(f.run('prepare', '--yes', spec=True))
+        self.success(f.run('pin', '--yes', spec=True))
+        before = copy.deepcopy(Store(f.state).views(spec_id=f.spec['spec_id']))
+        content = {row['path']: {str(path.relative_to(row['path'])): (path.read_bytes(), path.stat().st_ino)
+                   for path in Path(row['path']).rglob('*') if path.is_file()} for row in before}
+        home = Store(f.state).home(manifest['manifest_id'])
+        selection = ','.join(f.cfg['nodes'][index]['node_id'] for index in (2, 1))
+        plan = self.success(f.run('prepare', '--placement-nodes', selection, '--plan', spec=True))
+        actions = plan['snapshots'][0]['actions']
+        self.assertEqual([row['action'] for row in actions], ['copy', 'reuse'])
+        self.success(f.run('prepare', '--placement-nodes', selection, '--yes', spec=True))
+        f.cfg['trace_verification'] = True
+        f.save()
+        result = self.success(f.run('info', '--placement-nodes', selection, '--full', spec=True))
+        target = result['snapshots']['target']
+        self.assertEqual([row['node_id'] for row in target['ranks']], [f.cfg['nodes'][index]['node_id'] for index in (2, 1)])
+        self.assertEqual(target['home_node_id'], home['node_id'])
+        self.assertEqual(result['topology_id'], f.topology['topology_id'])
+        self.assertEqual(sum(row['bytes'] for row in f.events('verification-read')), 3*manifest['total_bytes'])
+        after = Store(f.state).views(spec_id=f.spec['spec_id'])
+        for old in before:
+            current = next(row for row in after if row['node_id'] == old['node_id'])
+            for field in ('path', 'hub_path', 'rank', 'pinned', 'is_home_view', 'snapshot_manifest_id'):
+                self.assertEqual(current[field], old[field])
+            self.assertEqual({str(path.relative_to(old['path'])): (path.read_bytes(), path.stat().st_ino)
+                             for path in Path(old['path']).rglob('*') if path.is_file()}, content[old['path']])
+
+    def test_selection_rejects_wrong_count_and_duplicate_nodes_before_prepare(self):
+        f = self.fixture(nodes=3)
+        self.acquire_candidate(f, nodes=2)
+        ids = [node['node_id'] for node in f.cfg['nodes']]
+        before = len(f.events('node-operation'))
+        for selected in (ids[1], ids[1]+','+ids[1], ids[1]+',missing', ids[1]+','+ids[2]+','):
+            self.failure(f.run('prepare', '--placement-nodes', selected, '--yes', spec=True))
+        self.assertEqual(len(f.events('node-operation')), before)
 
     def test_source_plan_is_not_acquisition_and_execution_requires_exact_commit(self):
         f = self.fixture(nodes=2)

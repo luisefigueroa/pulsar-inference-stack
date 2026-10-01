@@ -25,9 +25,35 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1')):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1'),selection=None,head_ip=None):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
+            if selection is not None:
+                from scripts import container_runtime
+                from scripts.service_state import save
+                from model_library.state import Store
+                topology_nodes = 3
+                topology_ids = ('node-0', 'node-1', 'node-2')
+                topology_hostnames = ('rank-0', 'rank-1', 'rank-2')
+                members = prepared['snapshots'].values() if spec['schema_version'] == 3 else [prepared]
+                for slot, index in enumerate(selection):
+                    facts['ranks'][slot].update(node_id=f'node-{index}', hostname=f'rank-{index}',
+                        ssh_host=f'rank-{index}', control_ip=head_ip if slot==0 and head_ip else f'192.0.2.{index+1}')
+                    for member in members:
+                        row = member['ranks'][slot]
+                        row['node_id'] = f'node-{index}'
+                        row['hub_path'] = f'/var/tmp/selected-node-{index}'
+                        row['path'] = row['hub_path']+'/snapshots/'+member['revision']
+                plan = container_runtime.build_plan(spec, spec['spec_id'], facts, prepared)
+                save(Store(root/'library'), plan)
+                for slot in range(nodes):
+                    expected = container_runtime.rank_spec(plan, slot)
+                    ref = spec['source']['image_repository']+'@'+spec['recipe']['image_digest']
+                    args = container_runtime.docker_argv(plan, slot, include_secrets=False)
+                    containers[slot]['Config'].update(Labels=expected['labels'], Cmd=args[args.index(ref)+1:],
+                        Env=images[slot]['Config']['Env']+[key+'='+value for key,value in container_runtime.environment(plan, slot).items()])
+                    containers[slot]['Mounts'] = [{'Source':mount['source'], 'Destination':mount['target'], 'RW':False} for mount in expected['mounts']]
+                (root/'physical-to-logical.json').write_text(json.dumps({str(index):slot for slot,index in enumerate(selection)}))
             for rank in range(nodes):
                 (root/f'container-{rank}.json').write_text(json.dumps(containers[rank]));(root/f'image-{rank}.json').write_text(json.dumps(images[rank]))
             if mode=='missing-draft': del prepared['snapshots']['draft']
@@ -40,6 +66,7 @@ class ObservationShell(unittest.TestCase):
             tool=root/'docker.py';tool.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,sys
 root=pathlib.Path(os.environ['FIXTURE_ROOT']);rank=int(os.environ.get('FIXTURE_RANK','0'));mode=os.environ.get('FIXTURE_MODE','ok')
+if (root/'physical-to-logical.json').exists():rank=json.loads((root/'physical-to-logical.json').read_text())[str(rank)]
 if mode=='rank-loss' and rank==1:sys.exit(255)
 kind='image' if sys.argv[1]=='image' else 'container'
 doc=json.loads((root/f'{kind}-{rank}.json').read_text())
@@ -60,14 +87,14 @@ load_cluster_topology() {{
   CLUSTER_TOPOLOGY_COUNT={topology_nodes or nodes}; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_TOPOLOGY_LOADED=1
   CLUSTER_NODE_IDS=({' '.join(topology_ids)})
   CLUSTER_NODE_HOSTNAMES=({' '.join(topology_hostnames)})
-  CLUSTER_NODE_SSH_HOSTS=(local rank-1)
-  CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2)
-  CLUSTER_NODE_CONTROL_IFS=(eth0 eth0)
-  CLUSTER_PROFILE_HCAS=('mlx5_0,mlx5_1' 'mlx5_0,mlx5_1')
+  CLUSTER_NODE_SSH_HOSTS=(local rank-1 rank-2)
+  CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 {head_ip or '192.0.2.3'})
+  CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0)
+  CLUSTER_PROFILE_HCAS=('mlx5_0,mlx5_1' 'mlx5_0,mlx5_1' 'mlx5_0,mlx5_1')
 }}
 require_profile_topology() {{ load_cluster_topology; }}
 runtime_context_for_rank() {{ printf '{{"architecture":"fixture","kernel_release":"fixture","gpu_driver":null,"container_runtime_version":null}}\n'; }}
-{'' if node else placement_double}
+{'' if node or nodes>1 else placement_double}
 library_hot_info_for_profile() {{ printf '%s\\n' "${{PULSAR_OBSERVE_FULL:-0}}" >>"$FIXTURE_ROOT/verification-modes"; printf '%s\\n' "${{PULSAR_OBSERVE_VERIFICATION_JOBS:-}}" >>"$FIXTURE_ROOT/verification-jobs"; [ "$FIXTURE_MODE" != corrupt-files ] || return 2; [ "$FIXTURE_MODE" != missing-files ] || return 1; cat "$FIXTURE_ROOT/prepared.json"; }}
 ssh_node() {{ local rank="$1"; shift; FIXTURE_RANK="$rank" python3 "$FIXTURE_ROOT/docker.py" $([ "${{1#docker image}}" != "$1" ] && echo image || echo inspect); }}
 ''')
@@ -171,6 +198,24 @@ library_hot_info_for_profile() {
         observed=json.loads(result.stdout)['result']
         self.assertEqual(observed['served_name'],'example')
         self.assertTrue(observed['api_url'].endswith(':8000'))
+
+    def test_observer_uses_recorded_remote_head_and_ordered_quiet_pair(self):
+        result = self.run_scenario(2, selection=(2, 1), public=True, mode='changed-overlay')
+        self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+        observed = json.loads(result.stdout)['result']
+        self.assertEqual(observed['api_url'], 'http://192.0.2.3:8000')
+        self.assertEqual([row['rank'] for row in observed['ranks']], [0, 1])
+        self.assertEqual([row['container_configuration']['environment']['VLLM_HOST_IP'] for row in observed['ranks']],
+                         ['192.0.2.3', '192.0.2.2'])
+        self.assertEqual(observed['served_name'], 'example')
+        self.assertTrue(all(row['owned'] and row['files_verified'] for row in observed['ranks']))
+
+    def test_observer_brackets_a_recorded_remote_ipv6_api_head(self):
+        result = self.run_scenario(2, selection=(2, 1), head_ip='2001:db8::3', public=True)
+        self.assertEqual(result.returncode, 0, result.stderr+result.stdout)
+        observed = json.loads(result.stdout)['result']
+        self.assertEqual(observed['api_url'], 'http://[2001:db8::3]:8000')
+        self.assertEqual(observed['ranks'][0]['container_configuration']['environment']['VLLM_HOST_IP'], '2001:db8::3')
 
     def test_low_level_dry_run_uses_spec_and_distinct_mounts(self):
         for nodes in (1,2):

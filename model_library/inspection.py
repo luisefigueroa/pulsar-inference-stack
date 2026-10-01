@@ -16,14 +16,35 @@ from .preparation_verification import cache_path
 from .state import validate_home, validate_view
 
 
-def plan(store, spec, node_ids, topology_id, *, full=False, cache=None):
+def plan(store, spec, node_ids, topology_id, *, full=False, cache=None, confirmed_node_ids=None):
     spec=verify_spec(spec)
     if len(node_ids)!=spec['recipe']['geometry']['nodes'] or len(set(node_ids))!=len(node_ids):
         raise StorageError('inspection requires the exact selected physical nodes')
+    confirmed = node_ids if confirmed_node_ids is None else confirmed_node_ids
+    if len(set(confirmed)) != len(confirmed) or not set(node_ids) <= set(confirmed):
+        raise StorageError('serving nodes differ from confirmed membership')
     snapshots=required_snapshots(spec)
     names=['target']+sorted(name for name in snapshots if name!='target')
     views=store.views(spec_id=spec['spec_id'])
     jobs=[]; physical={}; members={}
+    def add_job(record, manifest):
+        key = (record['node_id'], record['snapshot_manifest_id'], record['path'])
+        if key not in physical:
+            candidate = record
+            mode = full
+            if cache:
+                path = cache_path(cache, record)
+                if path.exists():
+                    candidate = {**record, **read_json(path)}
+                    mode = False
+            index = len(jobs)
+            physical[key] = index
+            jobs.append({'index': index, 'node_slot': confirmed.index(record['node_id']),
+                         'record': record, 'candidate': candidate, 'manifest': manifest, 'full': mode})
+        index = physical[key]
+        if jobs[index]['record']['hub_path'] != record['hub_path']:
+            raise StorageError('one physical copy has conflicting hub identities')
+        return index
     for name in names:
         manifest=snapshots[name]['snapshot_manifest']
         home=store.home(manifest['manifest_id'])
@@ -32,8 +53,8 @@ def plan(store, spec, node_ids, topology_id, *, full=False, cache=None):
         if home is None:
             member.update(rc=1,error='no home is registered; acquire or restore the exact snapshot')
             continue
-        if home['node_id'] not in node_ids:
-            member.update(rc=1,error='home is outside selected serving nodes; explicitly move it first')
+        if home['node_id'] not in confirmed:
+            member.update(rc=1,error='snapshot home is outside confirmed membership')
             continue
         selected=[]
         for rank,node in enumerate(node_ids):
@@ -53,23 +74,11 @@ def plan(store, spec, node_ids, topology_id, *, full=False, cache=None):
             selected.append(row)
         if member['rc']:
             continue
+        if home['node_id'] not in node_ids:
+            member['home_job'] = add_job(home, manifest)
         for rank,row in enumerate(selected):
             record=home if row['is_home_view'] else row
-            key=(record['node_id'],record['snapshot_manifest_id'],record['path'])
-            if key not in physical:
-                candidate=record
-                mode=full
-                if cache:
-                    path=cache_path(cache,record)
-                    if path.exists():
-                        candidate={**record,**read_json(path)}
-                        mode=False
-                index=len(jobs);physical[key]=index
-                jobs.append({'index':index,'node_slot':rank,'record':record,'candidate':candidate,
-                             'manifest':manifest,'full':mode})
-            index=physical[key]
-            if jobs[index]['record']['hub_path']!=record['hub_path']:
-                raise StorageError('one physical copy has conflicting hub identities')
+            index = add_job(record, manifest)
             member['ranks'].append({'record':row,'job':index})
             if row['is_home_view']: member['home_job']=index
     return {'spec_id':spec['spec_id'],'spec_schema':spec['schema_version'],'topology_id':topology_id,
@@ -110,6 +119,11 @@ def assemble(value, directory, batch):
                 code=result['returncode']
                 rc=255 if code in (125,129,130,143,255) else 2
                 error=f"rank {binding['record']['rank']}: "+result.get('error','verification was not completed after another failure')
+            if not rc:
+                home_result = results.get(member['home_job'], {'returncode': 125})
+                if home_result['returncode'] != 0:
+                    rc = 255 if home_result['returncode'] in (125, 129, 130, 143, 255) else 2
+                    error = 'snapshot home: '+home_result.get('error', 'verification was not completed')
         prepared=None
         if not rc:
             home=read_json(root/'jobs'/f"{member['home_job']}.verified.json")

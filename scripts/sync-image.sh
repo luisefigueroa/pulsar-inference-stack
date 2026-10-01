@@ -3,17 +3,21 @@
 # the exact digest only with --pull-if-stream-incomplete, which start passes when
 # --pull-image grants pulling.
 set -euo pipefail
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: sync-image.sh SPEC [--spec-file FILE] [--node NODE] [--plan | --yes] [--pull | --pull-if-stream-incomplete]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image stage SPEC [--spec-file FILE] [--node NODE | --placement-nodes LIST] [--plan | --yes] [--pull | --pull-if-stream-incomplete | --export-tag TAG] [--json]"; exit 0; fi
 SCRIPT_NAME=sync-image
+PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 NAME="${1:?spec id required}"; shift
-PULL=0 YES=0 PLAN=0 NODE_SELECTOR="" PULL_FALLBACK=0
+PULL=0 YES=0 PLAN=0 JSON=0 NODE_SELECTOR="" PULL_FALLBACK=0 EXPORT_TAG=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --pull) PULL=1 ;;
     --pull-if-stream-incomplete) PULL_FALLBACK=1 ;;
     --yes|-y) YES=1 ;;
     --plan) PLAN=1 ;;
+    --json) JSON=1 ;;
+    --export-tag) EXPORT_TAG="${2:?export tag required}"; shift ;;
     --node) NODE_SELECTOR="${2:?node required}"; shift ;;
     --spec-file) export PULSAR_SPEC_FILE="${2:?spec file required}"; shift ;;
     *) die "unknown argument: $1" 2 ;;
@@ -21,26 +25,73 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ "$YES" = 0 ] || [ "$PLAN" = 0 ] || die "preview and apply are separate operations" 2
+[ -z "$EXPORT_TAG" ] || { [ "$PULL" = 0 ] && [ "$PULL_FALLBACK" = 0 ]; } \
+  || die "named export and registry pulling are separate modes" 2
 load_conf "$NAME"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
+export_image="$IMAGE"
+source_image_id=""
+verify_export_source() {
+  local inspected
+  inspected=$("$PULSAR_DOCKER" image inspect "$IMAGE" "$EXPORT_TAG") || die "export tag or pinned image is unavailable"
+  printf '%s' "$inspected" | python3 -c '
+import json,re,sys
+image,tag=sys.argv[1:]
+repository,digest=image.rsplit("@",1)
+if not tag.startswith(repository+":") or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}",tag[len(repository)+1:]):
+ raise SystemExit("export tag must be an explicit tag in the pinned repository")
+rows=json.load(sys.stdin)
+if not isinstance(rows,list) or len(rows)!=2:raise SystemExit("export image observation incomplete")
+for row in rows:
+ if row.get("Architecture")!="arm64" or row.get("Os")!="linux" or not row.get("Id"):
+  raise SystemExit("export requires exact ARM64 Linux images")
+ if image not in row.get("RepoDigests",[]):
+  raise SystemExit("export tag does not resolve to the pinned digest")
+if rows[0]["Id"]!=rows[1]["Id"]:raise SystemExit("export tag image differs from pinned image")
+print(rows[0]["Id"])
+' "$IMAGE" "$EXPORT_TAG"
+}
+if [ -n "$EXPORT_TAG" ]; then
+  source_image_id=$(verify_export_source) || die "export tag identity check failed"
+  export_image="$EXPORT_TAG"
+fi
 placement=()
 if [ "$NODES" = 1 ]; then
   NODE_SELECTOR=$(spec_overlay_node_selector "$NODE_SELECTOR")
   resolve_single_node_placement "$NODE_SELECTOR" || die "selected node is not confirmed"
   placement=(--node "${SINGLE_NODE_ID:-$SINGLE_NODE_INDEX}")
-elif [ -n "$NODE_SELECTOR" ]; then die "--node applies only to one-node specs" 2; fi
+else
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "selected serving nodes are not confirmed"
+  [ -z "$PLACEMENT_NODES" ] || placement=(--placement-nodes "$PLACEMENT_NODES")
+fi
 rc=0
 report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json) || rc=$?
 [ -n "$report" ] || die "image inspection failed"
 state=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
 case "$state" in
-  ok) log "Exact spec image already present on all $NODES serving ranks."; exit 0 ;;
+  ok) ;;
   missing-on-head|missing-on-rank|missing-both) ;;
   *) die "all target nodes must be observable and image identities valid before staging ($state)" ;;
 esac
 mode=stream-from-controller
 [ "$PULL" = 0 ] || mode=pull-exact-digest
+if [ -n "$EXPORT_TAG" ]; then
+  # Loading a named archive must never replace a different existing tag.
+  mapfile -t destinations < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+  for physical in "${destinations[@]}"; do
+    [ "$physical" != 0 ] || die "export tag requires the controller pinned image"
+    ids=$(ssh_node "$physical" "$(shell_join_q docker image ls --all --quiet --no-trunc "$EXPORT_TAG")") || die "destination export tag observation failed"
+    while IFS= read -r id; do
+      [ -z "$id" ] || [ "$id" = "$source_image_id" ] || die "destination export tag belongs to another image"
+    done <<<"$ids"
+  done
+fi
 if [ "$PLAN" = 1 ]; then
-  printf '%s' "$report" | python3 -c 'import json,sys; d=json.load(sys.stdin);d["operation"]="stage-image";d["mode"]=sys.argv[1];print(json.dumps(d,indent=2))' "$mode"
+  printf '%s' "$report" | python3 -c 'import json,sys; d=json.load(sys.stdin);d["operation"]="stage-image";d.update(mode=sys.argv[1],export_reference=sys.argv[2],source_image_id=sys.argv[3] or None);print(json.dumps(d,indent=2))' "$mode" "$export_image" "$source_image_id"
+  exit 0
+fi
+if [ "$state" = ok ]; then
+  if [ "$JSON" = 1 ]; then printf '%s\n' "$report"; else log "Exact spec image already present on all $NODES serving ranks."; fi
   exit 0
 fi
 [ "$YES" = 1 ] || die "image staging requires --yes after reviewing --plan" 2
@@ -52,10 +103,20 @@ fi
 mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
 for physical in "${missing[@]}"; do
   if [ "$PULL" = 1 ]; then
-    if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE"; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")"; fi
+    if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi
   else
     [ "$physical" != 0 ] || die "local missing image requires explicit --pull"
-    "$PULSAR_DOCKER" save "$IMAGE" | ssh_node "$physical" 'docker load'
+    if [ -n "$EXPORT_TAG" ]; then
+      [ "$(verify_export_source)" = "$source_image_id" ] || die "export source changed before transfer"
+      ids=$(ssh_node "$physical" "$(shell_join_q docker image ls --all --quiet --no-trunc "$EXPORT_TAG")") || die "destination export tag observation failed"
+      while IFS= read -r id; do
+        [ -z "$id" ] || [ "$id" = "$source_image_id" ] || die "destination export tag changed before transfer"
+      done <<<"$ids"
+    fi
+    "$PULSAR_DOCKER" save "$export_image" | ssh_node "$physical" 'docker load' >&2
+    if [ -n "$EXPORT_TAG" ]; then
+      [ "$(verify_export_source)" = "$source_image_id" ] || die 'export source changed during transfer'
+    fi
   fi
 done
 if ! "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null; then
@@ -66,10 +127,12 @@ if ! "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/n
   mapfile -t still < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]' 2>/dev/null)
   for physical in "${still[@]}"; do
     log "pulling the pinned image on $(human_node_name "$physical"); streaming did not keep its digest"
-    if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE"; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")"; fi \
+    if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi \
       || die "pulling $IMAGE failed on $(human_node_name "$physical"); check registry access on that node"
   done
   "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null \
     || die "the pinned image is still missing after pulling it; run ./pulsar doctor"
 fi
-log "Pinned spec image verified on all $NODES serving ranks."
+report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json) \
+  || die "the pinned repository/digest reference is not established on every serving rank"
+if [ "$JSON" = 1 ]; then printf '%s\n' "$report"; else log "Pinned spec image verified on all $NODES serving ranks."; fi

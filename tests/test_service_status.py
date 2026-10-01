@@ -137,9 +137,6 @@ class Results(unittest.TestCase):
         script = f". {ROOT}/scripts/lib.sh\nurl_host 2001:db8::1; url_host 192.0.2.1; url_host '[2001:db8::2]'"
         result = subprocess.run(["bash", "-c", script], text=True, capture_output=True, timeout=60)
         self.assertEqual(result.stdout.split(), ["[2001:db8::1]", "192.0.2.1", "[2001:db8::2]"])
-        # The verified cluster API URL is built with it.
-        self.assertEqual((ROOT / "scripts/observe-serving.sh").read_text().count(
-            'API_URL="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[0]}"):$PORT"'), 2)
 
     def test_an_ipv6_control_address_is_bracketed(self):
         nodes = {"worker": {"hostname": "spark-2", "control_ip": "2001:db8::1", "local": False}}

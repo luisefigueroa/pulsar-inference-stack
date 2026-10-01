@@ -40,6 +40,10 @@ class GuardLaunchAdmission(unittest.TestCase):
         from model_library.state import Store
         from scripts import container_runtime, service_state
         spec = guarded(self.base.spec)
+        from serving_guard.program import digest, program
+        from release_spec import serving
+        spec = serving.apply_overrides(spec, {'container': {'guard': {
+            **spec['recipe']['container']['guard'], 'program_sha256': digest(program())}}})
         prepared = copy.deepcopy(self.base.prepared)
         prepared['spec_id'] = spec['spec_id']
         for rank in prepared['ranks']:
@@ -79,8 +83,8 @@ class GuardLaunchAdmission(unittest.TestCase):
                 self.assertIn(spec['spec_id'][:12], result.stderr)
                 self.assertEqual(result.stdout.count('BLOCKED '), 1, result.stdout)
                 self.assertIn('BLOCKED guard_unsupported: this spec requires serving-guard enforcement '
-                              '(recipe.container.guard), which this Stack cannot run. Note: No start is '
-                              'possible from this Stack; see docs/SERVING_GUARD_SCHEMA.md.', result.stdout)
+                              '(recipe.container.guard), which ordinary start cannot enforce. Note: Use an explicitly '
+                              'scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md.', result.stdout)
                 self.assertEqual(recorded, [start_blockers.blocker('guard_unsupported')])
                 self.assertFalse((self.base.root / 'mutations').exists())
 
@@ -110,6 +114,18 @@ class GuardLaunchAdmission(unittest.TestCase):
         self.assertEqual(result.returncode, 67, result.stderr)
         self.assertTrue(marker.exists(), result.stderr)
         self.assertEqual(recorded, [])
+
+    def test_guarded_dry_run_reaches_readonly_prerequisites(self):
+        spec = guarded(fixture(3)[0])
+        self.base.path.write_text(json.dumps(spec))
+        marker = self.base.root/'guarded-planning'
+        with open(self.base.env['BASH_ENV'], 'a') as stream:
+            stream.write(f'\nrequire_cluster_nodes() {{ touch {str(marker)!r}; exit 67; }}\n')
+        result, recorded = self.launch('scripts/up.sh', spec['spec_id'], '--dry-run')
+        self.assertEqual(result.returncode, 67, result.stderr)
+        self.assertTrue(marker.exists(), result.stderr)
+        self.assertEqual(recorded, [])
+        self.assertFalse((self.base.root/'mutations').exists())
 
     def test_guard_added_by_override_is_also_rejected(self):
         spec = fixture(3)[0]
