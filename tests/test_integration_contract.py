@@ -20,7 +20,7 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(document['spec_schema_versions'],[2,3])
         self.assertEqual(document['serving_guard_schema_versions'],[1,2])
         self.assertEqual({operation for operation in document['operations'] if operation.startswith('guarded.')},
-                         {'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop'})
+                         {'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop', 'guarded.reconcile'})
         self.assertEqual({operation for operation in document['operations'] if operation.startswith('image.')},
                          {'image.check', 'image.stage'})
         self.assertFalse(any(operation.startswith('diagnostic.') for operation in document['operations']))

@@ -70,13 +70,21 @@ def retire(store, *, topology_id, node_ids, selected_spec_id=None):
         return retired
 
 
-def retire_plan(store, plan):
-    """Retire exactly this plan after caller verifies every owned rank's cleanup."""
+def retire_plan(store, plan, *, require_matching=False):
+    """Retire this plan after cleanup; reconciliation refuses a different locator."""
     validate_plan(plan)
     with store.lock(name='services.lock'):
         row = store.get('services', plan['service_id'])
-        if row is None or row['plan_id'] != plan['plan_id']:
+        if row is None:
             return False
+        if row['plan_id'] != plan['plan_id']:
+            if require_matching:
+                raise ValueError('active service locator selects a different launch plan; preserved')
+            return False
+        if require_matching and (type(row.get('schema_version')) is not int or row != {
+                'schema_version': 1, 'service_id': plan['service_id'],
+                'selected_spec_id': plan['selected_spec_id'], 'plan_id': plan['plan_id']}):
+            raise ValueError('active service locator differs from saved guarded plan; preserved')
         saved = store.get('service-plans', plan['plan_id'])
         if saved != plan or row['service_id'] != plan['service_id']:
             raise ValueError('service index differs from saved plan')

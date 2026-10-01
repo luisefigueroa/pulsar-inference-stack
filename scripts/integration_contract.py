@@ -37,7 +37,7 @@ def contract() -> dict:
                        'evidence.summary', 'contribution.verify', 'privacy.check', 'privacy.commits',
                        'selftest', 'start', 'observe', 'resources', 'status', 'stop', 'memory.verify',
                        'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify',
-                       'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop',
+                       'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop', 'guarded.reconcile',
                        'image.check', 'image.stage'],
         'baseline_policy_digest': APPROVED_POLICY_DIGEST,  # Legacy baseline-v1 field.
         'baseline_policies': dict(SUPPORTED_POLICY_DIGESTS),

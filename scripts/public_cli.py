@@ -177,9 +177,12 @@ def dispatch(command, args):
                     'validate': 'guarded validate --spec-file FILE [--json]',
                     'run': 'guarded run --spec-file FILE --spec-id SHA256 --output-dir NEW_DIR --yes [--json]',
                     'stop': 'guarded stop --output-dir DIR --run-id SHA256 [--json]',
+                    'reconcile': 'guarded reconcile --output-dir DIR --run-id SHA256 [--json]',
                     'scope': 'Foreground bounded serving; no image pulls, acquisition or replacement.'}
         if args[0] == 'run':
             return execute('scripts/guarded-serving.sh', args[1:], json_result=True)
+        if args[0] == 'reconcile':
+            return execute('scripts/guarded-reconcile.sh', args[1:], json_result=True)
         parser = CommandParser()
         if args[0] == 'template':
             from serving_guard.program import template
@@ -211,7 +214,7 @@ def dispatch(command, args):
             parser.add_argument('--run-id', required=True)
             options = parser.parse_args(args[1:])
             return stop(options.output_dir.absolute(), options.run_id)
-        raise ValueError('usage: pulsar guarded template|validate|run|stop --help')
+        raise ValueError('usage: pulsar guarded template|validate|run|stop|reconcile --help')
     if command == 'memory' and args[:1] == ['verify']:
         from release_spec.memory_estimate import load
         parser=CommandParser()
@@ -359,10 +362,11 @@ def main(argv=None):
                 argv[index]=str(Path(argv[index]).absolute())
         human_scripts={'start':'scripts/up.sh','stop':'scripts/down.sh',
                        'status':'scripts/status.sh','model':'scripts/model-library.sh'}
-        if argv[0] == 'guarded' and argv[1:2] == ['run'] and (
-                not json_output or any(a in ('--help', '-h') for a in argv[2:])):
+        if argv[0] == 'guarded' and argv[1:2] in (['run'], ['reconcile']) and (
+                (argv[1] == 'run' and not json_output) or any(a in ('--help', '-h') for a in argv[2:])):
             os.chdir(ROOT)
-            os.execvp('bash', ['bash', str(ROOT/'scripts/guarded-serving.sh'), *argv[2:]])
+            script = 'guarded-serving.sh' if argv[1] == 'run' else 'guarded-reconcile.sh'
+            os.execvp('bash', ['bash', str(ROOT/'scripts'/script), *argv[2:]])
         if argv[0] == 'image' and argv[1:2] in (['check'], ['stage']) and (
                 not json_output or any(a in ('--help', '-h') for a in argv[2:])):
             script = 'check-image.sh' if argv[1] == 'check' else 'sync-image.sh'
@@ -373,6 +377,13 @@ def main(argv=None):
             os.chdir(ROOT)
             os.execvp('bash',command)
         result=dispatch(argv[0],argv[1:])
+        if argv[:2] == ['guarded', 'reconcile'] and not json_output:
+            from scripts.terminal_format import TerminalWriter
+            out = TerminalWriter()
+            action = 'Retired service locator' if result['service_locator_retired'] else 'Service locator already absent'
+            out.emit(f"{action} {result['service_id'][:12]} after verified rank absence.")
+            out.field('Receipt', result['receipt_file'])
+            return 0
         emit(result,json_output=json_output)
         return 0
     except StackOutputError as exc:
