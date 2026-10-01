@@ -38,9 +38,14 @@ python3 -m serving_guard.controller initialize --spec-file "$spec" --spec-id "$s
 acquire_model_library_lifecycle_lock shared
 acquire_model_library_hot_lock shared
 # Normal prerequisites and full prepared-file checks remain authoritative.
+prerequisite_rc=0
 PULSAR_LAUNCH_PLAN_OUT="$output/plan.json" bash "$repo/scripts/up.sh" "$spec_id" \
   --spec-file "$output/spec.json" --dry-run "${admission[@]}" \
-  >"$output/prerequisites.stdout" 2>"$output/prerequisites.stderr"
+  >"$output/prerequisites.stdout" 2>"$output/prerequisites.stderr" || prerequisite_rc=$?
+if [ "$prerequisite_rc" != 0 ]; then
+  python3 -m serving_guard.controller fail-prerequisites --output "$output" --returncode "$prerequisite_rc"
+  exit "$prerequisite_rc"
+fi
 load_cluster_topology || die 'confirmed topology required'
 python3 -m serving_guard.controller activate --output "$output" --owner "$$"
 mapfile -t binding < <(python3 - "$output/active-plan.json" <<'PY'
@@ -102,7 +107,7 @@ finish() {
   trap '' INT TERM HUP
   cancel_batch
   phase cleanup || true
-  python3 -m serving_guard.controller finish --output "$output"
+  python3 -m serving_guard.controller finish --output "$output" --state-root "$PULSAR_MODEL_LIBRARY_DIR"
 }
 stop_signal() {
   cancel_batch

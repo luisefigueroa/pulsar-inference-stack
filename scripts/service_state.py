@@ -14,15 +14,18 @@ from release_spec.serving import load_json
 
 
 def save(store, plan):
-    validate_plan(plan)
-    existing = store.get('service-plans', plan['plan_id'])
-    if existing is not None and existing != plan:
-        raise ValueError('stored launch plan differs from its content digest')
-    if existing is None:
-        store.put('service-plans', plan['plan_id'], plan, replace=False)
-    # An index locates a service; its actual container labels identify the plan.
-    store.put('services', plan['service_id'], {'schema_version': 1,
-        'service_id': plan['service_id'], 'selected_spec_id': plan['selected_spec_id'], 'plan_id': plan['plan_id']})
+    # Callers may share the lifecycle lock; serialize index compare/write/remove
+    # separately, without upgrading the lifecycle lock held by a foreground run.
+    with store.lock(name='services.lock'):
+        validate_plan(plan)
+        existing = store.get('service-plans', plan['plan_id'])
+        if existing is not None and existing != plan:
+            raise ValueError('stored launch plan differs from its content digest')
+        if existing is None:
+            store.put('service-plans', plan['plan_id'], plan, replace=False)
+        # An index locates a service; its actual container labels identify the plan.
+        store.put('services', plan['service_id'], {'schema_version': 1,
+            'service_id': plan['service_id'], 'selected_spec_id': plan['selected_spec_id'], 'plan_id': plan['plan_id']})
 
 
 def locate(store, *, service_id=None, selected_spec_id=None):
@@ -47,21 +50,38 @@ def locate(store, *, service_id=None, selected_spec_id=None):
 
 def retire(store, *, topology_id, node_ids, selected_spec_id=None):
     """Retire active locators after proven stop; caller holds the lifecycle lock."""
-    checked_id(topology_id)
-    if selected_spec_id is not None: checked_id(selected_spec_id)
-    if not node_ids: raise ValueError('stop must identify its confirmed nodes')
-    retired=[]
-    for row in store.records('services'):
-        if selected_spec_id is not None and row['selected_spec_id']!=selected_spec_id:
-            continue
-        plan=store.get('service-plans',row['plan_id'])
-        validate_plan(plan)
-        if plan['service_id']!=row['service_id']:
+    # Callers may share the lifecycle lock; serialize index compare/write/remove
+    # separately, without upgrading the lifecycle lock held by a foreground run.
+    with store.lock(name='services.lock'):
+        checked_id(topology_id)
+        if selected_spec_id is not None: checked_id(selected_spec_id)
+        if not node_ids: raise ValueError('stop must identify its confirmed nodes')
+        retired=[]
+        for row in store.records('services'):
+            if selected_spec_id is not None and row['selected_spec_id']!=selected_spec_id:
+                continue
+            plan=store.get('service-plans',row['plan_id'])
+            validate_plan(plan)
+            if plan['service_id']!=row['service_id']:
+                raise ValueError('service index differs from saved plan')
+            if plan['topology_id']==topology_id and {rank['node_id'] for rank in plan['ranks']}<=set(node_ids):
+                store.remove('services',row['service_id'])
+                retired.append(row['service_id'])
+        return retired
+
+
+def retire_plan(store, plan):
+    """Retire exactly this plan after caller verifies every owned rank's cleanup."""
+    validate_plan(plan)
+    with store.lock(name='services.lock'):
+        row = store.get('services', plan['service_id'])
+        if row is None or row['plan_id'] != plan['plan_id']:
+            return False
+        saved = store.get('service-plans', plan['plan_id'])
+        if saved != plan or row['service_id'] != plan['service_id']:
             raise ValueError('service index differs from saved plan')
-        if plan['topology_id']==topology_id and {rank['node_id'] for rank in plan['ranks']}<=set(node_ids):
-            store.remove('services',row['service_id'])
-            retired.append(row['service_id'])
-    return retired
+        store.remove('services', plan['service_id'])
+        return True
 
 
 def actual_plan(store, locator, containers):

@@ -3068,24 +3068,25 @@ profile_service_is_stack_owned() {
 # Strict loaded-state proof for memory exemptions. Unlike the transition
 # classifier above, this accepts labels only; argv resemblance is insufficient.
 profile_service_is_proven_running() {
-  local conf="$1" selector="${2:-}" cname head_meta remote_meta host role
-  local head_rc=0 remote_rc=0 rank
+  local conf="$1" selector="${2:-}" cname head_meta remote_meta rank_meta host role
+  local head_rc=0 remote_rc=0 rank index
   cname=$(container_name_for "$conf" "$NODES")
 
   if [ "$NODES" -gt 1 ]; then
-    container_running_exact "$cname" || return 1
-    head_meta=$(container_ownership_inspect_local "$cname") || head_rc=$?
-    [ "$head_rc" -eq 0 ] || return 1
-    container_ownership_is_proven "$head_meta" "$conf" 0 || return 1
     require_cluster_nodes "$NODES" || return 1
-    for ((rank = 1; rank < NODES; rank++)); do
-      host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-      container_running_exact_remote "$host" "$cname" || return 1
-      remote_rc=0
-      remote_meta=$(container_ownership_inspect_remote "$host" "$cname") \
-        || remote_rc=$?
-      [ "$remote_rc" -eq 0 ] || return 1
-      container_ownership_is_proven "$remote_meta" "$conf" "$rank" || return 1
+    for ((rank = 0; rank < NODES; rank++)); do
+      # Logical ranks follow the selected placement, which can have a remote
+      # head or a local worker. An identical service elsewhere is not loaded
+      # capacity on these nodes.
+      index="${SERVING_NODE_INDEXES[$rank]:-$rank}"
+      if [ "$index" -eq 0 ]; then
+        container_running_exact "$cname" || return 1
+      else
+        host="${CLUSTER_NODE_SSH_HOSTS[$index]}"
+        container_running_exact_remote "$host" "$cname" || return 1
+      fi
+      rank_meta=$(container_ownership_inspect_on_node "$index" "$cname") || return 1
+      container_removal_is_proven "$rank_meta" "$conf" "$rank" "$index" || return 1
     done
     return 0
   fi

@@ -54,13 +54,15 @@ class Store:
         self.root = Path(os.path.realpath(root))
 
     @contextmanager
-    def lock(self, *, exclusive: bool = True) -> Iterator[None]:
+    def lock(self, *, exclusive: bool = True, name: str = 'lifecycle.lock') -> Iterator[None]:
+        if name not in {'lifecycle.lock', 'services.lock'}:
+            raise StorageError('unknown record lock')
         ensure_directory(self.root)
         with directory(self.root) as parent:
-            fd = os.open('lifecycle.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+            fd = os.open(name, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
             try:
                 if not stat.S_ISREG(os.fstat(fd).st_mode):
-                    raise StorageError('lifecycle lock is not a regular file')
+                    raise StorageError('record lock is not a regular file')
                 fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
                 yield
             finally:

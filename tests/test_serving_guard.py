@@ -16,6 +16,8 @@ from unittest.mock import MagicMock, patch
 
 from release_spec import serving
 from release_spec.normalize import canonical_json_digest
+from model_library.state import Store
+from scripts import service_state
 from scripts import container_runtime as runtime
 from serving_guard import controller, node, program
 from serving_guard import runtime as guard_runtime
@@ -29,6 +31,8 @@ def guarded_fixture(max_host_swap_growth_bytes=None, *, nodes=3, subdirectory=No
     spec, facts, prepared, _, containers, images = fixture(nodes, subdirectory=subdirectory)
     container = copy.deepcopy(spec['recipe']['container'])
     container['memory_limit_bytes'] = 16 * GIB
+    if nodes == 1:
+        container.update(network_mode='host', restart_policy='no', restart_max_retries=0, healthcheck=None)
     container['guard'] = program.template(['engine'], minimum=8 * GIB, startup=10, timeout=20,
                                          max_host_swap_growth_bytes=max_host_swap_growth_bytes)
     spec = serving.apply_overrides(spec, {'container': container})
@@ -485,7 +489,9 @@ class GuardTransport(unittest.TestCase):
             shutil.copytree(ROOT/package, self.root/package, ignore=shutil.ignore_patterns('__pycache__'))
         (self.root/'scripts').mkdir()
         for name in ('guarded-serving.sh', 'container_runtime.py', 'node-bundle.py',
-                     'model-library-common.sh', 'resource_sample.py'):
+                     'model-library-common.sh', 'resource_sample.py', 'service_state.py',
+                     'public_cli.py', 'document_cli.py', 'terminal_format.py',
+                     'check_publishable_privacy.py'):
             shutil.copyfile(ROOT/'scripts'/name,self.root/'scripts'/name)
         with (self.root/'scripts/resource_sample.py').open('a') as stream:
             stream.write('\nread_meminfo=lambda *a,**k: {"mem_available_bytes":100*1024**3,"swap_used_bytes":0}\n')
@@ -509,13 +515,18 @@ resolve_single_node_placement() {
 }
 ''')
         (self.root/'fake-ssh').write_text('export PULSAR_TEST_NODE="$1"\nshift\nexec bash -c "$1"\n')
+        shutil.copyfile(ROOT/'pulsar', self.root/'pulsar')
+        (self.root/'scripts/__init__.py').touch()
         (self.root/'docker-state').mkdir()
         self.env = {**os.environ, 'PYTHONPATH': str(self.root),
-                    'PULSAR_TEST_DOCKER_STATE': str(self.root/'docker-state'), 'PYTHONDONTWRITEBYTECODE': '1'}
+                    'PULSAR_TEST_DOCKER_STATE': str(self.root/'docker-state'), 'PYTHONDONTWRITEBYTECODE': '1',
+                    'PULSAR_MODEL_LIBRARY_DIR': str(self.root/'state')}
         for key in ('BASH_ENV', 'PULSAR_VERIFICATION_OWNER', 'PULSAR_VERIFICATION_REPORT', 'PULSAR_VERIFICATION_REPORT_FD'):
             self.env.pop(key, None)
         with (self.root/'scripts/lib.sh').open('a') as f:
-            f.write('\nacquire_model_library_hot_lock() { :; }\npersist_launch_plan_file() { :; }\n')
+            f.write('\nacquire_model_library_hot_lock() { :; }\n'
+                    'persist_launch_plan_file() { python3 \"$REPO_DIR/scripts/service_state.py\" save '
+                    '--state-root \"$PULSAR_MODEL_LIBRARY_DIR\" --plan \"$1\"; }\n')
         with patch.object(program,'ROOT',self.root):
             spec,_,_,plan,*_=guarded_fixture()
         self.ranks = 3
@@ -581,12 +592,22 @@ def execute(context,root):
         out,err=p.communicate(timeout=3);self.fail(out+'\n'+err)
 
     def select_two_ranks(self):
+        self.select_ranks(2)
+
+    def select_ranks(self, nodes):
         with patch.object(program, 'ROOT', self.root):
-            spec, _, _, plan, *_ = guarded_fixture(nodes=2, subdirectory='dflash')
+            spec, _, _, plan, *_ = guarded_fixture(nodes=nodes, subdirectory='dflash')
         (self.root/'guard-spec.json').write_text(json.dumps(spec))
         (self.root/'fixture-plan.json').write_text(json.dumps(plan))
         self.spec_id = spec['spec_id']
-        self.ranks = 2
+        self.ranks = nodes
+
+    def enable_api_auth(self):
+        path = self.root/'fixture-plan.json'
+        plan = json.loads(path.read_text())
+        plan['api_auth'] = True
+        plan['plan_id'] = canonical_json_digest({k:v for k,v in plan.items() if k != 'plan_id'})
+        path.write_text(json.dumps(plan))
 
     def test_two_rank_recipe_preserves_three_member_topology(self):
         self.select_two_ranks()
@@ -606,6 +627,7 @@ def execute(context,root):
         self.assertEqual((self.root/'scripts/lib.sh').read_bytes(), before)
         self.assertFalse((self.root/'docker-state/started-2').exists())
         self.assertFalse((self.root/'docker-state/cleanup-2').exists())
+        self.assert_retired_then_public_stop(plan)
 
     def test_remote_quiet_pair_maps_dispatch_and_never_writes_controller_path(self):
         with patch.object(program, 'ROOT', self.root):
@@ -636,6 +658,7 @@ def execute(context,root):
         self.assertEqual((self.root/'scripts/lib.sh').read_bytes(), before)
         self.assertFalse((self.output/'ready.json').exists())
         self.assertEqual(json.loads((self.output/'result.json').read_text())['status'], 'stopped')
+        self.assert_retired_then_public_stop(active)
 
     def test_reordered_selected_nodes_are_refused_before_execution(self):
         self.select_two_ranks()
@@ -678,16 +701,157 @@ def execute(context,root):
         self.assertNotEqual(p.returncode,0,err)
         self.assertTrue(json.loads((self.output/'result.json').read_text())['phases']['cleanup']['complete'])
         self.assertFalse(list((self.root/'docker-state').glob('guard-*')))
+        self.assert_no_dispatch_programs()
+        self.assert_retired_then_public_stop(json.loads((self.output/'active-plan.json').read_text()))
 
     def test_explicit_stop_completes_owned_cleanup(self):
-        p=self.start();self.wait_started(p)
+        self.select_ranks(1)
+        p=self.start({'HF_TOKEN': 'synthetic-guard-hf-canary'});self.wait_started(p)
         plan=json.loads((self.output/'active-plan.json').read_text())
+        self.assert_dispatch_canary('synthetic-guard-hf-canary')
         controller.stop(self.output,plan['guard_run_id'])
         out,err=p.communicate(timeout=20)
         self.assertEqual(p.returncode,0,err)
         result=json.loads(out);self.assertEqual(result['status'],'stopped')
         self.assertTrue(result['phases']['cleanup']['complete'])
         self.assertFalse(list((self.root/'docker-state').glob('guard-*')))
+        self.assert_no_dispatch_programs()
+        self.assert_retired_then_public_stop(plan)
+
+    def assert_retired_then_public_stop(self, plan):
+        store = Store(self.env['PULSAR_MODEL_LIBRARY_DIR'])
+        self.assertIsNone(store.get('services', plan['service_id']))
+        self.assertEqual(store.get('service-plans', plan['plan_id']), plan)
+        # Exercise the real public stop --all admission and retire path with
+        # synthetic confirmed membership and mutation doubles only.
+        envfile = self.root/'stop-environment.sh'
+        envfile.write_text(f". '{ROOT}/scripts/lib.sh'\n" + """
+load_cluster_topology() {
+ CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_SSH_HOSTS=(local peer-one peer-two)
+}
+remove_all_stack_managed_local() { :; }
+remove_all_stack_managed_remote() { :; }
+list_managed_container_ids_local() { :; }
+list_managed_container_ids_remote() { :; }
+""")
+        result = subprocess.run([str(ROOT/'pulsar'), 'stop', '--all', '--json'],
+            env={**self.env, 'BASH_ENV':str(envfile)}, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+
+    def assert_dispatch_canary(self, secret):
+        import base64
+        source = (self.output/'execute/0.program').read_text()
+        # Decode the dispatch context, which is a JSON base64 literal.
+        import ast
+        contexts = [node.args[0].value for node in ast.walk(ast.parse(source))
+                    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'b64decode' and node.args
+                    and isinstance(node.args[0], ast.Constant)]
+        self.assertTrue(any(secret.encode() in base64.b64decode(value) for value in contexts))
+
+    def assert_no_dispatch_programs(self):
+        self.assertFalse(list((self.output/'execute').glob('*.program')))
+        self.assertTrue((self.output/'code-hashes.json').exists())
+        self.assertTrue((self.output/'execute/tasks.json').exists())
+
+    def test_started_partial_cleanup_retains_exact_locator(self):
+        process = self.start({'PULSAR_TEST_CLEANUP_FAIL_RANK': '0'})
+        self.wait_started(process)
+        plan = json.loads((self.output/'active-plan.json').read_text())
+        controller.stop(self.output, plan['guard_run_id'])
+        out, err = process.communicate(timeout=20)
+        self.assertNotEqual(process.returncode, 0, out+err)
+        self.assertFalse(json.loads((self.output/'result.json').read_text())['phases']['cleanup']['complete'])
+        self.assertEqual(service_state.locate(Store(self.env['PULSAR_MODEL_LIBRARY_DIR']),
+                        service_id=plan['service_id']), plan)
+        self.assert_no_dispatch_programs()
+
+    def test_finishing_old_run_preserves_newer_and_unrelated_service_locators(self):
+        process = self.start()
+        self.wait_started(process)
+        plan = json.loads((self.output/'active-plan.json').read_text())
+        store = Store(self.env['PULSAR_MODEL_LIBRARY_DIR'])
+        with patch.object(program, 'ROOT', self.root):
+            replacement = guarded_fixture()[3]
+            unrelated = guarded_fixture(nodes=2)[3]
+        self.assertEqual(replacement['service_id'], plan['service_id'])
+        self.assertNotEqual(replacement['plan_id'], plan['plan_id'])
+        service_state.save(store, replacement)
+        service_state.save(store, unrelated)
+        controller.stop(self.output, plan['guard_run_id'])
+        out, err = process.communicate(timeout=20)
+        self.assertEqual(process.returncode, 0, out+err)
+        self.assertFalse(json.loads(out)['service_locator_retired'])
+        self.assertEqual(service_state.locate(store, service_id=plan['service_id']), replacement)
+        self.assertEqual(service_state.locate(store, service_id=unrelated['service_id']), unrelated)
+        # Re-finalization must not mutate historical records or dispatch files.
+        historical = self.output/'execute/0.program'
+        historical.write_text('historical evidence sentinel')
+        before = (self.output/'result.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'already finalized'):
+            controller.finish(self.output, store.root)
+        self.assertEqual(historical.read_text(), 'historical evidence sentinel')
+        self.assertEqual((self.output/'result.json').read_bytes(), before)
+
+    def test_handled_signal_retires_locator_and_discards_dispatch_credentials(self):
+        self.enable_api_auth()
+        process = self.start({'VLLM_API_KEY': 'synthetic-guard-api-canary'})
+        self.wait_started(process)
+        self.assert_dispatch_canary('synthetic-guard-api-canary')
+        process.terminate()
+        out, err = process.communicate(timeout=20)
+        self.assertEqual(process.returncode, 143, out+err)
+        self.assertNotIn('synthetic-guard-api-canary', out+err)
+        self.assert_no_dispatch_programs()
+        self.assert_retired_then_public_stop(json.loads((self.output/'active-plan.json').read_text()))
+
+    def test_task_setup_failure_discards_partial_dispatch_credentials(self):
+        path = self.root/'serving_guard/controller.py'
+        source = path.read_text().replace('    directory = output / phase\n    (directory / "jobs")',
+            '    if phase == "execute" and rank == 1: raise ValueError("synthetic task setup failure")\n'
+            '    directory = output / phase\n    (directory / "jobs")')
+        path.write_text(source)
+        self.enable_api_auth()
+        process = self.start({'VLLM_API_KEY': 'synthetic-guard-api-canary'})
+        out, err = process.communicate(timeout=20)
+        self.assertNotEqual(process.returncode, 0, out+err)
+        self.assertIn('synthetic task setup failure', err)
+        self.assertFalse(list((self.output/'execute').glob('*.program')))
+        self.assertNotIn('synthetic-guard-api-canary', out+err)
+        self.assertTrue(json.loads((self.output/'result.json').read_text())['phases']['cleanup']['complete'])
+
+    def test_prerequisite_failure_public_human_and_json_keep_diagnostic_and_evidence(self):
+        (self.root/'scripts/up.sh').write_text(
+            'echo "synthetic image unavailable; token=$HF_TOKEN"\n'
+            'echo "synthetic topology prerequisite blocked; password=$TEST_PASSWORD" >&2\nexit 67\n')
+        for json_output in (False, True):
+            output = self.root/f'failed-prerequisites-{json_output}'
+            result = subprocess.run(['bash', str(self.root/'pulsar'), 'guarded', 'run',
+                '--spec-file', str(self.root/'guard-spec.json'), '--spec-id', self.spec_id,
+                '--output-dir', str(output), '--yes', *(['--json'] if json_output else [])],
+                env={**self.env, 'HF_TOKEN':'synthetic-token-canary', 'TEST_PASSWORD':'synthetic-password-canary'},
+                text=True, capture_output=True, cwd=self.root, timeout=10)
+            self.assertNotEqual(result.returncode, 0, result.stdout+result.stderr)
+            self.assertIn('synthetic topology prerequisite blocked', result.stderr)
+            self.assertIn('synthetic image unavailable', result.stderr)
+            for secret in ('synthetic-token-canary', 'synthetic-password-canary'):
+                self.assertNotIn(secret, result.stdout+result.stderr)
+            if json_output:
+                error = json.loads(result.stdout)['error']
+                self.assertEqual(error['code'], 'prerequisite_failed')
+                self.assertIn('synthetic topology prerequisite blocked', error['message'])
+            self.assertIn('synthetic-token-canary', (output/'prerequisites.stdout').read_text())
+            self.assertIn('synthetic-password-canary', (output/'prerequisites.stderr').read_text())
+            record = json.loads((output/'result.json').read_text())
+            self.assertFalse(record['phases']['prerequisites']['complete'])
+            self.assertEqual(record['phases']['prerequisites']['returncode'], 67)
+            self.assertEqual(record['phases']['cleanup'], {'complete':False, 'not_started':True})
+            self.assertIsNone(record['run_id'])
+            self.assertFalse((output/'active-plan.json').exists())
+            self.assertFalse((output/'controller.json').exists())
+            self.assertFalse((output/'execute').exists())
+        self.assertFalse(Store(self.env['PULSAR_MODEL_LIBRARY_DIR']).records('services'))
 
     def test_controller_sigkill_cancels_owned_node_workers(self):
         p=self.start();self.wait_started(p);p.kill();p.wait(timeout=5)

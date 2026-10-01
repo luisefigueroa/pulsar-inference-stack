@@ -80,7 +80,10 @@ def preflight(plan, rank):
     if memory is None or memory["mem_available_bytes"] < max(guard["min_host_available_bytes"], recipe["container"]["memory_limit_bytes"]):
         raise RuntimeError("insufficient host memory")
     if rank == 0:
-        for port in (plan["port"], plan["master_port"]):
+        ports = [plan["port"]]
+        if len(plan["ranks"]) > 1:
+            ports.append(plan["master_port"])
+        for port in ports:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
                 probe.bind(("0.0.0.0", port))
     return {**identity(plan, rank), "ready": True, "image_id": image["Id"]}, image
@@ -99,6 +102,7 @@ def cleanup(plan, rank):
 
 def verify_argv(plan, rank, argv):
     actual = list(argv)
+    expected = docker_argv(plan, rank, include_secrets=False)
     if rank == 0 and plan["api_auth"]:
         if actual.count("--api-key") != 1:
             raise ValueError("guarded API credential binding differs")
@@ -106,7 +110,13 @@ def verify_argv(plan, rank, argv):
         if index >= len(actual) or not actual[index]:
             raise ValueError("guarded API credential unavailable")
         actual[index] = "<credential>"
-    if actual != docker_argv(plan, rank, include_secrets=False):
+    if len(plan["ranks"]) == 1:
+        # Normalize only the compiler's credential slot. Every other argument,
+        # including the preceding -e and any extra environment entry, must match.
+        index = expected.index("HF_TOKEN=<credential>")
+        if index < len(actual) and isinstance(actual[index], str) and actual[index].startswith("HF_TOKEN="):
+            actual[index] = expected[index]
+    if actual != expected:
         raise ValueError("frozen node command differs from serving plan")
 
 

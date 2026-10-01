@@ -161,6 +161,22 @@ then signals that controller. A successful stop request is not cleanup proof:
 wait for the foreground run's final `result.json`. It records each phase and
 requires every rank's cleanup. Normal model stop also causes the guard to fail
 closed, but an explicit guarded stop distinguishes the requested end of a trial.
+After verified cleanup on every rank, the controller retires only its exact
+active service locator; immutable launch plans and evidence remain. Incomplete
+cleanup retains the locator, and a newer replacement plan is never retired by
+an older controller. This applies to newly finalized runs; historical completed
+sessions with stale locators still require explicit reconciliation.
+
+A failed prerequisite check retains its full private stdout/stderr captures and
+writes a failed `result.json` with no run/service identity. Its preflight,
+execution and cleanup phases are marked not started. The command reports a
+sanitized blocker in both human and JSON modes without activating a service.
+
+Finalization removes the owned execute dispatch programs, which may contain
+credentials, after the active task batch has exited. Task manifests, frozen code
+and other evidence remain. Unlink failures are reported. An uncatchable controller
+termination such as SIGKILL cannot run this finalizer; private artifact review
+and physical-state reconciliation remain necessary before sharing or recovery.
 
 Rank guard reports include `baseline_sample`, `last_sample`, `trigger_sample`,
 `host_swap_growth_limit_bytes`, `max_observed_host_swap_growth_bytes` and

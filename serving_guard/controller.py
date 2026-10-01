@@ -170,8 +170,46 @@ def stop(output, run_id):
     return {"run_id": run_id, "stop_requested": True, "cleanup_complete": False}
 
 
-def finish(output):
+def fail_prerequisites(output, returncode):
+    """Retain failed planning evidence without claiming activation or cleanup."""
+    from scripts.public_cli import redact_diagnostic
+    spec = serving.load_spec(output / "spec.json")
+    diagnostics = []
+    for name in ("prerequisites.stdout", "prerequisites.stderr"):
+        with (output / name).open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            offset = max(0, stream.tell() - 16000)
+            stream.seek(offset)
+            data = stream.read()
+            # Do not expose a partial credential from the truncated first line.
+            if offset:
+                data = data.partition(b"\n")[2]
+            diagnostics.append(data.decode("utf-8", errors="replace"))
+    detail = redact_diagnostic("\n".join(diagnostics)).strip()[-4000:]
+    message = f"guarded serving prerequisites failed (exit {returncode})"
+    if detail:
+        message += ":\n" + detail
+    result = {"schema_version": 1, "kind": "pulsar-guarded-serving-result",
+              "run_id": None, "service_id": None, "spec_id": spec["spec_id"],
+              "phases": {"prerequisites": {"complete": False, "returncode": returncode},
+                         **{phase: {"complete": False, "not_started": True}
+                            for phase in ("preflight", "execute", "cleanup")}},
+              "requested_stop": False, "status": "failed", "qualification": False}
+    print(message, file=sys.stderr)
+    write(output / "result.json", result)
+    return result
+
+
+def finish(output, state_root=None):
+    if (output / "result.json").exists():
+        raise ValueError("guarded session already finalized")
     plan = validate_plan(json.loads((output / "active-plan.json").read_text()))
+    # Bash has joined/cancelled the batch before finalizing. These dispatch
+    # programs embed credential-bearing argv and are not retained evidence.
+    # SIGKILL cannot run this finalizer; abrupt controller loss needs private
+    # artifact review as well as physical-state reconciliation.
+    for rank in range(len(plan["ranks"])):
+        (output / "execute" / f"{rank}.program").unlink(missing_ok=True)
     phases = {}
     for phase in ("preflight", "execute", "cleanup"):
         try:
@@ -187,17 +225,23 @@ def finish(output):
               "spec_id": plan["spec_id"], "phases": phases, "requested_stop": requested,
               "status": "stopped" if requested and phases["cleanup"]["complete"] else "failed",
               "qualification": False}
+    if state_root is not None and phases["cleanup"]["complete"]:
+        from model_library.state import Store
+        from scripts.service_state import retire_plan
+        result["service_locator_retired"] = retire_plan(Store(state_root), plan)
     write(output / "result.json", result)
     return result
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=["initialize", "activate", "task", "tasks", "check", "finish"])
+    parser.add_argument("operation", choices=["initialize", "activate", "task", "tasks", "check", "finish", "fail-prerequisites"])
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--spec-file")
     parser.add_argument("--spec-id")
     parser.add_argument("--owner", type=int)
+    parser.add_argument("--state-root")
+    parser.add_argument("--returncode", type=int)
     parser.add_argument("--phase")
     parser.add_argument("--rank", type=int)
     parser.add_argument("--local-head", action="store_true")
@@ -215,10 +259,12 @@ def main():
         task(args.output, args.phase, args.rank, command, local_head=args.local_head)
     elif args.operation == "tasks":
         tasks(args.output, args.phase)
+    elif args.operation == "fail-prerequisites":
+        fail_prerequisites(args.output, args.returncode)
     elif args.operation == "check":
         check(args.output, args.phase)
     else:
-        result = finish(args.output)
+        result = finish(args.output, args.state_root)
         print(json.dumps(result))
         return 0 if result["status"] == "stopped" else 3
     return 0
