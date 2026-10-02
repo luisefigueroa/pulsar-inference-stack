@@ -64,6 +64,13 @@ the display says so. A Restore suggestion always notes that Restore rechecks
 contents before copying. With several required snapshots, the suggestion names
 one snapshot and does not imply that the other archives are available.
 
+Compact catalog labels prioritize withdrawal and unsupported-start warnings
+over model/file details. The selected-spec menu repeats a withdrawal's reason
+and recorded review date, when supplied, before its suggested action. Start
+and the memory-warning retry show the same wrapped notice before their existing
+confirmation. These are advisory maintainer metadata: they do not change
+catalog membership, launch checks or the number of confirmation steps.
+
 Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
 launch will work. `models check` (**Check now** in the menu) checks the

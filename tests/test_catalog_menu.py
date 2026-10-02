@@ -362,6 +362,21 @@ class SuggestedCommand(unittest.TestCase):
 
 
 class Labels(unittest.TestCase):
+    def test_critical_warnings_survive_long_models_and_narrow_widths(self):
+        for width in (32, 44, 80):
+            for withdrawn, unsupported in ((True, False), (False, True), (True, True)):
+                with self.subTest(width=width, withdrawn=withdrawn, unsupported=unsupported):
+                    state = checked(home=HOME, local_state="ready", model_id="org/" + "long-model-" * 12,
+                                    review={"status": "withdrawn"} if withdrawn else None,
+                                    **(GUARDED if unsupported else {}))
+                    label = menu.menu_label(state, width)
+                    self.assertLessEqual(len(label), width - 6)
+                    self.assertIn("[abababab]", label)
+                    if withdrawn:
+                        self.assertIn("withdrawn", label)
+                    if unsupported and (not withdrawn or width >= 44):
+                        self.assertTrue("start unsupported" in label or "start blocked" in label, label)
+
     def test_labels_show_saved_state_and_fit_80_and_44_columns(self):
         long_model = "org/" + "very-long-model-name-" * 4
         states = {
@@ -379,7 +394,8 @@ class Labels(unittest.TestCase):
                     self.assertIn("[abababab]", text)
                     self.assertNotIn("not specified", text)
                     if width == 80:
-                        self.assertTrue(text.endswith("] " + expected), text)
+                        for part in expected.split(" · "):
+                            self.assertIn(part, text)
         self.assertEqual(menu.short_state(checked(home=HOME, local_state="ready")), "files prepared")
 
     def test_cli_prints_the_spec_id_and_label_per_entry(self):
@@ -414,6 +430,58 @@ class Question(unittest.TestCase):
                          "Stop org/model on spark-2? Model files and pins are kept.")
         self.assertIn("Download org/model @ 01234567 to spark-2",
                       menu.question("acquire", state, plan={"selected_node": "n1"}, names=NAMES))
+
+    def test_withdrawal_notice_is_visible_without_changing_eligibility(self):
+        normal = checked(home=HOME, local_state="ready")
+        state = {**normal, "review": {"status": "withdrawn", "reviewed_at": "2026-09-03T00:00:00Z",
+                                      "reason": "Later testing found inconsistent answers."}}
+        before = copy.deepcopy(state)
+        self.assertEqual(menu.operations(state, "configured"), menu.operations(normal, "configured"))
+        offered, _, _ = menu.operations(state, "configured")
+        self.assertEqual(menu.suggestion(state, offered, "configured", names=NAMES)[0], "start")
+        for width in (44, 80):
+            lines = menu.view_lines(state, "configured", width=width, names=NAMES)
+            headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+            text = " ".join(" ".join(headers).split())
+            for expected in ("Maintainer warning: withdrawn", state["review"]["reason"],
+                             state["review"]["reviewed_at"], "Advisory metadata"):
+                self.assertIn(expected, text)
+            self.assertLess(text.index("Maintainer warning"), text.index("Suggested: Start"))
+            self.assertTrue(all(len(line) <= width - 4 for line in headers))
+        self.assertEqual(state, before)
+
+    def test_start_and_memory_retry_confirmations_repeat_the_wrapped_notice(self):
+        state = checked(home=HOME, local_state="ready", review={
+            "status": "withdrawn", "reviewed_at": "2026-09-03T00:00:00Z",
+            "reason": "The retained result should be reviewed before operating this published spec."})
+        for action in ("start", "start-memory"):
+            with self.subTest(action=action):
+                out, err = io.StringIO(), io.StringIO()
+                with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), \
+                        patch("sys.stdout", out), patch("sys.stderr", err), \
+                        patch.dict("os.environ", {"COLUMNS": "44"}):
+                    self.assertEqual(menu.main(["confirm", "--spec-id", state["spec_id"], "--action", action]), 0)
+                self.assertIn("Withdrawn spec.", out.getvalue())
+                self.assertEqual(len(out.getvalue().splitlines()), 1)
+                notice = " ".join(err.getvalue().split())
+                self.assertIn(state["review"]["reason"], notice)
+                self.assertIn(state["review"]["reviewed_at"], notice)
+                self.assertTrue(all(len(line) <= 44 for line in err.getvalue().splitlines()))
+
+    def test_warning_never_infers_or_changes_metadata(self):
+        for review in (None, {}, {"status": "validated"}):
+            with self.subTest(review=review):
+                state = checked(home=HOME, local_state="ready", state="released", review=review)
+                before = copy.deepcopy(state)
+                self.assertEqual(menu.withdrawal_notice(state), [])
+                self.assertTrue(menu.question("start", state, names=NAMES).startswith("Start "))
+                self.assertEqual(state, before)
+        state = checked(home=HOME, local_state="ready", review={"status": "withdrawn"}, **GUARDED)
+        notice = menu.withdrawal_notice(state)
+        self.assertFalse(any(line.startswith("Reviewed:") for line in notice))
+        self.assertTrue(any("No reason recorded" in line for line in notice))
+        offered, _, _ = menu.operations(state, "configured")
+        self.assertNotIn("start", offered)
 
     def test_blocked_plan_has_no_question(self):
         self.assertTrue(menu.plan_blocked({"plan": {"eligible": False}}))

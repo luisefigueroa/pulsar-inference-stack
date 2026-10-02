@@ -239,15 +239,49 @@ def short_state(row: dict) -> str:
     return " · ".join(parts)
 
 
+def withdrawal_notice(row: dict) -> list[str]:
+    """Display the maintainer's warning without adding an operation gate."""
+    review = row.get("review") or {}
+    if review.get("status") != "withdrawn":
+        return []
+    lines = ["Maintainer warning: withdrawn", f"Reason: {clean(review.get('reason') or 'No reason recorded.')}"]
+    if review.get("reviewed_at"):
+        lines.append(f"Reviewed: {clean(review['reviewed_at'])}")
+    lines.append("Advisory metadata; launch checks still apply.")
+    return lines
+
+
 def menu_label(row: dict, width: int) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
-    A long model ID is shortened first, to no fewer than 8 characters; only
-    then is the end of the state cut.
+    Critical warnings take space before optional model/file context. Ordinary
+    entries retain their model-first layout.
     """
     budget = max(32, min(100, width)) - 6
-    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
     model = clean(row["model_id"])
+    review = (row.get("review") or {}).get("status")
+    critical = (["withdrawn"] if review == "withdrawn" else [])
+    if start_unsupported(row):
+        critical.append("start unsupported")
+    if critical:
+        warning = " · ".join(critical)
+        identity = f" [{row['spec_id'][:8]}]"
+        if len(warning + identity) > budget:
+            warning = warning.replace("start unsupported", "start blocked")
+        if len(warning + identity) > budget:
+            # At the minimum width the withdrawal warning has priority; the
+            # selected view still explains every launch restriction in full.
+            warning = critical[0]
+        heading = warning + identity
+        room = budget - len(heading) - 1
+        if room < 4:
+            return heading
+        files = LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"
+        context = f"{model} · {files}" + (f" · {review}" if review and review != "withdrawn" else "")
+        if len(context) > room:
+            context = context[:room - 3] + "..."
+        return heading + " " + context
+    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
     text = model + suffix
@@ -258,6 +292,8 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
+    for line in withdrawal_notice(row):
+        out.emit(line)
     out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
@@ -379,6 +415,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     identity = _snapshot_identity(row, snapshot)
     place = names(node) if node else None
     nodes = row["geometry"]["nodes"]
+    warning = "Withdrawn spec. " if (row.get("review") or {}).get("status") == "withdrawn" else ""
     if action == "acquire":
         target = names(plan.get("selected_node") or node) if (plan.get("selected_node") or node) else "the selected node"
         if plan.get("action") == "reuse":
@@ -419,10 +456,10 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
                 "An existing archive is never replaced.")
     if action == "start":
         where = place or f"{nodes} nodes"
-        return f"Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+        return f"{warning}Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
     if action == "start-memory":
         where = place or f"{nodes} nodes"
-        return (f"Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
+        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
                 "Insufficient memory and all other blockers still prevent start.")
     if action == "stop":
         where = f" on {place}" if place else ""
@@ -494,6 +531,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("plan must be a JSON object")
             if plan_blocked(plan):
                 return 3
+        if args.action in ("start", "start-memory"):
+            notice = withdrawal_notice(row)
+            if notice:
+                out = TerminalWriter(stream=sys.stderr)
+                out.blank()
+                for line in notice:
+                    out.emit(line)
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:

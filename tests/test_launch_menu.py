@@ -9,6 +9,10 @@ from tests import test_catalog as catalog_tests
 from tests import test_catalog_menu as menu_tests
 from tests import test_start_blockers as start_tests
 
+WITHDRAWN_REVIEW = {"status": "withdrawn", "reviewer": "example-reviewer",
+                    "reviewed_at": "2026-09-03T00:00:00Z",
+                    "reason": "Later testing found inconsistent answers."}
+
 
 class LaunchMenu(unittest.TestCase):
     def run_menu(self, *args, **kwargs):
@@ -134,6 +138,35 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(questions.splitlines()), 1)
+
+    def test_withdrawn_start_remains_available_with_one_informed_confirmation(self):
+        spec, result, actions, _, questions = self.run_menu(
+            ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes"], review=WITHDRAWN_REVIEW)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "start", spec, "--node", "fixture-node"]])
+        self.assertEqual(len(questions.splitlines()), 1)
+        self.assertIn("Withdrawn spec.", questions)
+        for expected in (WITHDRAWN_REVIEW["reason"], WITHDRAWN_REVIEW["reviewed_at"]):
+            self.assertIn(expected, " ".join(result.stdout.split()))
+            self.assertIn(expected, " ".join(result.stderr.split()))
+
+    def test_withdrawal_notice_is_repeated_before_the_existing_memory_confirmation(self):
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes", "yes"],
+            review=WITHDRAWN_REVIEW, launch={"start_rc": 1, "blockers": ["memory_warning"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(len(questions.splitlines()), 2)
+        self.assertEqual(questions.count("Withdrawn spec."), 2)
+        self.assertEqual(result.stderr.count("Maintainer warning: withdrawn"), 2)
+
+    def test_withdrawn_start_can_be_declined_without_an_action(self):
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["no"], review=WITHDRAWN_REVIEW)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(len(questions.splitlines()), 1)
+        self.assertIn(WITHDRAWN_REVIEW["reason"], " ".join(result.stderr.split()))
 
 
 class LaunchPresentation(unittest.TestCase):

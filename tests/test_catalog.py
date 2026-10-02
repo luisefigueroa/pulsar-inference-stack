@@ -462,8 +462,11 @@ raise SystemExit(rc)
 """
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
-                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None):
+                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None):
         spec = self.add_spec(guarded=guarded)
+        if review is not None:
+            spec["review"] = review
+            (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
         if with_home:
             self.put_home(spec)
         if observation is not None:
