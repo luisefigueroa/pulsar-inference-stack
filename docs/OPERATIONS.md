@@ -37,12 +37,62 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 
 ## Browse and check
 
+The home menu reads saved configuration without probing nodes. Cluster setup
+requires confirmed membership and, for multiple nodes, enrolled SSH trust.
+An unset archive location is optional configuration, not an incomplete cluster
+setup. **Archive storage configuration** is available when archive actions are
+needed; entering or browsing the menu never saves or disables that setting.
+
+During cluster setup, **Browse the catalog (read-only)** lets you select a
+published spec, inspect its summary, details and published results, or compare
+it with another catalog spec, then return with **Back** or Esc.
+It offers no storage or serving operations. **Host diagnostics**, saved
+**Cluster topology (read-only)** and **Help** are also available. Diagnostics
+run only when selected. The same catalog browser is available directly as
+`./pulsar models menu --read-only`. Command-level prerequisites and confirmations
+still apply to all operational actions after setup.
+
 ```sh
 ./pulsar models
 ./pulsar models list --json
 ./pulsar models show <spec-id>
+./pulsar models results <spec-id>
 ./pulsar models check <spec-id> --node <node>
 ```
+
+The selected-spec menu separates **Selected recipe**, **Current observations
+(saved)** and **Published results**. Recipe geometry and explicitly recorded
+context, sequence and quantization settings describe intended execution; the
+menu does not infer engine defaults or resolve repeated arguments. The image
+digest is abbreviated here; **Show details** retains the complete identity and
+arguments. Maintainer reviews are advisory and keep their dates separate from
+measurement dates. Saved file checks retain their age, and the summary explicitly says
+that it has not observed the live service.
+
+**Published results** (also `models results SPEC`) reads only this catalog's
+`results/` records for the selected spec and uses the existing evidence verifier.
+It shows recorded run times, run and policy outcomes, benchmark token counts and
+concurrency, accuracy sample scope, soak results, and the command for the full
+public evidence summary. The compact view shows the most recent dated verified
+run regardless of outcome and counts undated or unverified records separately.
+Missing, inconsistent or unsupported evidence is explicit and never removes a
+spec or blocks its operations. Historical schema-1 evidence retains its format;
+the results view gives the command to inspect its bound references.
+
+These are historical results for the exact published recipe and workloads, not
+a current health or suitability score. Run dates are measurement dates, not
+publication dates. Workbench continues to own authoring, qualification and
+publication. Private experiments and approvals are not read by these views.
+The existing `models list --json`, `models show --json` and integration contract
+are unchanged; `models results` is a human report with a separate JSON evidence
+command for each verified run.
+
+**Compare catalog specs** invokes the existing `pulsar spec compare` for the
+selected spec and another published schema-2 or schema-3 spec. The output names
+both identities and every changed recipe field. Comparison leaves the current
+selection unchanged and makes no claim that their results are comparable across
+different workloads. Both inspection actions are available in the read-only
+catalog menu before cluster setup.
 
 The catalog includes every released recipe even when no local files are
 present. Each spec is one block that leads with its saved state: recipe
@@ -56,6 +106,21 @@ arguments, the home, per-rank prepared copies, pins and blockers. A **rank** is
 this job's slot in the serving group; rank 0 provides the API and need not
 hold the home.
 
+Recovery suggestions use those same archive facts for the next snapshot that
+needs a home. An archive observed as present is not described as verified;
+older verification keeps its age visible, and a newer missing or unavailable
+observation takes precedence. When timestamps cannot establish their order,
+the display says so. A Restore suggestion always notes that Restore rechecks
+contents before copying. With several required snapshots, the suggestion names
+one snapshot and does not imply that the other archives are available.
+
+Compact catalog labels prioritize withdrawal and unsupported-start warnings
+over model/file details. The selected-spec menu repeats a withdrawal's reason
+and recorded review date, when supplied, before its suggested action. Start
+and the memory-warning retry show the same wrapped notice before their existing
+confirmation. These are advisory maintainer metadata: they do not change
+catalog membership, launch checks or the number of confirmation steps.
+
 Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
 launch will work. `models check` (**Check now** in the menu) checks the
@@ -66,6 +131,7 @@ is running. Live service checks are separate:
 ```sh
 ./pulsar status <spec-id> --node <node> --json
 ./pulsar inventory
+./pulsar inventory menu
 ```
 
 `status` leads with its answer, for example `spec 139908cf23bb: running and
@@ -75,14 +141,35 @@ service started before launch records existed, it reports the inventory's view
 and says it is not verified, and why. It tells "no service exists" apart from
 "a node could not be observed".
 
+**Live service inventory** in the root menu opens `inventory menu`. Select an
+observed service whose spec is published in the catalog, then choose
+**Detailed status** or **Stop service**. These invoke the existing status and
+stop commands. One-node services use the node ID recorded in the inventory;
+multi-node services retain the commands' participating-node resolution.
+The inventory timestamp remains visible, and **Refresh inventory** obtains a
+new observation. **Show full inventory** retains the existing read-only view
+of all detected workloads, including those outside the catalog.
+
+Stop refreshes the inventory and shows the current scope before confirmation.
+It is unavailable when inventory has not established safe ownership and
+observability, or a one-node service has ambiguous placement. The stop command
+still rechecks ownership and can refuse; the menu does not bypass its guards.
+Model files, pins and archives are retained. The ordinary `inventory` and
+`inventory --json` commands remain read-only reports.
+
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
-until **Back** or **Exit**; each operation returns to the same recipe with a
-one-line result. It lists operations in lifecycle order and keeps storage
+until **Back** or **Exit**; each operation returns to the same recipe with its
+result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
+**Download** remains available when a home is recorded, and **Restore** remains
+available when an archive location is configured. A home record can outlive its
+files; these operations' live previews decide whether recovery or reuse is
+possible. For a recipe with required snapshots, every snapshot remains
+selectable for recovery, with unregistered homes listed first.
 **Start** is also left out for a spec with a serving guard, which this Stack
-cannot run; `models show` marks it `Start not supported by this Stack`, and no
-suggested step leads toward Start.
+cannot run through ordinary start. `models show` marks it
+`Start not supported by this Stack`, and no suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
 session; it is a starting point, not a readiness check. `models list` and
 `models show` print the same step as a command. A download or restore names
@@ -91,9 +178,51 @@ goes to the default destination (the deployment overlay's placement, or this
 node), while the menu asks for a node. The recipe
 list labels show the same short saved state. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
-model, nodes and consequence; a blocked plan ends without a question. Esc
-steps back one level. Ctrl-C at a prompt leaves the menu; during an operation
-it stops that operation and returns to the menu.
+model, nodes and consequence; a blocked plan ends without a question. **Back**
+or Esc leaves the current menu or cancels an action prompt to its containing
+menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
+configuration also stays open after a saved or declined change until **Back**.
+Ctrl-C at a choose, input or confirmation prompt exits the menu with status
+`130`, including membership and SSH enrollment confirmations.
+
+During a catalog operation, Ctrl-C requests interruption from the existing
+command; the menu resumes when that command exits. The menu does not infer
+confirmed cleanup, absence of a service, or unchanged files from the exit code.
+It labels the interruption even when a concurrent command completion returned
+zero, retains the command's output, and gives an explicit next inspection:
+**Check now** for storage, **Live status** for Start/Stop, or **Check pinned image**
+for image staging. These are suggestions, not automatic actions. Existing
+backend cleanup and retry behavior continues to own retained staging and service
+resources. Other command menus retain their command's interrupt exit status.
+
+A nonzero **Check now** that saved an observation is reported as recorded
+findings, rather than an execution failure. Missing or changed files can be a
+completed check's result; an interrupted or unrecorded check still needs a retry.
+
+A recent check that found missing or changed files suggests acquisition,
+restoration or preparation even when it recorded blockers. Unknown or stale
+file observations still suggest **Check now**. A check that records a result
+clears the previous operation's pending check; one that could not record a
+result does not turn earlier readiness into a new Start suggestion.
+
+**Launch options** provides shortcuts for the selected published catalog spec:
+
+- **Check launch prerequisites** runs the existing `start --dry-run` checks.
+  It does not launch or stage images. Its output identifies checks, such as the
+  multi-node preflight, that will run only during an actual Start.
+- **Check pinned image** runs `image check` on the selected serving nodes.
+- **Stage pinned image** previews `image stage` before confirmation. Choose
+  between pulling the exact catalog digest from its registry and copying the
+  pinned image from this node. Copying never silently falls back to a pull.
+  Staging does not start or replace a service or select a different image.
+
+**Start** continues to run its existing checks. If it refuses the start only
+because of a memory warning, the menu offers one separately confirmed retry
+with `--accept-memory-warn`, for the same spec and node selection. Insufficient
+memory and other blockers still prevent start. This acknowledgement is not
+remembered for later starts and does not authorize image pulls or replacement.
+These menu choices operate on catalog specs; they do not author or override
+recipes. Historical schema-1 specs do not offer the new launch shortcuts.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet
@@ -117,11 +246,12 @@ remaining local storage for it with `--spec-file` and its retained document.
 Confirmed topology determines membership and physical node identity. On a
 terminal, `./pulsar` offers the next setup step (**Set up cluster membership
 and SSH trust**, which runs `./pulsar topology setup`; **Enroll SSH trust**
-when membership is already saved; or **Select archive location**), read-only
-catalog browsing (`./pulsar models list`) and Exit until this checkout is bound
-to the cluster. A step that fails reports that it did not complete before the
-menu returns. That menu uses saved local files; it does not probe nodes. After
-the checkout is bound, open `./pulsar` and choose **Cluster topology**. The
+when membership is already saved), read-only catalog browsing
+(`./pulsar models menu --read-only`), diagnostics, saved topology, Help and Exit.
+Archives are optional and do not restrict navigation after cluster setup.
+A setup step that fails reports that it did not complete before the menu returns.
+Entering that menu uses saved local files; it does not probe nodes. After
+cluster setup, open `./pulsar` and choose **Cluster topology**. The
 same actions are available directly:
 
 ```sh
@@ -193,8 +323,8 @@ Select an existing archive location with:
 ./pulsar configure archive-root set <existing-directory> --yes
 ```
 
-The same workflow is available through the menu's archive step (during setup)
-or **Archive storage configuration** after the checkout is bound. `PULSAR_COLD_ROOT` is the explicit configuration
+The same workflow is available through **Archive storage configuration** after
+cluster setup. `PULSAR_COLD_ROOT` is the explicit configuration
 variable: process value first, then the repository's `.env`; empty disables
 archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.
@@ -233,6 +363,26 @@ An owned incomplete transfer resumes its staging rather than silently discarding
 it to create a shared binding.
 `prepare --plan` reports which ranks will reuse a binding, bind existing files,
 or copy files. A recipe change still requires preparation of its own bindings.
+
+Preparation previews also show the unique snapshot payload and, for each node,
+the new copy size, existing files used, prepared-copy root, observed disk free
+space, reserve and copy allowance. Named snapshots with the same manifest are
+counted once per physical node. The projected headroom subtracts all new copies
+from the smaller of disk space after reserve and unused copy allowance. If
+snapshot checks observed different budgets, the preview retains those readings
+and uses the lowest observed headroom. Unknown readings stay **not observed**;
+negative headroom is shown as a deficit. These estimates exclude filesystem
+overhead and do not reserve space. Existing preparation checks remain authoritative.
+Copy amounts cover full snapshot payloads; already written partial staging is
+not deducted from this conservative estimate.
+
+**Storage and archive → Storage budget (all nodes)** runs the existing
+`./pulsar model budget` inspection for every confirmed node. It shows the same
+reserve and allowance settings used by preparation, requires no confirmation,
+and does not change the selected recipe's saved file-check state. This budget
+describes prepared-copy storage; home and archive locations may use other filesystems.
+The same choice is available in the catalog's top-level menu, even when no
+specs are published.
 
 Routine acquisition of registered copies, preparation re-entry, inspection and
 serving observation reuse earlier verification while the complete file set,
@@ -341,6 +491,14 @@ archive location and confirmed topology, select the catalog spec and restore.
 The restored bytes must match the spec manifest before local records are
 rebuilt. Prepare and start are subsequent explicit operations. Restoration
 requires neither the private workbench nor access to Hugging Face.
+
+`restore --plan` and the menu's Restore preview show the selected snapshot's
+file count and full payload size, the destination home root and observed free
+space there. Restore plans a full snapshot copy with no existing bytes reused.
+The displayed disk space after copying is an estimate, without filesystem
+overhead or a reservation. Failure to observe free space leaves capacity
+unknown; it does not bypass or replace archive verification, home-absence checks
+or the explicit confirmation before restoration.
 
 The catalog's last archive-verification time is saved information, not current
 archive health. Use **Verify archive** to perform a fresh, read-only integrity

@@ -19,15 +19,20 @@ import json
 import sys
 from typing import Any
 
-from .catalog import age_text, archive_text, files_text
+from .catalog import ROOT, age_text, archive_facts, archive_text, files_text, recipe_text
+from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
-STORAGE = ("move", "archive", "verify", "pin", "unpin", "purge", "remove")
+LAUNCH = ("readiness", "image-check", "image-stage")
+STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
+    "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
+    "image-stage": "Stage pinned image",
+    "budget": "Storage budget (all nodes)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -35,6 +40,7 @@ LABELS = {
 # Operations that change model files or records; a success makes the saved
 # check out of date until the next Check now.
 MUTATIONS = frozenset({"acquire", "restore", "prepare", "move", "archive", "pin", "unpin", "purge", "remove"})
+INTERRUPTIONS = frozenset({"storage-interrupted", "service-interrupted", "image-interrupted", "check-interrupted"})
 STALE_SECONDS = 24 * 3600
 ARCHIVE_LOCATION = {"configured", "disabled", "not-configured"}
 # Why Start is left out when the catalog says this Stack cannot start the spec,
@@ -58,6 +64,13 @@ def members(row: dict) -> dict[str | None, dict]:
                    "model_id": row["model_id"], "model_commit": row["snapshot_revision"]}}
 
 
+def recovery_snapshots(row: dict) -> list[str | None]:
+    """Unregistered snapshots first, in the same order before/after JSON encoding."""
+    snapshots = members(row)
+    return sorted(snapshots, key=lambda name: (bool(snapshots[name].get("home")),
+                                             name != "target", name or ""))
+
+
 def _location_reason(archive_location: str) -> str:
     return "archives are disabled" if archive_location == "disabled" else "no archive location is configured"
 
@@ -65,8 +78,10 @@ def _location_reason(archive_location: str) -> str:
 def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
     """Return offered actions, left-out actions with reasons, and eligible snapshots.
 
-    Only saved records that rule an operation out leave it out. Service state
-    is live, so start, stop and status are offered, except that start is left
+    A home record locates files; it cannot rule out recovery after file loss.
+    Download and configured-archive Restore stay available, and their live
+    plans decide eligibility. Service state is live, so start, stop and status
+    are offered, except that start is left
     out for a spec this Stack cannot start (a serving guard); stop and status
     stay because such a service may have been started elsewhere. Pin, unpin
     and purge also act on node records and incomplete staging that saved
@@ -80,14 +95,10 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     without_home = [name for name, member in snapshots.items() if not member.get("home")]
     archives = archive_location == "configured"
     schema3 = isinstance(row.get("snapshots"), dict)
-    home_reason = "every required snapshot has a recorded home" if schema3 else "a home is recorded"
     missing_reason = ("no home is recorded for snapshot " + ", ".join(str(n) for n in without_home)
                       if schema3 else "no home is recorded")
     hidden: dict[str, str] = {}
-    if not without_home:
-        hidden["acquire"] = home_reason
-        hidden["restore"] = home_reason
-    elif not archives:
+    if not archives:
         hidden["restore"] = _location_reason(archive_location)
     if without_home:
         hidden["prepare"] = missing_reason
@@ -100,53 +111,80 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     unsupported = start_unsupported(row)
     if unsupported:
         hidden["start"] = unsupported
-    offered = [action for action in MAIN + STORAGE if action not in hidden]
+    if row.get("start_unsupported_reason") == "historical_spec":
+        for action in LAUNCH:
+            hidden[action] = "historical schema-1 specs do not support these operations"
+    offered = [action for action in MAIN + LAUNCH + STORAGE if action not in hidden]
     eligible = {}
     if schema3:
         for action in ("acquire", "restore"):
-            eligible[action] = [str(n) for n in without_home]
+            # Put unregistered snapshots first, while keeping recorded homes
+            # selectable when their files have gone missing.
+            eligible[action] = [str(n) for n in recovery_snapshots(row)]
         for action in ("move", "remove", "archive"):
             eligible[action] = [str(n) for n in with_home]
     return offered, hidden, eligible
 
 
 def suggestion(row: dict, offered: list[str], archive_location: str, after: str | None = None,
-               names: NodeNames | None = None) -> tuple[str, str] | None:
+               names: NodeNames | None = None, *, now=None) -> tuple[str, str] | None:
     """One suggested next step from saved state; the first matching rule wins.
 
-    ``after`` is the last operation that succeeded for this recipe in the
-    current menu session. It covers what saved records cannot show: a mutation
-    makes the saved check out of date, and a started service is live. For a
+    ``after`` is the last relevant outcome in this menu session. A recorded
+    check clears an earlier mutation even when it found blockers; a check
+    without a recorded result must not reuse old readiness. A mutation makes
+    the saved check out of date, and a started service is live. For a
     spec this Stack cannot start, nothing after the Check, Download and
     Restore rules is suggested: Prepare and Start would only lead to a start.
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
+    if after == "check-interrupted":
+        return "check", "check interruption requested; rerun before relying on saved observations"
+    if after == "storage-interrupted":
+        return "check", "storage outcome unconfirmed; inspect current files before retrying"
+    if after == "service-interrupted":
+        return "status", "service outcome unconfirmed; current service state is unknown"
+    if after == "image-interrupted" and "image-check" in offered:
+        return "image-check", "staging outcome unconfirmed; inspect the pinned image before retrying"
+    if after == "check-failed":
+        return "check", "the last check did not record an observation"
     if after == "start":
         return "status", "started from this menu; live status observes the service"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
-    if row.get("blockers"):
-        return "check", "saved blocker: " + names.prefixed(str(row["blockers"][0]))
     if row.get("checked_at") is None:
         return "check", "no saved check"
     if age is None or age > STALE_SECONDS:
         return "check", "last check " + age_text(age)
+    local = row.get("local_state", "unknown")
+    blocker = "saved blocker: " + names.prefixed(str(row["blockers"][0])) if row.get("blockers") else None
+    if local == "unknown":
+        return "check", blocker or "file state was not established by the last check"
     snapshots = members(row)
-    missing = [member for member in snapshots.values() if not member.get("home")]
+    missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
     if missing:
-        archived = all(member.get("archive") for member in missing) or row.get("archive_state") in ("present", "verified")
-        if archive_location == "configured" and archived and "restore" in offered:
-            return "restore", "no home recorded; a verified archive is available"
+        # Home operations act on one snapshot. Use that snapshot's reconciled
+        # archive fact, not the aggregate state or the existence of a record.
+        name = missing[0]
+        reason = "no home recorded" + (f" for snapshot {name}" if name is not None else "")
+        if archive_location == "configured":
+            kind, _, wording = archive_facts(row, now)[name]
+            reason += f"; archive: {wording}"
+            if kind in ("present", "verified") and "restore" in offered:
+                return "restore", reason + "; Restore rechecks contents"
+        else:
+            reason += "; " + _location_reason(archive_location)
         if "acquire" in offered:
-            return "acquire", "no home recorded"
+            return "acquire", reason
         return None
     if start_unsupported(row):
         return None
-    local = row.get("local_state")
     if local in ("missing", "changed") and "prepare" in offered:
         reason = "files changed since they were verified" if local == "changed" else "files not prepared on every rank"
         return "prepare", f"{reason} (checked {age_text(age)})"
+    if blocker:
+        return "check", blocker
     if local == "ready":
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
@@ -163,7 +201,7 @@ def recorded_node(row: dict) -> str | None:
     return None
 
 
-def suggested_command(row: dict, archive_location: str, names: NodeNames | None = None) -> list[str] | None:
+def suggested_command(row: dict, archive_location: str, names: NodeNames | None = None, *, now=None) -> list[str] | None:
     """The suggested next step (see suggestion) as the command that runs it.
 
     One-node recipes name the node their saved records place them on, by
@@ -174,7 +212,7 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     """
     names = names or NodeNames()
     offered, _, _ = operations(row, archive_location)
-    suggested = suggestion(row, offered, archive_location, None, names)
+    suggested = suggestion(row, offered, archive_location, None, names, now=now)
     if not suggested:
         return None
     action, spec = suggested[0], row["spec_id"][:12]
@@ -183,7 +221,7 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     if action in ("acquire", "restore"):
         snapshot = []
         if isinstance(row.get("snapshots"), dict):
-            without_home = [str(name) for name, member in row["snapshots"].items() if not member.get("home")]
+            without_home = [str(name) for name in recovery_snapshots(row) if not members(row)[name].get("home")]
             snapshot = ["--snapshot", without_home[0]] if without_home else []
         return ["./pulsar", "model", action, spec, *snapshot, *placement, "--yes"]
     if action == "check":
@@ -212,30 +250,95 @@ def short_state(row: dict) -> str:
     return " · ".join(parts)
 
 
+def withdrawal_notice(row: dict) -> list[str]:
+    """Display the maintainer's warning without adding an operation gate."""
+    review = row.get("review") or {}
+    if review.get("status") != "withdrawn":
+        return []
+    lines = ["Maintainer warning: withdrawn", f"Reason: {clean(review.get('reason') or 'No reason recorded.')}"]
+    if review.get("reviewed_at"):
+        lines.append(f"Reviewed: {clean(review['reviewed_at'])}")
+    lines.append("Advisory metadata; launch checks still apply.")
+    return lines
+
+
 def menu_label(row: dict, width: int) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
-    A long model ID is shortened first, to no fewer than 8 characters; only
-    then is the end of the state cut.
+    Critical warnings take space before optional model/file context. Ordinary
+    entries retain their model-first layout.
     """
     budget = max(32, min(100, width)) - 6
-    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
     model = clean(row["model_id"])
+    review = (row.get("review") or {}).get("status")
+    critical = (["withdrawn"] if review == "withdrawn" else [])
+    if start_unsupported(row):
+        critical.append("start unsupported")
+    if critical:
+        warning = " · ".join(critical)
+        identity = f" [{row['spec_id'][:8]}]"
+        if len(warning + identity) > budget:
+            warning = warning.replace("start unsupported", "start blocked")
+        if len(warning + identity) > budget:
+            # At the minimum width the withdrawal warning has priority; the
+            # selected view still explains every launch restriction in full.
+            warning = critical[0]
+        heading = warning + identity
+        room = budget - len(heading) - 1
+        if room < 4:
+            return heading
+        files = LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"
+        context = f"{model} · {files}" + (f" · {review}" if review and review != "withdrawn" else "")
+        if len(context) > room:
+            context = context[:room - 3] + "..."
+        return heading + " " + context
+    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
     text = model + suffix
     return text if len(text) <= budget else text[:budget - 3] + "..."
 
 
-def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int) -> list[str]:
+def explicit_settings(arguments: list[str]) -> str:
+    """Summarize recorded values only; do not guess engine defaults or precedence."""
+    labels = {"--max-model-len": "context", "--max-num-seqs": "max sequences", "--quantization": "quantization"}
+    values: dict[str, list[str]] = {flag: [] for flag in labels}
+    for index, token in enumerate(arguments):
+        flag, separator, value = token.partition("=")
+        if flag in labels:
+            if not separator:
+                value = arguments[index + 1] if index + 1 < len(arguments) and not arguments[index + 1].startswith("--") else "not supplied"
+            values[flag].append(value)
+    parts = [f"{labels[flag]} {items[0] if len(items) == 1 else 'has repeated values; see details'}"
+             for flag, items in values.items() if items]
+    return "; ".join(parts) if parts else "see Show details"
+
+
+def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
+           published=None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
-    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row)}")
+    for line in withdrawal_notice(row):
+        out.emit(line)
+    out.emit("Selected recipe: " + recipe_text(row["geometry"]))
+    digest = str((row.get("image") or {}).get("digest") or "not recorded")
+    image = digest if len(digest) <= 24 else digest[:24] + "…"
+    out.emit(f"Image: {image}")
+    out.emit("Settings: " + explicit_settings(row.get("engine_args") or []))
+    review = row.get("review") or {}
+    if review.get("status") and review["status"] != "withdrawn":
+        out.emit(f"Maintainer review (advisory): {review['status']} · "
+                 f"{review.get('reviewed_at') or 'date not recorded'}")
+    out.emit("Current observations (saved)")
+    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
+    out.emit("Live service: not observed here.")
+    for line in published_lines(published, now=now):
+        out.emit(line)
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
     by_reason: dict[str, list[str]] = {}
-    for action in MAIN + STORAGE:
+    for action in MAIN + LAUNCH + STORAGE:
         if action in hidden:
             by_reason.setdefault(hidden[action], []).append(LABELS[action])
     for reason, labels in by_reason.items():
@@ -250,14 +353,15 @@ def clean(text: object) -> str:
 
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
-               width: int | None = None, names: NodeNames | None = None) -> list[str]:
-    offered, hidden, eligible = operations(row, archive_location)
-    suggested = suggestion(row, offered, archive_location, after, names)
+               width: int | None = None, names: NodeNames | None = None, now=None,
+               published=None, read_only=False) -> list[str]:
+    offered, hidden, eligible = ([], {}, {}) if read_only else operations(row, archive_location)
+    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width)]
+    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now, published=published)]
     for action in offered:
-        group = "main" if action in MAIN else "storage"
+        group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
         lines.append(f"option\t{group}\t{action}\t{label}")
     if suggested:
@@ -266,6 +370,49 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
         for name in snapshots:
             lines.append(f"snapshot\t{action}\t{clean(name)}")
     return lines
+
+
+def memory_warning_only(records: list[dict]) -> bool:
+    """Offer acknowledgement only for the existing start check's warning code."""
+    return bool(records) and all(isinstance(record, dict)
+                                and record.get("stage") == "check"
+                                and record.get("blocker") == "memory_warning" for record in records)
+
+
+def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, mode: str, width=None) -> bool:
+    """Display the public image stage preview; never inspect or stage an image."""
+    plan = response.get("result")
+    if (type(response.get("schema_version")) is not int or response["schema_version"] != 1 or response.get("ok") is not True
+            or not isinstance(plan, dict) or plan.get("kind") != "pulsar-image-check"
+            or plan.get("operation") != "stage-image" or plan.get("model") != row["spec_id"]
+            or plan.get("image") != row["image"]["digest"]):
+        raise ValueError("image preview does not name the selected catalog spec and pinned image")
+    modes = {"pull-exact-digest": "Pull the exact digest from its registry",
+             "stream-from-controller": "Copy the pinned image from this node; no registry fallback"}
+    ranks = plan.get("ranks")
+    if (mode not in modes or plan.get("mode") != mode or not isinstance(ranks, list)
+            or type(plan.get("nodes")) is not int or plan["nodes"] != row["geometry"]["nodes"]
+            or len(ranks) != row["geometry"]["nodes"]
+            or any(not isinstance(rank, dict) or type(rank.get("rank")) is not int or rank["rank"] != index
+                   or type(rank.get("topology_index")) is not int or rank["topology_index"] < 0
+                   or rank["topology_index"] not in node_names
+                   or rank.get("state") not in ("ok", "missing") for index, rank in enumerate(ranks))):
+        raise ValueError("image preview does not establish every selected rank")
+    if len({rank["topology_index"] for rank in ranks}) != len(ranks):
+        raise ValueError("image preview repeats a selected node")
+    out = TerminalWriter(width=width)
+    out.emit("Pinned image staging preview")
+    out.field("Model", row["model_id"])
+    out.field("Spec", row["spec_id"])
+    out.field("Image", plan["image"])
+    out.field("Source", modes[plan["mode"]])
+    for rank in ranks:
+        node = node_names[rank["topology_index"]]
+        action = "will stage" if rank["state"] == "missing" else "already present"
+        out.field(f"Rank {rank['rank']}", f"{node}: {action}")
+    missing = any(rank["state"] == "missing" for rank in ranks)
+    out.emit("No service is started or replaced." if missing else "The pinned image is already present; nothing to stage.")
+    return missing
 
 
 def _short(commit: object) -> str:
@@ -309,6 +456,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     identity = _snapshot_identity(row, snapshot)
     place = names(node) if node else None
     nodes = row["geometry"]["nodes"]
+    warning = "Withdrawn spec. " if (row.get("review") or {}).get("status") == "withdrawn" else ""
     if action == "acquire":
         target = names(plan.get("selected_node") or node) if (plan.get("selected_node") or node) else "the selected node"
         if plan.get("action") == "reuse":
@@ -349,7 +497,11 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
                 "An existing archive is never replaced.")
     if action == "start":
         where = place or f"{nodes} nodes"
-        return f"Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+        return f"{warning}Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+    if action == "start-memory":
+        where = place or f"{nodes} nodes"
+        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
+                "Insufficient memory and all other blockers still prevent start.")
     if action == "stop":
         where = f" on {place}" if place else ""
         return f"Stop {model}{where}? Model files and pins are kept."
@@ -367,28 +519,60 @@ def read_row(stream, spec_id: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
+    labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
+    labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
+    warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
+    warning.add_argument("--blockers-file", required=True)
+    image = sub.add_parser("image-plan", help="render an existing public image stage preview")
+    image.add_argument("--spec-id", required=True)
+    image.add_argument("--plan-file", required=True)
+    image.add_argument("--mode", required=True, choices=("pull-exact-digest", "stream-from-controller"))
+    image.add_argument("--node-name", action="append", default=[])
     view = sub.add_parser("view", help="menu lines for one recipe; catalog JSON on stdin")
     view.add_argument("--spec-id", required=True)
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
-    view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check"}))
+    view.add_argument("--repo-root", default=ROOT)
+    view.add_argument("--read-only", action="store_true")
+    view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
-    confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop"}))
+    confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
     confirm.add_argument("--plan-file")
     confirm.add_argument("--snapshot")
     confirm.add_argument("--node")
     args = parser.parse_args(argv)
     try:
+        if args.command == "memory-warning":
+            from scripts.start_blockers import read
+            return 0 if memory_warning_only(read(args.blockers_file)) else 1
         if args.command == "labels":
             width = terminal_width()
-            for entry in json.load(sys.stdin).get("entries") or []:
+            entries = json.load(sys.stdin).get("entries") or []
+            if args.compare_with and any(entry["spec_id"] == args.compare_with and entry.get("historical") for entry in entries):
+                raise ValueError("spec comparison supports schemas 2 and 3; use Show details for this historical spec")
+            for entry in entries:
+                if args.compare_with and (entry["spec_id"] == args.compare_with or entry.get("historical")):
+                    continue
                 print(f"{entry['spec_id']}\t{menu_label(entry, width)}")
             return 0
         row = read_row(sys.stdin, args.spec_id)
         names = NodeNames.saved()
+        if args.command == "image-plan":
+            with open(args.plan_file, encoding="utf-8") as handle:
+                response = json.load(handle)
+            node_names = {}
+            for value in args.node_name:
+                index, separator, name = value.partition("=")
+                if not separator or not index.isdigit() or not name:
+                    raise ValueError("node names must use INDEX=NAME")
+                node_names[int(index)] = name
+            if not isinstance(response, dict):
+                raise ValueError("image preview must be a public result envelope")
+            return 0 if render_image_plan(row, response, node_names, mode=args.mode) else 1
         if args.command == "view":
-            print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names)))
+            published = published_results(args.repo_root, row["spec_id"])
+            print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
+                                      published=published, read_only=args.read_only)))
             return 0
         plan = None
         if args.plan_file:
@@ -398,6 +582,13 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("plan must be a JSON object")
             if plan_blocked(plan):
                 return 3
+        if args.action in ("start", "start-memory"):
+            notice = withdrawal_notice(row)
+            if notice:
+                out = TerminalWriter(stream=sys.stderr)
+                out.blank()
+                for line in notice:
+                    out.emit(line)
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:

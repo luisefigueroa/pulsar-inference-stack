@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only cluster bind status for the interactive pulsar menu.
+"""Local-only cluster setup status for the interactive pulsar menu.
 
 Reads topology, archive configuration and catalog filenames on disk. Does not
 contact nodes, Docker, GPUs or Hugging Face.
@@ -32,7 +32,6 @@ SPEC_FILENAME = re.compile(r"^[0-9a-f]{64}\.json$")
 ACTIONS = {
     "set-up-topology": "Set up cluster membership and SSH trust",
     "enroll-ssh-trust": "Enroll SSH trust",
-    "select-archive": "Select archive location",
 }
 
 
@@ -95,13 +94,12 @@ def build(repo: str | Path, environ: Mapping[str, str] | None = None) -> dict[st
         action = "set-up-topology"
     elif topology["trust"] == "not-enrolled":
         action = "enroll-ssh-trust"
-    elif archives == "not-configured":
-        action = "select-archive"
     else:
         action = None
     document: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "kind": KIND,
+        # Optional archive configuration does not block cluster operations.
         "complete": action is None,
         "topology": {"status": topology["status"], "nodes": topology["nodes"]},
         "ssh_trust": {"status": topology["trust"]},
@@ -137,7 +135,7 @@ def render_text(
     archives = {
         "configured": "configured",
         "disabled": "disabled",
-        "not-configured": "not configured",
+        "not-configured": "not configured (optional)",
     }[document["archives"]["status"]]
     specs = document["catalog"]["spec_count"]
     catalog = (
@@ -151,6 +149,8 @@ def render_text(
         if document["ssh_trust"]["status"] != "not-required":
             out.field("SSH trust", trust, indent=2)
         out.field("Archives", archives, indent=2)
+        if document["archives"]["status"] == "not-configured":
+            out.emit("Archive actions need a location; choose Archive storage configuration when needed.")
         out.blank()
         out.emit("Catalog")
         out.emit(catalog, initial_indent="  ", subsequent_indent="  ")
@@ -161,7 +161,13 @@ def render_text(
     out.field("Archives", archives, indent=2)
     out.field("Catalog", catalog, indent=2)
     out.blank()
-    out.emit("This checkout is not bound to a cluster yet.")
+    if topology == "confirmed":
+        out.emit("Cluster membership is confirmed; SSH trust is not enrolled.")
+    elif topology == "invalid":
+        out.emit("Saved cluster membership is invalid.")
+    else:
+        out.emit("Cluster membership is not configured.")
+    out.emit(f"Next: {document['next_label']}.")
 
 
 def main(argv: list[str] | None = None) -> int:

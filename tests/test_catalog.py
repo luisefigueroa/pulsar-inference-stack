@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from model_library.catalog import archive_fact, argument_groups, entries, render, age_seconds
+from model_library.catalog import archive_fact, argument_groups, combined_observation, entries, render, age_seconds
 from model_library.node_names import NodeNames
 from model_library.state import Store, view_key
 from model_library.integrity import StorageError
@@ -74,6 +74,37 @@ class Catalog(unittest.TestCase):
         self.assertEqual(row["archive_state"], "unknown")
         self.assertIsNone(row["checked_at"])
         self.assertFalse(self.store.root.exists())
+
+    def test_snapshot_blockers_survive_json_key_reordering(self):
+        from tests.test_container_runtime import fixture
+        spec = fixture(speculative=True)[0]
+        (self.repo / 'releases').mkdir()
+        (self.repo / 'releases' / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+        members = {name: {'local_state': 'missing', 'archive_state': 'unknown',
+                          'prepared': {'verified': 0, 'required': 1}, 'blockers': ['files missing']}
+                   for name in ('target', 'draft')}
+        aggregate = combined_observation(members)
+        reordered = json.loads(json.dumps(members, sort_keys=True))
+        self.assertEqual(list(reordered), ['draft', 'target'])
+        self.assertEqual(combined_observation(reordered), aggregate)
+        # Accept either historical order; persistence sorts only object keys.
+        for blockers in (aggregate['blockers'], list(reversed(aggregate['blockers']))):
+            with self.subTest(blockers=blockers):
+                self.observe(spec, **{**aggregate, 'blockers': blockers})
+                path = self.store.root / 'observations' / f"{spec['spec_id']}.json"
+                original = path.read_bytes()
+                row, = entries(self.repo, self.store, now=self.now)
+                self.assertEqual(row['local_state'], 'missing')
+                self.assertEqual(row['blockers'], blockers)
+                self.assertEqual(path.read_bytes(), original)
+        for changes in ({'local_state': 'ready'}, {'prepared': {'verified': 2, 'required': 2}},
+                        {'blockers': aggregate['blockers'][:-1]},
+                        {'blockers': aggregate['blockers'] + [aggregate['blockers'][0]]},
+                        {'blockers': ['different blocker']}, {'blockers': [None]}):
+            with self.subTest(changes=changes):
+                self.observe(spec, **{**aggregate, **changes})
+                with self.assertRaisesRegex(StorageError, 'saved aggregate disagrees'):
+                    entries(self.repo, self.store, now=self.now)
 
     def test_nullable_state_and_review_are_visible_without_gating(self):
         spec = self.add_spec()
@@ -242,6 +273,14 @@ class Catalog(unittest.TestCase):
     def test_future_observation_age_is_unknown(self):
         self.assertIsNone(age_seconds("2027-01-01T00:00:00Z", self.now))
 
+    def test_unknown_or_equal_archive_times_do_not_claim_an_order(self):
+        for check_age, record_age in ((None, 3600), (3600, None), (None, None), (3600, 3600)):
+            with self.subTest(check_age=check_age, record_age=record_age):
+                kind, _, wording = archive_fact("missing", check_age, {"verified": True}, record_age)
+                self.assertEqual(kind, "missing")
+                self.assertIn("order relative to check unknown", wording)
+                self.assertNotIn("before that", wording)
+
     def put_home(self, spec, node="node-a"):
         manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
         self.store.put("homes", manifest, {"schema_version": 1, "kind": "pulsar-home",
@@ -357,9 +396,22 @@ class Catalog(unittest.TestCase):
         acquire = ["./pulsar", "model", "acquire", prefix, "--yes"]
         self.assert_suggestion(acquire, location="not-configured")
         self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
-                                              "verified_at": "2026-09-04T01:00:00Z"})
+                                              "verified_at": "2026-09-05T00:30:00Z"})
         self.assert_suggestion(["./pulsar", "model", "restore", prefix, "--yes"])
         self.assert_suggestion(acquire, location="disabled")
+
+    def test_archive_check_and_suggested_command_agree(self):
+        spec = self.add_spec()
+        manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-08-17T01:00:00Z"})
+        for state in ("missing", "unavailable"):
+            with self.subTest(state=state):
+                self.observe(spec, local_state="missing", archive_state=state)
+                self.assert_suggestion(["./pulsar", "model", "acquire", spec["spec_id"][:12], "--yes"])
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-09-05T00:30:00Z"})
+        self.assert_suggestion(["./pulsar", "model", "restore", spec["spec_id"][:12], "--yes"])
 
     def test_a_guarded_spec_gets_no_suggestion_toward_start(self):
         spec = self.add_spec(guarded=True)
@@ -406,18 +458,67 @@ confirm() {
     ACTION = """#!/usr/bin/env python3
 import json,os,sys
 open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")
-if "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
-raise SystemExit(int(os.environ.get("ACTION_RC","0")))
+rc = int(os.environ.get("ACTION_RC", "0"))
+if os.path.basename(sys.argv[0]) == "pulsar":
+    fixture = json.loads(os.environ["LAUNCH_FIXTURE"])
+    if sys.argv[1] == "start":
+        mode = "dry" if "--dry-run" in sys.argv else ("accept" if "--accept-memory-warn" in sys.argv else "start")
+        rc = fixture.get(mode + "_rc", 0)
+        if os.environ.get("PULSAR_START_BLOCKERS_FILE"):
+            with open(os.environ["PULSAR_START_BLOCKERS_FILE"], "w") as stream:
+                for code in fixture.get("blockers", []):
+                    stream.write(json.dumps({"field": "blocker", "blocker": code, "stage": "check"}) + "\\n")
+    elif sys.argv[1:3] == ["image", "stage"] and "--plan" in sys.argv:
+        state = fixture.get("image_state", "missing")
+        plan = {"schema_version": 1, "kind": "pulsar-image-check", "operation": "stage-image",
+                "model": sys.argv[3], "image": fixture["image"], "nodes": 1,
+                "mode": "pull-exact-digest" if "--pull" in sys.argv else "stream-from-controller",
+                "ranks": [{"rank": 0, "topology_index": 0, "state": state}]}
+        print(json.dumps({"schema_version": 1, "ok": True, "result": plan}))
+        rc = fixture.get("plan_rc", 0)
+    elif sys.argv[1:3] == ["image", "stage"]:
+        rc = fixture.get("stage_rc", 0)
+elif "--plan" in sys.argv:
+    print(open(os.environ["PLAN_FILE"]).read())
+    rc = int(os.environ.get("PLAN_RC", str(rc)))
+elif sys.argv[1] == "check":
+    rc = int(os.environ.get("CHECK_RC", str(rc)))
+    observation = json.loads(os.environ["CHECK_OBSERVATION"])
+    if observation is not None:
+        from model_library.state import Store, now
+        spec = sys.argv[2]
+        Store(os.environ["PULSAR_MODEL_LIBRARY_DIR"]).put("observations", spec, {
+            "schema_version": 1, "kind": "pulsar-saved-observation", "spec_id": spec,
+            "checked_at": now(), **observation})
+        print(json.dumps({"spec_id": spec, "observation": observation}))
+if os.environ.get("ACTION_SIGNAL_PARENT") == "1" and "--plan" not in sys.argv:
+    # Only the fixture's waiting Bash process receives this test signal.
+    import signal
+    os.kill(os.getppid(), signal.SIGINT)
+raise SystemExit(rc)
 """
 
-    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False):
+    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
+                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
+                 menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False):
         spec = self.add_spec(guarded=guarded)
+        if review is not None:
+            spec["review"] = review
+            (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+        if with_home:
+            self.put_home(spec)
+        if observation is not None:
+            self.observe(spec, **{"checked_at": datetime.now(timezone.utc).isoformat(), **observation})
+        for extra in additional_specs:
+            (self.repo / "releases" / f"{extra['spec_id']}.json").write_bytes(pretty_json_bytes(extra))
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
         (scripts / "ui.sh").write_text(self.UI)
         for name in ("model-library.sh", "status.sh", "up.sh", "down.sh"):
             (scripts / name).write_text(self.ACTION); (scripts / name).chmod(0o700)
+        (shell_root / "pulsar").write_text(self.ACTION)
+        (shell_root / "pulsar").chmod(0o700)
         files = {name: self.root / name for name in ("answers", "confirms", "choices.log", "confirm.log", "action.log", "plan.json")}
         files["answers"].write_text("\n".join(answers) + "\n")
         files["confirms"].write_text("\n".join(confirms) + "\n")
@@ -426,17 +527,25 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
                    CLUSTER_TOPOLOGY_FILE=str(self.root / "no-topology.json"),
                    MENU_ANSWERS=str(files["answers"]), MENU_CONFIRMS=str(files["confirms"]),
                    CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),
-                   ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc))
+                   ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc),
+                   PLAN_RC=str(action_rc if plan_rc is None else plan_rc),
+                   ACTION_SIGNAL_PARENT="1" if interrupt_parent else "0",
+                   CHECK_OBSERVATION=json.dumps(check_observation),
+                   CHECK_RC=str(action_rc if check_rc is None else check_rc),
+                   LAUNCH_FIXTURE=json.dumps({"image": spec["recipe"]["image_digest"], **(launch or {})}))
         env.pop("PULSAR_COLD_ROOT", None)
         if archive_root is not None:
             env["PULSAR_COLD_ROOT"] = archive_root
-        shutil.copytree(self.repo / "releases", shell_root / "releases")
+        if empty_catalog:
+            (shell_root / "releases").mkdir()
+        else:
+            shutil.copytree(self.repo / "releases", shell_root / "releases")
         # The catalog reads the fixture releases root through a tiny python3 launcher.
         binary = self.root / "bin"; binary.mkdir()
         python = binary / "python3"
         python.write_text('#!/usr/bin/env bash\nif [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then shift 2; exec '+sys.executable+' -m model_library.catalog --repo-root '+str(shell_root)+' "$@"; fi\nexec '+sys.executable+' "$@"\n')
         python.chmod(0o700); env["PATH"] = str(binary) + os.pathsep + os.environ["PATH"]
-        result = subprocess.run(["bash", str(scripts / "model-storage.sh"), "menu"], env=env, text=True, capture_output=True)
+        result = subprocess.run(["bash", str(scripts / "model-storage.sh"), "menu", *menu_args], env=env, text=True, capture_output=True)
         log = files["action.log"]
         actions = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         choices = files["choices.log"].read_text()
@@ -444,10 +553,86 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         confirm_log = files["confirm.log"]
         return spec["spec_id"], result, actions, choices, confirm_log.read_text() if confirm_log.exists() else ""
 
-    def test_menu_returns_to_the_recipe_after_an_action(self):
-        spec, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"])
+    def test_read_only_catalog_opens_saved_details_without_operations(self):
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Show details", "Published results", "Back", "Back"], archive_root=None, menu_args=("--read-only",))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node"]])
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertIn(spec, result.stdout)
+        self.assertIn("Image", result.stdout)
+        self.assertIn("Arguments", result.stdout)
+        self.assertIn("Saved records:", result.stdout)
+        self.assertIn("Catalog spec (read-only)\nShow details\nPublished results\nCompare catalog specs\nBack\n", choices)
+        self.assertIn("None supplied.", result.stdout)
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
+        self.assertNotIn("Choose one operation", choices)
+        self.assertFalse(self.store.root.exists())
+
+    def test_catalog_comparison_uses_only_the_two_selected_published_specs(self):
+        from release_spec.tests.test_serving_guard import FIXTURES, guarded
+        extra = guarded(json.loads((FIXTURES / "spec.json").read_text()))
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Compare catalog specs", "#0", "Back", "Back"],
+            menu_args=("--read-only",), additional_specs=(extra,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before, after = sorted([spec, extra["spec_id"]])
+        releases = self.root / "shell/releases"
+        self.assertEqual(actions, [["pulsar", "spec", "compare", "--before", str(releases / f"{before}.json"),
+                                   "--after", str(releases / f"{after}.json")]])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
+        self.assertIn(f"Selected spec: {before}", result.stdout)
+
+    def test_single_catalog_spec_has_a_clear_comparison_return(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Compare catalog specs", "Back", "Back"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertIn("No other catalog spec supports comparison", result.stdout)
+        self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
+
+    def test_storage_budget_inspects_all_nodes_without_confirming_or_changing_suggestion(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Storage budget (all nodes)", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "budget"]])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Check now (suggested)\n"), 2)
+        self.assertNotIn('Select a confirmed physical node', choices)
+        self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
+
+    def test_empty_catalog_still_offers_storage_budget_inspection(self):
+        _, result, actions, _, questions = self.run_menu(
+            ["Storage budget (all nodes)", "Back"], empty_catalog=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "budget"]])
+        self.assertEqual(questions, "")
+        self.assertIn('The catalog is empty.', result.stdout)
+
+    def test_esc_from_read_only_details_returns_to_catalog(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "<esc>", "<esc>"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
+
+    def test_ctrl_c_in_read_only_details_exits_the_menu(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "<ctrl-c>"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 1)
+
+    def test_menu_returns_to_the_recipe_after_an_action(self):
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], with_home=True,
+            check_observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node", "--json"]])
         self.assertIn("✓ Check now finished for", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
         self.assertEqual(choices.count("Select a catalog spec\n"), 2)
@@ -463,6 +648,44 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertIn("(exit 1)", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
 
+    def test_interrupted_storage_keeps_partial_effects_unknown_and_suggests_recheck(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"],
+            action_rc=130, plan_rc=0, with_home=True,
+            observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Interruption requested: Restore", text)
+        self.assertIn("not confirmed cleanup or partial effects", text)
+        self.assertIn("Retained staging may be recoverable", text)
+        self.assertNotIn("Restore finished", text)
+        last = choices.rsplit("Choose one operation\n", 1)[1]
+        self.assertIn("Check now (suggested)", last)
+        self.assertNotIn("Start (suggested)", last)
+        self.assertEqual(len(actions), 2)  # preview and requested action only
+
+    def test_interrupted_stop_suggests_live_status_before_any_retry(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"], action_rc=130)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Live status (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
+        self.assertIn("Use Live status", " ".join(result.stdout.split()))
+        self.assertEqual(len(actions), 1)
+
+    def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], interrupt_parent=True,
+            check_observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Interruption requested: Check now", text)
+        self.assertIn("command exit 0", text)
+        self.assertNotIn("✓ Check now finished", text)
+        self.assertNotIn("the last check did not record an observation", text)
+        self.assertIn("rerun before relying on saved observations", text)
+        self.assertIn("Check now (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
+        self.assertEqual(len(actions), 1)
+
     def test_restore_previews_the_plan_before_a_specific_confirmation(self):
         spec, result, actions, _, questions = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -470,6 +693,63 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
                                    ["model-library.sh", "restore", spec, "--node", "fixture-node", "--yes"]])
         self.assertIn("Restoration preview", result.stdout)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
+
+    def test_recorded_home_does_not_prevent_a_restore_preview(self):
+        spec, result, actions, _, questions = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True,
+            observation={"local_state": "changed", "archive_state": "verified", "blockers": ["home files changed"]},
+            confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"]])
+        self.assertIn("Restore", questions)
+        self.assertIn("Nothing changed.", result.stdout)
+
+    def test_recorded_home_recovery_still_stops_at_a_blocked_plan(self):
+        plan = {"kind": "pulsar-restore-plan", "eligible": False, "blockers": ["existing files must not be replaced"]}
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True, plan=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0][-2:], ["--plan", "--json"])
+        self.assertEqual(questions, "")
+        self.assertIn("existing files must not be replaced", result.stdout)
+
+    def test_recorded_missing_files_clear_the_previous_mutation_check(self):
+        plan = {"kind": "pulsar-preparation-plan", "eligible": True,
+                "actions": [{"rank": 0, "node_id": "fixture-node", "action": "home-view"}]}
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Prepare", "fixture-host", "Check now (suggested)", "fixture-host", "Back", "Back"],
+            with_home=True, plan=plan, confirms=["yes"], check_rc=1,
+            check_observation={"local_state": "missing", "archive_state": "unknown",
+                               "blockers": ["required prepared copy is missing"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[-1], ["model-library.sh", "check", spec, "--node", "fixture-node", "--json"])
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Prepare (suggested)", last_options)
+        self.assertNotIn("Check now (suggested)", last_options)
+        self.assertIn("saved an observation with findings", result.stdout)
+        self.assertNotIn("Check now failed", result.stdout)
+
+    def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
+        spec, result, actions, _, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Restore (suggested)", "fixture-host", "Back", "Back"],
+            confirms=["no"], check_rc=1,
+            check_observation={"local_state": "missing", "archive_state": "verified",
+                               "blockers": ["no home is registered"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [
+            ["model-library.sh", "check", spec, "--node", "fixture-node", "--json"],
+            ["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"]])
+
+    def test_unrecorded_check_does_not_recommend_start_from_old_readiness(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now", "fixture-host", "Back", "Back"], with_home=True, check_rc=1,
+            observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Check now (suggested)", last_options)
+        self.assertNotIn("Start (suggested)", last_options)
 
     def test_declined_restore_changes_nothing(self):
         _, result, actions, _, _ = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["no"])
@@ -488,7 +768,7 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],
                          "views": [], "actions": []}, "incomplete_preparations": []}
         _, result, actions, _, questions = self.run_menu(
-            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back"], plan=plan)
+            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"], plan=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([a[-2:] for a in actions], [["--plan", "--json"]])
         self.assertIn("prepared copy is pinned", result.stdout)
@@ -501,6 +781,19 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(actions, [])
         self.assertEqual(choices.count("Choose one operation\n"), 2)
 
+    def test_escape_from_a_storage_action_returns_to_its_submenu(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Storage and archive…", "Move home", "<esc>", "Back", "Back", "Back"], with_home=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(choices.count("Storage and archive\n"), 2)
+
+    def test_ctrl_c_from_a_submenu_action_exits_without_mutation(self):
+        _, result, actions, _, _ = self.run_menu(
+            ["#0", "Storage and archive…", "Move home", "<ctrl-c>"], with_home=True)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(actions, [])
+
     def test_ctrl_c_at_a_prompt_leaves_the_menu(self):
         _, result, actions, _, _ = self.run_menu(["#0", "<ctrl-c>"])
         self.assertEqual(result.returncode, 130)
@@ -511,7 +804,8 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Start", "Stop", "Live status",
-                                 "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
+                                 "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Suggested: Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
@@ -523,7 +817,8 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
-                                 "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
+                                 "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
 

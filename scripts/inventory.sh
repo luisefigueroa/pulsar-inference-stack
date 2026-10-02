@@ -12,6 +12,10 @@
 # --verbose prints every service plus diagnostic metadata. --json always retains
 # the full inventory (schema_version=1).
 set -euo pipefail
+if [ "${1:-}" = menu ]; then
+  shift
+  exec bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/inventory-menu.sh" "$@"
+fi
 SCRIPT_NAME=inventory
 # shellcheck disable=SC1091
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
@@ -25,6 +29,7 @@ FROM_FIXTURE=""
 usage() {
   python3 "$REPO_DIR/scripts/terminal_format.py" <<'EOF'
 usage: pulsar inventory [--json] [--verbose] [--from-fixture path]
+       pulsar inventory menu
 
   Read-only inventory of vLLM-related containers on this node and every other
   confirmed cluster node. Reports ownership, safe_to_stop, MemAvailable, and
@@ -34,6 +39,7 @@ usage: pulsar inventory [--json] [--verbose] [--from-fixture path]
   --verbose         human mode: show every inactive unknown/legacy container
                     plus IDs, sources, paths, and other diagnostic metadata
   --from-fixture    classify a pre-collected raw snapshot (no Docker/SSH/GPU)
+  menu              select a published catalog service for status or confirmed stop
 EOF
 }
 

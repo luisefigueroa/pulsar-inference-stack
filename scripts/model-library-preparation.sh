@@ -56,7 +56,7 @@ prepare_snapshot() {
     printf '%s\n' "$(model_json node_id "$node" view_verified: "$verified" reuse_view: "$reuse_view")" >>"$ranks_tmp"
     roots=$(model_node "$rank" "$(model_node_request roots)") || die "node storage roots are unavailable"
     space=$(model_node "$rank" "$(model_node_request space path "$(json_fields "$roots" view_root)")") || die "node disk usage is unavailable"
-    budget=$(printf '%s' "$space" | python3 -c 'import json,sys; s=json.load(sys.stdin); r=int(sys.argv[1]) if sys.argv[1] else max(64*1024**3,s["total"]*5//100); limit=int(sys.argv[2]) if sys.argv[2] else max(0,s["available"]+s["used"]-r); assert r>=0 and limit>=0; print(json.dumps({"available":s["available"],"used":s["used"],"reserve":r,"limit":limit}))' "${PULSAR_HOT_RESERVE_BYTES:-}" "${PULSAR_HOT_BUDGET_BYTES:-}") || die "invalid disk budget"
+    budget=$(printf '%s' "$space" | python3 -c 'import json,sys; from model_library.planning import storage_budget; print(json.dumps(storage_budget(json.load(sys.stdin),sys.argv[1],sys.argv[2],path=sys.argv[3])))' "${PULSAR_HOT_RESERVE_BYTES:-}" "${PULSAR_HOT_BUDGET_BYTES:-}" "$(json_fields "$roots" view_root)") || die "invalid disk budget"
     printf '%s\n' "$(model_json node_id "$node" budget: "$budget")" >>"$budgets_tmp"
   done
   observations=$(printf '%s' "$observations" | python3 -c 'import json,sys; all=json.load(sys.stdin); selected=[json.loads(x) for x in open(sys.argv[1])]; print(json.dumps([{**next(o for o in all if o["node_id"]==v["node_id"]),**v} for v in selected]))' "$ranks_tmp")

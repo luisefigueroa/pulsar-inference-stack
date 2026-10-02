@@ -182,7 +182,7 @@ emit_error() {
 }
 
 # prompt_input HEADER [PLACEHOLDER]
-# Prints the entered line on stdout. Returns 1 on cancel or empty input.
+# Prints the entered line on stdout. Returns 1 on Esc/empty input, 130 on Ctrl-C.
 prompt_input() {
   local header="$1" placeholder="${2:-}" out rc
   _ui_require_gum || return
@@ -194,6 +194,9 @@ prompt_input() {
     --placeholder "$placeholder")
   rc=$?
   set -e
+  if [ "$rc" -eq 130 ]; then
+    return 130
+  fi
   if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
@@ -257,6 +260,7 @@ confirm() {
   _ui_gum_confirm_style_args
   set +e
   # Leave stderr open — Gum confirm draws its TUI on stderr.
+  # Gum defaults to Yes when --default is omitted; pass both values explicitly.
   if [ "$default" = yes ]; then
     _ui_gum confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
@@ -264,7 +268,7 @@ confirm() {
   else
     _ui_gum confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
-      "$msg"
+      --default=false "$msg"
   fi
   rc=$?
   set -e

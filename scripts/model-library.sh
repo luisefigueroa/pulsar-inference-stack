@@ -35,7 +35,7 @@ Usage: pulsar model OPERATION [SPEC_ID] [options]
   pin|unpin     Protect or release prepared copies
   purge         Remove unpinned, unused prepared copies
   remove        Remove an unused home, preserving catalog recovery
-  budget        Inspect per-node managed storage usage
+  budget        Inspect prepared-copy usage and headroom on all confirmed nodes
 
 Options:
   --spec-file FILE       Explicit lab candidate spec

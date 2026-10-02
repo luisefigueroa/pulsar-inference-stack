@@ -300,6 +300,33 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
 
+    def test_ctrl_c_at_membership_confirmation_preserves_interrupt_and_saved_files(self):
+        f = self.fixture
+        before = f.path.read_bytes(), f.config.read_bytes()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='130')
+        result, output = self.interactive(['topology', 'configure'], '', '')
+        self.assertEqual(result, 130, output)
+        self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+
+    def test_ctrl_c_at_enrollment_confirmation_preserves_interrupt_and_saved_files(self):
+        f = self.fixture
+        before = f.path.read_bytes(), f.config.read_bytes()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='130')
+        result, output = self.interactive(['ssh-trust', 'enroll'], '', '')
+        self.assertEqual(result, 130, output)
+        self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+
+    def test_fresh_setup_ctrl_c_never_reaches_enrollment(self):
+        f = self.fixture
+        f.path.unlink(); f.config.unlink()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='130')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 130, output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+
     def test_setup_detects_invalid_or_unready_saved_state_without_replacing_it(self):
         f = self.fixture
         f.path.write_text('{broken')

@@ -42,31 +42,43 @@ archive_cli() {
   python3 -m model_library.configuration --repo-root "$CONFIG_ROOT" "$@"
 }
 
-archive_cli show
-choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") \
-  || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
-case "$choice" in
-  0)
-    while true; do
-      path=$(prompt_input "Existing absolute directory:" "/existing/absolute/directory") || exit 0
-      if [ ! -d "$path" ]; then
-        printf '%s\n' "$path is not an existing directory. Pulsar does not create archive storage." | emit_error
-        confirm "Try another path?" yes || exit 0
-        continue
-      fi
-      confirm "Save this archive location? $path" no || exit 0
-      if ! output=$(archive_cli set "$path" --yes 2>&1); then
-        printf '%s\n' "$output" | emit_error
-        confirm "Try another path?" yes || exit 0
-        continue
-      fi
+set_archive_location() {
+  local path output rc
+  while true; do
+    path=$(prompt_input "Existing absolute directory:" "/existing/absolute/directory") || return $?
+    if [ ! -d "$path" ]; then
+      printf '%s\n' "$path is not an existing directory. Pulsar does not create archive storage." | emit_error
+      confirm "Try another path?" yes || return $?
+      continue
+    fi
+    confirm "Save this archive location? $path" no || return $?
+    if output=$(archive_cli set "$path" --yes 2>&1); then
       printf '%s\n' "$output"
-      exit 0
-    done
-    ;;
-  1)
-    confirm "Disable the saved archive location?" no || exit 0
-    archive_cli disable --yes
-    ;;
-  *) exit 0 ;;
-esac
+      return 0
+    else
+      rc=$?
+      printf '%s\n' "$output" | emit_error
+      [ "$rc" -ne 130 ] || return 130
+      confirm "Try another path?" yes || return $?
+    fi
+  done
+}
+
+# Every completed or declined action returns to this menu. Only Back/Esc
+# leaves it normally; Ctrl-C keeps its interrupt status all the way home.
+while true; do
+  archive_cli show
+  choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+  case "$choice" in
+    0) set_archive_location || { rc=$?; [ "$rc" -ne 130 ] || exit 130; } ;;
+    1)
+      if confirm "Disable the saved archive location?" no; then
+        archive_cli disable --yes || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
+      else
+        rc=$?; [ "$rc" -ne 130 ] || exit 130
+      fi
+      ;;
+    *) exit 0 ;;
+  esac
+done

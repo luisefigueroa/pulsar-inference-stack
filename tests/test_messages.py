@@ -144,6 +144,8 @@ class Deprecations(unittest.TestCase):
 
     def test_menus_refuse_json_and_name_the_command_that_prints_it(self):
         for args, hint in ((["models", "menu", "--json"], "./pulsar models list --json"),
+                           (["models", "menu", "--read-only", "--json"], "./pulsar models list --json"),
+                           (["inventory", "menu", "--json"], "./pulsar inventory --json"),
                            (["topology", "menu", "--json"], "./pulsar topology show --json"),
                            (["configure", "archive-root", "menu", "--json"], "./pulsar configure archive-root show --json"),
                            (["gum", "--json"], "./pulsar help")):

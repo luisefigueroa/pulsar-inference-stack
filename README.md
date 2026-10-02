@@ -20,15 +20,22 @@ serving results for any model.
 ./pulsar contract --json
 ```
 
-On a terminal, `./pulsar` first offers the next setup step (cluster membership
-and SSH trust, then an archive location), read-only catalog browsing, and Exit;
-catalog and cluster actions follow once this checkout is bound. Specs appear
-when the maintainer publishes them under `releases/`; browsing with
+On a terminal, `./pulsar` first offers the next cluster setup step (membership
+and SSH trust), read-only catalog details, host diagnostics, saved topology,
+Help and Exit. Catalog and cluster actions follow once membership and trust
+are configured. Archives are optional: leaving their location unset does not
+restrict navigation, and **Archive storage configuration** remains available.
+Specs appear when the maintainer publishes them under `releases/`; browsing with
 `./pulsar models` does not require topology. Direct commands still perform one
 explicit action; `./pulsar models check SPEC` refreshes a chosen entry.
 Acquiring files, restoring an archive, preparing copies and starting a service
 remain separate operations. The menus draw with Gum, bundled for the arm64
 nodes; every menu action is also a command.
+
+The selected-spec menu separates recipe settings, saved observations and
+historical published results. **Published results** (`./pulsar models results SPEC`)
+shows recorded workloads and outcomes; **Compare catalog specs** displays recipe
+differences using the existing spec comparison command.
 
 For first use, choose **Set up cluster membership and SSH trust**, or run
 `./pulsar topology setup`. It guides membership and SSH identity enrollment
@@ -36,9 +43,9 @@ with separate confirmations, then checks readiness. From the workbench, run
 these stack commands by the configured absolute Stack executable path shown by
 `./workbench check`.
 
-After setup, the bare `./pulsar` menu adds **Catalog and storage** and
-**Cluster topology**, which offers saved membership, live checks, discovery,
-explicit configuration and SSH trust. `./pulsar topology detect` discovers
+After cluster setup, the bare `./pulsar` menu adds **Catalog and storage** and
+the full **Cluster topology** menu, which offers saved membership, live checks,
+discovery, explicit configuration and SSH trust. `./pulsar topology detect` discovers
 candidates without saving; `./pulsar topology configure` asks before saving
 membership. Workbench invokes the same public commands through its configured
 Stack executable.

@@ -12,6 +12,17 @@ from .state import checked_id, validate_home, validate_view, view_record_key, co
 from release_spec.serving import identity_fields, required_snapshots
 
 
+def storage_budget(space: dict, reserve=None, limit=None, *, path: str | None = None) -> dict:
+    """Apply the existing prepared-copy allowance to an observed filesystem."""
+    if any(type(space.get(key)) is not int or space[key] < 0 for key in ('available', 'used', 'total')):
+        raise StorageError('storage usage is not observable')
+    reserve = int(reserve) if reserve not in (None, '') else max(64 * 1024**3, space['total'] * 5 // 100)
+    limit = int(limit) if limit not in (None, '') else max(0, space['available'] + space['used'] - reserve)
+    if reserve < 0 or limit < 0:
+        raise StorageError('storage reserve and copy budget must be nonnegative')
+    return {**space, 'reserve': reserve, 'limit': limit, **({'path': path} if path else {})}
+
+
 def require_observations(node_ids: list[str], observations: list[dict]) -> dict[str, dict]:
     if len(node_ids) != len(set(node_ids)) or not node_ids:
         raise StorageError('operation requires unique confirmed nodes')
@@ -169,7 +180,8 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
     return {'kind': 'pulsar-preparation-plan', 'spec_id': spec['spec_id'],
             'snapshot_manifest_id': manifest['manifest_id'], 'topology_id': topology_id,
             'eligible': not blockers, 'blockers': blockers, 'actions': actions,
-            **({'snapshot':snapshot,'total_bytes':manifest['total_bytes'],'budgets':budgets} if spec['schema_version']==3 else {})}
+            'total_bytes': manifest['total_bytes'], 'file_count': manifest['file_count'], 'budgets': budgets,
+            **({'snapshot': snapshot} if spec['schema_version'] == 3 else {})}
 
 
 def preparation_set_plan(spec: dict, plans: list[dict]) -> dict:

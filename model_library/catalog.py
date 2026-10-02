@@ -55,6 +55,7 @@ def age_text(age):
 
 def combined_observation(members):
     """Aggregate complete per-snapshot checks without turning unknown into absent."""
+    names = sorted(members, key=lambda name: (name != 'target', name))
     def state(field, precedence):
         values={m.get(field,'unknown') for m in members.values()}
         return next(v for v in precedence if v in values)
@@ -63,7 +64,7 @@ def combined_observation(members):
         'archive_state':state('archive_state',('unknown','unavailable','not-configured','missing','present','verified')),
         'prepared':{'verified':sum(m.get('prepared',{}).get('verified',0) for m in members.values()),
                     'required':sum(m.get('prepared',{}).get('required',0) for m in members.values())},
-        'blockers':[name+': '+b for name,m in members.items() for b in m.get('blockers',[])]}
+        'blockers':[name+': '+b for name in names for b in members[name].get('blockers',[])]}
 
 
 # Why this Stack cannot start a spec, as the start blocker code a start would
@@ -123,7 +124,14 @@ def project(spec, store, *, now=None):
         # Only complete saved checks establish aggregate readiness.
         if observation is not None:
             combined=combined_observation(saved)
-            if any(observed.get(k)!=combined[k] for k in ('local_state','archive_state','prepared','blockers')):
+            blockers = observed.get('blockers')
+            # JSON object ordering is not evidence. Historical writers could
+            # aggregate before sort_keys reordered snapshot names on disk.
+            # Compare the messages with multiplicity, retaining every other
+            # consistency check and the stored order used for display.
+            if (any(observed.get(k)!=combined[k] for k in ('local_state','archive_state','prepared'))
+                    or not isinstance(blockers, list) or any(not isinstance(b, str) for b in blockers)
+                    or sorted(blockers) != sorted(combined['blockers'])):
                 raise StorageError('saved aggregate disagrees with snapshot observations')
     local_state = observed.get("local_state", "unknown")
     archive_state = observed.get("archive_state", "unknown")
@@ -213,7 +221,11 @@ def archive_fact(state, check_age, record, record_age, *, checked=True):
         return "verified", age, _verified(age)
     if state == "verified":
         return "verified", check_age, _verified(check_age)
-    before = f" ({_verified(record_age)} before that)" if record is not None else ""
+    before = ""
+    if record is not None:
+        order = (" before that" if record_age is not None and check_age is not None and record_age > check_age
+                 else "; order relative to check unknown")
+        before = f" ({_verified(record_age)}{order})"
     if state == "present":
         return "present", check_age, "present at last check, not verified"
     if state == "missing":
@@ -376,7 +388,7 @@ def _details(out, row, names, label_width):
         out.emit(view["path"], initial_indent=hanging, subsequent_indent=hanging)
 
 
-def render(rows, *, details=False, writer=None, names=None, location=None, now=None):
+def render(rows, *, details=False, writer=None, names=None, location=None, now=None, published=None):
     """One compact block per spec that leads with saved state.
 
     ``location`` is the archive location status (configured, disabled or
@@ -431,11 +443,15 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
         if details:
             for blocker in row["blockers"]:
                 field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
-        command = suggested_command(row, location, names)
+        command = suggested_command(row, location, names, now=now)
         if command:
             _command_field(out, "Suggested", command, label_width=label_width)
         if details:
             _details(out, row, names, label_width)
+            if published is not None:
+                from .published_results import compact_lines
+                for line in compact_lines(published.get(row["spec_id"]), now=now):
+                    out.emit(line)
     out.blank()
     if details and len(rows) == 1:
         out.emit("Saved records: locations are not proof that files are intact now. "
@@ -457,16 +473,20 @@ def prefix_hint(repo, spec_id):
 
 
 HELP = """\
-usage: pulsar models [list|menu] [--json]
+usage: pulsar models list [--json]
+       pulsar models menu [--read-only]
        pulsar models show SPEC [--json]
+       pulsar models results SPEC
        pulsar models check SPEC [--node NODE]
 
-Browse catalog specs with their saved file and archive state; only check contacts nodes.
+Browse catalog specs, saved storage state and published results; saved views never contact nodes.
 
   list        Every catalog spec: recipe, files, archive and the suggested next step
   show SPEC   One spec in detail: identity, image, engine arguments, home, prepared copies and blockers
+  results SPEC  Published run dates, workloads and outcomes, checked against the selected spec
   check SPEC  Check the spec's managed files and archive and save the result; see pulsar model --help
   menu        Open the catalog menu; it needs an interactive terminal with Gum
+  --read-only  Browse saved catalog details without offering operations (menu only)
   --json      Print list or show as JSON
 
 Without a command, a terminal opens the menu and other callers get the list. SPEC is a catalog spec ID; people may type a unique prefix of at least 12 characters.
@@ -478,9 +498,9 @@ def main(argv=None):
     if "-h" in argv or "--help" in argv:
         emit_help(HELP)
         return 0
-    parser = argparse.ArgumentParser(prog="pulsar models", usage="pulsar models [list|show SPEC] [--json]",
+    parser = argparse.ArgumentParser(prog="pulsar models", usage="pulsar models list|show SPEC|results SPEC",
                                      add_help=False)
-    parser.add_argument("command", choices=("list", "show"), nargs="?", default="list")
+    parser.add_argument("command", choices=("list", "show", "results"), nargs="?", default="list")
     parser.add_argument("spec_id", nargs="?")
     parser.add_argument("--json", action="store_true")
     # Internal: model-storage.sh and tests select the catalog and state roots.
@@ -489,15 +509,26 @@ def main(argv=None):
                         help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
-        if args.command == "show" and not args.spec_id:
-            raise StorageError("show requires one complete spec id")
+        if args.command in ("show", "results") and not args.spec_id:
+            raise StorageError(f"{args.command} requires one complete spec id")
         if args.spec_id:
             prefix_hint(args.repo_root, args.spec_id)
+        if args.command == "results":
+            if args.json:
+                raise StorageError("models results is a human report; run ./pulsar models results SPEC to find each evidence summary --json command")
+            from .published_results import collect, render as render_results
+            spec = load_spec(Path(args.repo_root) / "releases" / f"{checked_id(args.spec_id)}.json")
+            if spec["spec_id"] != args.spec_id:
+                raise StorageError("catalog filename and spec identity differ")
+            render_results(collect(args.repo_root, args.spec_id), args.spec_id)
+            return 0
         rows = entries(args.repo_root, Store(args.state_root), spec_id=args.spec_id)
         if args.json:
             print(json.dumps({"schema_version": 1, "kind": "pulsar-model-catalog", "entries": rows}, sort_keys=True))
         else:
-            render(rows, details=args.command == "show", names=NodeNames.saved(args.repo_root))
+            from .published_results import collect
+            published = {row["spec_id"]: collect(args.repo_root, row["spec_id"]) for row in rows} if args.command == "show" else None
+            render(rows, details=args.command == "show", names=NodeNames.saved(args.repo_root), published=published)
         return 0
     except (StorageError, ValueError, OSError, KeyError, TypeError) as exc:
         print(f"error: catalog: {exc}", file=sys.stderr)

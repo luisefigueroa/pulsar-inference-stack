@@ -87,7 +87,7 @@ def spec_position(command: str, args: list[str]) -> tuple[int | None, str | None
         return (0 if args and not args[0].startswith("-") else None), None
     if command == "models":
         # models check forwards to the model parser, so flags may precede the spec.
-        return (_first_positional(args, 1) if args[:1] in (["show"], ["check"]) else None), None
+        return (_first_positional(args, 1) if args[:1] in (["show"], ["check"], ["results"]) else None), None
     if command == "model" and args:
         operation = args[0]
         start = 2 if operation == "archive" else 1

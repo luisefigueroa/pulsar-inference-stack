@@ -190,8 +190,12 @@ cmd_enroll() {
   print_hanging "  Effect    " \
     "Saves confirmed SSH identities and endpoint configuration. If topology identity changes, prepare the selected model again before serving."
   if [ "$yes" = 0 ]; then
-    if ! confirm 'Enroll these SSH identities?'; then
+    if confirm 'Enroll these SSH identities?'; then
+      :
+    else
+      local confirmation_rc=$?
       log "not enrolled"
+      [ "$confirmation_rc" -ne 130 ] || return 130
       return 0
     fi
   fi

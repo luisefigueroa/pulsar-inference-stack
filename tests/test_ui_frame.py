@@ -23,7 +23,7 @@ class UiFrame(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             f"printf '%s NO_COLOR=%s\\n' \"$*\" \"${{NO_COLOR:-}}\" >> '{self.gum_log}'\n"
             "if [ \"$1\" = style ]; then cat; exit 0; fi\n"
-            "if [ \"$1\" = input ]; then printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
+            "if [ \"$1\" = input ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
             # choose prints the line GUM_CHOICE names (default: the first) or exits GUM_RC.
             "if [ \"$1\" = choose ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; "
             "sed -n \"$(( ${GUM_CHOICE:-0} + 1 ))p\"; exit 0; fi\n"
@@ -133,6 +133,8 @@ class UiFrame(unittest.TestCase):
             with self.subTest(gum_rc=rc):
                 result = self.run_ui('choose_index "Pick" one two || echo "rc=$?"', GUM_RC=rc)
                 self.assertEqual(result.stdout, f"rc={expected}\n")
+                result = self.run_ui('prompt_input "Path" || echo "rc=$?"', GUM_RC=rc)
+                self.assertEqual(result.stdout, f"rc={expected}\n")
         result = self.run_ui('confirm "Sure?" || echo "rc=$?"', GUM_RC="130")
         self.assertEqual(result.stdout, "rc=130\n")
 
@@ -218,6 +220,7 @@ class MenuEntries(unittest.TestCase):
             ("models",): "error: the catalog menu needs an interactive terminal with Gum; "
                          "use: pulsar models list | show SPEC | check SPEC",
             ("models", "menu"): "error: the catalog menu needs",
+            ("inventory", "menu"): "error: the inventory menu needs an interactive terminal with Gum",
             ("wizard",): "error: the catalog menu needs",
             ("topology", "menu"): "error: the topology menu needs an interactive terminal with Gum; "
                                   "use: pulsar topology show | check | setup | detect | configure",

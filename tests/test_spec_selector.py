@@ -52,6 +52,7 @@ class SpecSelector(unittest.TestCase):
             ("start", (OTHER[:12], "--dry-run")): (0, None),
             ("stop", ("--all",)): (None, None),
             ("models", ("show", OTHER[:12])): (1, None),
+            ("models", ("results", OTHER[:12])): (1, None),
             ("models", ("list",)): (None, None),
             ("models", ("check", "--node", "n1", OTHER[:12])): (3, None),
             ("models", ("show", "--json")): (None, None),
