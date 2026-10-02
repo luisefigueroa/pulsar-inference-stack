@@ -447,7 +447,9 @@ if os.path.basename(sys.argv[0]) == "pulsar":
         rc = fixture.get("plan_rc", 0)
     elif sys.argv[1:3] == ["image", "stage"]:
         rc = fixture.get("stage_rc", 0)
-elif "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
+elif "--plan" in sys.argv:
+    print(open(os.environ["PLAN_FILE"]).read())
+    rc = int(os.environ.get("PLAN_RC", str(rc)))
 elif sys.argv[1] == "check":
     rc = int(os.environ.get("CHECK_RC", str(rc)))
     observation = json.loads(os.environ["CHECK_OBSERVATION"])
@@ -458,12 +460,16 @@ elif sys.argv[1] == "check":
             "schema_version": 1, "kind": "pulsar-saved-observation", "spec_id": spec,
             "checked_at": now(), **observation})
         print(json.dumps({"spec_id": spec, "observation": observation}))
+if os.environ.get("ACTION_SIGNAL_PARENT") == "1" and "--plan" not in sys.argv:
+    # Only the fixture's waiting Bash process receives this test signal.
+    import signal
+    os.kill(os.getppid(), signal.SIGINT)
 raise SystemExit(rc)
 """
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
-                 menu_args=(), additional_specs=(), empty_catalog=False):
+                 menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False):
         spec = self.add_spec(guarded=guarded)
         if review is not None:
             spec["review"] = review
@@ -491,6 +497,8 @@ raise SystemExit(rc)
                    MENU_ANSWERS=str(files["answers"]), MENU_CONFIRMS=str(files["confirms"]),
                    CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),
                    ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc),
+                   PLAN_RC=str(action_rc if plan_rc is None else plan_rc),
+                   ACTION_SIGNAL_PARENT="1" if interrupt_parent else "0",
                    CHECK_OBSERVATION=json.dumps(check_observation),
                    CHECK_RC=str(action_rc if check_rc is None else check_rc),
                    LAUNCH_FIXTURE=json.dumps({"image": spec["recipe"]["image_digest"], **(launch or {})}))
@@ -609,6 +617,44 @@ raise SystemExit(rc)
         self.assertIn("(exit 1)", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
 
+    def test_interrupted_storage_keeps_partial_effects_unknown_and_suggests_recheck(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"],
+            action_rc=130, plan_rc=0, with_home=True,
+            observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Interruption requested: Restore", text)
+        self.assertIn("not confirmed cleanup or partial effects", text)
+        self.assertIn("Retained staging may be recoverable", text)
+        self.assertNotIn("Restore finished", text)
+        last = choices.rsplit("Choose one operation\n", 1)[1]
+        self.assertIn("Check now (suggested)", last)
+        self.assertNotIn("Start (suggested)", last)
+        self.assertEqual(len(actions), 2)  # preview and requested action only
+
+    def test_interrupted_stop_suggests_live_status_before_any_retry(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"], action_rc=130)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Live status (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
+        self.assertIn("Use Live status", " ".join(result.stdout.split()))
+        self.assertEqual(len(actions), 1)
+
+    def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], interrupt_parent=True,
+            check_observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Interruption requested: Check now", text)
+        self.assertIn("command exit 0", text)
+        self.assertNotIn("✓ Check now finished", text)
+        self.assertNotIn("the last check did not record an observation", text)
+        self.assertIn("rerun before relying on saved observations", text)
+        self.assertIn("Check now (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
+        self.assertEqual(len(actions), 1)
+
     def test_restore_previews_the_plan_before_a_specific_confirmation(self):
         spec, result, actions, _, questions = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -650,6 +696,8 @@ raise SystemExit(rc)
         last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("Prepare (suggested)", last_options)
         self.assertNotIn("Check now (suggested)", last_options)
+        self.assertIn("saved an observation with findings", result.stdout)
+        self.assertNotIn("Check now failed", result.stdout)
 
     def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
         spec, result, actions, _, _ = self.run_menu(
@@ -689,7 +737,7 @@ raise SystemExit(rc)
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],
                          "views": [], "actions": []}, "incomplete_preparations": []}
         _, result, actions, _, questions = self.run_menu(
-            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back"], plan=plan)
+            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"], plan=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([a[-2:] for a in actions], [["--plan", "--json"]])
         self.assertIn("prepared copy is pinned", result.stdout)
@@ -701,6 +749,19 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [])
         self.assertEqual(choices.count("Choose one operation\n"), 2)
+
+    def test_escape_from_a_storage_action_returns_to_its_submenu(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Storage and archive…", "Move home", "<esc>", "Back", "Back", "Back"], with_home=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(choices.count("Storage and archive\n"), 2)
+
+    def test_ctrl_c_from_a_submenu_action_exits_without_mutation(self):
+        _, result, actions, _, _ = self.run_menu(
+            ["#0", "Storage and archive…", "Move home", "<ctrl-c>"], with_home=True)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(actions, [])
 
     def test_ctrl_c_at_a_prompt_leaves_the_menu(self):
         _, result, actions, _, _ = self.run_menu(["#0", "<ctrl-c>"])

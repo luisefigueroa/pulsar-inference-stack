@@ -312,8 +312,12 @@ echo
 
 if [ "$YES" != 1 ]; then
   # ui.sh was loaded, and Gum found, before discovery started.
-  if ! confirm "Save this cluster membership?"; then
+  if confirm "Save this cluster membership?"; then
+    :
+  else
+    confirmation_rc=$?
     log "aborted — topology not modified"
+    [ "$confirmation_rc" -ne 130 ] || exit 130
     exit 0
   fi
 fi

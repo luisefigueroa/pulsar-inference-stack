@@ -42,13 +42,14 @@ elapsed_text() {
 }
 
 # run_operation ACTION LABEL SPEC MODEL COMMAND...
-# Runs one explicit operation and reports its outcome. Ctrl-C reaches the
-# operation, which stops through its own cleanup; the menu then continues.
+# Runs one explicit operation and reports its outcome. The command owns
+# interruption and cleanup; the menu cannot independently confirm its effects.
 run_operation() {
-  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result=""
+  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" recovery
   shift 4
   [ "$action" != check ] || result=$(mktemp)
-  printf '\n→ %s %s. Ctrl-C stops it and returns to this menu.\n' "$label" "$model"
+  printf '\n→ %s %s. Ctrl-C requests interruption; this menu returns when the command exits.\n' "$label" "$model" \
+    | python3 -m scripts.terminal_format
   trap 'interrupted=1' INT
   set +e
   if [ "$action" = check ]; then
@@ -73,11 +74,31 @@ run_operation() {
   fi
   local took
   took=$(elapsed_text $((SECONDS - started)))
-  if [ "$rc" -eq 0 ]; then
+  if [ "$interrupted" = 1 ] || [ "$rc" -eq 130 ]; then
+    interrupted=1
+    recovery='Rerun this inspection when ready; its partial output may be incomplete.'
+    case "$action" in
+      acquire|restore|prepare|move|archive|pin|unpin|purge|remove)
+        LAST_RESULT[$spec]=storage-interrupted
+        recovery='Use Check now to inspect current files before retrying. Retained staging may be recoverable by the same operation.' ;;
+      start|stop)
+        LAST_RESULT[$spec]=service-interrupted
+        recovery='Use Live status to inspect the service before retrying Start or Stop.' ;;
+      image-stage)
+        LAST_RESULT[$spec]=image-interrupted
+        recovery='Use Launch options → Check pinned image before retrying staging.' ;;
+      check) LAST_RESULT[$spec]=check-interrupted ;;
+    esac
+    {
+      printf 'Interruption requested: %s for %s after %s (command exit %s).\n' "$label" "$model" "$took" "$rc"
+      printf 'This menu has not confirmed cleanup or partial effects. Review the command output above.\n'
+      printf '%s\n' "$recovery"
+    } | python3 -m scripts.terminal_format
+  elif [ "$rc" -eq 0 ]; then
     printf '✓ %s finished for %s in %s\n' "$label" "$model" "$took"
     case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
-  elif [ "$interrupted" = 1 ] || [ "$rc" -eq 130 ]; then
-    printf '✗ %s stopped by Ctrl-C for %s after %s; details above\n' "$label" "$model" "$took"
+  elif [ "$action" = check ] && [ "${LAST_RESULT[$spec]:-}" = check ]; then
+    printf '→ %s saved an observation with findings for %s in %s (command exit %s).\n' "$label" "$model" "$took" "$rc"
   else
     printf '✗ %s failed for %s (exit %d) after %s; details above\n' "$label" "$model" "$rc" "$took"
   fi
@@ -117,15 +138,22 @@ stage_catalog_image() {
   case "$choice" in
     0) mode=(--pull); verb=Pull; mode_name=pull-exact-digest ;;
     1) verb=Copy; mode_name=stream-from-controller ;;
-    *) return 0 ;;
+    *) return 1 ;;
   esac
   require_cluster_nodes "$RECIPE_NODES" >/dev/null || return 0
   for index in "${!CLUSTER_NODE_IDS[@]}"; do names+=(--node-name "$index=$(human_node_name "$index")"); done
   plan=$(mktemp) || return 1
-  if ! spin "Planning pinned image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
+  if spin "Planning pinned image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
       "${mode[@]}" --plan --json >"$plan"; then
+    :
+  else
+    rc=$?
     rm -f "$plan"
-    printf '✗ Image staging preview failed; nothing was staged.\n'
+    if [ "$rc" -eq 130 ]; then
+      printf 'Image preview interrupted; staging was not requested. Review command output for cleanup status.\n'
+    else
+      printf '✗ Image staging preview failed; nothing was staged.\n'
+    fi
     return 0
   fi
   if ! printf '%s' "$ROW_JSON" | catalog_menu image-plan --spec-id "$spec" --plan-file "$plan" \
@@ -135,7 +163,7 @@ stage_catalog_image() {
   fi
   rm -f "$plan"
   confirm "$verb the pinned image for $RECIPE_MODEL on the nodes shown? No service starts or is replaced." no \
-    || { rc=$?; echo 'Nothing was staged.'; [ "$rc" -ne 130 ] || return 130; return 0; }
+    || { rc=$?; echo 'Nothing was staged.'; return "$rc"; }
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }
 
@@ -148,9 +176,16 @@ plan_and_confirm() {
   local -a render_args=(--operation "$1")
   [ "$1" != archive ] || render_args+=(--archive-action create)
   plan=$(mktemp)
-  if ! spin "Planning ${label,,}…" "$REPO_DIR/scripts/model-library.sh" "$@" --plan --json >"$plan"; then
+  if spin "Planning ${label,,}…" "$REPO_DIR/scripts/model-library.sh" "$@" --plan --json >"$plan"; then
+    :
+  else
+    rc=$?
     rm -f "$plan"
-    printf '✗ Planning %s failed; nothing changed.\n' "${label,,}"
+    if [ "$rc" -eq 130 ]; then
+      printf 'Preview interrupted; %s was not requested. Review command output for cleanup status.\n' "${label,,}"
+    else
+      printf '✗ Planning %s failed; nothing changed.\n' "${label,,}"
+    fi
     return 1
   fi
   echo
@@ -200,17 +235,17 @@ perform() {
     image-stage) stage_catalog_image "$label" "$spec" "${args[@]}" ;;
     start|stop)
       question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
-      confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; return 0; }
+      confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
       if [ "$action" = start ]; then
         start_catalog_spec "$label" "$spec" "${args[@]}"
       else
         run_operation stop "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/down.sh" "$spec" "${args[@]}"
       fi ;;
     archive)
-      plan_and_confirm archive "$label" "$spec" archive create "$spec" "${args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+      plan_and_confirm archive "$label" "$spec" archive create "$spec" "${args[@]}" || return $?
       run_operation archive "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive create "$spec" "${args[@]}" --yes ;;
     *)
-      plan_and_confirm "$action" "$label" "$spec" "$action" "$spec" "${args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+      plan_and_confirm "$action" "$label" "$spec" "$action" "$spec" "${args[@]}" || return $?
       run_operation "$action" "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" "$action" "$spec" "${args[@]}" --yes ;;
   esac
 }
@@ -276,15 +311,27 @@ recipe_menu() {
     group="${labels[$index]}"
     case "$group" in
       "Launch options…")
-        index=$(choose_index "Launch options for the selected catalog spec" "${launch_labels[@]}" "Back") \
-          || { rc=$?; [ "$rc" -ne 130 ] || return 130; continue; }
-        [ "$index" -lt "${#launch[@]}" ] || continue
-        perform "${launch[$index]}" "${launch_labels[$index]}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+        while true; do
+          index=$(choose_index "Launch options for the selected catalog spec" "${launch_labels[@]}" "Back") \
+            || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
+          [ "$index" -lt "${#launch[@]}" ] || break
+          if perform "${launch[$index]}" "${launch_labels[$index]}" "$spec"; then break
+          else
+            rc=$?; [ "$rc" -ne 130 ] || return 130
+            [ "$rc" -eq 1 ] || break
+          fi
+        done ;;
       "Storage and archive…")
-        index=$(choose_index "Storage and archive" "${storage_labels[@]}" "Back") \
-          || { rc=$?; [ "$rc" -ne 130 ] || return 130; continue; }
-        [ "$index" -lt "${#storage[@]}" ] || continue
-        perform "${storage[$index]}" "${storage_labels[$index]}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+        while true; do
+          index=$(choose_index "Storage and archive" "${storage_labels[@]}" "Back") \
+            || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
+          [ "$index" -lt "${#storage[@]}" ] || break
+          if perform "${storage[$index]}" "${storage_labels[$index]}" "$spec"; then break
+          else
+            rc=$?; [ "$rc" -ne 130 ] || return 130
+            [ "$rc" -eq 1 ] || break
+          fi
+        done ;;
       "Show details") catalog show "$spec" || true ;;
       "Published results") catalog results "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       "Compare catalog specs") compare_catalog_spec "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;

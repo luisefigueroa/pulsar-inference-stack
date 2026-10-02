@@ -40,6 +40,7 @@ LABELS = {
 # Operations that change model files or records; a success makes the saved
 # check out of date until the next Check now.
 MUTATIONS = frozenset({"acquire", "restore", "prepare", "move", "archive", "pin", "unpin", "purge", "remove"})
+INTERRUPTIONS = frozenset({"storage-interrupted", "service-interrupted", "image-interrupted", "check-interrupted"})
 STALE_SECONDS = 24 * 3600
 ARCHIVE_LOCATION = {"configured", "disabled", "not-configured"}
 # Why Start is left out when the catalog says this Stack cannot start the spec,
@@ -138,6 +139,14 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
+    if after == "check-interrupted":
+        return "check", "check interruption requested; rerun before relying on saved observations"
+    if after == "storage-interrupted":
+        return "check", "storage outcome unconfirmed; inspect current files before retrying"
+    if after == "service-interrupted":
+        return "status", "service outcome unconfirmed; current service state is unknown"
+    if after == "image-interrupted" and "image-check" in offered:
+        return "image-check", "staging outcome unconfirmed; inspect the pinned image before retrying"
     if after == "check-failed":
         return "check", "the last check did not record an observation"
     if after == "start":
@@ -524,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     view.add_argument("--repo-root", default=ROOT)
     view.add_argument("--read-only", action="store_true")
-    view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check", "check-failed"}))
+    view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))

@@ -1,4 +1,4 @@
-"""Confirmation behavior against the bundled Gum, without operator actions."""
+"""Prompt behavior against the bundled Gum, without operator actions."""
 import errno
 import fcntl
 import os
@@ -20,7 +20,7 @@ GUM = ROOT / "third_party/gum/linux-arm64/gum"
 @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
                      "the bundled Gum requires Linux arm64")
 class BundledGumConfirmation(unittest.TestCase):
-    def confirm(self, keys, default=None):
+    def confirm(self, keys, default=None, *, primitive="confirm"):
         self.assertTrue(GUM.is_file() and os.access(GUM, os.X_OK), "bundled Gum is unavailable")
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PULSAR_", "GUM_")) and key not in ("BASH_ENV", "ENV")}
@@ -34,6 +34,10 @@ else
   exit "$?"
 fi
 '''
+        if primitive == "input":
+            script = script.replace('confirm "Confirm fixture action?" "$@"', 'prompt_input "Confirm fixture action?"')
+        elif primitive == "choose":
+            script = script.replace('confirm "Confirm fixture action?" "$@"', 'choose_index "Confirm fixture action?" one two')
         master, slave = pty.openpty()
         process = None
         try:
@@ -121,6 +125,20 @@ fi
 
     def test_ctrl_c_preserves_interrupt_status(self):
         self.assert_confirmation(b"\x03", 130)
+
+    def test_input_and_selection_preserve_escape_and_ctrl_c(self):
+        for primitive in ("input", "choose"):
+            for keys, expected in ((b"\x1b", 1), (b"\x03", 130)):
+                with self.subTest(primitive=primitive, keys=keys):
+                    code, output = self.confirm(keys, primitive=primitive)
+                    self.assertEqual(code, expected, output)
+                    self.assertNotIn("ACTION_CONFIRMED", output)
+
+    def test_input_keeps_the_submitted_value(self):
+        code, output = self.confirm(b"fixture-value\r", primitive="input")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fixture-value", output)
+        self.assertIn("ACTION_CONFIRMED", output)
 
 
 if __name__ == "__main__":

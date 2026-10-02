@@ -51,26 +51,34 @@ case "$action" in
       echo 'No saved membership. Detecting candidates without saving first.'
       "$0" detect "${setup_detect_flags[@]}" || exit $?
       "$0" configure "${setup_configure_flags[@]}" || exit $?
-    elif ! "$0" show >/dev/null 2>&1; then
-      "$0" show || true
+    elif "$0" show >/dev/null 2>&1; then
+      :
+    else
+      rc=$?; [ "$rc" -ne 130 ] || exit 130
+      "$0" show || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       echo 'Saved membership is invalid. Running diagnostic discovery without replacing it.'
-      "$0" detect "${setup_detect_flags[@]}" || true
+      "$0" detect "${setup_detect_flags[@]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       echo 'Saved membership was not changed. Inspect it before explicit topology configure.'
       exit 1
     fi
     # A cancelled configuration, invalid membership or failed enrollment cannot
     # fall through to a success message or trigger a model operation.
     "$0" show || exit $?
-    if ! "$REPO_DIR/scripts/topology-ssh-trust.sh" check; then
+    if "$REPO_DIR/scripts/topology-ssh-trust.sh" check; then
+      :
+    else
+      rc=$?; [ "$rc" -ne 130 ] || exit 130
       echo 'SSH enrollment is missing or needs attention. Review the identities before confirming enrollment.'
       "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll || exit $?
       "$REPO_DIR/scripts/topology-ssh-trust.sh" check || exit $?
     fi
     if "$0" check; then
       exit 0
+    else
+      rc=$?; [ "$rc" -ne 130 ] || exit 130
     fi
     echo 'Saved membership is not ready. Running diagnostic discovery without saving.'
-    "$0" detect "${setup_detect_flags[@]}" || true
+    "$0" detect "${setup_detect_flags[@]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
     echo 'Saved membership was not changed. Review discovery before explicit topology configure.'
     exit 1 ;;
   menu)

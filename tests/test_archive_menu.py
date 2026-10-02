@@ -15,11 +15,18 @@ class ArchiveMenu(unittest.TestCase):
         self.root = Path(self.tmp.name)
         (self.root / "releases").mkdir()
         self.confirm_log = self.root / "confirm.log"
+        self.choose_log = self.root / "choose.log"
         self.ui = self.root / "ui.sh"
         self.ui.write_text(r'''
 require_gum() { :; }
-choose_index() { printf '0\n'; }
-prompt_input() { printf '%s\n' "$ARCHIVE_PATH"; }
+choose_index() {
+  printf '%s\n' "$1" >> "$CHOOSE_LOG"
+  local n value
+  n=$(wc -l < "$CHOOSE_LOG")
+  value=$(printf '%s' "$CHOICES" | cut -d, -f"$n")
+  case "$value" in esc) return 1 ;; ctrl-c) return 130 ;; *) printf '%s\n' "${value:-2}" ;; esac
+}
+prompt_input() { [ "${INPUT_RC:-0}" = 0 ] || return "$INPUT_RC"; printf '%s\n' "$ARCHIVE_PATH"; }
 emit_error() { cat >&2; }
 confirm() {
   printf '%s\n' "$1" >> "$CONFIRM_LOG"
@@ -27,7 +34,9 @@ confirm() {
 }
 ''')
 
-    def run_menu(self, path, confirm_rc=1):
+    def run_menu(self, path, confirm_rc=1, *, choices="0,2", input_rc=0):
+        self.choose_log.unlink(missing_ok=True)
+        self.confirm_log.unlink(missing_ok=True)
         return subprocess.run(
             ["bash", str(ROOT / "scripts/configure-archive.sh"), "menu"],
             env={
@@ -38,11 +47,15 @@ confirm() {
                 "ARCHIVE_PATH": str(path),
                 "CONFIRM_LOG": str(self.confirm_log),
                 "CONFIRM_RC": str(confirm_rc),
+                "CHOOSE_LOG": str(self.choose_log),
+                "CHOICES": choices,
+                "INPUT_RC": str(input_rc),
                 "PYTHONDONTWRITEBYTECODE": "1",
             },
             cwd=str(ROOT),
             text=True,
             capture_output=True,
+            timeout=15,
         )
 
     def test_missing_directory_is_explained_and_not_created(self):
@@ -55,6 +68,7 @@ confirm() {
         self.assertNotIn("Save this archive location", self.confirm_log.read_text())
         self.assertFalse(missing.exists())
         self.assertFalse((self.root / ".env").exists())
+        self.assertEqual(self.choose_log.read_text().splitlines(), ["Archive storage"] * 2)
 
     def test_without_gum_the_menu_names_commands_and_changes_nothing(self):
         env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "GUM"))}
@@ -77,6 +91,46 @@ confirm() {
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("Save this archive location", self.confirm_log.read_text())
         self.assertIn(str(archive), (self.root / ".env").read_text())
+        self.assertEqual(self.choose_log.read_text().splitlines(), ["Archive storage"] * 2)
+
+    def test_ctrl_c_at_each_archive_prompt_preserves_status_and_configuration(self):
+        archive = self.root / "archives"
+        archive.mkdir()
+        config = self.root / ".env"
+        original = "# preserve unrelated configuration\nOTHER=example\n"
+        config.write_text(original)
+        cases = [dict(choices="ctrl-c"), dict(input_rc=130), dict(confirm_rc=130),
+                 dict(choices="1", confirm_rc=130)]
+        for options in cases:
+            with self.subTest(options=options):
+                result = self.run_menu(archive, **options)
+                self.assertEqual(result.returncode, 130, result.stderr)
+                self.assertEqual(config.read_text(), original)
+                self.assertEqual(len(self.choose_log.read_text().splitlines()), 1)
+        result = self.run_menu(self.root / "absent", confirm_rc=130)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(config.read_text(), original)
+
+    def test_escape_and_decline_return_to_archive_menu(self):
+        archive = self.root / "archives"
+        archive.mkdir()
+        for options in (dict(input_rc=1), dict(confirm_rc=1), dict(choices="1,2", confirm_rc=1)):
+            with self.subTest(options=options):
+                result = self.run_menu(archive, **options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(len(self.choose_log.read_text().splitlines()), 2)
+                self.assertFalse((self.root / ".env").exists())
+
+    def test_disabling_returns_to_archive_menu_without_deleting_archives(self):
+        archive = self.root / "archives"
+        archive.mkdir()
+        sentinel = archive / "existing-content"
+        sentinel.write_text("keep")
+        result = self.run_menu(archive, confirm_rc=0, choices="1,2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PULSAR_COLD_ROOT=', (self.root / ".env").read_text())
+        self.assertEqual(sentinel.read_text(), "keep")
+        self.assertEqual(len(self.choose_log.read_text().splitlines()), 2)
 
 
 if __name__ == "__main__":

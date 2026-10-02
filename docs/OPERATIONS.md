@@ -158,8 +158,8 @@ Model files, pins and archives are retained. The ordinary `inventory` and
 `inventory --json` commands remain read-only reports.
 
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
-until **Back** or **Exit**; each operation returns to the same recipe with a
-one-line result. It lists operations in lifecycle order and keeps storage
+until **Back** or **Exit**; each operation returns to the same recipe with its
+result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
 **Download** remains available when a home is recorded, and **Restore** remains
@@ -178,9 +178,26 @@ goes to the default destination (the deployment overlay's placement, or this
 node), while the menu asks for a node. The recipe
 list labels show the same short saved state. Storage mutations show
 the operation's own `--plan` preview before a confirmation that names the
-model, nodes and consequence; a blocked plan ends without a question. Esc
-steps back one level. Ctrl-C at a prompt leaves the menu; during an operation
-it stops that operation and returns to the menu.
+model, nodes and consequence; a blocked plan ends without a question. **Back**
+or Esc leaves the current menu or cancels an action prompt to its containing
+menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
+configuration also stays open after a saved or declined change until **Back**.
+Ctrl-C at a choose, input or confirmation prompt exits the menu with status
+`130`, including membership and SSH enrollment confirmations.
+
+During a catalog operation, Ctrl-C requests interruption from the existing
+command; the menu resumes when that command exits. The menu does not infer
+confirmed cleanup, absence of a service, or unchanged files from the exit code.
+It labels the interruption even when a concurrent command completion returned
+zero, retains the command's output, and gives an explicit next inspection:
+**Check now** for storage, **Live status** for Start/Stop, or **Check pinned image**
+for image staging. These are suggestions, not automatic actions. Existing
+backend cleanup and retry behavior continues to own retained staging and service
+resources. Other command menus retain their command's interrupt exit status.
+
+A nonzero **Check now** that saved an observation is reported as recorded
+findings, rather than an execution failure. Missing or changed files can be a
+completed check's result; an interrupted or unrecorded check still needs a retry.
 
 A recent check that found missing or changed files suggests acquisition,
 restoration or preparation even when it recorded blockers. Unknown or stale

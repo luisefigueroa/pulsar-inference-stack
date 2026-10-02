@@ -21,8 +21,9 @@ class LaunchMenu(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         return fixture.run_menu(*args, **kwargs)
 
-    def shortcut(self, label, *extra, **kwargs):
-        return self.run_menu(["#0", "Launch options…", label, "fixture-host", *extra, "Back", "Back"], **kwargs)
+    def shortcut(self, label, *extra, cancelled=False, **kwargs):
+        back = ["Back"] * (3 if cancelled else 2)
+        return self.run_menu(["#0", "Launch options…", label, "fixture-host", *extra, *back], **kwargs)
 
     def test_readiness_uses_existing_dry_run_without_permissions(self):
         spec, result, actions, _, questions = self.shortcut("Check launch prerequisites")
@@ -57,17 +58,18 @@ class LaunchMenu(unittest.TestCase):
 
     def test_declined_staging_does_not_apply(self):
         _, result, actions, _, _ = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", confirms=["no"])
+            "Stage pinned image", "Pull pinned image from registry", confirms=["no"], cancelled=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0][-2:], ["--plan", "--json"])
         self.assertIn("Nothing was staged", result.stdout)
 
     def test_back_from_staging_does_not_run_a_command(self):
-        _, result, actions, _, questions = self.shortcut("Stage pinned image", "Back")
+        _, result, actions, choices, questions = self.shortcut("Stage pinned image", "Back", cancelled=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [])
         self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Launch options for the selected catalog spec\n"), 2)
 
     def test_failed_preview_does_not_offer_confirmation(self):
         _, result, actions, _, questions = self.shortcut(
@@ -76,6 +78,25 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
         self.assertIn("nothing was staged", result.stdout)
+
+    def test_interrupted_preview_does_not_request_staging_or_claim_completion(self):
+        _, result, actions, _, questions = self.shortcut(
+            "Stage pinned image", "Pull pinned image from registry", launch={"plan_rc": 130})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(questions, "")
+        self.assertIn("Image preview interrupted; staging was not requested", result.stdout)
+
+    def test_interrupted_staging_suggests_inspection_without_automatic_retry(self):
+        _, result, actions, _, questions = self.shortcut(
+            "Stage pinned image", "Pull pinned image from registry", confirms=["yes"], launch={"stage_rc": 130})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 2)
+        self.assertEqual(len(questions.splitlines()), 1)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Interruption requested", text)
+        self.assertIn("Suggested: Check pinned image", text)
+        self.assertNotIn("Stage pinned image finished", text)
 
     def test_already_present_image_does_not_offer_staging(self):
         _, result, actions, _, questions = self.shortcut(
@@ -119,11 +140,13 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(len(questions.splitlines()), 1)
 
     def test_interrupted_start_does_not_offer_a_retry(self):
-        _, _, actions, _, questions = self.run_menu(
+        _, result, actions, choices, questions = self.run_menu(
             ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes"],
             launch={"start_rc": 130, "blockers": ["memory_warning"]})
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(questions.splitlines()), 1)
+        self.assertIn("Live status (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
+        self.assertIn("not confirmed cleanup or partial effects", " ".join(result.stdout.split()))
 
     def test_ctrl_c_at_warning_confirmation_exits_without_retry(self):
         _, result, actions, _, _ = self.run_menu(
