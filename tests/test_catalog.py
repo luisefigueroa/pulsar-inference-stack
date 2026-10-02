@@ -428,7 +428,26 @@ confirm() {
 import json,os,sys
 open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")
 rc = int(os.environ.get("ACTION_RC", "0"))
-if "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
+if os.path.basename(sys.argv[0]) == "pulsar":
+    fixture = json.loads(os.environ["LAUNCH_FIXTURE"])
+    if sys.argv[1] == "start":
+        mode = "dry" if "--dry-run" in sys.argv else ("accept" if "--accept-memory-warn" in sys.argv else "start")
+        rc = fixture.get(mode + "_rc", 0)
+        if os.environ.get("PULSAR_START_BLOCKERS_FILE"):
+            with open(os.environ["PULSAR_START_BLOCKERS_FILE"], "w") as stream:
+                for code in fixture.get("blockers", []):
+                    stream.write(json.dumps({"field": "blocker", "blocker": code, "stage": "check"}) + "\\n")
+    elif sys.argv[1:3] == ["image", "stage"] and "--plan" in sys.argv:
+        state = fixture.get("image_state", "missing")
+        plan = {"schema_version": 1, "kind": "pulsar-image-check", "operation": "stage-image",
+                "model": sys.argv[3], "image": fixture["image"], "nodes": 1,
+                "mode": "pull-exact-digest" if "--pull" in sys.argv else "stream-from-controller",
+                "ranks": [{"rank": 0, "topology_index": 0, "state": state}]}
+        print(json.dumps({"schema_version": 1, "ok": True, "result": plan}))
+        rc = fixture.get("plan_rc", 0)
+    elif sys.argv[1:3] == ["image", "stage"]:
+        rc = fixture.get("stage_rc", 0)
+elif "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
 elif sys.argv[1] == "check":
     rc = int(os.environ.get("CHECK_RC", str(rc)))
     observation = json.loads(os.environ["CHECK_OBSERVATION"])
@@ -443,7 +462,7 @@ raise SystemExit(rc)
 """
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
-                 with_home=False, observation=None, check_observation=None, check_rc=None):
+                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None):
         spec = self.add_spec(guarded=guarded)
         if with_home:
             self.put_home(spec)
@@ -455,6 +474,8 @@ raise SystemExit(rc)
         (scripts / "ui.sh").write_text(self.UI)
         for name in ("model-library.sh", "status.sh", "up.sh", "down.sh"):
             (scripts / name).write_text(self.ACTION); (scripts / name).chmod(0o700)
+        (shell_root / "pulsar").write_text(self.ACTION)
+        (shell_root / "pulsar").chmod(0o700)
         files = {name: self.root / name for name in ("answers", "confirms", "choices.log", "confirm.log", "action.log", "plan.json")}
         files["answers"].write_text("\n".join(answers) + "\n")
         files["confirms"].write_text("\n".join(confirms) + "\n")
@@ -465,7 +486,8 @@ raise SystemExit(rc)
                    CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),
                    ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc),
                    CHECK_OBSERVATION=json.dumps(check_observation),
-                   CHECK_RC=str(action_rc if check_rc is None else check_rc))
+                   CHECK_RC=str(action_rc if check_rc is None else check_rc),
+                   LAUNCH_FIXTURE=json.dumps({"image": spec["recipe"]["image_digest"], **(launch or {})}))
         env.pop("PULSAR_COLD_ROOT", None)
         if archive_root is not None:
             env["PULSAR_COLD_ROOT"] = archive_root
@@ -607,7 +629,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Start", "Stop", "Live status",
-                                 "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Suggested: Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
@@ -619,7 +641,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
-                                 "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
 

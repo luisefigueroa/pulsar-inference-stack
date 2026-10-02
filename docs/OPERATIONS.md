@@ -94,8 +94,8 @@ files; these operations' live previews decide whether recovery or reuse is
 possible. For a recipe with required snapshots, every snapshot remains
 selectable for recovery, with unregistered homes listed first.
 **Start** is also left out for a spec with a serving guard, which this Stack
-cannot run; `models show` marks it `Start not supported by this Stack`, and no
-suggested step leads toward Start.
+cannot run through ordinary start. `models show` marks it
+`Start not supported by this Stack`, and no suggested step leads toward Start.
 One **suggested** next step comes from the same saved records and this menu
 session; it is a starting point, not a readiness check. `models list` and
 `models show` print the same step as a command. A download or restore names
@@ -113,6 +113,25 @@ restoration or preparation even when it recorded blockers. Unknown or stale
 file observations still suggest **Check now**. A check that records a result
 clears the previous operation's pending check; one that could not record a
 result does not turn earlier readiness into a new Start suggestion.
+
+**Launch options** provides shortcuts for the selected published catalog spec:
+
+- **Check launch prerequisites** runs the existing `start --dry-run` checks.
+  It does not launch or stage images. Its output identifies checks, such as the
+  multi-node preflight, that will run only during an actual Start.
+- **Check pinned image** runs `image check` on the selected serving nodes.
+- **Stage pinned image** previews `image stage` before confirmation. Choose
+  between pulling the exact catalog digest from its registry and copying the
+  pinned image from this node. Copying never silently falls back to a pull.
+  Staging does not start or replace a service or select a different image.
+
+**Start** continues to run its existing checks. If it refuses the start only
+because of a memory warning, the menu offers one separately confirmed retry
+with `--accept-memory-warn`, for the same spec and node selection. Insufficient
+memory and other blockers still prevent start. This acknowledgement is not
+remembered for later starts and does not authorize image pulls or replacement.
+These menu choices operate on catalog specs; they do not author or override
+recipes. Historical schema-1 specs do not offer the new launch shortcuts.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet

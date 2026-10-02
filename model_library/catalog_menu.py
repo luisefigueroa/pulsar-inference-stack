@@ -24,10 +24,13 @@ from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
+LAUNCH = ("readiness", "image-check", "image-stage")
 STORAGE = ("move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
+    "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
+    "image-stage": "Stage pinned image",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -105,7 +108,10 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     unsupported = start_unsupported(row)
     if unsupported:
         hidden["start"] = unsupported
-    offered = [action for action in MAIN + STORAGE if action not in hidden]
+    if row.get("start_unsupported_reason") == "historical_spec":
+        for action in LAUNCH:
+            hidden[action] = "historical schema-1 specs do not support these operations"
+    offered = [action for action in MAIN + LAUNCH + STORAGE if action not in hidden]
     eligible = {}
     if schema3:
         for action in ("acquire", "restore"):
@@ -256,7 +262,7 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
     by_reason: dict[str, list[str]] = {}
-    for action in MAIN + STORAGE:
+    for action in MAIN + LAUNCH + STORAGE:
         if action in hidden:
             by_reason.setdefault(hidden[action], []).append(LABELS[action])
     for reason, labels in by_reason.items():
@@ -278,7 +284,7 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
     lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now)]
     for action in offered:
-        group = "main" if action in MAIN else "storage"
+        group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
         lines.append(f"option\t{group}\t{action}\t{label}")
     if suggested:
@@ -287,6 +293,49 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
         for name in snapshots:
             lines.append(f"snapshot\t{action}\t{clean(name)}")
     return lines
+
+
+def memory_warning_only(records: list[dict]) -> bool:
+    """Offer acknowledgement only for the existing start check's warning code."""
+    return bool(records) and all(isinstance(record, dict)
+                                and record.get("stage") == "check"
+                                and record.get("blocker") == "memory_warning" for record in records)
+
+
+def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, mode: str, width=None) -> bool:
+    """Display the public image stage preview; never inspect or stage an image."""
+    plan = response.get("result")
+    if (type(response.get("schema_version")) is not int or response["schema_version"] != 1 or response.get("ok") is not True
+            or not isinstance(plan, dict) or plan.get("kind") != "pulsar-image-check"
+            or plan.get("operation") != "stage-image" or plan.get("model") != row["spec_id"]
+            or plan.get("image") != row["image"]["digest"]):
+        raise ValueError("image preview does not name the selected catalog spec and pinned image")
+    modes = {"pull-exact-digest": "Pull the exact digest from its registry",
+             "stream-from-controller": "Copy the pinned image from this node; no registry fallback"}
+    ranks = plan.get("ranks")
+    if (mode not in modes or plan.get("mode") != mode or not isinstance(ranks, list)
+            or type(plan.get("nodes")) is not int or plan["nodes"] != row["geometry"]["nodes"]
+            or len(ranks) != row["geometry"]["nodes"]
+            or any(not isinstance(rank, dict) or type(rank.get("rank")) is not int or rank["rank"] != index
+                   or type(rank.get("topology_index")) is not int or rank["topology_index"] < 0
+                   or rank["topology_index"] not in node_names
+                   or rank.get("state") not in ("ok", "missing") for index, rank in enumerate(ranks))):
+        raise ValueError("image preview does not establish every selected rank")
+    if len({rank["topology_index"] for rank in ranks}) != len(ranks):
+        raise ValueError("image preview repeats a selected node")
+    out = TerminalWriter(width=width)
+    out.emit("Pinned image staging preview")
+    out.field("Model", row["model_id"])
+    out.field("Spec", row["spec_id"])
+    out.field("Image", plan["image"])
+    out.field("Source", modes[plan["mode"]])
+    for rank in ranks:
+        node = node_names[rank["topology_index"]]
+        action = "will stage" if rank["state"] == "missing" else "already present"
+        out.field(f"Rank {rank['rank']}", f"{node}: {action}")
+    missing = any(rank["state"] == "missing" for rank in ranks)
+    out.emit("No service is started or replaced." if missing else "The pinned image is already present; nothing to stage.")
+    return missing
 
 
 def _short(commit: object) -> str:
@@ -371,6 +420,10 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     if action == "start":
         where = place or f"{nodes} nodes"
         return f"Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+    if action == "start-memory":
+        where = place or f"{nodes} nodes"
+        return (f"Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
+                "Insufficient memory and all other blockers still prevent start.")
     if action == "stop":
         where = f" on {place}" if place else ""
         return f"Stop {model}{where}? Model files and pins are kept."
@@ -389,18 +442,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
+    warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
+    warning.add_argument("--blockers-file", required=True)
+    image = sub.add_parser("image-plan", help="render an existing public image stage preview")
+    image.add_argument("--spec-id", required=True)
+    image.add_argument("--plan-file", required=True)
+    image.add_argument("--mode", required=True, choices=("pull-exact-digest", "stream-from-controller"))
+    image.add_argument("--node-name", action="append", default=[])
     view = sub.add_parser("view", help="menu lines for one recipe; catalog JSON on stdin")
     view.add_argument("--spec-id", required=True)
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
-    confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop"}))
+    confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
     confirm.add_argument("--plan-file")
     confirm.add_argument("--snapshot")
     confirm.add_argument("--node")
     args = parser.parse_args(argv)
     try:
+        if args.command == "memory-warning":
+            from scripts.start_blockers import read
+            return 0 if memory_warning_only(read(args.blockers_file)) else 1
         if args.command == "labels":
             width = terminal_width()
             for entry in json.load(sys.stdin).get("entries") or []:
@@ -408,6 +471,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         row = read_row(sys.stdin, args.spec_id)
         names = NodeNames.saved()
+        if args.command == "image-plan":
+            with open(args.plan_file, encoding="utf-8") as handle:
+                response = json.load(handle)
+            node_names = {}
+            for value in args.node_name:
+                index, separator, name = value.partition("=")
+                if not separator or not index.isdigit() or not name:
+                    raise ValueError("node names must use INDEX=NAME")
+                node_names[int(index)] = name
+            if not isinstance(response, dict):
+                raise ValueError("image preview must be a public result envelope")
+            return 0 if render_image_plan(row, response, node_names, mode=args.mode) else 1
         if args.command == "view":
             print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names)))
             return 0
