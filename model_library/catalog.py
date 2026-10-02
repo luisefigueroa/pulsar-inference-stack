@@ -55,6 +55,7 @@ def age_text(age):
 
 def combined_observation(members):
     """Aggregate complete per-snapshot checks without turning unknown into absent."""
+    names = sorted(members, key=lambda name: (name != 'target', name))
     def state(field, precedence):
         values={m.get(field,'unknown') for m in members.values()}
         return next(v for v in precedence if v in values)
@@ -63,7 +64,7 @@ def combined_observation(members):
         'archive_state':state('archive_state',('unknown','unavailable','not-configured','missing','present','verified')),
         'prepared':{'verified':sum(m.get('prepared',{}).get('verified',0) for m in members.values()),
                     'required':sum(m.get('prepared',{}).get('required',0) for m in members.values())},
-        'blockers':[name+': '+b for name,m in members.items() for b in m.get('blockers',[])]}
+        'blockers':[name+': '+b for name in names for b in members[name].get('blockers',[])]}
 
 
 # Why this Stack cannot start a spec, as the start blocker code a start would
@@ -123,7 +124,14 @@ def project(spec, store, *, now=None):
         # Only complete saved checks establish aggregate readiness.
         if observation is not None:
             combined=combined_observation(saved)
-            if any(observed.get(k)!=combined[k] for k in ('local_state','archive_state','prepared','blockers')):
+            blockers = observed.get('blockers')
+            # JSON object ordering is not evidence. Historical writers could
+            # aggregate before sort_keys reordered snapshot names on disk.
+            # Compare the messages with multiplicity, retaining every other
+            # consistency check and the stored order used for display.
+            if (any(observed.get(k)!=combined[k] for k in ('local_state','archive_state','prepared'))
+                    or not isinstance(blockers, list) or any(not isinstance(b, str) for b in blockers)
+                    or sorted(blockers) != sorted(combined['blockers'])):
                 raise StorageError('saved aggregate disagrees with snapshot observations')
     local_state = observed.get("local_state", "unknown")
     archive_state = observed.get("archive_state", "unknown")

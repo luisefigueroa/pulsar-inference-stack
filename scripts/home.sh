@@ -9,6 +9,14 @@ export PYTHONDONTWRITEBYTECODE=1
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
 
+review_catalog_error() {
+  local status="$1" rc
+  printf '\nCatalog could not be displayed (exit %s). Review the error above.\n' "$status"
+  choose_index "Catalog error" "Back" >/dev/null \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+  return 0
+}
+
 SETUP_PY="${PULSAR_SETUP_STATUS_PY:-$REPO_DIR/scripts/setup_status.py}"
 status_json=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format json)
 complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("complete") else "0")')
@@ -41,6 +49,9 @@ if [ "$complete" = 1 ]; then
   rc=$?
   set -e
   [ "$rc" -ne 130 ] || exit 130
+  if [ "$choice" = 0 ] && [ "$rc" -ne 0 ]; then
+    review_catalog_error "$rc" || exit $?
+  fi
   # Re-read local setup state; a submenu may have changed it.
   exec "$REPO_DIR/scripts/home.sh"
 fi
@@ -65,6 +76,9 @@ esac
 rc=$?
 set -e
 [ "$rc" -ne 130 ] || exit 130
+if [ "$choice" = 1 ] && [ "$rc" -ne 0 ]; then
+  review_catalog_error "$rc" || exit $?
+fi
 if [ "$choice" = 0 ] && [ "$rc" -ne 0 ]; then
   printf '✗ Setup step did not complete; details above\n'
 fi

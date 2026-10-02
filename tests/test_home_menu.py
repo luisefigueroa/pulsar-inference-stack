@@ -125,6 +125,21 @@ choose_index() {
         self.assertEqual(len(menus), 2)
         self.assertEqual(menus[0], menus[1])
 
+    def test_catalog_error_waits_before_redrawing_the_home_menu(self):
+        (self.root / '.cluster-topology.json').write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(['0', '0', '6'], PULSAR_RC='2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ['models menu'])
+        self.assertEqual(self.menus()[1], ['Catalog error', 'Back'])
+        self.assertEqual(len(self.menus()), 3)
+        self.assertIn('Catalog could not be displayed (exit 2)', result.stdout)
+
+    def test_first_run_catalog_error_can_be_interrupted(self):
+        result = self.run_home(['1', 'ctrl-c'], PULSAR_RC='2')
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(self.menus()[1], ['Catalog error', 'Back'])
+        self.assertEqual(len(self.menus()), 2)
+
     def test_inspection_and_help_are_available_before_setup(self):
         result = self.run_home(["2", "3", "4", "5"], PULSAR_RC="1,2,0")
         self.assertEqual(result.returncode, 0, result.stderr)

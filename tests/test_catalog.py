@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from model_library.catalog import archive_fact, argument_groups, entries, render, age_seconds
+from model_library.catalog import archive_fact, argument_groups, combined_observation, entries, render, age_seconds
 from model_library.node_names import NodeNames
 from model_library.state import Store, view_key
 from model_library.integrity import StorageError
@@ -74,6 +74,37 @@ class Catalog(unittest.TestCase):
         self.assertEqual(row["archive_state"], "unknown")
         self.assertIsNone(row["checked_at"])
         self.assertFalse(self.store.root.exists())
+
+    def test_snapshot_blockers_survive_json_key_reordering(self):
+        from tests.test_container_runtime import fixture
+        spec = fixture(speculative=True)[0]
+        (self.repo / 'releases').mkdir()
+        (self.repo / 'releases' / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+        members = {name: {'local_state': 'missing', 'archive_state': 'unknown',
+                          'prepared': {'verified': 0, 'required': 1}, 'blockers': ['files missing']}
+                   for name in ('target', 'draft')}
+        aggregate = combined_observation(members)
+        reordered = json.loads(json.dumps(members, sort_keys=True))
+        self.assertEqual(list(reordered), ['draft', 'target'])
+        self.assertEqual(combined_observation(reordered), aggregate)
+        # Accept either historical order; persistence sorts only object keys.
+        for blockers in (aggregate['blockers'], list(reversed(aggregate['blockers']))):
+            with self.subTest(blockers=blockers):
+                self.observe(spec, **{**aggregate, 'blockers': blockers})
+                path = self.store.root / 'observations' / f"{spec['spec_id']}.json"
+                original = path.read_bytes()
+                row, = entries(self.repo, self.store, now=self.now)
+                self.assertEqual(row['local_state'], 'missing')
+                self.assertEqual(row['blockers'], blockers)
+                self.assertEqual(path.read_bytes(), original)
+        for changes in ({'local_state': 'ready'}, {'prepared': {'verified': 2, 'required': 2}},
+                        {'blockers': aggregate['blockers'][:-1]},
+                        {'blockers': aggregate['blockers'] + [aggregate['blockers'][0]]},
+                        {'blockers': ['different blocker']}, {'blockers': [None]}):
+            with self.subTest(changes=changes):
+                self.observe(spec, **{**aggregate, **changes})
+                with self.assertRaisesRegex(StorageError, 'saved aggregate disagrees'):
+                    entries(self.repo, self.store, now=self.now)
 
     def test_nullable_state_and_review_are_visible_without_gating(self):
         spec = self.add_spec()
