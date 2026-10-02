@@ -228,6 +228,7 @@ Execution operations independently check their live prerequisites.
 | --- | --- |
 | `spec example/freeze/verify/show/compare` | Author, validate, read, and compare serving specs |
 | `model acquire/prepare/info/restore/archive` | Existing explicit model-file lifecycle; use `--model-commit` for first acquisition |
+| `model budget` | Read prepared-copy storage usage, reserve and allowance on every confirmed node |
 | `start`, `status`, `stop` | Serve, inspect, or stop an owned service |
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
 | `resources --service-id ID --jsonl` | Stream private diagnostics for a recorded service |
@@ -237,6 +238,15 @@ Execution operations independently check their live prerequisites.
 | `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
+
+Storage previews retain additive capacity context without changing recipe identity
+or operation eligibility. Single-snapshot preparation plans for both current spec
+schemas include `total_bytes`, `file_count` and per-node `budgets`; budget readings
+can include their observed `total` and prepared-copy `path`. Restore plans include
+the snapshot size/count, `destination_root` and `destination_space` (null when
+unobserved). These readings are estimates from the preview invocation, not space
+reservations. Callers must still inspect the existing eligibility and blocker
+fields and respect the operation's checks when executing.
 
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;

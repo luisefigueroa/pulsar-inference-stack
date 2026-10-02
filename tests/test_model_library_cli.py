@@ -593,6 +593,44 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']),[])
         self.assertEqual(f.events('transfer'),[])
 
+    def test_preparation_preview_and_budget_inspection_share_allowances(self):
+        f = self.fixture(nodes=2)
+        self.acquire_candidate(f, nodes=2)
+        f.env.update(PULSAR_HOT_RESERVE_BYTES='5', PULSAR_HOT_BUDGET_BYTES='3000')
+        before = {p: p.read_bytes() for p in f.state.rglob('*.json')}
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        manifest = f.spec['recipe']['model']['snapshot_manifest']
+        self.assertEqual(plan['total_bytes'], manifest['total_bytes'])
+        self.assertEqual(plan['file_count'], manifest['file_count'])
+        report = self.success(f.run('budget'))
+        for index, node in enumerate(report['nodes']):
+            self.assertEqual(node['reserve'], 5)
+            self.assertEqual(node['limit'], 3000)
+            self.assertEqual(node['path'], f.cfg['nodes'][index]['view_root'])
+            self.assertEqual(plan['budgets'][node['node_id']]['reserve'], node['reserve'])
+            self.assertEqual(plan['budgets'][node['node_id']]['limit'], node['limit'])
+        self.assertEqual({p: p.read_bytes() for p in f.state.rglob('*.json')}, before)
+        self.assertEqual(f.events('transfer'), [])
+
+    def test_restore_preview_shows_payload_and_optional_space_without_staging(self):
+        f = self.fixture(nodes=2)
+        acquired = self.acquire_candidate(f, nodes=2)
+        shutil.rmtree(acquired['home']['hub_path'])  # Synthetic loss, entirely inside the fixture.
+        before = {p: p.read_bytes() for p in f.state.rglob('*.json')}
+        count = len(f.events('node-operation'))
+        plan = self.success(f.run('restore', '--node', 'node-1', '--plan', spec=True))
+        manifest = f.spec['recipe']['model']['snapshot_manifest']
+        self.assertEqual(plan['total_bytes'], manifest['total_bytes'])
+        self.assertEqual(plan['file_count'], manifest['file_count'])
+        self.assertEqual(plan['destination_root'], f.cfg['nodes'][1]['home_root'])
+        self.assertIsInstance(plan['destination_space']['available'], int)
+        self.assertTrue({event['operation'] for event in f.events('node-operation')[count:]} <= {'find-source', 'path-state', 'roots', 'space'})
+        f.cfg['node_fault'] = dict(operation='space', rank=1); f.save()
+        plan = self.success(f.run('restore', '--node', 'node-1', '--plan', spec=True))
+        self.assertIsNone(plan['destination_space'])
+        self.assertEqual({p: p.read_bytes() for p in f.state.rglob('*.json')}, before)
+        self.assertEqual(f.events('transfer'), [])
+
     def test_two_nodes_with_remote_home(self):
         f = self.fixture(nodes=2)
         acquired = self.acquire_candidate(f, nodes=2, home=1)

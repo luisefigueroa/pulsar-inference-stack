@@ -26,12 +26,13 @@ from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
 LAUNCH = ("readiness", "image-check", "image-stage")
-STORAGE = ("move", "archive", "verify", "pin", "unpin", "purge", "remove")
+STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
     "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
     "image-stage": "Stage pinned image",
+    "budget": "Storage budget (all nodes)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",

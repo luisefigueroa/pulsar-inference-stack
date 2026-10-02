@@ -25,6 +25,100 @@ def bytes_text(value: Any) -> str:
     return f'{value:,} bytes'
 
 
+def _known_bytes(value: Any) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _headroom_text(value: int | None) -> str:
+    if value is None:
+        return 'not observed'
+    return 'deficit ' + bytes_text(-value) if value < 0 else bytes_text(value)
+
+
+def _minimum_headroom(budgets: list[dict], available: str, used: str) -> int | None:
+    if not budgets or any(not _known_bytes(b.get(available)) or not _known_bytes(b.get(used)) for b in budgets):
+        return None
+    return min(b[available] - b[used] for b in budgets)
+
+
+def _budget_context(out: TerminalWriter, budgets: list[dict], *, new_copy: int | None = None,
+                    project: bool = False) -> None:
+    distinct = []
+    for budget in budgets:
+        if budget not in distinct:
+            distinct.append(budget)
+    if len(distinct) > 1:
+        out.emit('Snapshot checks observed different budgets; lowest observed headroom is shown.')
+    for index, budget in enumerate(distinct):
+        if len(distinct) > 1:
+            out.field('Observation', index + 1)
+        out.field('Copy root', budget.get('path') or 'not observed')
+        for key, label in (('available', 'Disk free'), ('reserve', 'Reserve'),
+                           ('used', 'Managed files'), ('limit', 'Copy budget')):
+            out.field(label, bytes_text(budget.get(key)))
+        if 'total' in budget:
+            out.field('Disk total', bytes_text(budget['total']))
+    disk = _minimum_headroom(budgets, 'available', 'reserve')
+    allowance = _minimum_headroom(budgets, 'limit', 'used')
+    roots = {b['path'] for b in budgets if b.get('path')}
+    if len(roots) > 1:
+        out.emit('Storage roots differ between observations; combined headroom is unknown.')
+        disk = allowance = None
+    out.field('Disk after reserve', _headroom_text(disk))
+    out.field('Copy allowance left', _headroom_text(allowance))
+    if project:
+        after = min(disk, allowance) - new_copy if disk is not None and allowance is not None and new_copy is not None else None
+        out.field('After planned copies', _headroom_text(after))
+
+
+def _preparation_capacity(out: TerminalWriter, plans: list[dict], names: NodeNames) -> None:
+    """Count each manifest once per node, as the combined copy-budget check does."""
+    sizes = {}
+    placements: dict[str, dict[Any, set[str]]] = {}
+    for index, plan in enumerate(plans):
+        identity = plan.get('snapshot_manifest_id') or ('unknown', index)
+        size = plan.get('total_bytes')
+        size = size if _known_bytes(size) else None
+        sizes[identity] = size if identity not in sizes or sizes[identity] == size else None
+        for action in plan.get('actions') or []:
+            placements.setdefault(action.get('node_id', 'unknown'), {}).setdefault(identity, set()).add(action.get('action'))
+    total = sum(sizes.values()) if sizes and all(size is not None for size in sizes.values()) else None
+    out.emit('Storage estimate (snapshot payload only)')
+    out.field('Unique snapshots', bytes_text(total))
+    for node, groups in placements.items():
+        out.field('Node', names(node))
+        copy_sizes, existing_sizes = [], []
+        for identity, actions in groups.items():
+            if not actions <= {'copy', 'reuse', 'home-view', 'bind'}:
+                copy_sizes.append(None); existing_sizes.append(None)
+            elif 'copy' in actions:
+                copy_sizes.append(sizes[identity])
+            else:
+                existing_sizes.append(sizes[identity])
+        new_copy = sum(copy_sizes) if all(size is not None for size in copy_sizes) else None
+        existing = sum(existing_sizes) if all(size is not None for size in existing_sizes) else None
+        out.field('New copy', bytes_text(new_copy))
+        out.field('Existing files used', bytes_text(existing))
+        budgets = [(plan.get('budgets') or {}).get(node) or {} for plan in plans
+                   if any(action.get('node_id') == node for action in plan.get('actions') or [])]
+        _budget_context(out, budgets, new_copy=new_copy, project=True)
+    out.emit('Estimates exclude filesystem overhead and do not reserve space; preparation rechecks its budgets.')
+
+
+def _restore_capacity(out: TerminalWriter, document: dict) -> None:
+    size = document.get('total_bytes')
+    space = document.get('destination_space') or {}
+    available = space.get('available')
+    after = available - size if _known_bytes(available) and _known_bytes(size) else None
+    out.emit('Storage estimate (snapshot payload only)')
+    out.field('Home root', document.get('destination_root') or 'not observed')
+    out.field('New copy', bytes_text(size))
+    out.field('Existing files reused', bytes_text(0))
+    out.field('Disk free', bytes_text(available))
+    out.field('Disk after copy', _headroom_text(after))
+    out.emit('Estimate only; filesystem overhead is excluded and space is not reserved. Prepared-copy budgets apply separately.')
+
+
 def _identity(out: TerminalWriter, document: dict) -> None:
     for key, label in (('model_id', 'Model'), ('spec_id', 'Spec'),
                        ('snapshot_revision', 'Commit'), ('revision', 'Commit'),
@@ -84,7 +178,7 @@ def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
         out.field('Blocker', blocker)
 
 
-def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames) -> None:
+def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames, *, capacity: bool = True) -> None:
     titles = {'acquire': 'Acquisition preview', 'prepare': 'Preparation preview',
               'archive': 'Archive preview', 'restore': 'Restoration preview',
               'move': 'Home movement preview', 'pin': 'Pin preview', 'unpin': 'Unpin preview',
@@ -105,6 +199,8 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames)
         if not document.get('model_id'):
             _identity(out, source)
         _files(out, source)
+    else:
+        _files(out, document)
     for key, label in (('selected_node', 'Destination'), ('source_node', 'From node'),
                        ('destination_node', 'To node'), ('archive_root', 'Archive')):
         if document.get(key):
@@ -138,6 +234,10 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames)
             _copy(out, view, names)
     for spec_id in document.get('dependent_spec_ids') or []:
         out.field('Depends on', spec_id)
+    if capacity and document.get('kind') == 'pulsar-preparation-plan':
+        _preparation_capacity(out, [document], names)
+    elif capacity and document.get('kind') == 'pulsar-restore-plan':
+        _restore_capacity(out, document)
     _blockers(out, document, names)
     if operation == 'acquire':
         out.emit('The complete source file list is available with --json.')
@@ -185,10 +285,11 @@ def render(document: Any, *, operation: str, archive_action: str = '',
             render(member,operation=operation,archive_action=archive_action,writer=out,names=names)
         return
     if kind == 'pulsar-preparation-set-plan':
-        _plan(out,document,operation,names)
+        _plan(out,document,operation,names,capacity=False)
+        _preparation_capacity(out, document['snapshots'], names)
         for member in document['snapshots']:
             out.field('Snapshot',member['snapshot'])
-            _plan(out,member,operation,names)
+            _plan(out,member,operation,names,capacity=False)
         return
 
     if isinstance(document.get('plan'), dict):
@@ -268,10 +369,8 @@ def render(document: Any, *, operation: str, archive_action: str = '',
             if index:
                 out.blank()
             out.field('Node', names(node['node_id']) if node.get('node_id') else 'not recorded')
-            for key, label in (('used', 'Managed files'), ('available', 'Disk free'),
-                               ('total', 'Disk total'), ('reserve', 'Reserve'), ('limit', 'Copy budget')):
-                if key in node:
-                    out.field(label, bytes_text(node[key]))
+            _budget_context(out, [node])
+        out.emit('Observed prepared-copy storage only; space is not reserved.')
         return
     raise ValueError('unrecognized storage result; inspect the machine-readable output with --json')
 

@@ -59,7 +59,7 @@ show_budget() {
   for ((rank=0; rank<CLUSTER_TOPOLOGY_COUNT; rank++)); do
     roots=$(model_node "$rank" "$(model_node_request roots)") || die "node storage is unobservable"
     space=$(model_node "$rank" "$(model_node_request space path "$(json_fields "$roots" view_root)")") || die "node storage usage is unobservable"
-    result=$(printf '%s' "$result" | python3 -c 'import json,sys; a=json.load(sys.stdin); a.append({"node_id":sys.argv[1],**json.loads(sys.argv[2])}); print(json.dumps(a))' "${CLUSTER_NODE_IDS[$rank]}" "$space")
+    result=$(printf '%s' "$result" | python3 -c 'import json,sys; from model_library.planning import storage_budget; a=json.load(sys.stdin); a.append({"node_id":sys.argv[1],**storage_budget(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4],path=sys.argv[5])}); print(json.dumps(a))' "${CLUSTER_NODE_IDS[$rank]}" "$space" "${PULSAR_HOT_RESERVE_BYTES:-}" "${PULSAR_HOT_BUDGET_BYTES:-}" "$(json_fields "$roots" view_root)") || die "invalid disk budget"
   done
   emit_result "$(model_json kind pulsar-storage-budget nodes: "$result")"
 }

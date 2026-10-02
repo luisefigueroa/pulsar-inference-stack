@@ -463,7 +463,7 @@ raise SystemExit(rc)
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
-                 menu_args=(), additional_specs=()):
+                 menu_args=(), additional_specs=(), empty_catalog=False):
         spec = self.add_spec(guarded=guarded)
         if review is not None:
             spec["review"] = review
@@ -497,7 +497,10 @@ raise SystemExit(rc)
         env.pop("PULSAR_COLD_ROOT", None)
         if archive_root is not None:
             env["PULSAR_COLD_ROOT"] = archive_root
-        shutil.copytree(self.repo / "releases", shell_root / "releases")
+        if empty_catalog:
+            (shell_root / "releases").mkdir()
+        else:
+            shutil.copytree(self.repo / "releases", shell_root / "releases")
         # The catalog reads the fixture releases root through a tiny python3 launcher.
         binary = self.root / "bin"; binary.mkdir()
         python = binary / "python3"
@@ -550,6 +553,24 @@ raise SystemExit(rc)
         self.assertEqual(questions, "")
         self.assertIn("No other catalog spec supports comparison", result.stdout)
         self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
+
+    def test_storage_budget_inspects_all_nodes_without_confirming_or_changing_suggestion(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Storage budget (all nodes)", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "budget"]])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Check now (suggested)\n"), 2)
+        self.assertNotIn('Select a confirmed physical node', choices)
+        self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
+
+    def test_empty_catalog_still_offers_storage_budget_inspection(self):
+        _, result, actions, _, questions = self.run_menu(
+            ["Storage budget (all nodes)", "Back"], empty_catalog=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "budget"]])
+        self.assertEqual(questions, "")
+        self.assertIn('The catalog is empty.', result.stdout)
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(

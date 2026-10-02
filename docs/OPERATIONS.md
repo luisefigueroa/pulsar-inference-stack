@@ -306,8 +306,8 @@ Select an existing archive location with:
 ./pulsar configure archive-root set <existing-directory> --yes
 ```
 
-The same workflow is available through the menu's archive step (during setup)
-or **Archive storage configuration** after the checkout is bound. `PULSAR_COLD_ROOT` is the explicit configuration
+The same workflow is available through **Archive storage configuration** after
+cluster setup. `PULSAR_COLD_ROOT` is the explicit configuration
 variable: process value first, then the repository's `.env`; empty disables
 archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.
@@ -346,6 +346,26 @@ An owned incomplete transfer resumes its staging rather than silently discarding
 it to create a shared binding.
 `prepare --plan` reports which ranks will reuse a binding, bind existing files,
 or copy files. A recipe change still requires preparation of its own bindings.
+
+Preparation previews also show the unique snapshot payload and, for each node,
+the new copy size, existing files used, prepared-copy root, observed disk free
+space, reserve and copy allowance. Named snapshots with the same manifest are
+counted once per physical node. The projected headroom subtracts all new copies
+from the smaller of disk space after reserve and unused copy allowance. If
+snapshot checks observed different budgets, the preview retains those readings
+and uses the lowest observed headroom. Unknown readings stay **not observed**;
+negative headroom is shown as a deficit. These estimates exclude filesystem
+overhead and do not reserve space. Existing preparation checks remain authoritative.
+Copy amounts cover full snapshot payloads; already written partial staging is
+not deducted from this conservative estimate.
+
+**Storage and archive → Storage budget (all nodes)** runs the existing
+`./pulsar model budget` inspection for every confirmed node. It shows the same
+reserve and allowance settings used by preparation, requires no confirmation,
+and does not change the selected recipe's saved file-check state. This budget
+describes prepared-copy storage; home and archive locations may use other filesystems.
+The same choice is available in the catalog's top-level menu, even when no
+specs are published.
 
 Routine acquisition of registered copies, preparation re-entry, inspection and
 serving observation reuse earlier verification while the complete file set,
@@ -454,6 +474,14 @@ archive location and confirmed topology, select the catalog spec and restore.
 The restored bytes must match the spec manifest before local records are
 rebuilt. Prepare and start are subsequent explicit operations. Restoration
 requires neither the private workbench nor access to Hugging Face.
+
+`restore --plan` and the menu's Restore preview show the selected snapshot's
+file count and full payload size, the destination home root and observed free
+space there. Restore plans a full snapshot copy with no existing bytes reused.
+The displayed disk space after copying is an estimate, without filesystem
+overhead or a reservation. Failure to observe free space leaves capacity
+unknown; it does not bypass or replace archive verification, home-absence checks
+or the explicit confirmation before restoration.
 
 The catalog's last archive-verification time is saved information, not current
 archive health. Use **Verify archive** to perform a fresh, read-only integrity

@@ -75,7 +75,7 @@ run_operation() {
   took=$(elapsed_text $((SECONDS - started)))
   if [ "$rc" -eq 0 ]; then
     printf '✓ %s finished for %s in %s\n' "$label" "$model" "$took"
-    case "$action" in status|verify|check|readiness|image-check|image-stage) ;; *) LAST_RESULT[$spec]="$action" ;; esac
+    case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
   elif [ "$interrupted" = 1 ] || [ "$rc" -eq 130 ]; then
     printf '✗ %s stopped by Ctrl-C for %s after %s; details above\n' "$label" "$model" "$took"
   else
@@ -191,6 +191,7 @@ perform() {
   esac
   [ -z "$MENU_NODE" ] || args+=(--node "$MENU_NODE")
   case "$action" in
+    budget) run_operation budget 'Inspect storage budget' "$spec" 'all confirmed nodes' "$REPO_DIR/pulsar" model budget ;;
     check) run_operation check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" check "$spec" "${args[@]}" ;;
     status) run_operation status "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/status.sh" "$spec" "${args[@]}" ;;
     verify) run_operation verify "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive verify "$spec" ;;
@@ -303,11 +304,19 @@ browse() {
     result=$(catalog list --json) || return $?
     # Each entry is "SPEC_ID<tab>label"; labels show the same saved state as models list.
     mapfile -t entries < <(printf '%s' "$result" | catalog_menu labels)
-    if [ "${#entries[@]}" -eq 0 ]; then catalog list; return; fi
+    if [ "${#entries[@]}" -eq 0 ]; then
+      catalog list
+      [ "$read_only" = 0 ] || return 0
+    fi
     ids=(); labels=()
     for entry in "${entries[@]}"; do ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}"); done
+    [ "$read_only" = 1 ] || labels+=("Storage budget (all nodes)")
     index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    if [ "$read_only" = 0 ] && [ "$index" -eq "${#ids[@]}" ]; then
+      run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget
+      continue
+    fi
     [ "$index" -lt "${#ids[@]}" ] || return 0
     recipe_menu "${ids[$index]}" "$read_only" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
   done

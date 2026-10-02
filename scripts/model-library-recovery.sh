@@ -36,7 +36,7 @@ archive_create() {
 
 restore_model() {
   require_archive_root
-  local rank existing stage result archive_path previous
+  local rank existing stage result archive_path previous roots destination_root="" space=null rc
   require_cluster_nodes 1 >/dev/null || die "restoration requires confirmed topology"
   load_home || die "existing home registration cannot be inspected"
   previous="$HOME_JSON"
@@ -46,7 +46,21 @@ restore_model() {
   existing=$(find_source_homes) || die "all-node home presence is unobservable"
   [ "$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 0 ] || die "a home exists; verify/reuse it instead of replacing it"
   if [ "$PLAN" -eq 1 ]; then
-    emit_result "$(model_json kind pulsar-restore-plan snapshot_manifest_id "$MANIFEST_ID" selected_node "${CLUSTER_NODE_IDS[$rank]}" archive_root "$PULSAR_COLD_ROOT")"; return
+    # Capacity is advisory: an unavailable observation stays unknown and does
+    # not replace the restore operation's existing checks or stage any files.
+    if roots=$(model_node "$rank" "$(model_node_request roots)"); then
+      destination_root=$(json_fields "$roots" home_root)
+      if [ -n "$destination_root" ]; then
+        space=$(model_node "$rank" "$(model_node_request space path "$destination_root")") \
+          || { rc=$?; [ "$rc" -ne 130 ] || return 130; space=null; }
+      fi
+    else
+      rc=$?; [ "$rc" -ne 130 ] || return 130
+    fi
+    emit_result "$(model_json kind pulsar-restore-plan snapshot_manifest_id "$MANIFEST_ID" \
+      total_bytes: "$(json_fields "$MANIFEST_JSON" total_bytes)" file_count: "$(json_fields "$MANIFEST_JSON" file_count)" \
+      selected_node "${CLUSTER_NODE_IDS[$rank]}" archive_root "$PULSAR_COLD_ROOT" \
+      destination_root "$destination_root" destination_space: "$space")"; return
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
   phase 1 4 "verifying the archive against the expected file hashes"
