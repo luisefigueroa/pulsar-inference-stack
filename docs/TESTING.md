@@ -67,6 +67,11 @@ tests, Python/Bash syntax checks, catalog checks, and publication privacy.
 Use `shellcheck --severity=error` for affected shell scripts as well. Fixtures
 are synthetic and do not authorize real downloads or service mutations.
 
+`python3 -m unittest tests.test_ui_confirm` checks confirmation defaults,
+explicit choices and cancellation against the bundled Gum in a pseudo-terminal.
+These tests run on Linux arm64 and are skipped on other platforms. They only
+answer fixture prompts and never perform operator actions.
+
 The refactor removes tests that required a shell profile projector, launch
 commit labels, or runtime commit equality. Their replacement checks recipe
 identity, direct container bindings, actual configuration drift, stored launch

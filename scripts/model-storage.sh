@@ -29,9 +29,9 @@ select_node() {
   printf '%s\n' "${CLUSTER_NODE_IDS[$index]}"
 }
 
-# The last operation that succeeded for each recipe in this menu session. The
-# saved check cannot show it, so it informs the suggested next step.
-declare -A LAST_SUCCESS=()
+# The last relevant outcome for each recipe in this menu session. A recorded
+# check supersedes a prior mutation even when it found missing/changed files.
+declare -A LAST_RESULT=()
 
 elapsed_text() {
   local seconds="$1"
@@ -44,20 +44,37 @@ elapsed_text() {
 # Runs one explicit operation and reports its outcome. Ctrl-C reaches the
 # operation, which stops through its own cleanup; the menu then continues.
 run_operation() {
-  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0
+  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result=""
   shift 4
+  [ "$action" != check ] || result=$(mktemp)
   printf '\n→ %s %s. Ctrl-C stops it and returns to this menu.\n' "$label" "$model"
   trap 'interrupted=1' INT
   set +e
-  "$@"
+  if [ "$action" = check ]; then
+    "$@" --json >"$result"
+  else
+    "$@"
+  fi
   rc=$?
   set -e
   trap - INT
+  if [ "$action" = check ]; then
+    LAST_RESULT[$spec]=check-failed
+    # Check emits this result only after saving the observation. Missing files
+    # still return a nonzero status, but their recorded state can guide repair.
+    if [ -s "$result" ] && python3 -m model_library.render --operation check <"$result"; then
+      LAST_RESULT[$spec]=check
+    elif [ "$rc" -eq 0 ]; then
+      printf 'error: check did not return a readable saved observation\n' >&2
+      rc=2
+    fi
+    rm -f "$result"
+  fi
   local took
   took=$(elapsed_text $((SECONDS - started)))
   if [ "$rc" -eq 0 ]; then
     printf '✓ %s finished for %s in %s\n' "$label" "$model" "$took"
-    case "$action" in status|verify) ;; *) LAST_SUCCESS[$spec]="$action" ;; esac
+    case "$action" in status|verify|check) ;; *) LAST_RESULT[$spec]="$action" ;; esac
   elif [ "$interrupted" = 1 ] || [ "$rc" -eq 130 ]; then
     printf '✗ %s stopped by Ctrl-C for %s after %s; details above\n' "$label" "$model" "$took"
   else
@@ -145,7 +162,7 @@ recipe_menu() {
   while true; do
     ROW_JSON=$(catalog show "$spec" --json) || return 0
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
-      --archive-location "$(archive_location)" ${LAST_SUCCESS[$spec]:+--after "${LAST_SUCCESS[$spec]}"}) || return 0
+      --archive-location "$(archive_location)" ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"}) || return 0
     header=(); main=(); main_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
       case "$kind" in

@@ -406,12 +406,28 @@ confirm() {
     ACTION = """#!/usr/bin/env python3
 import json,os,sys
 open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")
+rc = int(os.environ.get("ACTION_RC", "0"))
 if "--plan" in sys.argv: print(open(os.environ["PLAN_FILE"]).read())
-raise SystemExit(int(os.environ.get("ACTION_RC","0")))
+elif sys.argv[1] == "check":
+    rc = int(os.environ.get("CHECK_RC", str(rc)))
+    observation = json.loads(os.environ["CHECK_OBSERVATION"])
+    if observation is not None:
+        from model_library.state import Store, now
+        spec = sys.argv[2]
+        Store(os.environ["PULSAR_MODEL_LIBRARY_DIR"]).put("observations", spec, {
+            "schema_version": 1, "kind": "pulsar-saved-observation", "spec_id": spec,
+            "checked_at": now(), **observation})
+        print(json.dumps({"spec_id": spec, "observation": observation}))
+raise SystemExit(rc)
 """
 
-    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False):
+    def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
+                 with_home=False, observation=None, check_observation=None, check_rc=None):
         spec = self.add_spec(guarded=guarded)
+        if with_home:
+            self.put_home(spec)
+        if observation is not None:
+            self.observe(spec, **{"checked_at": datetime.now(timezone.utc).isoformat(), **observation})
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
@@ -426,7 +442,9 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
                    CLUSTER_TOPOLOGY_FILE=str(self.root / "no-topology.json"),
                    MENU_ANSWERS=str(files["answers"]), MENU_CONFIRMS=str(files["confirms"]),
                    CHOICES_LOG=str(files["choices.log"]), CONFIRM_LOG=str(files["confirm.log"]),
-                   ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc))
+                   ACTION_LOG=str(files["action.log"]), PLAN_FILE=str(files["plan.json"]), ACTION_RC=str(action_rc),
+                   CHECK_OBSERVATION=json.dumps(check_observation),
+                   CHECK_RC=str(action_rc if check_rc is None else check_rc))
         env.pop("PULSAR_COLD_ROOT", None)
         if archive_root is not None:
             env["PULSAR_COLD_ROOT"] = archive_root
@@ -445,9 +463,11 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
         return spec["spec_id"], result, actions, choices, confirm_log.read_text() if confirm_log.exists() else ""
 
     def test_menu_returns_to_the_recipe_after_an_action(self):
-        spec, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"])
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], with_home=True,
+            check_observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node"]])
+        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node", "--json"]])
         self.assertIn("✓ Check now finished for", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
         self.assertEqual(choices.count("Select a catalog spec\n"), 2)
@@ -470,6 +490,61 @@ raise SystemExit(int(os.environ.get("ACTION_RC","0")))
                                    ["model-library.sh", "restore", spec, "--node", "fixture-node", "--yes"]])
         self.assertIn("Restoration preview", result.stdout)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
+
+    def test_recorded_home_does_not_prevent_a_restore_preview(self):
+        spec, result, actions, _, questions = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True,
+            observation={"local_state": "changed", "archive_state": "verified", "blockers": ["home files changed"]},
+            confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"]])
+        self.assertIn("Restore", questions)
+        self.assertIn("Nothing changed.", result.stdout)
+
+    def test_recorded_home_recovery_still_stops_at_a_blocked_plan(self):
+        plan = {"kind": "pulsar-restore-plan", "eligible": False, "blockers": ["existing files must not be replaced"]}
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True, plan=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0][-2:], ["--plan", "--json"])
+        self.assertEqual(questions, "")
+        self.assertIn("existing files must not be replaced", result.stdout)
+
+    def test_recorded_missing_files_clear_the_previous_mutation_check(self):
+        plan = {"kind": "pulsar-preparation-plan", "eligible": True,
+                "actions": [{"rank": 0, "node_id": "fixture-node", "action": "home-view"}]}
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Prepare", "fixture-host", "Check now (suggested)", "fixture-host", "Back", "Back"],
+            with_home=True, plan=plan, confirms=["yes"], check_rc=1,
+            check_observation={"local_state": "missing", "archive_state": "unknown",
+                               "blockers": ["required prepared copy is missing"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[-1], ["model-library.sh", "check", spec, "--node", "fixture-node", "--json"])
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Prepare (suggested)", last_options)
+        self.assertNotIn("Check now (suggested)", last_options)
+
+    def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
+        spec, result, actions, _, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Restore (suggested)", "fixture-host", "Back", "Back"],
+            confirms=["no"], check_rc=1,
+            check_observation={"local_state": "missing", "archive_state": "verified",
+                               "blockers": ["no home is registered"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [
+            ["model-library.sh", "check", spec, "--node", "fixture-node", "--json"],
+            ["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"]])
+
+    def test_unrecorded_check_does_not_recommend_start_from_old_readiness(self):
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now", "fixture-host", "Back", "Back"], with_home=True, check_rc=1,
+            observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Check now (suggested)", last_options)
+        self.assertNotIn("Start (suggested)", last_options)
 
     def test_declined_restore_changes_nothing(self):
         _, result, actions, _, _ = self.run_menu(["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["no"])

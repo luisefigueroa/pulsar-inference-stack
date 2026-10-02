@@ -80,6 +80,11 @@ until **Back** or **Exit**; each operation returns to the same recipe with a
 one-line result. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
+**Download** remains available when a home is recorded, and **Restore** remains
+available when an archive location is configured. A home record can outlive its
+files; these operations' live previews decide whether recovery or reuse is
+possible. For a recipe with required snapshots, every snapshot remains
+selectable for recovery, with unregistered homes listed first.
 **Start** is also left out for a spec with a serving guard, which this Stack
 cannot run; `models show` marks it `Start not supported by this Stack`, and no
 suggested step leads toward Start.
@@ -94,6 +99,12 @@ the operation's own `--plan` preview before a confirmation that names the
 model, nodes and consequence; a blocked plan ends without a question. Esc
 steps back one level. Ctrl-C at a prompt leaves the menu; during an operation
 it stops that operation and returns to the menu.
+
+A recent check that found missing or changed files suggests acquisition,
+restoration or preparation even when it recorded blockers. Unknown or stale
+file observations still suggest **Check now**. A check that records a result
+clears the previous operation's pending check; one that could not record a
+result does not turn earlier readiness into a new Start suggestion.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet

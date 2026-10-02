@@ -41,10 +41,26 @@ def two_snapshots(target_home, draft_home):
 
 
 class Operations(unittest.TestCase):
-    def test_recorded_home_hides_download_and_restore_only(self):
+    def test_recovery_available_with_a_recorded_home(self):
+        for state in ("unknown", "missing", "changed", "ready"):
+            with self.subTest(state=state):
+                offered, hidden, _ = menu.operations(checked(home=HOME, local_state=state), "configured")
+                self.assertIn("acquire", offered)
+                self.assertIn("restore", offered)
+                self.assertNotIn("acquire", hidden)
+                self.assertNotIn("restore", hidden)
+
+    def test_every_required_snapshot_is_selectable_for_recovery(self):
+        for homes in ((HOME, None), (HOME, HOME)):
+            with self.subTest(homes=homes):
+                _, _, eligible = menu.operations(row(snapshots=two_snapshots(*homes)), "configured")
+                self.assertCountEqual(eligible["acquire"], ["target", "draft"])
+                self.assertCountEqual(eligible["restore"], ["target", "draft"])
+
+    def test_recorded_home_keeps_every_operation_available(self):
         offered, hidden, _ = menu.operations(checked(home=HOME), "configured")
-        self.assertEqual(hidden, {"acquire": "a home is recorded", "restore": "a home is recorded"})
-        self.assertEqual(offered[:5], ["check", "prepare", "start", "stop", "status"])
+        self.assertEqual(hidden, {})
+        self.assertEqual(offered[:7], list(menu.MAIN))
 
     def test_missing_home_hides_home_operations(self):
         offered, hidden, _ = menu.operations(row(), "configured")
@@ -75,8 +91,7 @@ class Operations(unittest.TestCase):
             for action in ("check", "stop", "status", "pin", "unpin", "purge"):
                 self.assertIn(action, offered)
         offered, hidden, _ = menu.operations(checked(home=HOME, **GUARDED), "configured")
-        self.assertEqual(hidden, {"acquire": "a home is recorded", "restore": "a home is recorded",
-                                  "start": GUARD_REASON})
+        self.assertEqual(hidden, {"start": GUARD_REASON})
         for action in ("prepare", "move", "archive", "verify", "remove"):
             self.assertIn(action, offered)
 
@@ -86,12 +101,12 @@ class Operations(unittest.TestCase):
             self.assertIn("start", offered)
             self.assertNotIn("start", hidden)
 
-    def test_schema3_names_snapshots_and_offers_eligible_ones(self):
+    def test_schema3_names_snapshots_and_prioritizes_missing_homes(self):
         state = row(snapshots=two_snapshots(HOME, None))
         offered, hidden, eligible = menu.operations(state, "configured")
         self.assertEqual(hidden["prepare"], "no home is recorded for snapshot draft")
         self.assertIn("acquire", offered)
-        self.assertEqual(eligible["acquire"], ["draft"])
+        self.assertEqual(eligible["acquire"], ["draft", "target"])
         self.assertEqual(eligible["move"], ["target"])
 
 
@@ -100,18 +115,44 @@ class Suggestion(unittest.TestCase):
         offered, _, _ = menu.operations(state, location)
         return menu.suggestion(state, offered, location, after, NAMES)
 
+    def test_fresh_missing_files_recommend_a_remedy_despite_blockers(self):
+        for state, expected in (
+            (checked(local_state="missing", blockers=["no home is registered"]), "acquire"),
+            (checked(local_state="missing", archive_state="verified", blockers=["no home is registered"]), "restore"),
+            (checked(home=HOME, local_state="missing", blockers=["required prepared copy is missing"]), "prepare"),
+            (checked(home=HOME, local_state="changed", blockers=["file hash mismatch"]), "prepare"),
+        ):
+            with self.subTest(expected=expected, state=state):
+                self.assertEqual(self.suggest(state)[0], expected)
+
+    def test_unknown_and_stale_observations_are_checked_before_repair(self):
+        for state in (
+            checked(local_state="unknown"),
+            checked(local_state="unknown", blockers=["node is unreachable"]),
+            checked(home=HOME, local_state="unknown", blockers=["node is unreachable"]),
+            checked(local_state="missing", observation_age_seconds=None),
+            checked(local_state="missing", observation_age_seconds=2 * 86400, blockers=["no home is registered"]),
+            checked(snapshots=two_snapshots(HOME, None), local_state="unknown"),
+        ):
+            with self.subTest(state=state):
+                self.assertEqual(self.suggest(state)[0], "check")
+
+    def test_unsaved_check_does_not_reuse_ready_state(self):
+        state = checked(home=HOME, local_state="ready")
+        self.assertEqual(self.suggest(state, after="check-failed")[0], "check")
+
     def test_rules_in_order(self):
         self.assertEqual(self.suggest(row())[0], "check")
         self.assertEqual(self.suggest(checked(observation_age_seconds=3 * 86400)), ("check", "last check 3 days ago"))
         self.assertEqual(self.suggest(checked(blockers=["n1: disk full"])), ("check", "saved blocker: spark-2: disk full"))
-        self.assertEqual(self.suggest(checked()), ("acquire", "no home recorded"))
-        self.assertEqual(self.suggest(checked(archive_state="verified"))[0], "restore")
+        self.assertEqual(self.suggest(checked(local_state="missing")), ("acquire", "no home recorded"))
+        self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="changed")),
                          ("prepare", "files changed since they were verified (checked 2 hours ago)"))
         self.assertEqual(self.suggest(checked(home=HOME, local_state="ready"))[0], "start")
 
     def test_restore_needs_a_configured_archive_location(self):
-        self.assertEqual(self.suggest(checked(archive_state="verified"), location="disabled")[0], "acquire")
+        self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"), location="disabled")[0], "acquire")
 
     def test_session_history_outranks_saved_state(self):
         ready = checked(home=HOME, local_state="ready")
@@ -122,11 +163,11 @@ class Suggestion(unittest.TestCase):
 
     def test_guarded_spec_keeps_check_download_restore_and_nothing_toward_start(self):
         self.assertEqual(self.suggest(row(**GUARDED)), ("check", "no saved check"))
-        self.assertEqual(self.suggest(checked(**GUARDED)), ("acquire", "no home recorded"))
-        self.assertEqual(self.suggest(checked(archive_state="verified", **GUARDED))[0], "restore")
+        self.assertEqual(self.suggest(checked(local_state="missing", **GUARDED)), ("acquire", "no home recorded"))
+        self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified", **GUARDED))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", **GUARDED), after="prepare"),
                          ("check", "prepare ran after the last check"))
-        for local in ("ready", "missing", "changed", "unknown"):
+        for local in ("ready", "missing", "changed"):
             for after in (None, "stop", "check"):
                 with self.subTest(local=local, after=after):
                     self.assertIsNone(self.suggest(checked(home=HOME, local_state=local, **GUARDED), after))
@@ -153,7 +194,9 @@ class View(unittest.TestCase):
         self.assertIn("org/model [abababab]", text)
         self.assertIn("checked 2 hours ago", text)
         self.assertIn("Suggested: Start", text)
-        self.assertIn("Not shown: Download, Restore (a home is recorded)", text)
+        self.assertIn("no archive location is configured", " ".join(text.split()))
+        self.assertIn("option\tmain\tacquire\tDownload", lines)
+        self.assertFalse(any(line.startswith("option\tmain\trestore\t") for line in lines))
         self.assertIn("Check now refreshes them", text)
         self.assertIn("option\tmain\tstart\tStart (suggested)", lines)
         self.assertIn("suggest\tstart", lines)
@@ -196,22 +239,23 @@ class SuggestedCommand(unittest.TestCase):
 
     def test_acquire_and_restore_name_a_recorded_node_or_use_the_default(self):
         # No saved record places the recipe: the command's default destination.
-        self.assertEqual(self.command(checked()), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
-        self.assertEqual(self.command(checked(archive_state="verified")),
+        self.assertEqual(self.command(checked(local_state="missing")), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
+        self.assertEqual(self.command(checked(local_state="missing", archive_state="verified")),
                          ["./pulsar", "model", "restore", "abababababab", "--yes"])
-        state = checked(snapshots=two_snapshots(HOME, None))
+        state = checked(local_state="missing", snapshots=two_snapshots(HOME, None))
         self.assertEqual(self.command(state), ["./pulsar", "model", "acquire", "abababababab",
                                                "--snapshot", "draft", "--yes"])
         # A one-node recipe keeps the node its other snapshot's home names.
         one = {"geometry": {"nodes": 1, "tp": 1, "pp": 1}}
-        self.assertEqual(self.command(checked(snapshots=two_snapshots(HOME, None), **one)),
+        self.assertEqual(self.command(checked(local_state="missing", snapshots=two_snapshots(HOME, None), **one)),
                          ["./pulsar", "model", "acquire", "abababababab", "--snapshot", "draft",
                           "--node", "spark-1", "--yes"])
-        self.assertEqual(self.command(checked(**one)), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
+        self.assertEqual(self.command(checked(local_state="missing", **one)), ["./pulsar", "model", "acquire", "abababababab", "--yes"])
 
-    def test_no_command_when_nothing_is_suggested(self):
+    def test_guarded_ready_has_no_command_but_unknown_files_need_check(self):
         self.assertIsNone(self.command(checked(home=HOME, local_state="ready", **GUARDED)))
-        self.assertIsNone(self.command(checked(home=HOME, local_state="unknown")))
+        self.assertEqual(self.command(checked(home=HOME, local_state="unknown")),
+                         ["./pulsar", "models", "check", "abababababab"])
 
 
 class Labels(unittest.TestCase):

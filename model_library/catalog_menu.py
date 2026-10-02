@@ -65,8 +65,10 @@ def _location_reason(archive_location: str) -> str:
 def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
     """Return offered actions, left-out actions with reasons, and eligible snapshots.
 
-    Only saved records that rule an operation out leave it out. Service state
-    is live, so start, stop and status are offered, except that start is left
+    A home record locates files; it cannot rule out recovery after file loss.
+    Download and configured-archive Restore stay available, and their live
+    plans decide eligibility. Service state is live, so start, stop and status
+    are offered, except that start is left
     out for a spec this Stack cannot start (a serving guard); stop and status
     stay because such a service may have been started elsewhere. Pin, unpin
     and purge also act on node records and incomplete staging that saved
@@ -80,14 +82,10 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     without_home = [name for name, member in snapshots.items() if not member.get("home")]
     archives = archive_location == "configured"
     schema3 = isinstance(row.get("snapshots"), dict)
-    home_reason = "every required snapshot has a recorded home" if schema3 else "a home is recorded"
     missing_reason = ("no home is recorded for snapshot " + ", ".join(str(n) for n in without_home)
                       if schema3 else "no home is recorded")
     hidden: dict[str, str] = {}
-    if not without_home:
-        hidden["acquire"] = home_reason
-        hidden["restore"] = home_reason
-    elif not archives:
+    if not archives:
         hidden["restore"] = _location_reason(archive_location)
     if without_home:
         hidden["prepare"] = missing_reason
@@ -104,7 +102,9 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
     eligible = {}
     if schema3:
         for action in ("acquire", "restore"):
-            eligible[action] = [str(n) for n in without_home]
+            # Put unregistered snapshots first, while keeping recorded homes
+            # selectable when their files have gone missing.
+            eligible[action] = [str(n) for n in without_home + with_home]
         for action in ("move", "remove", "archive"):
             eligible[action] = [str(n) for n in with_home]
     return offered, hidden, eligible
@@ -114,24 +114,29 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
                names: NodeNames | None = None) -> tuple[str, str] | None:
     """One suggested next step from saved state; the first matching rule wins.
 
-    ``after`` is the last operation that succeeded for this recipe in the
-    current menu session. It covers what saved records cannot show: a mutation
-    makes the saved check out of date, and a started service is live. For a
+    ``after`` is the last relevant outcome in this menu session. A recorded
+    check clears an earlier mutation even when it found blockers; a check
+    without a recorded result must not reuse old readiness. A mutation makes
+    the saved check out of date, and a started service is live. For a
     spec this Stack cannot start, nothing after the Check, Download and
     Restore rules is suggested: Prepare and Start would only lead to a start.
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
+    if after == "check-failed":
+        return "check", "the last check did not record an observation"
     if after == "start":
         return "status", "started from this menu; live status observes the service"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
-    if row.get("blockers"):
-        return "check", "saved blocker: " + names.prefixed(str(row["blockers"][0]))
     if row.get("checked_at") is None:
         return "check", "no saved check"
     if age is None or age > STALE_SECONDS:
         return "check", "last check " + age_text(age)
+    local = row.get("local_state", "unknown")
+    blocker = "saved blocker: " + names.prefixed(str(row["blockers"][0])) if row.get("blockers") else None
+    if local == "unknown":
+        return "check", blocker or "file state was not established by the last check"
     snapshots = members(row)
     missing = [member for member in snapshots.values() if not member.get("home")]
     if missing:
@@ -143,10 +148,11 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return None
     if start_unsupported(row):
         return None
-    local = row.get("local_state")
     if local in ("missing", "changed") and "prepare" in offered:
         reason = "files changed since they were verified" if local == "changed" else "files not prepared on every rank"
         return "prepare", f"{reason} (checked {age_text(age)})"
+    if blocker:
+        return "check", blocker
     if local == "ready":
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
@@ -371,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
     view = sub.add_parser("view", help="menu lines for one recipe; catalog JSON on stdin")
     view.add_argument("--spec-id", required=True)
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
-    view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check"}))
+    view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop"}))

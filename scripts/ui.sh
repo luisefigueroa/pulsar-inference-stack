@@ -257,6 +257,7 @@ confirm() {
   _ui_gum_confirm_style_args
   set +e
   # Leave stderr open — Gum confirm draws its TUI on stderr.
+  # Gum defaults to Yes when --default is omitted; pass both values explicitly.
   if [ "$default" = yes ]; then
     _ui_gum confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
@@ -264,7 +265,7 @@ confirm() {
   else
     _ui_gum confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
-      "$msg"
+      --default=false "$msg"
   fi
   rc=$?
   set -e
