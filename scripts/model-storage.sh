@@ -214,14 +214,39 @@ perform() {
   esac
 }
 
-# recipe_menu SPEC — loops over one recipe's operations until Back.
+# Compare two existing catalog specs through the canonical public comparator.
+compare_catalog_spec() {
+  local spec="$1" result rows entry index rc
+  local -a ids=() labels=()
+  result=$(catalog list --json) || return 0
+  rows=$(printf '%s' "$result" | catalog_menu labels --compare-with "$spec") || return 0
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}")
+  done <<<"$rows"
+  if [ "${#ids[@]}" -eq 0 ]; then
+    printf 'No other catalog spec supports comparison. Show details remains available.\n'
+    return 0
+  fi
+  index=$(choose_index "Compare the selected spec with another catalog spec" "${labels[@]}" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  [ "$index" -lt "${#ids[@]}" ] || return 0
+  printf '\nSelected spec: %s\nCompared with: %s\n' "$spec" "${ids[$index]}"
+  "$REPO_DIR/pulsar" spec compare --before "$REPO_DIR/releases/$spec.json" \
+    --after "$REPO_DIR/releases/${ids[$index]}.json" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+}
+
+# recipe_menu SPEC [READ_ONLY] — loops over one selected spec until Back.
 recipe_menu() {
-  local spec="$1" kind a b c index rc default group
+  local spec="$1" read_only="${2:-0}" kind a b c index rc default group title="Choose one operation"
+  local -a view_args=()
+  if [ "$read_only" = 1 ]; then view_args+=(--read-only); title="Catalog spec (read-only)"; fi
   local -a header=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=() labels=()
   while true; do
     ROW_JSON=$(catalog show "$spec" --json) || return 0
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
-      --archive-location "$(archive_location)" ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"}) || return 0
+      --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" \
+      ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"}) || return 0
     header=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
       case "$kind" in
@@ -240,8 +265,8 @@ recipe_menu() {
     labels=("${main_labels[@]}")
     [ "${#launch[@]}" -eq 0 ] || labels+=("Launch options…")
     [ "${#storage[@]}" -eq 0 ] || labels+=("Storage and archive…")
-    labels+=("Show details" "Back")
-    index=$(PULSAR_CHOOSE_DEFAULT="$default" choose_index "Choose one operation" "${labels[@]}") \
+    labels+=("Show details" "Published results" "Compare catalog specs" "Back")
+    index=$(PULSAR_CHOOSE_DEFAULT="$default" choose_index "$title" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     if [ "$index" -lt "${#main[@]}" ]; then
       perform "${main[$index]}" "${main_labels[$index]% (suggested)}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
@@ -260,6 +285,8 @@ recipe_menu() {
         [ "$index" -lt "${#storage[@]}" ] || continue
         perform "${storage[$index]}" "${storage_labels[$index]}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       "Show details") catalog show "$spec" || true ;;
+      "Published results") catalog results "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      "Compare catalog specs") compare_catalog_spec "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       *) return 0 ;;
     esac
   done
@@ -282,15 +309,7 @@ browse() {
     index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$index" -lt "${#ids[@]}" ] || return 0
-    if [ "$read_only" = 1 ]; then
-      # The existing detail renderer reads saved records only. Do not enter
-      # the operations menu while the operator is browsing during setup.
-      catalog show "${ids[$index]}" || continue
-      choose_index "Catalog spec details (read-only)" "Back" >/dev/null \
-        || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
-      continue
-    fi
-    recipe_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    recipe_menu "${ids[$index]}" "$read_only" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
   done
 }
 
@@ -306,9 +325,9 @@ case "$command" in
     if [ "${1:-}" = --read-only ]; then read_only=1; shift; fi
     [ $# -eq 0 ] || { echo "error: use ./pulsar models menu [--read-only], or ./pulsar models list --json" >&2; exit 2; }
     browse "$read_only" ;;
-  list|show) catalog "$command" "$@" ;;
+  list|show|results) catalog "$command" "$@" ;;
   check) exec "$REPO_DIR/scripts/model-library.sh" check "$@" ;;
   --json) catalog list --json "$@" ;;
   --help|-h|help) catalog --help ;;
-  *) echo 'usage: pulsar models list|show SPEC|check SPEC|menu [--read-only]' >&2; exit 2 ;;
+  *) echo 'usage: pulsar models list|show SPEC|results SPEC|check SPEC|menu [--read-only]' >&2; exit 2 ;;
 esac

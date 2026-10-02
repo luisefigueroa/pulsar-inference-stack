@@ -463,7 +463,7 @@ raise SystemExit(rc)
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
-                 menu_args=()):
+                 menu_args=(), additional_specs=()):
         spec = self.add_spec(guarded=guarded)
         if review is not None:
             spec["review"] = review
@@ -472,6 +472,8 @@ raise SystemExit(rc)
             self.put_home(spec)
         if observation is not None:
             self.observe(spec, **{"checked_at": datetime.now(timezone.utc).isoformat(), **observation})
+        for extra in additional_specs:
+            (self.repo / "releases" / f"{extra['spec_id']}.json").write_bytes(pretty_json_bytes(extra))
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
@@ -511,7 +513,7 @@ raise SystemExit(rc)
 
     def test_read_only_catalog_opens_saved_details_without_operations(self):
         spec, result, actions, choices, questions = self.run_menu(
-            ["#0", "Back", "Back"], archive_root=None, menu_args=("--read-only",))
+            ["#0", "Show details", "Published results", "Back", "Back"], archive_root=None, menu_args=("--read-only",))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [])
         self.assertEqual(questions, "")
@@ -519,10 +521,35 @@ raise SystemExit(rc)
         self.assertIn("Image", result.stdout)
         self.assertIn("Arguments", result.stdout)
         self.assertIn("Saved records:", result.stdout)
-        self.assertIn("Catalog spec details (read-only)\nBack\n", choices)
+        self.assertIn("Catalog spec (read-only)\nShow details\nPublished results\nCompare catalog specs\nBack\n", choices)
+        self.assertIn("None supplied.", result.stdout)
         self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
         self.assertNotIn("Choose one operation", choices)
         self.assertFalse(self.store.root.exists())
+
+    def test_catalog_comparison_uses_only_the_two_selected_published_specs(self):
+        from release_spec.tests.test_serving_guard import FIXTURES, guarded
+        extra = guarded(json.loads((FIXTURES / "spec.json").read_text()))
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Compare catalog specs", "#0", "Back", "Back"],
+            menu_args=("--read-only",), additional_specs=(extra,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        before, after = sorted([spec, extra["spec_id"]])
+        releases = self.root / "shell/releases"
+        self.assertEqual(actions, [["pulsar", "spec", "compare", "--before", str(releases / f"{before}.json"),
+                                   "--after", str(releases / f"{after}.json")]])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
+        self.assertIn(f"Selected spec: {before}", result.stdout)
+
+    def test_single_catalog_spec_has_a_clear_comparison_return(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Compare catalog specs", "Back", "Back"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertIn("No other catalog spec supports comparison", result.stdout)
+        self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -664,7 +691,8 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Start", "Stop", "Live status",
-                                 "Launch options…", "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
+                                 "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Suggested: Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
@@ -676,7 +704,8 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
-                                 "Launch options…", "Storage and archive…", "Show details", "Back"])
+                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
+                                 "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
 

@@ -44,7 +44,8 @@ setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
 
 During cluster setup, **Browse the catalog (read-only)** lets you select a
-published spec and read its existing details, then return with **Back** or Esc.
+published spec, inspect its summary, details and published results, or compare
+it with another catalog spec, then return with **Back** or Esc.
 It offers no storage or serving operations. **Host diagnostics**, saved
 **Cluster topology (read-only)** and **Help** are also available. Diagnostics
 run only when selected. The same catalog browser is available directly as
@@ -55,8 +56,43 @@ still apply to all operational actions after setup.
 ./pulsar models
 ./pulsar models list --json
 ./pulsar models show <spec-id>
+./pulsar models results <spec-id>
 ./pulsar models check <spec-id> --node <node>
 ```
+
+The selected-spec menu separates **Selected recipe**, **Current observations
+(saved)** and **Published results**. Recipe geometry and explicitly recorded
+context, sequence and quantization settings describe intended execution; the
+menu does not infer engine defaults or resolve repeated arguments. The image
+digest is abbreviated here; **Show details** retains the complete identity and
+arguments. Maintainer reviews are advisory and keep their dates separate from
+measurement dates. Saved file checks retain their age, and the summary explicitly says
+that it has not observed the live service.
+
+**Published results** (also `models results SPEC`) reads only this catalog's
+`results/` records for the selected spec and uses the existing evidence verifier.
+It shows recorded run times, run and policy outcomes, benchmark token counts and
+concurrency, accuracy sample scope, soak results, and the command for the full
+public evidence summary. The compact view shows the most recent dated verified
+run regardless of outcome and counts undated or unverified records separately.
+Missing, inconsistent or unsupported evidence is explicit and never removes a
+spec or blocks its operations. Historical schema-1 evidence retains its format;
+the results view gives the command to inspect its bound references.
+
+These are historical results for the exact published recipe and workloads, not
+a current health or suitability score. Run dates are measurement dates, not
+publication dates. Workbench continues to own authoring, qualification and
+publication. Private experiments and approvals are not read by these views.
+The existing `models list --json`, `models show --json` and integration contract
+are unchanged; `models results` is a human report with a separate JSON evidence
+command for each verified run.
+
+**Compare catalog specs** invokes the existing `pulsar spec compare` for the
+selected spec and another published schema-2 or schema-3 spec. The output names
+both identities and every changed recipe field. Comparison leaves the current
+selection unchanged and makes no claim that their results are comparable across
+different workloads. Both inspection actions are available in the read-only
+catalog menu before cluster setup.
 
 The catalog includes every released recipe even when no local files are
 present. Each spec is one block that leads with its saved state: recipe
@@ -193,11 +229,12 @@ remaining local storage for it with `--spec-file` and its retained document.
 Confirmed topology determines membership and physical node identity. On a
 terminal, `./pulsar` offers the next setup step (**Set up cluster membership
 and SSH trust**, which runs `./pulsar topology setup`; **Enroll SSH trust**
-when membership is already saved; or **Select archive location**), read-only
-catalog browsing (`./pulsar models list`) and Exit until this checkout is bound
-to the cluster. A step that fails reports that it did not complete before the
-menu returns. That menu uses saved local files; it does not probe nodes. After
-the checkout is bound, open `./pulsar` and choose **Cluster topology**. The
+when membership is already saved), read-only catalog browsing
+(`./pulsar models menu --read-only`), diagnostics, saved topology, Help and Exit.
+Archives are optional and do not restrict navigation after cluster setup.
+A setup step that fails reports that it did not complete before the menu returns.
+Entering that menu uses saved local files; it does not probe nodes. After
+cluster setup, open `./pulsar` and choose **Cluster topology**. The
 same actions are available directly:
 
 ```sh

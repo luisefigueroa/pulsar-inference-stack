@@ -19,7 +19,8 @@ import json
 import sys
 from typing import Any
 
-from .catalog import age_text, archive_facts, archive_text, files_text
+from .catalog import ROOT, age_text, archive_facts, archive_text, files_text, recipe_text
+from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
 
@@ -288,13 +289,42 @@ def menu_label(row: dict, width: int) -> str:
     return text if len(text) <= budget else text[:budget - 3] + "..."
 
 
-def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None) -> list[str]:
+def explicit_settings(arguments: list[str]) -> str:
+    """Summarize recorded values only; do not guess engine defaults or precedence."""
+    labels = {"--max-model-len": "context", "--max-num-seqs": "max sequences", "--quantization": "quantization"}
+    values: dict[str, list[str]] = {flag: [] for flag in labels}
+    for index, token in enumerate(arguments):
+        flag, separator, value = token.partition("=")
+        if flag in labels:
+            if not separator:
+                value = arguments[index + 1] if index + 1 < len(arguments) and not arguments[index + 1].startswith("--") else "not supplied"
+            values[flag].append(value)
+    parts = [f"{labels[flag]} {items[0] if len(items) == 1 else 'has repeated values; see details'}"
+             for flag, items in values.items() if items]
+    return "; ".join(parts) if parts else "see Show details"
+
+
+def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
+           published=None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
     for line in withdrawal_notice(row):
         out.emit(line)
+    out.emit("Selected recipe: " + recipe_text(row["geometry"]))
+    digest = str((row.get("image") or {}).get("digest") or "not recorded")
+    image = digest if len(digest) <= 24 else digest[:24] + "…"
+    out.emit(f"Image: {image}")
+    out.emit("Settings: " + explicit_settings(row.get("engine_args") or []))
+    review = row.get("review") or {}
+    if review.get("status") and review["status"] != "withdrawn":
+        out.emit(f"Maintainer review (advisory): {review['status']} · "
+                 f"{review.get('reviewed_at') or 'date not recorded'}")
+    out.emit("Current observations (saved)")
     out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
+    out.emit("Live service: not observed here.")
+    for line in published_lines(published, now=now):
+        out.emit(line)
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
     by_reason: dict[str, list[str]] = {}
@@ -313,12 +343,13 @@ def clean(text: object) -> str:
 
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
-               width: int | None = None, names: NodeNames | None = None, now=None) -> list[str]:
-    offered, hidden, eligible = operations(row, archive_location)
-    suggested = suggestion(row, offered, archive_location, after, names, now=now)
+               width: int | None = None, names: NodeNames | None = None, now=None,
+               published=None, read_only=False) -> list[str]:
+    offered, hidden, eligible = ([], {}, {}) if read_only else operations(row, archive_location)
+    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now)]
+    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now, published=published)]
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
@@ -478,7 +509,8 @@ def read_row(stream, spec_id: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
+    labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
+    labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
@@ -489,6 +521,8 @@ def main(argv: list[str] | None = None) -> int:
     view = sub.add_parser("view", help="menu lines for one recipe; catalog JSON on stdin")
     view.add_argument("--spec-id", required=True)
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
+    view.add_argument("--repo-root", default=ROOT)
+    view.add_argument("--read-only", action="store_true")
     view.add_argument("--after", choices=sorted(MUTATIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
@@ -503,7 +537,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if memory_warning_only(read(args.blockers_file)) else 1
         if args.command == "labels":
             width = terminal_width()
-            for entry in json.load(sys.stdin).get("entries") or []:
+            entries = json.load(sys.stdin).get("entries") or []
+            if args.compare_with and any(entry["spec_id"] == args.compare_with and entry.get("historical") for entry in entries):
+                raise ValueError("spec comparison supports schemas 2 and 3; use Show details for this historical spec")
+            for entry in entries:
+                if args.compare_with and (entry["spec_id"] == args.compare_with or entry.get("historical")):
+                    continue
                 print(f"{entry['spec_id']}\t{menu_label(entry, width)}")
             return 0
         row = read_row(sys.stdin, args.spec_id)
@@ -521,7 +560,9 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("image preview must be a public result envelope")
             return 0 if render_image_plan(row, response, node_names, mode=args.mode) else 1
         if args.command == "view":
-            print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names)))
+            published = published_results(args.repo_root, row["spec_id"])
+            print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
+                                      published=published, read_only=args.read_only)))
             return 0
         plan = None
         if args.plan_file:

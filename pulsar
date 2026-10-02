@@ -95,6 +95,7 @@ for heading,rows in [
   ('pulsar models','Browse catalog and saved storage observations.'),
   ('pulsar models menu --read-only','Select published specs and inspect saved details without offering operations.'),
   ('pulsar models show SPEC','Show recipe, known copies, pins and blockers.'),
+  ('pulsar models results SPEC','Inspect published run dates, workloads and policy outcomes for this spec.'),
   ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),
   ('pulsar model --help','Acquire, restore, move, prepare, pin, purge and archive.')]),
  ('Serve',[

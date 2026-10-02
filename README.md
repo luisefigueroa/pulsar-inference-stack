@@ -32,6 +32,11 @@ Acquiring files, restoring an archive, preparing copies and starting a service
 remain separate operations. The menus draw with Gum, bundled for the arm64
 nodes; every menu action is also a command.
 
+The selected-spec menu separates recipe settings, saved observations and
+historical published results. **Published results** (`./pulsar models results SPEC`)
+shows recorded workloads and outcomes; **Compare catalog specs** displays recipe
+differences using the existing spec comparison command.
+
 For first use, choose **Set up cluster membership and SSH trust**, or run
 `./pulsar topology setup`. It guides membership and SSH identity enrollment
 with separate confirmations, then checks readiness. From the workbench, run
