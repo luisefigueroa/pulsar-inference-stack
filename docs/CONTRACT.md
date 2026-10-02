@@ -27,7 +27,8 @@ Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.
 `contract` advertises its supported document versions through
 `serving_guard_schema_versions`. Guard metadata participates in recipe identity
 and can be validated for catalog and evidence purposes. The separate
-`guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+`guarded.template`, `guarded.validate`, `guarded.run`, `guarded.stop` and
+`guarded.reconcile`
 operations provide [bounded foreground serving](GUARDED_SERVING.md). Ordinary
 launch still rejects guarded recipes, and static launch compatibility reports
 that limitation separately. `start --dry-run` can plan a guarded recipe without

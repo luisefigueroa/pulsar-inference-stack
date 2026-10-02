@@ -50,7 +50,8 @@ matching filename/spec ID, and publication privacy. No catalog classification
 follows from a guard or from passing measurements.
 
 `pulsar contract` advertises `serving_guard_schema_versions` and the separate
-`guarded.template`, `guarded.validate`, `guarded.run` and `guarded.stop`
+`guarded.template`, `guarded.validate`, `guarded.run`, `guarded.stop` and
+`guarded.reconcile`
 operations. [Bounded guarded serving](GUARDED_SERVING.md) owns a foreground
 lease, enforces the recorded policy, and verifies owned cleanup. The static
 ordinary-launch compatibility check reports guarded recipes unsupported.

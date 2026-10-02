@@ -29,9 +29,9 @@ def write(path, value):
         stream.write("\n")
 
 
-def read_regular(path, limit=64 * 1024**2):
+def read_regular(path, limit=64 * 1024**2, *, dir_fd=None):
     import stat
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
     with os.fdopen(fd, "rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
