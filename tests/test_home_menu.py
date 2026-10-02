@@ -1,4 +1,4 @@
-"""Interactive ./pulsar menu: setup steps and read-only browsing until the checkout is bound."""
+"""Interactive ./pulsar menu: cluster setup and optional archive configuration."""
 import json
 import os
 from pathlib import Path
@@ -60,6 +60,10 @@ choose_index() {
         pulsar.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PULSAR_LOG"\n'
                           'n=$(wc -l < "$PULSAR_LOG")\n'
                           'rc=$(printf "%s" "${PULSAR_RC:-0}" | cut -d, -f"$n")\n'
+                          'case "$*" in "topology setup"|"ssh-trust enroll")\n'
+                          '  if [ "${rc:-0}" = 0 ] && [ -n "${SETUP_TOPOLOGY:-}" ]; then\n'
+                          '    cp "$SETUP_TOPOLOGY" .cluster-topology.json\n'
+                          '  fi ;; esac\n'
                           'exit "${rc:-0}"\n')
         pulsar.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh"):
@@ -96,38 +100,49 @@ choose_index() {
     def commands(self):
         return self.pulsar_log.read_text().splitlines() if self.pulsar_log.exists() else []
 
-    def test_first_run_offers_the_next_step_read_only_browsing_and_exit(self):
-        result = self.run_home(["2"])
+    def test_first_run_offers_setup_read_only_inspection_and_help(self):
+        result = self.run_home(["5"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus(), [["Pulsar Inference Stack", "Set up cluster membership and SSH trust",
-                                         "Browse the catalog (read-only)", "Exit"]])
+                                         "Browse the catalog (read-only)", "Host diagnostics",
+                                         "Cluster topology (read-only)", "Help", "Exit"]])
         self.assertEqual(self.commands(), [])
-        self.assertIn("This checkout is not bound to a cluster yet.", result.stdout)
+        self.assertIn("Cluster membership is not configured.", result.stdout)
+        self.assertFalse((self.root / ".env").exists())
 
     def test_membership_step_runs_guided_topology_setup(self):
-        result = self.run_home(["0", "2"])
+        result = self.run_home(["0", "5"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology setup"])
         self.assertNotIn("Setup step did not complete", result.stdout)
         self.assertEqual(len(self.menus()), 2)
 
-    def test_browsing_lists_the_catalog_and_returns_to_the_menu(self):
-        result = self.run_home(["1", "2"])
+    def test_catalog_details_are_read_only_and_return_to_the_menu(self):
+        result = self.run_home(["1", "5"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.commands(), ["models list"])
+        self.assertEqual(self.commands(), ["models menu --read-only"])
         menus = self.menus()
         self.assertEqual(len(menus), 2)
         self.assertEqual(menus[0], menus[1])
 
+    def test_inspection_and_help_are_available_before_setup(self):
+        result = self.run_home(["2", "3", "4", "5"], PULSAR_RC="1,2,0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["doctor", "topology show", "help"])
+        self.assertEqual(len(self.menus()), 4)
+        self.assertNotIn("Setup step did not complete", result.stdout)
+        self.assertFalse((self.root / ".cluster-topology.json").exists())
+        self.assertFalse((self.root / ".env").exists())
+
     def test_a_failed_setup_step_is_reported_before_the_menu_returns(self):
-        result = self.run_home(["0", "2"], PULSAR_RC="1")
+        result = self.run_home(["0", "5"], PULSAR_RC="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology setup"])
         self.assertIn("✗ Setup step did not complete; details above", result.stdout)
         # The report comes before the status and menu are shown again.
-        self.assertEqual(result.stdout.count("This checkout is not bound to a cluster yet."), 2)
+        self.assertEqual(result.stdout.count("Cluster membership is not configured."), 2)
         self.assertLess(result.stdout.index("✗ Setup step"),
-                        result.stdout.rindex("This checkout is not bound to a cluster yet."))
+                        result.stdout.rindex("Cluster membership is not configured."))
 
     def test_ctrl_c_during_a_setup_step_leaves_the_menu(self):
         result = self.run_home(["0"], PULSAR_RC="130")
@@ -136,17 +151,40 @@ choose_index() {
 
     def test_saved_membership_without_trust_enrolls_ssh_trust(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(unenrolled_two_node()))
-        result = self.run_home(["0", "2"], PULSAR_COLD_ROOT="")
+        result = self.run_home(["0", "5"], PULSAR_COLD_ROOT="")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[0][1], "Enroll SSH trust")
         self.assertEqual(self.commands(), ["ssh-trust enroll"])
 
-    def test_bound_checkout_without_archive_location_selects_one(self):
+    def test_configured_cluster_without_archives_opens_full_operations(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "2"])
+        result = self.run_home(["0", "1", "2", "5", "6"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.menus()[0][1], "Select archive location")
+        self.assertEqual(self.menus()[0][1], "Catalog and storage")
+        self.assertEqual(self.commands(), ["models menu", "inventory menu", "doctor", "help"])
+        self.assertNotIn("not bound", result.stdout)
+        self.assertFalse((self.root / ".env").exists())
+
+    def test_completing_cluster_setup_opens_full_menu_without_saving_archives(self):
+        topology = self.root / "enrolled.json"
+        topology.write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["0", "6"], SETUP_TOPOLOGY=str(topology))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["topology setup"])
+        self.assertEqual(self.menus()[0][1], "Set up cluster membership and SSH trust")
+        self.assertEqual(self.menus()[1][1], "Catalog and storage")
+        self.assertFalse((self.root / ".env").exists())
+
+    def test_unset_archives_remain_an_explicit_configuration_choice(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["3", "6"])
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["configure archive-root menu"])
+
+    def test_ctrl_c_during_read_only_inspection_exits(self):
+        result = self.run_home(["1"], PULSAR_RC="130")
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(len(self.menus()), 1)
 
     def test_complete_menu_starts_with_catalog_and_archive_opens_menu(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))

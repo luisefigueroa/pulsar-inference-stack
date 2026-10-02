@@ -269,7 +269,8 @@ browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
   require_gum "the catalog menu" "pulsar models list | show SPEC | check SPEC"
-  local result index rc entry
+  local read_only="${1:-0}" result index rc entry title="Select a catalog spec"
+  [ "$read_only" = 0 ] || title+=" (read-only)"
   local -a entries=() ids=() labels=()
   while true; do
     result=$(catalog list --json) || return $?
@@ -278,9 +279,17 @@ browse() {
     if [ "${#entries[@]}" -eq 0 ]; then catalog list; return; fi
     ids=(); labels=()
     for entry in "${entries[@]}"; do ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}"); done
-    index=$(choose_index "Select a catalog spec" "${labels[@]}" "Back") \
+    index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$index" -lt "${#ids[@]}" ] || return 0
+    if [ "$read_only" = 1 ]; then
+      # The existing detail renderer reads saved records only. Do not enter
+      # the operations menu while the operator is browsing during setup.
+      catalog show "${ids[$index]}" || continue
+      choose_index "Catalog spec details (read-only)" "Back" >/dev/null \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      continue
+    fi
     recipe_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
   done
 }
@@ -290,11 +299,16 @@ command="${1:-}"
 case "$command" in
   "") if [ -t 0 ]; then browse; else catalog list; fi ;;
   menu)
-    [ $# -eq 0 ] || { echo "error: the catalog menu is interactive; use ./pulsar models list --json" >&2; exit 2; }
-    browse ;;
+    for arg in "$@"; do
+      [ "$arg" != --json ] || { echo "error: the catalog menu is interactive; use ./pulsar models list --json" >&2; exit 2; }
+    done
+    read_only=0
+    if [ "${1:-}" = --read-only ]; then read_only=1; shift; fi
+    [ $# -eq 0 ] || { echo "error: use ./pulsar models menu [--read-only], or ./pulsar models list --json" >&2; exit 2; }
+    browse "$read_only" ;;
   list|show) catalog "$command" "$@" ;;
   check) exec "$REPO_DIR/scripts/model-library.sh" check "$@" ;;
   --json) catalog list --json "$@" ;;
   --help|-h|help) catalog --help ;;
-  *) echo 'usage: pulsar models [list|show SPEC|check SPEC|menu] [--json]' >&2; exit 2 ;;
+  *) echo 'usage: pulsar models list|show SPEC|check SPEC|menu [--read-only]' >&2; exit 2 ;;
 esac

@@ -85,14 +85,15 @@ w.emit('Pulsar Inference Stack')
 w.emit('Catalog, model storage, recovery and exact-spec serving.')
 for heading,rows in [
  ('Set up this checkout',[
-  ('pulsar','Open the menu on a terminal with Gum: setup steps and read-only browsing until this checkout is bound, then catalog and cluster actions.'),
+  ('pulsar','Open the menu on a terminal with Gum: cluster setup, read-only catalog details, diagnostics and Help. Full operations follow membership and SSH setup; archives are optional.'),
   ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
   ('pulsar topology show|check|detect|configure','Inspect saved membership, check nodes, discover or explicitly configure.'),
   ('pulsar ssh-trust --help','Inspect or explicitly enroll SSH trust.'),
-  ('pulsar configure archive-root','Select an existing archive location.'),
+  ('pulsar configure archive-root','Select an existing archive location when archives are needed.'),
   ('pulsar doctor','Run explicit host and topology diagnostics.')]),
  ('Catalog and model files',[
   ('pulsar models','Browse catalog and saved storage observations.'),
+  ('pulsar models menu --read-only','Select published specs and inspect saved details without offering operations.'),
   ('pulsar models show SPEC','Show recipe, known copies, pins and blockers.'),
   ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),
   ('pulsar model --help','Acquire, restore, move, prepare, pin, purge and archive.')]),

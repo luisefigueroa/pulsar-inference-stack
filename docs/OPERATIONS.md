@@ -37,6 +37,20 @@ names (for example `--skip-weights-check`, `PULSAR_COLD_ROOT`,
 
 ## Browse and check
 
+The home menu reads saved configuration without probing nodes. Cluster setup
+requires confirmed membership and, for multiple nodes, enrolled SSH trust.
+An unset archive location is optional configuration, not an incomplete cluster
+setup. **Archive storage configuration** is available when archive actions are
+needed; entering or browsing the menu never saves or disables that setting.
+
+During cluster setup, **Browse the catalog (read-only)** lets you select a
+published spec and read its existing details, then return with **Back** or Esc.
+It offers no storage or serving operations. **Host diagnostics**, saved
+**Cluster topology (read-only)** and **Help** are also available. Diagnostics
+run only when selected. The same catalog browser is available directly as
+`./pulsar models menu --read-only`. Command-level prerequisites and confirmations
+still apply to all operational actions after setup.
+
 ```sh
 ./pulsar models
 ./pulsar models list --json

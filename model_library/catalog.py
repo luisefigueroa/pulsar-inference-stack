@@ -461,7 +461,8 @@ def prefix_hint(repo, spec_id):
 
 
 HELP = """\
-usage: pulsar models [list|menu] [--json]
+usage: pulsar models list [--json]
+       pulsar models menu [--read-only]
        pulsar models show SPEC [--json]
        pulsar models check SPEC [--node NODE]
 
@@ -471,6 +472,7 @@ Browse catalog specs with their saved file and archive state; only check contact
   show SPEC   One spec in detail: identity, image, engine arguments, home, prepared copies and blockers
   check SPEC  Check the spec's managed files and archive and save the result; see pulsar model --help
   menu        Open the catalog menu; it needs an interactive terminal with Gum
+  --read-only  Browse saved catalog details without offering operations (menu only)
   --json      Print list or show as JSON
 
 Without a command, a terminal opens the menu and other callers get the list. SPEC is a catalog spec ID; people may type a unique prefix of at least 12 characters.

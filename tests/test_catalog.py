@@ -462,7 +462,8 @@ raise SystemExit(rc)
 """
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
-                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None):
+                 with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
+                 menu_args=()):
         spec = self.add_spec(guarded=guarded)
         if review is not None:
             spec["review"] = review
@@ -500,13 +501,44 @@ raise SystemExit(rc)
         python = binary / "python3"
         python.write_text('#!/usr/bin/env bash\nif [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then shift 2; exec '+sys.executable+' -m model_library.catalog --repo-root '+str(shell_root)+' "$@"; fi\nexec '+sys.executable+' "$@"\n')
         python.chmod(0o700); env["PATH"] = str(binary) + os.pathsep + os.environ["PATH"]
-        result = subprocess.run(["bash", str(scripts / "model-storage.sh"), "menu"], env=env, text=True, capture_output=True)
+        result = subprocess.run(["bash", str(scripts / "model-storage.sh"), "menu", *menu_args], env=env, text=True, capture_output=True)
         log = files["action.log"]
         actions = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
         choices = files["choices.log"].read_text()
         self.assertNotIn("MISSING OPTION", choices)
         confirm_log = files["confirm.log"]
         return spec["spec_id"], result, actions, choices, confirm_log.read_text() if confirm_log.exists() else ""
+
+    def test_read_only_catalog_opens_saved_details_without_operations(self):
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Back", "Back"], archive_root=None, menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertIn(spec, result.stdout)
+        self.assertIn("Image", result.stdout)
+        self.assertIn("Arguments", result.stdout)
+        self.assertIn("Saved records:", result.stdout)
+        self.assertIn("Catalog spec details (read-only)\nBack\n", choices)
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
+        self.assertNotIn("Choose one operation", choices)
+        self.assertFalse(self.store.root.exists())
+
+    def test_esc_from_read_only_details_returns_to_catalog(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "<esc>", "<esc>"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
+
+    def test_ctrl_c_in_read_only_details_exits_the_menu(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "<ctrl-c>"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertEqual(questions, "")
+        self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 1)
 
     def test_menu_returns_to_the_recipe_after_an_action(self):
         spec, result, actions, choices, _ = self.run_menu(

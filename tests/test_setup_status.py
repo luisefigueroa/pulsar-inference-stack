@@ -100,14 +100,25 @@ class SetupStatus(unittest.TestCase):
                 self.assertRegex(output.getvalue(), rf"(?m)^  Catalog +{expected}$")
                 self.assertNotIn("recipe", output.getvalue())
 
-    def test_one_node_schema1_needs_archive_location(self):
-        self.write_topology(schema1(1))
-        document = build(self.repo, {})
-        self.assertEqual(document["next_action"], "select-archive")
-        self.assertEqual(document["ssh_trust"]["status"], "not-required")
-        self.assertEqual(document["topology"]["nodes"], 1)
+    def test_cluster_setup_completes_without_an_archive_choice(self):
+        for topology, trust in ((schema1(1), "not-required"), (schema2_enrolled(), "enrolled")):
+            with self.subTest(nodes=len(topology["nodes"])):
+                self.write_topology(topology)
+                document = build(self.repo, {})
+                self.assertTrue(document["complete"])
+                self.assertNotIn("next_action", document)
+                self.assertEqual(document["ssh_trust"]["status"], trust)
+                self.assertEqual(document["archives"]["status"], "not-configured")
+                self.assertFalse((self.repo / ".env").exists())
+                output = io.StringIO()
+                render_text(document, writer=TerminalWriter(width=44, stream=output))
+                self.assertIn("Cluster\n", output.getvalue())
+                self.assertNotIn("not bound", output.getvalue())
+                self.assertIn("optional", output.getvalue())
+                self.assertIn("Archive storage configuration", " ".join(output.getvalue().split()))
+                self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()))
 
-    def test_two_node_schema1_needs_ssh_trust_before_archives(self):
+    def test_two_node_schema1_needs_ssh_trust_even_with_archives_configured(self):
         self.write_topology(schema1(2))
         (self.repo / ".env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\n")
         document = build(self.repo, {})
@@ -155,7 +166,7 @@ class SetupStatus(unittest.TestCase):
         render_text(build(self.repo, {}), writer=TerminalWriter(width=44, stream=output))
         self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()),
                         output.getvalue())
-        self.assertIn("not bound to a cluster yet", output.getvalue())
+        self.assertIn("Cluster membership is not configured.", output.getvalue())
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts/setup_status.py"),
              "--repo-root", str(self.repo), "--format", "text"],
@@ -164,6 +175,24 @@ class SetupStatus(unittest.TestCase):
         )
         self.assertTrue(all(len(line) <= 44 for line in result.stdout.splitlines()),
                         result.stdout)
+
+    def test_incomplete_status_names_the_actual_setup_gap(self):
+        cases = ((None, "Cluster membership is not configured.", "set-up-topology"),
+                 ({}, "Saved cluster membership is invalid.", "set-up-topology"),
+                 (schema1(2), "Cluster membership is confirmed; SSH trust is not enrolled.", "enroll-ssh-trust"))
+        for topology, explanation, next_action in cases:
+            with self.subTest(topology=topology):
+                if topology is not None:
+                    self.write_topology(topology)
+                document = build(self.repo, {})
+                self.assertFalse(document["complete"])
+                self.assertEqual(document["next_action"], next_action)
+                output = io.StringIO()
+                render_text(document, writer=TerminalWriter(width=44, stream=output))
+                text = " ".join(output.getvalue().split())
+                self.assertIn(explanation, text)
+                self.assertIn(document["next_label"], text)
+                self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()))
 
 
 if __name__ == "__main__":
