@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
@@ -70,12 +71,15 @@ def retire(store, *, topology_id, node_ids, selected_spec_id=None):
         return retired
 
 
-def retire_plan(store, plan, *, require_matching=False):
+def retire_plan(store, plan, *, require_matching=False, retirement_record=None):
     """Retire this plan after cleanup; reconciliation refuses a different locator."""
     validate_plan(plan)
     with store.lock(name='services.lock'):
         row = store.get('services', plan['service_id'])
         if row is None:
+            if retirement_record is not None:
+                with retirement_record(False):
+                    pass
             return False
         if row['plan_id'] != plan['plan_id']:
             if require_matching:
@@ -88,7 +92,11 @@ def retire_plan(store, plan, *, require_matching=False):
         saved = store.get('service-plans', plan['plan_id'])
         if saved != plan or row['service_id'] != plan['service_id']:
             raise ValueError('service index differs from saved plan')
-        store.remove('services', plan['service_id'])
+        # A reconciliation receipt must be durable before removal, and remain
+        # truthful if removal or its final record fails. Keep the caller's
+        # receipt context inside the same compare/remove lock.
+        with retirement_record(True) if retirement_record is not None else nullcontext():
+            store.remove('services', plan['service_id'])
         return True
 
 

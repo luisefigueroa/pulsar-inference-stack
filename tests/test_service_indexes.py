@@ -1,5 +1,6 @@
 """Stops retire only active locators; immutable plan history remains readable."""
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -102,6 +103,62 @@ class ServiceIndexes(unittest.TestCase):
                 retire_thread.join(5)
                 if save_thread.ident is not None:
                     save_thread.join(5)
+        self.assertFalse(retire_thread.is_alive())
+        self.assertFalse(save_thread.is_alive())
+        self.assertFalse(errors, errors)
+        self.assertTrue(saved.is_set())
+        self.assertEqual(locate(self.store, service_id=self.plan['service_id']), self.replacement())
+
+    def test_retirement_record_keeps_compare_remove_lock_through_both_writes(self):
+        before = threading.Event()
+        remove_allowed = threading.Event()
+        after = threading.Event()
+        finish_allowed = threading.Event()
+        saved = threading.Event()
+        errors = []
+
+        @contextmanager
+        def record(matching):
+            self.assertTrue(matching)
+            self.assertIsNotNone(self.store.get('services', self.plan['service_id']))
+            before.set()
+            if not remove_allowed.wait(5):
+                raise AssertionError('test did not release intent write')
+            yield
+            self.assertIsNone(self.store.get('services', self.plan['service_id']))
+            after.set()
+            if not finish_allowed.wait(5):
+                raise AssertionError('test did not release completion write')
+
+        def retire_old():
+            try:
+                self.assertTrue(retire_plan(self.store, self.plan, retirement_record=record))
+            except BaseException as exc:
+                errors.append(exc)
+
+        def save_new():
+            try:
+                save(self.store, self.replacement())
+                saved.set()
+            except BaseException as exc:
+                errors.append(exc)
+
+        retire_thread = threading.Thread(target=retire_old)
+        save_thread = threading.Thread(target=save_new)
+        retire_thread.start()
+        try:
+            self.assertTrue(before.wait(5))
+            save_thread.start()
+            self.assertFalse(saved.wait(.1))
+            remove_allowed.set()
+            self.assertTrue(after.wait(5))
+            self.assertFalse(saved.wait(.1))
+        finally:
+            remove_allowed.set()
+            finish_allowed.set()
+            retire_thread.join(5)
+            if save_thread.ident is not None:
+                save_thread.join(5)
         self.assertFalse(retire_thread.is_alive())
         self.assertFalse(save_thread.is_alive())
         self.assertFalse(errors, errors)

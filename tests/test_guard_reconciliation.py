@@ -1,5 +1,6 @@
 """Synthetic public reconciliation: immutable history and no container mutations."""
 import copy
+import errno
 import json
 import os
 from pathlib import Path
@@ -7,11 +8,13 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from model_library.state import Store
 from model_library.verification_process import process_identity
 from release_spec.normalize import canonical_json_digest
 from scripts import service_state
+from serving_guard import reconciliation
 from tests.test_serving_guard import guarded_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +128,128 @@ ssh_node() {
         self.assertFalse(json.loads(result.stdout)['ok'])
         self.assertEqual(self.store.get('services', self.plan['service_id'])['plan_id'], self.plan['plan_id'])
         self.assertFalse(list((self.output / 'reconciliations').glob('*.json')))
+
+    def direct_reconcile(self):
+        observed = self.root / 'observed'
+        observed.mkdir(exist_ok=True)
+        (observed / 'plan.json').write_text(json.dumps(self.plan))
+        for rank in range(len(self.plan['ranks'])):
+            for selector in ('name', 'run', 'plan', 'spec'):
+                (observed / f'{rank}-{selector}.out').write_text('')
+        members = [field for index in range(3) for field in
+                   (f'node-{index}', f'rank-{index}', 'local' if index == 0 else f'rank-{index}',
+                    f'192.0.2.{index + 1}', 'eth0')]
+        with patch.object(reconciliation, 'Store', return_value=self.store):
+            return reconciliation.reconcile(self.output, self.plan['guard_run_id'],
+                self.store.root, observed, self.plan['topology_id'], members)
+
+    def receipts(self):
+        return sorted((self.output / 'reconciliations').glob('*.json'))
+
+    def test_receipt_write_failure_before_retirement_preserves_locator(self):
+        for code in (errno.EACCES, errno.ENOSPC):
+            with self.subTest(errno=code), patch.object(reconciliation, 'atomic_json',
+                    side_effect=OSError(code, 'synthetic receipt write failure')):
+                with self.assertRaises((OSError, ValueError)):
+                    self.direct_reconcile()
+                self.assertEqual(self.store.get('services', self.plan['service_id'])['plan_id'],
+                                 self.plan['plan_id'])
+                self.assertFalse(self.receipts())
+        result = self.direct_reconcile()
+        self.assertEqual(result['status'], 'complete')
+        self.assertTrue(result['service_locator_retired'])
+
+    def test_pending_receipt_publication_error_never_removes_locator(self):
+        write = reconciliation.atomic_json
+        def fail_after_write(*args, **kwargs):
+            write(*args, **kwargs)
+            raise OSError(errno.EIO, 'synthetic receipt directory fsync failure')
+        with patch.object(reconciliation, 'atomic_json', side_effect=fail_after_write):
+            with self.assertRaisesRegex(ValueError, 'locator was not changed.*receipt publication failed'):
+                self.direct_reconcile()
+        self.assertIsNotNone(self.store.get('services', self.plan['service_id']))
+        receipt = json.loads(self.receipts()[0].read_text())
+        self.assertEqual(receipt['status'], 'retirement-pending')
+        self.assertIsNone(receipt['service_locator_retired'])
+
+    def test_locator_removal_fault_keeps_truthful_pending_receipt(self):
+        remove = self.store.remove
+        for after_unlink in (False, True):
+            with self.subTest(after_unlink=after_unlink):
+                service_state.save(self.store, self.plan)
+                before = set(self.receipts())
+                def fail_remove(namespace, key):
+                    if after_unlink:
+                        remove(namespace, key)
+                    raise OSError(errno.EIO, 'synthetic locator removal failure')
+                with patch.object(self.store, 'remove', side_effect=fail_remove):
+                    with self.assertRaisesRegex(ValueError, 'outcome is unknown.*pending receipt') as error:
+                        self.direct_reconcile()
+                path, = set(self.receipts()) - before
+                self.assertIn(str(path), str(error.exception))
+                original = path.read_bytes()
+                receipt = json.loads(original)
+                self.assertEqual(receipt['status'], 'retirement-pending')
+                self.assertIsNone(receipt['service_locator_retired'])
+                self.assertEqual(self.store.get('services', self.plan['service_id']) is None,
+                                 after_unlink)
+                retry = self.direct_reconcile()
+                self.assertEqual(retry['status'], 'complete')
+                self.assertEqual(retry['service_locator_retired'], not after_unlink)
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_final_receipt_write_failure_keeps_pending_and_retry_preserves_it(self):
+        write = reconciliation.atomic_json
+        calls = 0
+        def fail_final(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError(errno.ENOSPC, 'synthetic completion receipt write failure')
+            write(*args, **kwargs)
+        with patch.object(reconciliation, 'atomic_json', side_effect=fail_final):
+            with self.assertRaisesRegex(ValueError, 'completion receipt publication failed') as error:
+                self.direct_reconcile()
+        self.assertIsNone(self.store.get('services', self.plan['service_id']))
+        path, = self.receipts()
+        self.assertIn(str(path), str(error.exception))
+        original = path.read_bytes()
+        receipt = json.loads(original)
+        self.assertEqual(receipt['status'], 'retirement-pending')
+        self.assertIsNone(receipt['service_locator_retired'])
+        retry = self.direct_reconcile()
+        self.assertFalse(retry['service_locator_retired'])
+        self.assertEqual(retry['status'], 'complete')
+        self.assertNotEqual(retry['receipt_file'], str(path))
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_final_receipt_fsync_error_keeps_truthful_published_outcome(self):
+        write = reconciliation.atomic_json
+        calls = 0
+        def fail_final_after_publish(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            write(*args, **kwargs)
+            if calls == 2:
+                raise OSError(errno.EIO, 'synthetic completion receipt fsync failure')
+        with patch.object(reconciliation, 'atomic_json', side_effect=fail_final_after_publish):
+            with self.assertRaisesRegex(ValueError, 'completion receipt publication failed'):
+                self.direct_reconcile()
+        self.assertIsNone(self.store.get('services', self.plan['service_id']))
+        receipt = json.loads(self.receipts()[0].read_text())
+        self.assertEqual(receipt['status'], 'complete')
+        self.assertTrue(receipt['service_locator_retired'])
+
+    def test_replacement_refusal_does_not_publish_retirement_intent(self):
+        replacement = copy.deepcopy(self.plan)
+        replacement['guard_run_id'] = 'e' * 64
+        replacement['plan_id'] = canonical_json_digest({k: v for k, v in replacement.items() if k != 'plan_id'})
+        service_state.save(self.store, replacement)
+        with self.assertRaisesRegex(ValueError, 'different launch plan'):
+            self.direct_reconcile()
+        self.assertFalse(self.receipts())
+        self.assertEqual(self.store.get('services', replacement['service_id'])['plan_id'],
+                         replacement['plan_id'])
 
     def test_absent_default_nondefault_and_failed_session_cleanup_retire_exact_locator(self):
         for placement, status in (((0, 1), 'stopped'), ((2, 1), 'failed'), ((0,), 'stopped')):

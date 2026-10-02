@@ -182,7 +182,17 @@ service locks it retires only the matching active locator; a newer replacement
 locator is preserved and reported as a failure. An already absent locator is
 an idempotent success after the same checks. Each success appends a fresh private
 receipt under `reconciliations/`; original records, immutable plans, model files,
-pins and archives remain. Incomplete historical cleanup or a missing final
+pins and archives remain. Before removing a matching locator, the command
+durably writes a `retirement-pending` receipt with `service_locator_retired=null`
+under the service lock. Failure to write that receipt preserves the locator.
+Successful removal finalizes the receipt as `complete` with
+`service_locator_retired=true`; an already absent locator records `false`.
+The locator and receipt may be on different filesystems. If removal or final
+receipt publication fails, the command reports failure with the receipt path.
+A pending receipt records an attempted removal, not proof that it completed;
+inspect the current locator before recovery. Retries append fresh receipts and
+do not rewrite a previous pending receipt.
+Incomplete historical cleanup or a missing final
 result requires separate physical recovery and cannot authorize reconciliation.
 
 A failed prerequisite check retains its full private stdout/stderr captures and

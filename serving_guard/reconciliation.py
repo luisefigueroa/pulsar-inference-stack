@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import secrets
@@ -112,9 +113,37 @@ def reconcile(output, run_id, state_root, observed, topology_id, members):
                'plan_id': plan['plan_id'], 'topology_id': topology_id, 'observed_at': now(),
                'ranks': [{'rank': row['rank'], 'node_id': row['node_id'], 'absent': True}
                          for row in plan['ranks']]}
-    receipt['service_locator_retired'] = retire_plan(store, plan, require_matching=True)
     receipt['receipt_file'] = str(receipts / (secrets.token_hex(16) + '.json'))
-    atomic_json(Path(receipt['receipt_file']), receipt, replace=False)
+
+    @contextmanager
+    def retirement_record(matching):
+        # The locator and receipt can be on different filesystems: persist an
+        # honest pending record before removal rather than claim an atomic
+        # cross-filesystem commit. Failure after this point leaves evidence
+        # requiring inspection; a retry cannot erase or complete this receipt.
+        receipt.update(status='retirement-pending' if matching else 'complete',
+                       service_locator_retired=None if matching else False)
+        path = Path(receipt['receipt_file'])
+        try:
+            atomic_json(path, receipt, replace=False)
+        except (OSError, ValueError) as exc:
+            raise ValueError('service locator was not changed; reconciliation receipt '
+                             f'publication failed; inspect receipt {path}') from exc
+        try:
+            yield
+        except (OSError, ValueError) as exc:
+            raise ValueError('service locator retirement outcome is unknown; '
+                             f'inspect pending receipt {path}') from exc
+        if matching:
+            receipt.update(status='complete', service_locator_retired=True)
+            try:
+                atomic_json(path, receipt)
+            except (OSError, ValueError) as exc:
+                raise ValueError('service locator was retired but completion receipt '
+                                 'publication failed; durable receipt outcome is unknown; '
+                                 f'inspect receipt {path}') from exc
+
+    retire_plan(store, plan, require_matching=True, retirement_record=retirement_record)
     return receipt
 
 
