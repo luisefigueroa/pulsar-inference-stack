@@ -32,7 +32,7 @@ if [ "$complete" = 1 ]; then
   set +e
   case "$choice" in
     0) "$REPO_DIR/scripts/model-storage.sh" menu ;;
-    1) "$REPO_DIR/scripts/inventory.sh" ;;
+    1) "$REPO_DIR/pulsar" inventory menu ;;
     2) "$REPO_DIR/scripts/doctor.sh" ;;
     3) "$REPO_DIR/pulsar" configure archive-root menu ;;
     4) "$REPO_DIR/scripts/topology.sh" menu ;;

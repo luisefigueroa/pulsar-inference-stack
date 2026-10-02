@@ -218,6 +218,7 @@ class MenuEntries(unittest.TestCase):
             ("models",): "error: the catalog menu needs an interactive terminal with Gum; "
                          "use: pulsar models list | show SPEC | check SPEC",
             ("models", "menu"): "error: the catalog menu needs",
+            ("inventory", "menu"): "error: the inventory menu needs an interactive terminal with Gum",
             ("wizard",): "error: the catalog menu needs",
             ("topology", "menu"): "error: the topology menu needs an interactive terminal with Gum; "
                                   "use: pulsar topology show | check | setup | detect | configure",

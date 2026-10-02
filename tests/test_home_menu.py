@@ -161,6 +161,12 @@ choose_index() {
         self.assertEqual(len(menus), 2)
         self.assertEqual(menus[1][0], "Pulsar Inference Stack")
 
+    def test_inventory_choice_opens_the_service_menu(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["1", "6"], PULSAR_COLD_ROOT="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["inventory menu"])
+
     def test_ctrl_c_at_the_home_menu_exits_with_130(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
         result = self.run_home(["3", "ctrl-c"], PULSAR_COLD_ROOT="")

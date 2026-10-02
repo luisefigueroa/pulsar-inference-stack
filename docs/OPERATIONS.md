@@ -74,6 +74,7 @@ is running. Live service checks are separate:
 ```sh
 ./pulsar status <spec-id> --node <node> --json
 ./pulsar inventory
+./pulsar inventory menu
 ```
 
 `status` leads with its answer, for example `spec 139908cf23bb: running and
@@ -82,6 +83,22 @@ healthy on spark-1; recipe and files verified`. It asks the service's API
 service started before launch records existed, it reports the inventory's view
 and says it is not verified, and why. It tells "no service exists" apart from
 "a node could not be observed".
+
+**Live service inventory** in the root menu opens `inventory menu`. Select an
+observed service whose spec is published in the catalog, then choose
+**Detailed status** or **Stop service**. These invoke the existing status and
+stop commands. One-node services use the node ID recorded in the inventory;
+multi-node services retain the commands' participating-node resolution.
+The inventory timestamp remains visible, and **Refresh inventory** obtains a
+new observation. **Show full inventory** retains the existing read-only view
+of all detected workloads, including those outside the catalog.
+
+Stop refreshes the inventory and shows the current scope before confirmation.
+It is unavailable when inventory has not established safe ownership and
+observability, or a one-node service has ambiguous placement. The stop command
+still rechecks ownership and can refuse; the menu does not bypass its guards.
+Model files, pins and archives are retained. The ordinary `inventory` and
+`inventory --json` commands remain read-only reports.
 
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with a
