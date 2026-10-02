@@ -56,6 +56,14 @@ arguments, the home, per-rank prepared copies, pins and blockers. A **rank** is
 this job's slot in the serving group; rank 0 provides the API and need not
 hold the home.
 
+Recovery suggestions use those same archive facts for the next snapshot that
+needs a home. An archive observed as present is not described as verified;
+older verification keeps its age visible, and a newer missing or unavailable
+observation takes precedence. When timestamps cannot establish their order,
+the display says so. A Restore suggestion always notes that Restore rechecks
+contents before copying. With several required snapshots, the suggestion names
+one snapshot and does not imply that the other archives are available.
+
 Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
 launch will work. `models check` (**Check now** in the menu) checks the

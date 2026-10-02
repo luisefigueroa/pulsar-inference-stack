@@ -1,4 +1,6 @@
 """Catalog menu decisions come from saved records only and never hide unknown state."""
+import copy
+from datetime import datetime, timezone
 import io
 import json
 import sys
@@ -9,7 +11,9 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_library import catalog_menu as menu
+from model_library.catalog import archive_facts, archive_text, combined_observation, render
 from model_library.node_names import NodeNames
+from scripts.terminal_format import TerminalWriter
 
 NAMES = NodeNames({"n0": "spark-1", "n1": "spark-2", "n2": "spark-3"})
 HOME = {"node_id": "n0", "path": "/fixture/home", "verified_at": "2026-09-05T00:00:00Z"}
@@ -145,7 +149,7 @@ class Suggestion(unittest.TestCase):
         self.assertEqual(self.suggest(row())[0], "check")
         self.assertEqual(self.suggest(checked(observation_age_seconds=3 * 86400)), ("check", "last check 3 days ago"))
         self.assertEqual(self.suggest(checked(blockers=["n1: disk full"])), ("check", "saved blocker: spark-2: disk full"))
-        self.assertEqual(self.suggest(checked(local_state="missing")), ("acquire", "no home recorded"))
+        self.assertEqual(self.suggest(checked(local_state="missing"))[0], "acquire")
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="changed")),
                          ("prepare", "files changed since they were verified (checked 2 hours ago)"))
@@ -163,7 +167,7 @@ class Suggestion(unittest.TestCase):
 
     def test_guarded_spec_keeps_check_download_restore_and_nothing_toward_start(self):
         self.assertEqual(self.suggest(row(**GUARDED)), ("check", "no saved check"))
-        self.assertEqual(self.suggest(checked(local_state="missing", **GUARDED)), ("acquire", "no home recorded"))
+        self.assertEqual(self.suggest(checked(local_state="missing", **GUARDED))[0], "acquire")
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified", **GUARDED))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", **GUARDED), after="prepare"),
                          ("check", "prepare ran after the last check"))
@@ -184,6 +188,105 @@ class Suggestion(unittest.TestCase):
             for after in (None, "start", "stop", "purge"):
                 result = self.suggest(state, after)
                 self.assertNotIn(result and result[0], {"stop", *menu.STORAGE})
+
+
+class ArchiveSuggestions(unittest.TestCase):
+    NOW = datetime(2026, 9, 5, 2, tzinfo=timezone.utc)
+
+    def suggest(self, state):
+        offered, _, _ = menu.operations(state, "configured")
+        return menu.suggestion(state, offered, "configured", names=NAMES, now=self.NOW)
+
+    def snapshot_row(self, states, *, dates=None, target_home=None):
+        snapshots = two_snapshots(target_home, None)
+        for name, state in zip(("target", "draft"), states):
+            snapshots[name]["observation"] = {
+                "archive_state": state, "local_state": "ready" if snapshots[name]["home"] else "missing",
+                "blockers": [],
+            }
+            if dates and name in dates:
+                snapshots[name]["archive"] = {"verified": True, "verified_at": dates[name]}
+        combined = combined_observation({name: member["observation"] for name, member in snapshots.items()})
+        return checked(**{**combined, "snapshots": snapshots})
+
+    def test_presence_is_not_presented_as_verification(self):
+        state = checked(local_state="missing", archive_state="present")
+        action, reason = self.suggest(state)
+        self.assertEqual(action, "restore")
+        self.assertIn(archive_text(state), reason)
+        self.assertIn("Restore rechecks contents", reason)
+        self.assertNotIn("verified archive is available", reason)
+
+    def test_old_and_unknown_verification_ages_remain_explicit(self):
+        for age in (19 * 86400, None):
+            with self.subTest(age=age):
+                state = checked(local_state="missing", archive={"verified": True}, archive_age_seconds=age)
+                action, reason = self.suggest(state)
+                self.assertEqual(action, "restore")
+                self.assertIn(archive_text(state), reason)
+                self.assertIn("Restore rechecks contents", reason)
+                self.assertNotIn("available", reason)
+
+    def test_newer_negative_check_overrides_old_verification(self):
+        for status in ("missing", "unavailable", "not-configured"):
+            with self.subTest(status=status):
+                state = checked(local_state="missing", archive_state=status,
+                                archive={"verified": True}, archive_age_seconds=19 * 86400)
+                action, reason = self.suggest(state)
+                self.assertEqual(action, "acquire")
+                self.assertIn(archive_text(state), reason)
+
+    def test_newer_verification_overrides_an_older_negative_check(self):
+        state = checked(local_state="missing", archive_state="missing",
+                        archive={"verified": True}, archive_age_seconds=3600)
+        action, reason = self.suggest(state)
+        self.assertEqual(action, "restore")
+        self.assertIn(archive_text(state), reason)
+        self.assertIn("Restore rechecks contents", reason)
+
+    def test_mixed_archives_name_only_the_snapshot_being_recovered(self):
+        old = "2026-08-17T02:00:00Z"
+        recent = "2026-09-05T01:00:00Z"
+        cases = [
+            (self.snapshot_row(("present", "missing")), "restore", "target"),
+            (self.snapshot_row(("missing", "verified"), dates={"target": old, "draft": recent}), "acquire", "target"),
+            (self.snapshot_row(("unavailable", "present"), target_home=HOME), "restore", "draft"),
+            (self.snapshot_row(("unknown", "verified")), "acquire", "target"),
+            (self.snapshot_row(("missing", "unknown"), dates={"target": recent}), "restore", "target"),
+        ]
+        for state, expected, snapshot in cases:
+            for reverse in (False, True):
+                with self.subTest(states=state["archive_state"], snapshot=snapshot, reverse=reverse):
+                    document = copy.deepcopy(state)
+                    if reverse:
+                        document["snapshots"] = dict(reversed(list(document["snapshots"].items())))
+                    before = copy.deepcopy(document)
+                    with patch("subprocess.run", side_effect=AssertionError("suggestions must not probe")):
+                        action, reason = self.suggest(document)
+                        command = menu.suggested_command(document, "configured", NAMES, now=self.NOW)
+                    self.assertEqual(action, expected)
+                    self.assertIn(f"for snapshot {snapshot}", reason)
+                    self.assertIn(archive_facts(document, self.NOW)[snapshot][2], reason)
+                    self.assertEqual(command, ["./pulsar", "model", expected, "abababababab",
+                                               "--snapshot", snapshot, "--yes"])
+                    self.assertEqual(document, before)
+
+    def test_menu_and_catalog_use_the_same_reconciled_time(self):
+        state = self.snapshot_row(("missing", "unknown"), dates={"target": "2026-09-05T01:00:00Z"})
+        for width in (44, 80):
+            with self.subTest(width=width):
+                lines = menu.view_lines(state, "configured", width=width, names=NAMES, now=self.NOW)
+                headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+                text = " ".join(" ".join(headers).split())
+                self.assertIn("target verified 1 hour ago", text)
+                self.assertIn("Suggested: Restore", text)
+                self.assertIn("archive: verified 1 hour ago; Restore rechecks contents", text)
+                self.assertTrue(all(len(line) <= width - 4 for line in headers))
+                output = io.StringIO()
+                render([state], writer=TerminalWriter(width=width, stream=output), names=NAMES,
+                       location="configured", now=self.NOW)
+                self.assertIn("model restore", output.getvalue())
+                self.assertIn("--snapshot target", output.getvalue())
 
 
 class View(unittest.TestCase):

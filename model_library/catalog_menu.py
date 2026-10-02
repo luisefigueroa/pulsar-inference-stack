@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from .catalog import age_text, archive_text, files_text
+from .catalog import age_text, archive_facts, archive_text, files_text
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
 
@@ -56,6 +56,13 @@ def members(row: dict) -> dict[str | None, dict]:
         return row["snapshots"]
     return {None: {"home": row.get("home"), "archive": row.get("archive"),
                    "model_id": row["model_id"], "model_commit": row["snapshot_revision"]}}
+
+
+def recovery_snapshots(row: dict) -> list[str | None]:
+    """Unregistered snapshots first, in the same order before/after JSON encoding."""
+    snapshots = members(row)
+    return sorted(snapshots, key=lambda name: (bool(snapshots[name].get("home")),
+                                             name != "target", name or ""))
 
 
 def _location_reason(archive_location: str) -> str:
@@ -104,14 +111,14 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
         for action in ("acquire", "restore"):
             # Put unregistered snapshots first, while keeping recorded homes
             # selectable when their files have gone missing.
-            eligible[action] = [str(n) for n in without_home + with_home]
+            eligible[action] = [str(n) for n in recovery_snapshots(row)]
         for action in ("move", "remove", "archive"):
             eligible[action] = [str(n) for n in with_home]
     return offered, hidden, eligible
 
 
 def suggestion(row: dict, offered: list[str], archive_location: str, after: str | None = None,
-               names: NodeNames | None = None) -> tuple[str, str] | None:
+               names: NodeNames | None = None, *, now=None) -> tuple[str, str] | None:
     """One suggested next step from saved state; the first matching rule wins.
 
     ``after`` is the last relevant outcome in this menu session. A recorded
@@ -138,13 +145,21 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     snapshots = members(row)
-    missing = [member for member in snapshots.values() if not member.get("home")]
+    missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
     if missing:
-        archived = all(member.get("archive") for member in missing) or row.get("archive_state") in ("present", "verified")
-        if archive_location == "configured" and archived and "restore" in offered:
-            return "restore", "no home recorded; a verified archive is available"
+        # Home operations act on one snapshot. Use that snapshot's reconciled
+        # archive fact, not the aggregate state or the existence of a record.
+        name = missing[0]
+        reason = "no home recorded" + (f" for snapshot {name}" if name is not None else "")
+        if archive_location == "configured":
+            kind, _, wording = archive_facts(row, now)[name]
+            reason += f"; archive: {wording}"
+            if kind in ("present", "verified") and "restore" in offered:
+                return "restore", reason + "; Restore rechecks contents"
+        else:
+            reason += "; " + _location_reason(archive_location)
         if "acquire" in offered:
-            return "acquire", "no home recorded"
+            return "acquire", reason
         return None
     if start_unsupported(row):
         return None
@@ -169,7 +184,7 @@ def recorded_node(row: dict) -> str | None:
     return None
 
 
-def suggested_command(row: dict, archive_location: str, names: NodeNames | None = None) -> list[str] | None:
+def suggested_command(row: dict, archive_location: str, names: NodeNames | None = None, *, now=None) -> list[str] | None:
     """The suggested next step (see suggestion) as the command that runs it.
 
     One-node recipes name the node their saved records place them on, by
@@ -180,7 +195,7 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     """
     names = names or NodeNames()
     offered, _, _ = operations(row, archive_location)
-    suggested = suggestion(row, offered, archive_location, None, names)
+    suggested = suggestion(row, offered, archive_location, None, names, now=now)
     if not suggested:
         return None
     action, spec = suggested[0], row["spec_id"][:12]
@@ -189,7 +204,7 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     if action in ("acquire", "restore"):
         snapshot = []
         if isinstance(row.get("snapshots"), dict):
-            without_home = [str(name) for name, member in row["snapshots"].items() if not member.get("home")]
+            without_home = [str(name) for name in recovery_snapshots(row) if not members(row)[name].get("home")]
             snapshot = ["--snapshot", without_home[0]] if without_home else []
         return ["./pulsar", "model", action, spec, *snapshot, *placement, "--yes"]
     if action == "check":
@@ -233,11 +248,11 @@ def menu_label(row: dict, width: int) -> str:
     return text if len(text) <= budget else text[:budget - 3] + "..."
 
 
-def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int) -> list[str]:
+def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
-    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row)}")
+    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
     if suggested:
         out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
     by_reason: dict[str, list[str]] = {}
@@ -256,12 +271,12 @@ def clean(text: object) -> str:
 
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
-               width: int | None = None, names: NodeNames | None = None) -> list[str]:
+               width: int | None = None, names: NodeNames | None = None, now=None) -> list[str]:
     offered, hidden, eligible = operations(row, archive_location)
-    suggested = suggestion(row, offered, archive_location, after, names)
+    suggested = suggestion(row, offered, archive_location, after, names, now=now)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width)]
+    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now)]
     for action in offered:
         group = "main" if action in MAIN else "storage"
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")

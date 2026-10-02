@@ -213,7 +213,11 @@ def archive_fact(state, check_age, record, record_age, *, checked=True):
         return "verified", age, _verified(age)
     if state == "verified":
         return "verified", check_age, _verified(check_age)
-    before = f" ({_verified(record_age)} before that)" if record is not None else ""
+    before = ""
+    if record is not None:
+        order = (" before that" if record_age is not None and check_age is not None and record_age > check_age
+                 else "; order relative to check unknown")
+        before = f" ({_verified(record_age)}{order})"
     if state == "present":
         return "present", check_age, "present at last check, not verified"
     if state == "missing":
@@ -431,7 +435,7 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
         if details:
             for blocker in row["blockers"]:
                 field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
-        command = suggested_command(row, location, names)
+        command = suggested_command(row, location, names, now=now)
         if command:
             _command_field(out, "Suggested", command, label_width=label_width)
         if details:

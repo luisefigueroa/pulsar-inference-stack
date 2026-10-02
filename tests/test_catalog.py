@@ -242,6 +242,14 @@ class Catalog(unittest.TestCase):
     def test_future_observation_age_is_unknown(self):
         self.assertIsNone(age_seconds("2027-01-01T00:00:00Z", self.now))
 
+    def test_unknown_or_equal_archive_times_do_not_claim_an_order(self):
+        for check_age, record_age in ((None, 3600), (3600, None), (None, None), (3600, 3600)):
+            with self.subTest(check_age=check_age, record_age=record_age):
+                kind, _, wording = archive_fact("missing", check_age, {"verified": True}, record_age)
+                self.assertEqual(kind, "missing")
+                self.assertIn("order relative to check unknown", wording)
+                self.assertNotIn("before that", wording)
+
     def put_home(self, spec, node="node-a"):
         manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
         self.store.put("homes", manifest, {"schema_version": 1, "kind": "pulsar-home",
@@ -357,9 +365,22 @@ class Catalog(unittest.TestCase):
         acquire = ["./pulsar", "model", "acquire", prefix, "--yes"]
         self.assert_suggestion(acquire, location="not-configured")
         self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
-                                              "verified_at": "2026-09-04T01:00:00Z"})
+                                              "verified_at": "2026-09-05T00:30:00Z"})
         self.assert_suggestion(["./pulsar", "model", "restore", prefix, "--yes"])
         self.assert_suggestion(acquire, location="disabled")
+
+    def test_archive_check_and_suggested_command_agree(self):
+        spec = self.add_spec()
+        manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-08-17T01:00:00Z"})
+        for state in ("missing", "unavailable"):
+            with self.subTest(state=state):
+                self.observe(spec, local_state="missing", archive_state=state)
+                self.assert_suggestion(["./pulsar", "model", "acquire", spec["spec_id"][:12], "--yes"])
+        self.store.put("archives", manifest, {"snapshot_manifest_id": manifest, "verified": True,
+                                              "verified_at": "2026-09-05T00:30:00Z"})
+        self.assert_suggestion(["./pulsar", "model", "restore", spec["spec_id"][:12], "--yes"])
 
     def test_a_guarded_spec_gets_no_suggestion_toward_start(self):
         spec = self.add_spec(guarded=True)
