@@ -5,6 +5,9 @@ repository owns the catalog, verified model files, archives,
 preparation and vLLM lifecycle commands. The separate private
 `pulsar-inference-workbench` owns model onboarding and experiments.
 
+**[MiMo V2.6 Flash image provenance and credits](docs/IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md)**
+— upstream base image, contributors, patches, and component licenses.
+
 Specs appear when the maintainer publishes them under `releases/`. The
 workbench maintainer decides which schema-valid specs are published; the
 filename must equal the complete `spec_id`. Nullable `state` and `review`
