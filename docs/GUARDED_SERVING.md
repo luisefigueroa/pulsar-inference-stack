@@ -79,7 +79,8 @@ but an old spec cannot silently launch using a different installed guard hash.
   --yes --json
 ```
 
-The memory estimate is optional and retains its existing contract. Any memory
+The [memory estimate](MEMORY_ESTIMATES.md) is optional and retains its existing
+contract. Omit both estimate flags when using the default calculation. Any memory
 warning needs the explicit `--accept-memory-warn` decision. The runner uses the
 first N confirmed nodes by default. For a multi-node recipe, pass the ordered
 `--placement-nodes NODE_ID,NODE_ID` list to `model prepare`, `model info`,

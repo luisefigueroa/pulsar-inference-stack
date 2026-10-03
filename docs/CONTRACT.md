@@ -5,6 +5,9 @@ Stack modules, source its shell library, or require a matching Git commit.
 `pulsar contract --json` lists implemented operations and supported document
 versions. Check the operations needed for an action before performing it.
 
+For setup and lifecycle procedures, use [Operations](OPERATIONS.md). This page
+is the reference for document identity, command results, and compatibility.
+
 ## Documents and identity
 
 A schema-2 or schema-3 `pulsar-serving-spec` contains `schema_version`, `kind`,
@@ -41,6 +44,10 @@ refuses destination tag conflicts, and requires exact repository/digest readback
 Image IDs alone do not establish a pinned reference. Named export and registry
 pulling are separate modes; an incomplete named stream never falls back to a
 pull. `--plan` observes only, while `--yes` applies the selected stage.
+
+Optional [memory estimates](MEMORY_ESTIMATES.md) supply reviewed resident-weight
+inputs for an exact effective spec. They affect admission calculations and the
+recorded launch plan, not recipe identity or evidence of physical fit.
 
 An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
 not recipe data. It selects ordered confirmed members for preparation, file and
@@ -258,7 +265,8 @@ successful command results or snapshot, prepared-set and evidence schemas.
 positive integer, default 3). Prepared-file verification runs at most N jobs
 and at most one per physical node. `1` selects serial execution; `--full`
 independently requests full hashes. Every required snapshot and rank must
-verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#historical-specs-and-current-observations).
+verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#inspect-a-running-service)
+and [file verification](OPERATIONS.md#verify-model-files).
 
 For non-streaming `--json` operations, stdout is one envelope with schema version
 1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human

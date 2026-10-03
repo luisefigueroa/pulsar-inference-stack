@@ -1,5 +1,11 @@
 # Stack implementation plan: serve from the spec contract
 
+> Historical planning document, retained as written below. For current interfaces
+> and procedures, use [the public contract](CONTRACT.md) and
+> [Operations](OPERATIONS.md). The proposal's status and authority statements
+> apply to the planning task dated below; they do not report current completion
+> or physical validation.
+
 Status: engineering handoff proposal, 2026-09-09. This document specifies future
 behavior; it does not claim that the refactor or its validation has happened.
 Implementation, physical experiments, commits, and publication are separate work.
