@@ -6,6 +6,11 @@
       "spec_id": "bd64cf17f60a25a9129ad8d13d4449103e6ae24f2ae29ce09fedb529952cfc9e",
       "removed_at": "2026-09-26",
       "reason": "Removed at maintainer direction. The SGLang PP3 recipe for nvidia/GLM-5.3-Flash-NVFP4 is superseded by spec 0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07 (vLLM TP3 with MTP), which passed baseline-v2."
+    },
+    {
+      "spec_id": "685a6d5f460c3715c00e7db42379a99c09aca42e0d421fc099c2615e90e3b9f8",
+      "removed_at": "2026-10-05",
+      "reason": "Superseded by spec 1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435 for XiaomiMiMo/MiMo-V2.6-Flash-RL, adding structured tool calls, separate reasoning, thinking enabled by default and explicit sampling defaults without a configured output or thinking-token cap."
     }
   ]
 }
