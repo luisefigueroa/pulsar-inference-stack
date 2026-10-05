@@ -81,7 +81,18 @@
       "--mm-processor-cache-gb",
       "0",
       "--load-format",
-      "instanttensor"
+      "instanttensor",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "mimo",
+      "--reasoning-parser",
+      "mimo",
+      "--generation-config",
+      "vllm",
+      "--override-generation-config",
+      "{\"temperature\":1.0,\"top_p\":0.95}",
+      "--default-chat-template-kwargs",
+      "{\"enable_thinking\":true}"
     ],
     "geometry": {
       "fabric": "roce-v2",
@@ -563,6 +574,6 @@
   "source": {
     "image_repository": "ghcr.io/luisefigueroa/mimo-v26-flash-vllm"
   },
-  "spec_id": "685a6d5f460c3715c00e7db42379a99c09aca42e0d421fc099c2615e90e3b9f8",
+  "spec_id": "1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435",
   "state": null
 }
