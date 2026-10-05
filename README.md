@@ -1,15 +1,42 @@
 # Pulsar Inference Stack
 
-Serve model recipes on NVIDIA DGX Spark GB10 systems with vLLM. Pulsar manages
-the model files, prepares them on the selected machines, checks the exact
-serving configuration, and starts or stops the service. Verified archives
-provide a separate recovery path.
+Serve open-source AI models on NVIDIA DGX Spark GB10 systems using published, reproducible serving specifications and a common set of operational tools.
 
-You select a **spec** from the catalog: a serving specification that fixes the
-model files, container image, execution settings, and required hardware together.
-Its **recipe** is the execution configuration. You can browse, restore, prepare,
-and serve published specs using this public repository alone. The separate
-private `pulsar-inference-workbench` owns model onboarding and experiments.
+Pulsar brings model files, quantization, container images, execution settings, and hardware requirements together in a versioned **spec**. Its **recipe** defines how the model is served. The catalog gives operators a concrete configuration to inspect, prepare, and run, together with any published measurements for that exact recipe.
+
+The goal is to make local serving a more informed choice: understand what a recipe was designed to achieve, the capabilities measured in testing, and the limits within which it was tested. Context length, concurrency, memory headroom, and performance are deliberate tradeoffs that can differ between recipes—even for the same model.
+
+Pulsar manages model acquisition and serving copies, checks configuration and launch prerequisites, and starts or stops services. Verified archives provide a separate recovery path. Current serving support uses vLLM. You can browse, restore, prepare, and serve published specs using this public repository alone.
+
+## Choosing a recipe
+
+Start with the hardware requirements and configured operating limits, then review the published results for your intended workload.
+
+Recipe development considers four priorities:
+
+- **Stability:** whether the configuration operates reliably under the tested conditions.
+- **Accuracy:** whether the served model preserves the capabilities measured by the selected evaluations.
+- **Performance:** the throughput achieved for the tested workload and concurrency.
+- **Latency:** the response times observed under those conditions.
+
+These priorities guide experiments and iteration. Publication is a maintainer decision informed by the model, intended use, and available results; there is no universal benchmark score that every catalog entry must meet. Catalog membership itself is not a certification or a guarantee of performance on your installation.
+
+### Model capability and recipe limits
+
+A model’s advertised maximum context is distinct from the context configured in a serving recipe. A recipe may use a lower limit to leave memory headroom, support a particular concurrency, or improve operational reliability. Evaluate context and concurrency together: a large context window does not imply that every concurrent session can use that full capacity.
+
+Review the selected spec’s node count, model files, image, execution settings, and any launch limitations before serving it. Published measurements apply to the configuration and conditions recorded with those results. Changes to hardware, settings, or workload can change the outcome.
+
+### Interpreting measured results
+
+Where comparable evaluations are available, results can be compared with model-provider or independent reference evaluations to assess whether specific capabilities are preserved in local serving. Such comparisons should identify the benchmark, configuration, scope, and limitations. A match on one evaluation supports that tested capability; it does not establish equivalence across all workloads.
+
+Evaluation coverage is still evolving. Preliminary results should be identified as preliminary, and capabilities without published measurements should remain explicitly uncharacterized.
+
+Use `./pulsar models results SPEC` to inspect historical published results for the exact recipe. Saved results, file verification, and current service health describe different things. An execution override creates a modified recipe with its own identity and does not inherit the original recipe’s measurements.
+
+Model onboarding and experimentation are maintained separately in the private `pulsar-inference-workbench` repository. Approved serving specifications are contributed to this public stack through pull requests.
+
 
 ## Before you start
 
@@ -164,11 +191,6 @@ equal to their complete spec IDs. Nullable `state` and `review` values,
 measurements, archive observations, and launch compatibility do not determine
 catalog membership. A catalog entry does not promise that its files are present
 or that it can run on this installation.
-
-`./pulsar models results SPEC` shows historical published results for the exact
-recipe. Those results, saved file checks, and live service health are distinct.
-Changing execution settings with an override creates a modified recipe with its
-own identity. It does not inherit the selected recipe's measurements.
 
 New operations support spec schemas 2 and 3. Historical specs remain readable;
 code updates do not automatically restart existing services. Integrators can
