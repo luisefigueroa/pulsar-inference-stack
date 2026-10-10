@@ -7,18 +7,6 @@
       "devices": [
         "infiniband"
       ],
-      "guard": {
-        "entrypoint": [
-          "vllm",
-          "serve"
-        ],
-        "max_host_swap_growth_bytes": 268435456,
-        "min_host_available_bytes": 25769803776,
-        "program_sha256": "1d9faa90cba56de93929a83576b8b0c335677744bc70f52005722eeef074dfd5",
-        "schema_version": 2,
-        "startup_timeout_seconds": 7200,
-        "timeout_seconds": 18000
-      },
       "healthcheck": null,
       "ipc_mode": "host",
       "memory_limit_bytes": 103079215104,
@@ -61,15 +49,15 @@
       "--distributed-executor-backend",
       "mp",
       "--max-model-len",
-      "8192",
+      "500000",
       "--max-num-seqs",
-      "8",
+      "2",
       "--max-num-batched-tokens",
       "8192",
       "--kv-cache-dtype",
       "fp8_ds_mla",
       "--kv-cache-memory-bytes",
-      "3489660928",
+      "9126805504",
       "--enable-expert-parallel",
       "--enable-ep-weight-filter",
       "--moe-backend",
@@ -80,6 +68,9 @@
       "data",
       "--no-enable-prefix-caching",
       "--no-enable-flashinfer-autotune",
+      "--sparse-indexer-topk-backend",
+      "per_row",
+      "--no-async-scheduling",
       "--load-format",
       "safetensors",
       "--enforce-eager",
@@ -93,7 +84,7 @@
       "pp": 1,
       "tp": 3
     },
-    "image_digest": "sha256:93c160d787863cbf91f4944edf7597bafdd03f31a27b913f44e2d911fb7d7b87",
+    "image_digest": "sha256:7ffa2e55ce2e3af4fae51caa89d03902b4a80cb1507563f17b051f7918dce0d3",
     "model": {
       "model_commit": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
       "model_id": "nvidia/GLM-5.3-Flash-NVFP4",
@@ -333,8 +324,8 @@
   "review": null,
   "schema_version": 2,
   "source": {
-    "image_repository": "pulsar-local/glm53-flash-vllm-tp3"
+    "image_repository": "ghcr.io/luisefigueroa/glm53-flash-vllm-tp3"
   },
-  "spec_id": "0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07",
+  "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3",
   "state": null
 }

@@ -6,11 +6,11 @@
   "reason": "completed",
   "schema_version": 1,
   "validate-soak": {
-    "completed_requests": 901,
+    "completed_requests": 375,
     "concurrency": 8,
-    "duration_seconds": "3607.10331",
-    "ended_at": "2026-10-10T05:09:59.987401Z",
+    "duration_seconds": "3606.566952",
+    "ended_at": "2026-10-10T21:08:29.136990Z",
     "request_error_count": 0,
-    "started_at": "2026-10-10T04:09:52.884091Z"
+    "started_at": "2026-10-10T20:08:22.570038Z"
   }
 }

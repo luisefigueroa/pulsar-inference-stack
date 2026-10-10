@@ -4,52 +4,52 @@
     "input_tokens": 512,
     "levels": [
       {
-        "aggregate_tps": "45.010168",
+        "aggregate_tps": "45.386495",
         "completion": "complete",
         "concurrency": 1,
-        "decode_tps_p50": "49.183592",
+        "decode_tps_p50": "48.763993",
         "measured_request_count": 4,
         "reason": "completed",
         "requested_request_count": 4,
-        "ttft_p50_ms": "496.092411",
-        "ttft_p95_ms": "499.337975",
-        "wall_s": "22.750415"
+        "ttft_p50_ms": "413.95798",
+        "ttft_p95_ms": "418.431599",
+        "wall_s": "22.561778"
       },
       {
-        "aggregate_tps": "73.67358",
+        "aggregate_tps": "71.853107",
         "completion": "complete",
         "concurrency": 2,
-        "decode_tps_p50": "40.955934",
+        "decode_tps_p50": "39.963435",
         "measured_request_count": 4,
         "reason": "completed",
         "requested_request_count": 4,
-        "ttft_p50_ms": "723.257062",
-        "ttft_p95_ms": "726.642241",
-        "wall_s": "13.899148"
+        "ttft_p50_ms": "623.92179",
+        "ttft_p95_ms": "822.786037",
+        "wall_s": "14.251297"
       },
       {
-        "aggregate_tps": "113.032544",
+        "aggregate_tps": "70.761486",
         "completion": "complete",
         "concurrency": 4,
-        "decode_tps_p50": "32.324275",
+        "decode_tps_p50": "37.507953",
         "measured_request_count": 8,
         "reason": "completed",
         "requested_request_count": 8,
-        "ttft_p50_ms": "1170.169934",
-        "ttft_p95_ms": "1175.937163",
-        "wall_s": "18.118676"
+        "ttft_p50_ms": "7671.026049",
+        "ttft_p95_ms": "7877.362702",
+        "wall_s": "28.942298"
       },
       {
-        "aggregate_tps": "169.445015",
+        "aggregate_tps": "71.009011",
         "completion": "complete",
         "concurrency": 8,
-        "decode_tps_p50": "25.322451",
+        "decode_tps_p50": "37.66849",
         "measured_request_count": 16,
         "reason": "completed",
         "requested_request_count": 16,
-        "ttft_p50_ms": "2016.024496",
-        "ttft_p95_ms": "2019.710411",
-        "wall_s": "24.173033"
+        "ttft_p50_ms": "22000.778079",
+        "ttft_p95_ms": "22377.141357",
+        "wall_s": "57.68282"
       }
     ],
     "output_tokens": 256,

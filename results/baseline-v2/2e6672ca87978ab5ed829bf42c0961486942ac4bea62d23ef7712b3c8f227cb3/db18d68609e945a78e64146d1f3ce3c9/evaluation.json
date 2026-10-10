@@ -25,12 +25,12 @@
   },
   "kind": "pulsar-baseline-evaluation",
   "measurement_sha256": {
-    "benchmark-serving": "ec3509af0f2880b816e40334d5ba93e6725f8bc17802ca2fe391389ce08918a4",
+    "benchmark-serving": "5d70b43573eb0b7af77c29fe33e76bc1fc93c566b95352a08539237081391913",
     "compare-captures": "2fb40db1f57e67520b1a49bc1e06c544f531257a4dcf947a04b8e292b62914fa",
-    "evaluate-gsm8k": "75009fdda48312b5761dfc31f2e27482c2adb3757a751aa8b9c3a06cdefa191c",
+    "evaluate-gsm8k": "23726c4d42d559da7689a868215b9af3e5152d4fe826eb368906e8f4d0101c56",
     "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
-    "validate-soak": "9f2647178b360ad51c4cecd767d6576f895d59c17101838e8c28603e7e86846f",
-    "verify-snapshot-manifest": "c90c182accccd9350b1b7104ae0d6546e04a8400bfaf16834e364346e5af784c"
+    "validate-soak": "e1cc2294e9081eae90c69d08c55673a3194aea2166752175d4efd87f1505c9ce",
+    "verify-snapshot-manifest": "b551757c012e70fb9b536be7165095bb6eefdb6dd4d923bc00d39f243ae93bbc"
   },
   "measurements": [
     {
@@ -152,6 +152,6 @@
   },
   "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
   "schema_version": 2,
-  "spec_id": "0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07",
+  "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3",
   "suite": "baseline-v2"
 }
