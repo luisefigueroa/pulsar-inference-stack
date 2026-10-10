@@ -11,6 +11,16 @@
       "spec_id": "685a6d5f460c3715c00e7db42379a99c09aca42e0d421fc099c2615e90e3b9f8",
       "removed_at": "2026-10-05",
       "reason": "Superseded by spec 1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435 for XiaomiMiMo/MiMo-V2.6-Flash-RL, adding structured tool calls, separate reasoning, thinking enabled by default and explicit sampling defaults without a configured output or thinking-token cap."
+    },
+    {
+      "spec_id": "0a609131d18c0c1299e8f6230d33cabfb06a148d4cfa6ac81c23645717494d07",
+      "removed_at": "2026-10-10",
+      "reason": "Removed at maintainer direction. The guarded 8k-context vLLM TP3 MTP recipe for nvidia/GLM-5.3-Flash-NVFP4 is superseded by spec 2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3 (vLLM v0.31.0-based image, 500k context, per_row decode top-k), which passed baseline-v2."
+    },
+    {
+      "spec_id": "c75d5c897c64c612c3c16e12f48c9436d136587ce3f922d4b97bd5285afdda20",
+      "removed_at": "2026-10-10",
+      "reason": "Removed at maintainer direction. The guard-free 8k-context vLLM TP3 MTP recipe for nvidia/GLM-5.3-Flash-NVFP4 is superseded by spec 2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3 (vLLM v0.31.0-based image, 500k context, per_row decode top-k), which passed baseline-v2."
     }
   ]
 }
