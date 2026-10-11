@@ -239,6 +239,24 @@ def subcommand_mistake(command, given):
     return UsageError('command', f'{problem}; see ./pulsar {command} --help')
 
 
+def require_complete_spec_id(command, args):
+    """Under --json, reject a spec argument that is not a complete spec ID.
+
+    Machine callers keep the exact-ID contract. Checking here, before any
+    script runs, makes a shortened ID the same usage_error for every command
+    instead of a lock, a node probe and a misleading result.
+    """
+    from scripts.spec_selector import HEX, SPEC_ID, matches, spec_position
+    index, _ = spec_position(command, args)
+    if index is None or SPEC_ID.match(args[index]):
+        return
+    value = args[index]
+    found = matches(ROOT, value) if HEX.match(value) else []
+    detail = (f"{value} matches {', '.join(found)}" if found
+              else f"{value} is not a catalog spec ID; see ./pulsar models list --json")
+    raise UsageError('spec_id', f'--json requires the complete 64-character spec ID; {detail}')
+
+
 def dispatch(command, args):
     if command in SUBCOMMANDS and (not args or args[0] not in SUBCOMMANDS[command][1]):
         raise subcommand_mistake(command, args[0] if args else None)
@@ -451,6 +469,9 @@ def main(argv=None):
             # A missing subcommand is a usage mistake: help on stderr, exit 2.
             emit_help(COMMAND_HELP[argv[0]], TerminalWriter(stream=sys.stderr))
             return 2
+        if json_output and argv[0] in ('start', 'stop', 'status', 'model') \
+                and not any(a in ('--help', '-h') for a in argv[1:]):
+            require_complete_spec_id(argv[0], argv[1:])
         if argv[0] in SUBCOMMANDS and argv[1:] in (['--help'], ['-h']) and not json_output:
             from scripts.terminal_format import emit_help
             emit_help(subcommand_help(argv[0]))

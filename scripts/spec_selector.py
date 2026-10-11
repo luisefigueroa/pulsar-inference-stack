@@ -25,7 +25,7 @@ HEX = re.compile(r"^[0-9a-f]+$")
 FULL_ID_OPERATIONS = {"purge", "remove"}
 VALUE_OPTIONS = {
     "--snapshot", "--spec-file", "--manifest", "--model-id", "--model-commit",
-    "--revision", "--node", "--manifest-out", "--verification-jobs",
+    "--revision", "--node", "--placement-nodes", "--manifest-out", "--verification-jobs",
     "--override-file", "--memory-estimate-file", "--memory-estimate-id",
     "--backend", "--transport", "--copy-streams", "--repo-root", "--state-root",
 }

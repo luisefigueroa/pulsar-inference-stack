@@ -306,6 +306,15 @@ Without `--json`, `start`, `stop`, `status` and `model` run their operator
 scripts directly, so a refused or failed action exits 1 and a command-line
 mistake exits 2.
 
+Under `--json`, these four commands require the complete 64-character spec ID.
+A shortened or invalid ID is a `usage_error`, reported before any lock is taken
+or node is contacted; its message names the matching catalog spec IDs.
+
+Change note, 2026-10-11: a shortened spec ID under `--json` is a `usage_error`
+for `start`, `stop`, `status` and `model`. Before, `status` could probe every
+node and report `service_absent`, and `start` reported `prerequisite_failed`
+after taking its lock.
+
 Change note, 2026-09-29: `invalid_stack_output` exits 3 instead of 2. Without
 `--json`, refusals (a serving guard, a historical spec, another platform) exit
 1 instead of 2, so 2 always means nothing was attempted. More command-line
