@@ -25,6 +25,9 @@ The recipe contains the model ID and model commit, complete snapshot manifest,
 image digest, engine argument tokens, literal container environment, hardware
 geometry, and explicit container settings. Snapshot manifests retain schema 1
 and their original `snapshot_revision` field and hashing for storage reuse.
+Schema verification does not require tool-choice or parser engine arguments;
+catalog publication does, as described in
+[catalog contribution review](CONTRIBUTIONS.md).
 
 Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.md).
 `contract` advertises its supported document versions through

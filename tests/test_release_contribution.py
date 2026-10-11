@@ -200,4 +200,37 @@ class Contributions(unittest.TestCase):
         self.assertEqual(result['unverified_suites'],['deep'])
 
 
+class CurrentSpecContribution(unittest.TestCase):
+    """Contribution verification applies the catalog engine-argument policy."""
+    def setUp(self):
+        from release_spec import serving
+        self.serving=serving
+        self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
+        self.root=pathlib.Path(self.temp.name)
+        self.fixture=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+
+    def write(self,extra_args):
+        spec=copy.deepcopy(self.fixture)
+        spec['recipe']['engine_args']+=extra_args
+        spec['spec_id']=self.serving.spec_id(spec['recipe'])
+        path=self.root/f"{spec['spec_id']}.json";path.write_bytes(pretty_json_bytes(spec))
+        return path
+
+    def test_compliant_current_spec_passes(self):
+        path=self.write(['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                         '--reasoning-parser','example_reasoning'])
+        self.assertTrue(verify_contribution(path)['schema_valid'])
+
+    def test_current_spec_without_required_engine_args_fails(self):
+        from release_spec.catalog_policy import CatalogPolicyError
+        path=self.write(['--enable-auto-tool-choice','--reasoning-parser','example_reasoning'])
+        with self.assertRaisesRegex(CatalogPolicyError,path.name+': .*missing: --tool-call-parser$'):
+            verify_contribution(path)
+        import subprocess
+        result=subprocess.run([sys.executable,str(ROOT/'scripts/verify-contribution.py'),'--spec',str(path)],
+                              capture_output=True,text=True)
+        self.assertEqual(result.returncode,2)
+        self.assertIn('missing: --tool-call-parser',result.stderr)
+
+
 if __name__=='__main__':unittest.main()

@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """New or edited catalog files use the current spec; unchanged history is readable.
 
+Each new or edited catalog spec must declare the engine arguments required by
+release_spec.catalog_policy (automatic tool choice and named tool-call and
+reasoning parsers).
+
 A catalog file may be deleted only for a spec recorded in catalog-removals.json
 whose results/ evidence is removed in the same change.
 """
@@ -13,6 +17,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from release_spec import serving
+from release_spec.catalog_policy import check_required_engine_args
 from release_spec.catalog_removals import LEDGER_PATH, check_append_only, parse_removals
 from release_spec.immutable_io import parse_strict_json
 
@@ -83,6 +88,7 @@ def check(root,*,base=None,head='HEAD',staged=False,merge_base=False):
             if mode not in (b'100644',b'100755'): raise ValueError('catalog entry must be a regular file')
             spec=serving.verify_spec(parse_strict_json(git(root,'show',head_commit+':'+name),label='committed spec'))
         if Path(name).stem!=spec['spec_id']: raise ValueError('catalog filename differs from spec identity')
+        check_required_engine_args(spec,label=name)
         checked+=1
     if staged:
         has_head=subprocess.run(['git','-C',str(root),'rev-parse','--verify','-q','HEAD^{commit}'],capture_output=True).returncode==0

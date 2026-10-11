@@ -5,6 +5,7 @@ from typing import Any
 from . import load_spec
 from .baseline_policy import load_policy, applied_accuracy_floor
 from .baseline_evaluate import evaluate, OPERATION_FILES
+from .catalog_policy import check_required_engine_args
 from .measurement import read_stable_bytes, sha256_bytes, load_measurement_bytes, parse_strict_json
 from .run_record import verify_run_record, _time
 from .schema import fail
@@ -112,8 +113,12 @@ def verify_contribution(spec_path: str | Path, evidence_root: str | Path | None 
     launch compatibility are independent metadata or diagnostics; they never
     authorize or block catalog membership here. ``evidence_root`` and
     ``run_path`` remain accepted for callers using the former interface.
+    Current (schema-2 and schema-3) specs must declare the engine arguments
+    required by ``catalog_policy``; historical schema-1 records are not checked.
     """
     spec = load_spec(spec_path)
+    if spec["schema_version"] in (2, 3):
+        check_required_engine_args(spec, label=Path(spec_path).name)
     return {"kind": "pulsar-contribution-verification", "schema_version": 1,
             "spec_id": spec["spec_id"], "state": spec["state"],
             "review": spec["review"], "schema_valid": True,

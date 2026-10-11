@@ -36,13 +36,27 @@ Run the catalog and publication-safety checks on the proposed checkout:
 
 ```sh
 python3 scripts/check-catalog.py
+python3 scripts/check-new-specs.py --base TARGET_BRANCH --merge-base
 python3 scripts/check_publishable_privacy.py
 git diff --check
 ```
 
 `check-catalog.py` checks the release-spec schema, regular-file layout, and the
-filename-to-`spec_id` binding. The privacy scanner remains a separate mandatory
-publication safeguard.
+filename-to-`spec_id` binding. `check-new-specs.py` checks the catalog files the
+change adds, modifies, or deletes. The privacy scanner remains a separate
+mandatory publication safeguard.
+
+Every new or modified catalog spec must declare three engine arguments in
+`recipe.engine_args`: `--enable-auto-tool-choice`, `--tool-call-parser NAME`,
+and `--reasoning-parser NAME`. Publication checks only that the flags are present
+and that each parser has a non-empty name. Parser names are model-specific;
+whether the serving image provides a named parser is established by serving the
+recipe, not by this check. `check-new-specs.py` applies the rule to added and
+modified catalog files, and `scripts/verify-contribution.py` applies it to the
+selected spec. Freezing a draft and the package verifier
+(`pulsar contribution verify`) do not apply it, so experimental recipes without
+parsers remain valid attempts and exportable packages. `check-catalog.py` will
+apply the rule to every catalog member once every member complies.
 
 Select additional tests for the changed behavior using
 [validation guidance](TESTING.md#select-checks-for-the-change). A catalog-only
