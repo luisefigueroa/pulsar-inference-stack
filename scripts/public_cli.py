@@ -160,6 +160,48 @@ def evaluate(args):
     return result
 
 
+# Human help for commands that group subcommands. Their --help --json result
+# remains the usage dictionary dispatch returns.
+COMMAND_HELP = {
+    'image': """\
+usage: pulsar image check SPEC [--node NODE] [--spec-file FILE] [--json]
+       pulsar image stage SPEC [--node NODE] [--spec-file FILE] (--plan | --yes) [--pull | --export-tag TAG] [--json]
+
+Check or stage the spec's pinned image on its serving nodes; staging never starts or replaces a service.
+
+  check SPEC        Verify the pinned image on every serving node; never pulls
+  stage SPEC        Copy the pinned image from this node to serving nodes that lack it
+  --plan            Preview the stage without changing any node
+  --yes             Apply the stage that --plan previewed
+  --pull            Pull the exact pinned digest from its registry instead of copying
+  --export-tag TAG  Copy a verified local tag in the pinned image's repository; never pulls
+  --node NODE       One-node spec: the serving node, by hostname or node ID
+  --spec-file FILE  Use an explicit workbench candidate
+  --json            Print the result as JSON
+
+SPEC is the complete 64-character spec ID. A multi-node spec uses its confirmed serving nodes; omit --node. Each command's --help lists every option.
+""",
+    'guarded': """\
+usage: pulsar guarded template --entrypoint-json ARRAY [--json]
+       pulsar guarded validate --spec-file FILE [--json]
+       pulsar guarded run --spec-file FILE --spec-id SHA256 --output-dir NEW_DIR --yes [--json]
+       pulsar guarded stop --output-dir DIR --run-id SHA256 [--json]
+       pulsar guarded reconcile --output-dir DIR --run-id SHA256 [--json]
+
+Run a bounded serving trial of a guarded spec, separately from ordinary start; it never downloads model files, pulls an image or replaces a service.
+
+  template   Generate a serving-guard policy for the image's entrypoint
+  validate   Check that a spec selects this Stack's serving-guard program; nothing runs
+  run        Own a bounded trial in the foreground until it ends or is stopped
+  stop       Ask a running trial to stop; its final result.json records cleanup
+  reconcile  After verified cleanup, retire the trial's remaining service locator
+  --json     Print the result as JSON
+
+Each command accepts --help. Stage the pinned image first; see pulsar image --help and docs/GUARDED_SERVING.md.
+""",
+}
+
+
 def dispatch(command, args):
     if command == 'image':
         if not args or args in (['--help'], ['-h']):
@@ -362,6 +404,14 @@ def main(argv=None):
                 argv[index]=str(Path(argv[index]).absolute())
         human_scripts={'start':'scripts/up.sh','stop':'scripts/down.sh',
                        'status':'scripts/status.sh','model':'scripts/model-library.sh'}
+        if argv[0] in COMMAND_HELP and argv[1:] in ([], ['--help'], ['-h']) and not json_output:
+            from scripts.terminal_format import TerminalWriter, emit_help
+            if argv[1:]:
+                emit_help(COMMAND_HELP[argv[0]])
+                return 0
+            # A missing subcommand is a usage mistake: help on stderr, exit 2.
+            emit_help(COMMAND_HELP[argv[0]], TerminalWriter(stream=sys.stderr))
+            return 2
         if argv[0] == 'guarded' and argv[1:2] in (['run'], ['reconcile']) and (
                 (argv[1] == 'run' and not json_output) or any(a in ('--help', '-h') for a in argv[2:])):
             os.chdir(ROOT)
