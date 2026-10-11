@@ -91,6 +91,29 @@ class CatalogContributions(unittest.TestCase):
             self.assertTrue(catalog.check_catalog(root)['verified'])
             with self.assertRaises(compat.CompatibilityError): compat.check_launch_compatibility(spec)
 
+    def test_current_candidate_specs_need_no_measurements_for_catalog_admission(self):
+        from release_spec import serving
+        fixtures = ROOT / 'tests/fixtures/contracts'
+        manifest = json.loads((fixtures / 'manifest.json').read_text())
+        for version in (1, 2):
+            draft = json.loads((fixtures / 'draft.json').read_text())
+            draft['schema_version'] = version
+            if version == 2:
+                draft['recipe']['required_snapshots'] = {}
+            spec = serving.freeze(draft, manifest if version == 1 else {'target': manifest})
+            with self.subTest(schema=spec['schema_version']), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / 'releases').mkdir()
+                path = root / 'releases' / (spec['spec_id'] + '.json')
+                raw = pretty_json_bytes(spec)
+                path.write_bytes(raw)
+                result = catalog.check_catalog(root)
+                self.assertTrue(result['verified'])
+                self.assertEqual(result['spec_count'], 1)
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(json.loads(path.read_bytes())['state'], 'candidate')
+                self.assertFalse((root / 'results').exists())
+
     def test_withdrawn_recipe_retains_same_baseline_provenance(self):
         self.spec['review'].update(status='withdrawn',reason='A later observation requires caution.')
         self.write_spec();self.assertTrue(self.check()['verified'])

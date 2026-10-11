@@ -44,7 +44,9 @@ class IntegrationContract(unittest.TestCase):
             result=subprocess.run([str(ROOT/'pulsar'),'spec','freeze','--draft',str(fixtures/'draft.json'),
                 '--manifest',str(fixtures/'manifest.json'),'--json'],cwd=cwd,text=True,capture_output=True)
         self.assertEqual(result.returncode,0,result.stderr)
-        self.assertEqual(json.loads(result.stdout)['result'],json.loads((fixtures/'spec.json').read_text()))
+        expected=json.loads((fixtures/'spec.json').read_text())
+        self.assertIsNone(expected['state'])  # Retain the historical null-state fixture.
+        self.assertEqual(json.loads(result.stdout)['result'],{**expected,'state':'candidate'})
 
     def test_schema_two_bare_speculative_models_remain_readable_but_cannot_freeze_or_launch(self):
         import tempfile
