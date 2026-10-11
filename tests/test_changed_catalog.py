@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -11,6 +12,19 @@ ROOT = Path(__file__).resolve().parents[1]
 loader = importlib.util.spec_from_file_location('changed_catalog', ROOT/'scripts/check-new-specs.py')
 checker = importlib.util.module_from_spec(loader)
 loader.loader.exec_module(checker)
+sys.path.insert(0, str(ROOT))
+from release_spec import serving
+from release_spec.catalog_policy import CatalogPolicyError
+
+REQUIRED_ARGS = ['--enable-auto-tool-choice', '--tool-call-parser', 'example_tools',
+                 '--reasoning-parser', 'example_reasoning']
+
+
+def with_engine_args(spec, engine_args):
+    spec = json.loads(json.dumps(spec))
+    spec['recipe']['engine_args'] = engine_args
+    spec['spec_id'] = serving.spec_id(spec['recipe'])
+    return spec
 
 
 class ChangedCatalog(unittest.TestCase):
@@ -28,7 +42,8 @@ class ChangedCatalog(unittest.TestCase):
         self.git('add', '.')
         self.git('commit', '-qm', 'Historical fixture')
         self.base = self.git('rev-parse', 'HEAD').strip()
-        self.spec = json.loads((ROOT/'tests/fixtures/contracts/spec.json').read_text())
+        self.fixture = json.loads((ROOT/'tests/fixtures/contracts/spec.json').read_text())
+        self.spec = with_engine_args(self.fixture, self.fixture['recipe']['engine_args']+REQUIRED_ARGS)
         self.path = self.root/'releases'/(self.spec['spec_id']+'.json')
 
     def git(self, *args):
@@ -112,6 +127,52 @@ class ChangedCatalog(unittest.TestCase):
         self.old.unlink();self.git('add','-A');self.git('commit','-qm','Topic deletion')
         with self.assertRaisesRegex(ValueError,'deletion or renaming'):
             checker.check(self.root,base=base,merge_base=True)
+
+    def test_added_spec_without_required_engine_args_is_rejected(self):
+        args = self.spec['recipe']['engine_args']
+        index = args.index('--reasoning-parser')
+        spec = with_engine_args(self.spec, args[:index]+args[index+2:])
+        path = self.root/'releases'/(spec['spec_id']+'.json')
+        path.write_text(json.dumps(spec));self.git('add','.')
+        message = f"releases/{spec['spec_id']}.json: .*missing: --reasoning-parser$"
+        with self.assertRaisesRegex(CatalogPolicyError, message):
+            checker.check(self.root, staged=True)
+        self.git('commit','-qm','Parser-less recipe')
+        with self.assertRaisesRegex(CatalogPolicyError, message):
+            checker.check(self.root, base=self.base)
+        with self.assertRaisesRegex(CatalogPolicyError, message):
+            checker.check(self.root, base=self.base, merge_base=True)
+
+    def test_policy_failure_exits_like_other_catalog_change_errors(self):
+        spec = self.fixture
+        (self.root/'releases'/(spec['spec_id']+'.json')).write_text(json.dumps(spec))
+        self.git('add','.')
+        result = subprocess.run([sys.executable, str(ROOT/'scripts/check-new-specs.py'),
+                                 '--repo-root', str(self.root), '--staged'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('error: catalog changes: releases/', result.stderr)
+        self.assertIn('missing: --enable-auto-tool-choice, --tool-call-parser, --reasoning-parser', result.stderr)
+
+    def test_modified_compliant_spec_is_checked_and_accepted(self):
+        self.stage_current();self.git('commit','-qm','Current recipe')
+        base = self.git('rev-parse','HEAD').strip()
+        self.spec['state'] = 'measured'
+        self.stage_current()
+        self.assertEqual(checker.check(self.root, staged=True), 1)
+        self.git('commit','-qm','Promote recipe')
+        self.assertEqual(checker.check(self.root, base=base), 1)
+
+    def test_deleted_noncompliant_spec_is_not_policy_checked(self):
+        legacy = self.root/'releases'/(self.fixture['spec_id']+'.json')
+        legacy.write_text(json.dumps(self.fixture))
+        self.git('add','.');self.git('commit','-qm','Parser-less catalog member')
+        base = self.git('rev-parse','HEAD').strip()
+        legacy.unlink()
+        self.write_ledger({'spec_id':self.fixture['spec_id'],'removed_at':'2026-10-10','reason':'Superseded'})
+        self.git('add','-A')
+        self.assertEqual(checker.check(self.root, staged=True), 0)
+        self.git('commit','-qm','Remove parser-less recipe')
+        self.assertEqual(checker.check(self.root, base=base), 0)
 
     def write_ledger(self, *entries):
         ledger={'schema_version':1,'kind':'pulsar-catalog-removals','removals':list(entries)}

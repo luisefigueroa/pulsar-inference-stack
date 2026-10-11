@@ -8,6 +8,7 @@ import stat
 from . import serving
 from .baseline_evaluate import OPERATION_FILES
 from .baseline_policy import SUPPORTED_POLICY_DIGESTS, load_supported_policy
+from .catalog_policy import check_required_engine_args
 from .evidence_v2 import verify_evidence, evidence_summary
 from .measurement import read_stable_bytes
 
@@ -22,6 +23,7 @@ def allowed_path(spec_id, name):
 
 
 def verify_package(root):
+    """Verify package integrity and the spec's catalog publication requirements."""
     root=Path(root).absolute()
     package=serving.load_json(root/'package.json')
     serving.closed(package,{'schema_version','kind','spec_id','files'},'package')
@@ -51,6 +53,7 @@ def verify_package(root):
             raise ValueError('package may contain only regular files and directories')
     if actual!=set(package['files'])|{'package.json'}:
         raise ValueError('package contains missing or undeclared artifacts')
+    check_required_engine_args(spec,label=spec_path.relative_to(root).as_posix())
     runs={(PurePosixPath(name).parts[1],PurePosixPath(name).parts[3])
           for name in package['files'] if name.startswith('results/')}
     for suite,run_id in sorted(runs):

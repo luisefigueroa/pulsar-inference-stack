@@ -11,8 +11,9 @@ from scripts import container_runtime as runtime
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def fixture(nodes=1, speculative=False, subdirectory=None):
+def fixture(nodes=1, speculative=False, subdirectory=None, engine_args=None):
     draft = serving.example(nodes)
+    draft['recipe']['engine_args'] += engine_args or []
     draft['recipe']['model'] = {'model_id': 'example/model', 'model_commit': 'a'*40}
     draft['recipe']['image_digest'] = 'sha256:'+'b'*64
     manifest = json.loads((ROOT/'tests/fixtures/contracts/manifest.json').read_text())

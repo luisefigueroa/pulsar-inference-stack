@@ -60,6 +60,8 @@ def check_catalog(repo_root: str | Path) -> dict:
     for name in sorted(release_files):
         if re.fullmatch(r'[0-9a-f]{64}\.json', name) is None:
             raise CatalogError(f'releases/{name}: filename must be the complete spec id')
+        # catalog_policy.check_required_engine_args applies to new or modified specs only
+        # (check-new-specs.py); enable it here once every catalog member complies.
         spec = load_spec(releases / name)
         spec_id = spec['spec_id']
         if name != f'{spec_id}.json':

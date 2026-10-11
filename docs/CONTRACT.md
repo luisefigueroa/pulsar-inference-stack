@@ -25,6 +25,9 @@ The recipe contains the model ID and model commit, complete snapshot manifest,
 image digest, engine argument tokens, literal container environment, hardware
 geometry, and explicit container settings. Snapshot manifests retain schema 1
 and their original `snapshot_revision` field and hashing for storage reuse.
+Schema verification does not require tool-choice or parser engine arguments;
+catalog publication does, as described in
+[catalog contribution review](CONTRIBUTIONS.md).
 
 Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.md).
 `contract` advertises its supported document versions through
@@ -242,7 +245,7 @@ Execution operations independently check their live prerequisites.
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
 | `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
-| `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
+| `contribution verify --package DIR` | Validate the exact package, identities, hashes, required catalog engine arguments, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
 
