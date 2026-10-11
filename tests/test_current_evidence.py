@@ -155,10 +155,17 @@ class CurrentEvidence(unittest.TestCase):
             self.check()
 
     def test_catalog_metadata_does_not_change_measurement_identity(self):
-        self.spec['state']='released'
-        self.spec['review']={}
-        (self.root/'spec.json').write_bytes(pretty_json_bytes(self.spec))
-        self.assertEqual(self.check()['outcome'],'pass')
+        for state in (None, 'candidate', 'measured', 'released'):
+            with self.subTest(state=state):
+                self.spec.update(state=state,review={})
+                raw=pretty_json_bytes(self.spec)
+                (self.root/'spec.json').write_bytes(raw)
+                before=copy.deepcopy(self.spec)
+                evaluation,_=evaluate_measurements(self.spec,self.root/'policy.json',self.root/'measurements')
+                self.assertEqual(evaluation['outcome'],'pass')
+                self.assertEqual(self.check()['outcome'],'pass')
+                self.assertEqual(self.spec,before)
+                self.assertEqual((self.root/'spec.json').read_bytes(),raw)
 
     def test_soak_must_fit_the_recorded_producer_window(self):
         self.record['gates'][-1]['ended_at']=self.record['gates'][-1]['started_at']

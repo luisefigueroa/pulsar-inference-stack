@@ -41,7 +41,7 @@ class ServingGuardSchema(unittest.TestCase):
     def test_absent_guard_preserves_existing_golden_identity(self):
         draft = json.loads((FIXTURES / 'draft.json').read_text())
         manifest = json.loads((FIXTURES / 'manifest.json').read_text())
-        self.assertEqual(serving.freeze(draft, manifest), self.original)
+        self.assertEqual(serving.freeze(draft, manifest), {**self.original, 'state': 'candidate'})
         self.assertNotIn('guard', serving.verify_spec(self.original)['recipe']['container'])
 
     def test_both_versions_round_trip_without_mutating_input(self):

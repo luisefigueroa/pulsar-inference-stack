@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from release_spec import serving
-from release_spec.schema import ReleaseSpecError
+from release_spec.schema import ReleaseSpecError, STATES
 
 FIXTURES = Path(__file__).resolve().parents[2] / "tests/fixtures/contracts"
 
@@ -26,6 +26,8 @@ class ServingSpec(unittest.TestCase):
         self.draft['recipe']['engine_args'] += ['--speculative-config',json.dumps({'model':'pulsar-snapshot:draft','num_speculative_tokens':3})]
         spec=serving.freeze(self.draft,{'target':self.manifest,'draft':second})
         self.assertEqual(spec['schema_version'],3)
+        self.assertEqual(spec['state'],'candidate')
+        self.assertIsNone(spec['review'])
         self.assertEqual(serving.verify_spec(spec),spec)
         for manifests in ({'target':self.manifest},{'target':self.manifest,'draft':self.manifest},
                           {'target':self.manifest,'draft':second,'extra':second}):
@@ -126,11 +128,43 @@ class ServingSpec(unittest.TestCase):
         payload = json.dumps({"schema_version": 2, "recipe": self.spec["recipe"]},
                              sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
         self.assertEqual(self.spec["spec_id"], hashlib.sha256(payload).hexdigest())
-        self.assertEqual(serving.freeze(self.draft, self.manifest), self.spec)
+        self.assertEqual(serving.freeze(self.draft, self.manifest), {**self.spec, "state": "candidate"})
         changed = copy.deepcopy(self.spec)
         changed.update(state="released", review={})
         changed["source"]["image_repository"] = "example/mirror"
         self.assertEqual(serving.verify_spec(changed)["spec_id"], self.spec["spec_id"])
+
+    def test_current_states_are_independent_of_review_and_recipe_identity(self):
+        review = {"status": "stable", "reviewer": "example-reviewer",
+                  "reviewed_at": "2026-09-02T00:00:00Z"}
+        for version in (1, 2):
+            draft = copy.deepcopy(self.draft)
+            draft['schema_version'] = version
+            if version == 2:
+                draft['recipe']['required_snapshots'] = {}
+            spec = serving.freeze(draft, self.manifest if version == 1 else {'target': self.manifest})
+            self.assertEqual(spec['schema_version'], version + 1)
+            self.assertEqual(spec['state'], 'candidate')
+            self.assertIsNone(spec['review'])
+            for state in (None, 'candidate', 'measured', 'released'):
+                self.assertIn(state, STATES)
+                for metadata in (None, {}, review):
+                    with self.subTest(schema=version + 1, state=state, review=metadata):
+                        selected = {**spec, 'state': state, 'review': metadata}
+                        self.assertEqual(serving.verify_spec(selected), selected)
+                        self.assertEqual(selected['spec_id'], serving.spec_id(selected['recipe']))
+                        for overrides in ({}, {'engine_args': selected['recipe']['engine_args']}):
+                            self.assertEqual(serving.apply_overrides(selected, overrides), selected)
+                        changed = serving.apply_overrides(selected, {'container_env': ['EXAMPLE_FLAG=1']})
+                        self.assertNotEqual(changed['spec_id'], selected['spec_id'])
+                        self.assertEqual(changed['state'], 'candidate')
+                        self.assertIsNone(changed['review'])
+                        self.assertEqual(selected['state'], state)
+                        self.assertEqual(selected['review'], metadata)
+            for state in ('', 'Candidate', 'testing', 0, False, [], {}):
+                with self.subTest(schema=version + 1, invalid_state=state):
+                    with self.assertRaisesRegex(ReleaseSpecError, 'state'):
+                        serving.verify_spec({**spec, 'state': state})
 
     def test_execution_changes_drop_selected_metadata(self):
         self.spec.update(state="measured", review={})
@@ -144,7 +178,7 @@ class ServingSpec(unittest.TestCase):
             with self.subTest(patch=patch):
                 effective = serving.apply_overrides(self.spec, {"container": patch})
                 self.assertNotEqual(effective["spec_id"], self.spec["spec_id"])
-                self.assertIsNone(effective["state"])
+                self.assertEqual(effective["state"], "candidate")
                 self.assertIsNone(effective["review"])
                 self.assertTrue(serving.compare(self.spec, effective)["recipe_changed"])
         self.assertEqual(serving.apply_overrides(self.spec, {}), self.spec)
@@ -176,7 +210,7 @@ class ServingSpec(unittest.TestCase):
 
     def test_normalization_and_mutation_detection(self):
         self.draft["recipe"]["engine_args"] = ["--gpu-memory-utilization=0.800"]
-        self.assertEqual(serving.freeze(self.draft, self.manifest), self.spec)
+        self.assertEqual(serving.freeze(self.draft, self.manifest), {**self.spec, "state": "candidate"})
         tampered = copy.deepcopy(self.spec)
         tampered["recipe"]["container"]["network_mode"] = "host"
         with self.assertRaises(ReleaseSpecError):

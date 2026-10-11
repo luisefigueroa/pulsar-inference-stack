@@ -16,6 +16,15 @@ are nullable display metadata. Do not infer, promote, classify, or reject a
 catalog entry from state, review, evidence, archive observations, baseline
 outcomes, or current launch compatibility.
 
+New specs default to `state: "candidate"` and `review: null`. Candidate describes
+the specific spec's initial maturity, not qualification, readiness, or active
+testing. Existing null-state specs remain valid and unchanged. Preserve selected
+metadata when adding measurements or exporting; measurement success and
+publication never promote state. Only the maintainer explicitly selects
+`measured` or `released`. Older Stack installations reject candidate state;
+follow the compatibility boundary in [contribution review](../../docs/CONTRIBUTIONS.md)
+without silently switching the configured executable or rewriting metadata.
+
 If the maintainer asks for an evidence assessment, run the separate evidence
 verifier and report exactly what it establishes and what remains provenance or
 physical-review judgement. If the maintainer asks whether the current stack can
@@ -30,7 +39,7 @@ maintainer's publication scope. Merge remains separate. This skill never
 downloads weights, operates hardware, changes archives, or starts or stops a
 service.
 
-New or changed catalog specs must use schema 2. Historical schema-1 files remain
+New or changed catalog specs must use schema 2 or 3. Historical schema-1 files remain
 readable and must not be silently rewritten. New evidence is per immutable run,
 with no Stack-commit equality gate. Use `pulsar contribution verify` and the public
 privacy/evidence commands; do not require private Workbench code or live cluster

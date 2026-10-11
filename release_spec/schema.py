@@ -19,7 +19,8 @@ HISTORICAL_SPEC_KIND = "pulsar-release-spec"
 SNAPSHOT_MANIFEST_SCHEMA_VERSION = 1
 SNAPSHOT_MANIFEST_KIND = "model-library-snapshot-manifest"
 
-STATES = frozenset({None, "measured", "released"})
+# Current spec states; schema-1 validation retains its historical values.
+STATES = frozenset({None, "candidate", "measured", "released"})
 REVIEW_STATUSES = frozenset({"experimental", "stable", "validated", "failed", "withdrawn"})
 MEASUREMENT_SUITES = frozenset({"baseline-v1", "deep"})
 MEASUREMENT_OUTCOMES = frozenset(
