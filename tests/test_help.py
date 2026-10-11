@@ -20,6 +20,7 @@ COMMANDS = [
     ("status", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
     ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
     ("image", "--help"), ("guarded", "--help"),
+    ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
 ]
 
 
@@ -57,7 +58,8 @@ class Help(unittest.TestCase):
 
     def test_help_leads_with_usage_then_one_sentence_then_aligned_options(self):
         for args in (("models", "--help"), ("status", "--help"), ("stop", "--help"), ("start", "--help"),
-                     ("image", "--help"), ("guarded", "--help")):
+                     ("image", "--help"), ("guarded", "--help"), ("memory", "--help"),
+                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help")):
             with self.subTest(command=args[0]):
                 text = self.run_help(args, 80)
                 lines = text.splitlines()
@@ -105,6 +107,17 @@ class Help(unittest.TestCase):
                     envelope = json.loads(result.stdout)
                     self.assertTrue(envelope["ok"])
                     self.assertEqual(set(envelope["result"]), subcommands | {"scope"})
+
+    def test_subcommand_help_lists_every_subcommand_under_its_pulsar_name(self):
+        from scripts.public_cli import SUBCOMMANDS
+        for command, (_, subcommands) in SUBCOMMANDS.items():
+            with self.subTest(command=command):
+                text = self.run_help((command, "--help"), 80)
+                for name in subcommands:
+                    self.assertRegex(text, rf"(?m)^  {name}  ")
+                    # Each listed subcommand's own help names it as a pulsar command.
+                    self.assertTrue(self.run_help((command, name, "--help"), 80)
+                                    .startswith(f"usage: pulsar {command} {name} "))
 
     def test_top_level_help_uses_spec_terms(self):
         text = " ".join(self.run_help(("help",), 100).split())

@@ -58,6 +58,22 @@ class ErrorCodes(unittest.TestCase):
                                 text=True, capture_output=True, timeout=60)
         self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --interval requires a value"))
 
+    def test_a_missing_or_unknown_subcommand_names_the_valid_ones(self):
+        for args, message in (
+                (["evidence"], "pulsar evidence needs a subcommand: measurement, evaluate, verify or summary; "
+                               "see ./pulsar evidence --help"),
+                (["memory", "--bogus"], "pulsar memory needs a subcommand: verify; see ./pulsar memory --help"),
+                (["privacy", "bogus"], "pulsar privacy has no subcommand bogus; use check or commits; "
+                                       "see ./pulsar privacy --help")):
+            with self.subTest(args=args):
+                status, response = pulsar(*args)
+                self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+                self.assertEqual(response["error"]["details"][0]["message"], message)
+                human = subprocess.run([str(ROOT / "pulsar"), *args], text=True, capture_output=True)
+                self.assertEqual((human.returncode, human.stdout), (2, ""))
+                # The command names itself, so the human line drops the "command:" field label.
+                self.assertEqual(human.stderr, f"error: {message}\n")
+
     def test_stop_without_a_selector_says_so(self):
         status, response = pulsar("stop")
         self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))

@@ -107,7 +107,7 @@ def execute(script, args, *, json_result=False, env=None):
 
 def measurement(args):
     from release_spec import measurement as m
-    parser = CommandParser()
+    parser = CommandParser(prog='pulsar evidence measurement')
     parser.add_argument('--operation', required=True, choices=['compare-captures', 'benchmark-serving',
         'evaluate-gsm8k', 'validate-soak', 'verify-snapshot-manifest', 'serve-smoke', 'observe-resources'])
     parser.add_argument('--input', required=True)
@@ -144,7 +144,7 @@ def policy(args):
 def evaluate(args):
     from release_spec.measurement import atomic_write_json
     from release_spec.evidence_v2 import evaluate_measurements
-    parser=CommandParser()
+    parser=CommandParser(prog='pulsar evidence evaluate')
     parser.add_argument('--spec-file', required=True)
     parser.add_argument('--policy-file', required=True)
     parser.add_argument('--measurements-dir', required=True)
@@ -202,7 +202,46 @@ Each command accepts --help. Stage the pinned image first; see pulsar image --he
 }
 
 
+# Commands that act only through a subcommand: what the command does, then
+# each subcommand with a one-line description for --help.
+SUBCOMMANDS = {
+    'memory': ('Validate explicit memory estimates for an exact spec.', {
+        'verify': 'Validate an estimate of resident weights against the exact spec'}),
+    'evidence': ('Construct and assess compact evidence, independently of catalog membership.', {
+        'measurement': 'Build or validate one compact measurement from a producer payload',
+        'evaluate': 'Evaluate measurements against a baseline policy and write the results',
+        'verify': "Check a run's evidence documents against the spec, including failed runs",
+        'summary': 'Summarize verified evidence and state what is missing'}),
+    'privacy': ('Check publication files or commit metadata for private information.', {
+        'check': 'Check the files of a checkout or directory before publication',
+        'commits': 'Check the commit metadata in a Git range'}),
+    'contribution': ('Validate a contribution package before publication.', {
+        'verify': 'Validate the exact package, identities, hashes and publication privacy'}),
+}
+
+
+def subcommand_help(command):
+    summary, subcommands = SUBCOMMANDS[command]
+    width = max(len(name) for name in subcommands) + 2
+    rows = '\n'.join(f'  {name:<{width}}{text}' for name, text in subcommands.items())
+    return (f"usage: pulsar {command} {'|'.join(subcommands)} [options] [--json]\n\n{summary}\n\n{rows}\n\n"
+            f"Each subcommand's --help lists its options.\n")
+
+
+def subcommand_mistake(command, given):
+    """The usage error for a missing or unknown subcommand, naming the valid ones."""
+    names = list(SUBCOMMANDS[command][1])
+    choices = names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' or ' + names[-1]
+    if not given or given.startswith('-'):
+        problem = f'pulsar {command} needs a subcommand: {choices}'
+    else:
+        problem = f'pulsar {command} has no subcommand {given}; use {choices}'
+    return UsageError('command', f'{problem}; see ./pulsar {command} --help')
+
+
 def dispatch(command, args):
+    if command in SUBCOMMANDS and (not args or args[0] not in SUBCOMMANDS[command][1]):
+        raise subcommand_mistake(command, args[0] if args else None)
     if command == 'image':
         if not args or args in (['--help'], ['-h']):
             return {'check': 'image check SPEC [--spec-file FILE] [--json]',
@@ -225,7 +264,7 @@ def dispatch(command, args):
             return execute('scripts/guarded-serving.sh', args[1:], json_result=True)
         if args[0] == 'reconcile':
             return execute('scripts/guarded-reconcile.sh', args[1:], json_result=True)
-        parser = CommandParser()
+        parser = CommandParser(prog=f'pulsar guarded {args[0]}')
         if args[0] == 'template':
             from serving_guard.program import template
             parser.add_argument('--entrypoint-json', required=True)
@@ -259,7 +298,7 @@ def dispatch(command, args):
         raise ValueError('usage: pulsar guarded template|validate|run|stop|reconcile --help')
     if command == 'memory' and args[:1] == ['verify']:
         from release_spec.memory_estimate import load
-        parser=CommandParser()
+        parser=CommandParser(prog='pulsar memory verify')
         parser.add_argument('--file',required=True)
         parser.add_argument('--spec-file',required=True)
         parser.add_argument('--estimate-id')
@@ -319,7 +358,7 @@ def dispatch(command, args):
         return policy(args)
     if command == 'contribution' and args[:1] == ['verify']:
         from release_spec.package import verify_package
-        parser=CommandParser()
+        parser=CommandParser(prog='pulsar contribution verify')
         parser.add_argument('--package',required=True)
         options=parser.parse_args(args[1:])
         result=verify_package(options.package)
@@ -337,7 +376,7 @@ def dispatch(command, args):
             return evaluate(args[1:])
         if args[0] in ('verify', 'summary'):
             from release_spec.evidence_v2 import verify_evidence
-            parser=CommandParser()
+            parser=CommandParser(prog=f'pulsar evidence {args[0]}')
             parser.add_argument('--spec-file',required=True)
             parser.add_argument('--run',required=True)
             parser.add_argument('--evidence-root')
@@ -352,7 +391,7 @@ def dispatch(command, args):
     if command == 'selftest':
         return execute('scripts/selftest.sh', args)
     if command == 'privacy' and args[:1] == ['check']:
-        parser=CommandParser()
+        parser=CommandParser(prog='pulsar privacy check')
         parser.add_argument('--root',required=True)
         parser.add_argument('--staged',action='store_true')
         options=parser.parse_args(args[1:])
@@ -377,7 +416,7 @@ def dispatch(command, args):
             raise ValueError('publication privacy check failed')
         return {'checked':True}
     if command == 'privacy' and args[:1] == ['commits']:
-        parser=CommandParser()
+        parser=CommandParser(prog='pulsar privacy commits')
         parser.add_argument('--root',required=True)
         parser.add_argument('--range',required=True)
         options=parser.parse_args(args[1:])
@@ -412,6 +451,10 @@ def main(argv=None):
             # A missing subcommand is a usage mistake: help on stderr, exit 2.
             emit_help(COMMAND_HELP[argv[0]], TerminalWriter(stream=sys.stderr))
             return 2
+        if argv[0] in SUBCOMMANDS and argv[1:] in (['--help'], ['-h']) and not json_output:
+            from scripts.terminal_format import emit_help
+            emit_help(subcommand_help(argv[0]))
+            return 0
         if argv[0] == 'guarded' and argv[1:2] in (['run'], ['reconcile']) and (
                 (argv[1] == 'run' and not json_output) or any(a in ('--help', '-h') for a in argv[2:])):
             os.chdir(ROOT)
