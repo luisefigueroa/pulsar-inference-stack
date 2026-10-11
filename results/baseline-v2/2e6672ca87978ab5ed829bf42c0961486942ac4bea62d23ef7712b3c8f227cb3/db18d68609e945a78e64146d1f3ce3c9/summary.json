@@ -27,12 +27,12 @@
     },
     "kind": "pulsar-baseline-evaluation",
     "measurement_sha256": {
-      "benchmark-serving": "22b7a628a416be8b464be6e3cca5ff3193d0e76c78a1251d6781af0c5242ec71",
+      "benchmark-serving": "5d70b43573eb0b7af77c29fe33e76bc1fc93c566b95352a08539237081391913",
       "compare-captures": "2fb40db1f57e67520b1a49bc1e06c544f531257a4dcf947a04b8e292b62914fa",
-      "evaluate-gsm8k": "75009fdda48312b5761dfc31f2e27482c2adb3757a751aa8b9c3a06cdefa191c",
+      "evaluate-gsm8k": "23726c4d42d559da7689a868215b9af3e5152d4fe826eb368906e8f4d0101c56",
       "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
-      "validate-soak": "592381b7ebb2f6387c2e8cf0fa028c5edafe4d33d32057514c9a86904d2aba71",
-      "verify-snapshot-manifest": "abbff28ba527c113db6afab01fa6bada02ef03ee47cf696d9d6e134aab493018"
+      "validate-soak": "e1cc2294e9081eae90c69d08c55673a3194aea2166752175d4efd87f1505c9ce",
+      "verify-snapshot-manifest": "b551757c012e70fb9b536be7165095bb6eefdb6dd4d923bc00d39f243ae93bbc"
     },
     "measurements": [
       {
@@ -154,12 +154,12 @@
     },
     "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
     "schema_version": 2,
-    "spec_id": "c75d5c897c64c612c3c16e12f48c9436d136587ce3f922d4b97bd5285afdda20",
+    "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3",
     "suite": "baseline-v2"
   },
   "kind": "pulsar-evidence-summary",
   "outcome": "pass",
-  "run_id": "baseline-v2-001",
+  "run_id": "db18d68609e945a78e64146d1f3ce3c9",
   "schema_version": 2,
-  "spec_id": "c75d5c897c64c612c3c16e12f48c9436d136587ce3f922d4b97bd5285afdda20"
+  "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3"
 }
