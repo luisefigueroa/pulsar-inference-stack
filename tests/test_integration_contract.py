@@ -136,8 +136,12 @@ class IntegrationContract(unittest.TestCase):
         import tempfile,hashlib
         with tempfile.TemporaryDirectory() as temp:
             package=Path(temp)
-            data=(ROOT/'tests/fixtures/contracts/spec.json').read_bytes()
-            spec=json.loads(data)
+            from release_spec import serving
+            spec=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
+            spec['recipe']['engine_args']+=['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                                          '--reasoning-parser','example_reasoning']
+            spec['spec_id']=serving.spec_id(spec['recipe'])
+            data=json.dumps(spec).encode()
             name=f"releases/{spec['spec_id']}.json"
             (package/'releases').mkdir();(package/name).write_bytes(data)
             manifest={'schema_version':2,'kind':'pulsar-contribution-package','spec_id':spec['spec_id'],

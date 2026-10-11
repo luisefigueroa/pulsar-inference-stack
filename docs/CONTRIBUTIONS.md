@@ -52,11 +52,14 @@ and `--reasoning-parser NAME`. Publication checks only that the flags are presen
 and that each parser has a non-empty name. Parser names are model-specific;
 whether the serving image provides a named parser is established by serving the
 recipe, not by this check. `check-new-specs.py` applies the rule to added and
-modified catalog files, and `scripts/verify-contribution.py` applies it to the
-selected spec. Freezing a draft and the package verifier
-(`pulsar contribution verify`) do not apply it, so experimental recipes without
-parsers remain valid attempts and exportable packages. `check-catalog.py` will
-apply the rule to every catalog member once every member complies.
+modified catalog files. The public package verifier (`pulsar contribution verify`)
+and `scripts/verify-contribution.py` apply the same rule before publication,
+reporting the required arguments the selected spec lacks. Freezing a draft,
+`pulsar spec verify`, and `pulsar evidence verify` do not apply it, so experimental
+recipes without parsers remain valid attempts with independently verifiable
+evidence. Their exported packages must meet the engine-argument requirement
+before contribution verification succeeds. `check-catalog.py` will apply the
+rule to every catalog member once every member complies.
 
 Select additional tests for the changed behavior using
 [validation guidance](TESTING.md#select-checks-for-the-change). A catalog-only
@@ -64,11 +67,13 @@ contribution needs its spec, package and applicable evidence checks; publication
 alone does not require the full implementation suite. Reuse matching validation,
 and check the exact staged content and commit metadata before publishing.
 
-## Optional assessments
+## Package verification and optional assessments
 
 New publications support schema-2 and schema-3 specs. Historical files already in
 the catalog remain readable; CI rejects adding or editing schema-1 specs for new operations.
-Use the public package verifier for an exported contribution:
+Use the public package verifier for an exported contribution. It checks the
+exact package's identities, paths, hashes, catalog engine arguments, included
+evidence integrity, and publication privacy:
 
 ```sh
 ./pulsar contribution verify --package PACKAGE_DIRECTORY --json

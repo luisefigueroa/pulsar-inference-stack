@@ -17,8 +17,10 @@ from scripts.container_runtime import observe_rank
 ROOT=Path(__file__).resolve().parents[1]
 
 
-def make_run(root, speculative=False):
-    spec,_,_,plan,containers,images=fixture(speculative=speculative)
+def make_run(root, speculative=False, publishable=False):
+    engine_args=['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                 '--reasoning-parser','example_reasoning'] if publishable else []
+    spec,_,_,plan,containers,images=fixture(speculative=speculative,engine_args=engine_args)
     root.mkdir(parents=True,exist_ok=True)
     (root/'measurements').mkdir()
     (root/'spec.json').write_bytes(pretty_json_bytes(spec))
@@ -102,7 +104,7 @@ class CurrentEvidence(unittest.TestCase):
     def test_speculative_evidence_package_verifies_without_workbench(self):
         from release_spec import serving
         root=self.root/'speculative-package-run'
-        spec,record=make_run(root,speculative=True)
+        spec,record=make_run(root,speculative=True,publishable=True)
         verified=verify_evidence(root/'spec.json',root/'run.json',root)
         proof={'schema_version':2,'kind':'pulsar-archive-verification','spec_id':spec['spec_id'],'verified':True,
             'snapshots':{name:{'schema_version':1,'kind':'pulsar-archive-verification','verified':True,

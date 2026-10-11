@@ -21,7 +21,7 @@ class BaselineV2Tests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name)
-        self.spec,self.record=make_run(self.root,speculative=True)
+        self.spec,self.record=make_run(self.root,speculative=True,publishable=True)
         self.policy=self.root/'policy.json'
         self.policy.write_bytes((ROOT/'policy/baseline-v2.json').read_bytes())
         self.capture=self.root/'measurements/compare-captures.json'

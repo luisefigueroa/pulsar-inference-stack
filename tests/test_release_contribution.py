@@ -14,6 +14,7 @@ from release_spec.identity import argv_from_identity
 from release_spec.baseline_evaluate import evaluate, OPERATION_FILES
 from release_spec.baseline_policy import load_policy, applied_accuracy_floor
 from release_spec.contribution import verify_compact_evidence, verify_contribution
+from release_spec.package import verify_package
 from release_spec.run_record import GATE_NAMES
 
 FIXTURES=ROOT/'tests/fixtures/baseline'
@@ -209,12 +210,72 @@ class CurrentSpecContribution(unittest.TestCase):
         self.root=pathlib.Path(self.temp.name)
         self.fixture=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
 
-    def write(self,extra_args):
+    def write(self,extra_args,schema_version=2):
         spec=copy.deepcopy(self.fixture)
+        if schema_version==3:
+            spec['schema_version']=3
+            spec['recipe']['required_snapshots']={}
         spec['recipe']['engine_args']+=extra_args
+        spec['recipe']=self.serving.canonical_recipe(spec['recipe'])
         spec['spec_id']=self.serving.spec_id(spec['recipe'])
         path=self.root/f"{spec['spec_id']}.json";path.write_bytes(pretty_json_bytes(spec))
         return path
+
+    def package(self,path):
+        root=pathlib.Path(tempfile.mkdtemp(dir=self.root))
+        name=f'releases/{path.name}'
+        (root/'releases').mkdir()
+        raw=path.read_bytes();(root/name).write_bytes(raw)
+        manifest={'schema_version':2,'kind':'pulsar-contribution-package','spec_id':path.stem,
+                  'files':{name:hashlib.sha256(raw).hexdigest()}}
+        (root/'package.json').write_bytes(pretty_json_bytes(manifest))
+        return root,manifest
+
+    def test_compliant_packages_pass_for_both_current_schemas(self):
+        for schema_version in (2,3):
+            for arguments in (
+                ['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                 '--reasoning-parser','example_reasoning'],
+                ['--enable-auto-tool-choice','--tool-call-parser=example_tools',
+                 '--reasoning-parser=example_reasoning']):
+                with self.subTest(schema_version=schema_version,arguments=arguments):
+                    root,manifest=self.package(self.write(arguments,schema_version))
+                    self.assertEqual(verify_package(root),manifest)
+
+    def test_public_package_reports_missing_args_while_experimental_spec_verifies(self):
+        import subprocess
+        for schema_version in (2,3):
+            with self.subTest(schema_version=schema_version):
+                path=self.write([],schema_version)
+                root,_=self.package(path)
+                command=[str(ROOT/'pulsar'),'contribution','verify','--package',str(root)]
+                result=subprocess.run(command+['--json'],capture_output=True,text=True)
+                self.assertEqual(result.returncode,2,result.stderr+result.stdout)
+                error=json.loads(result.stdout)
+                self.assertFalse(error['ok'])
+                self.assertEqual(error['error']['code'],'invalid_spec')
+                message=error['error']['message']
+                self.assertIn(f'releases/{path.name}:',message)
+                self.assertIn('missing: --enable-auto-tool-choice, --tool-call-parser, --reasoning-parser',message)
+                human=subprocess.run(command,capture_output=True,text=True)
+                self.assertEqual(human.returncode,2,human.stderr+human.stdout)
+                self.assertEqual(human.stderr,'error: '+message+'\n')
+                self.assertEqual(human.stdout,'')
+                experimental=subprocess.run([str(ROOT/'pulsar'),'spec','verify','--file',str(path),'--json'],
+                                            capture_output=True,text=True)
+                self.assertEqual(experimental.returncode,0,experimental.stderr+experimental.stdout)
+                self.assertEqual(json.loads(experimental.stdout)['result'],json.loads(path.read_bytes()))
+
+    def test_packages_require_named_parsers(self):
+        for flag,arguments in (
+            ('--tool-call-parser',['--enable-auto-tool-choice','--tool-call-parser',
+                                  '--reasoning-parser','example_reasoning']),
+            ('--reasoning-parser',['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                                  '--reasoning-parser'])):
+            with self.subTest(flag=flag):
+                root,_=self.package(self.write(arguments))
+                with self.assertRaisesRegex(ValueError,'missing: '+flag+' value$'):
+                    verify_package(root)
 
     def test_compliant_current_spec_passes(self):
         path=self.write(['--enable-auto-tool-choice','--tool-call-parser','example_tools',

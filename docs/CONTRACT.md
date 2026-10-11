@@ -245,7 +245,7 @@ Execution operations independently check their live prerequisites.
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
 | `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
-| `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
+| `contribution verify --package DIR` | Validate the exact package, identities, hashes, required catalog engine arguments, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
 
