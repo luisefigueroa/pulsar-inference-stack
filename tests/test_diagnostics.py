@@ -168,6 +168,16 @@ ssh_node() {{
         self.assertEqual(rows['rank_1_memory']['level'],'fail')
         self.assertIn('memory unavailable',rows['rank_1_memory']['message'])
 
+    def test_the_check_convention_keeps_interrupts_and_usage_mistakes(self):
+        # 3 is a check that could not run; an interrupt stays 128+signal even when a
+        # child caught the signal and exited with it, and keep-usage keeps usage_die's 2.
+        for body,status in (('exit 130',130),('exit 143',143),('exit 1',3),('exit 255',3),
+                            ('usage_die "bad flag"',2),('check_result 1',1)):
+            with self.subTest(body=body):
+                result=subprocess.run(['bash','-c',f". {shlex.quote(str(ROOT/'scripts/lib.sh'))}; "
+                                       f"check_exit_convention keep-usage; {body}"],text=True,capture_output=True)
+                self.assertEqual(result.returncode,status,result.stderr)
+
     def test_image_preview_and_confirmation(self):
         spec_id=self.spec['spec_id']
         for flags in (['--plan'],[]):

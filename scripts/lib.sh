@@ -3297,6 +3297,9 @@ container_exists_exact() {
 # never reads a broken check as a missing image or a memory warning.
 _check_exit() {
   local status=$?
+  # An interrupt keeps its 128+signal status, even when a child caught the
+  # signal and exited with it instead of being killed by it.
+  if [ "$status" -gt 128 ] && [ "$status" -le 160 ]; then return; fi
   [ "$status" = 0 ] || [ -n "$CHECK_RESULT_EXIT" ] || exit 3
 }
 check_exit_convention() {
