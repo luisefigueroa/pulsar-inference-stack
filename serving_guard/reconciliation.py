@@ -45,6 +45,12 @@ def completed_plan(output, run_id):
         raise ValueError('saved guarded controller identity differs')
     if process_identity(owner[0]) == owner:
         raise ValueError('guarded controller is still alive; wait for completion')
+    # After the controller has exited, ordinary stop recovers what reconciliation cannot.
+    recover = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
+               "recorded nodes and retires its service record")
+    if not (output / 'result.json').exists():
+        raise ValueError(f'guarded run {run_id[:12]} has no final result.json: its controller exited '
+                         f'without finishing, so reconciliation cannot retire its service record. {recover}')
     result = record(output / 'result.json')
     if (type(result.get('schema_version')) is not int or result['schema_version'] != 1
             or result.get('kind') != 'pulsar-guarded-serving-result'
@@ -57,7 +63,8 @@ def completed_plan(output, run_id):
     phase = result['phases']['cleanup']
     if (phase != {'complete': True, 'ranks': count} or phase.get('complete') is not True
             or type(phase.get('ranks')) is not int):
-        raise ValueError('saved cleanup is incomplete')
+        raise ValueError('the saved cleanup is incomplete, so reconciliation cannot retire the service '
+                         f'record. {recover}')
     batch = record(output / 'cleanup' / 'batch.json')
     if (batch.get('outcome') != 'complete' or type(batch.get('returncode')) is not int
             or batch['returncode'] != 0 or len(batch['results']) != count):

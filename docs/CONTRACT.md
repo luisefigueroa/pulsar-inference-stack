@@ -389,6 +389,9 @@ owned service was stopped, `false` when none was running. For `stop --all`,
 `--yes` approves it. Without `--yes` it warns on stderr and still runs; CLI
 contract 2 requires `--yes`. `stop SPEC` asks no confirmation, and `--yes`
 with it is a `usage_error`.
+`stop SPEC` also stops a guarded trial whose controller has exited, on its recorded
+rank-to-node bindings (see [guarded serving](GUARDED_SERVING.md#recover-an-exited-trial));
+`stopped` is `true` when it removed the trial.
 
 `status --json SPEC` reports what status established about the spec's service.
 `ok` is true whenever a service exists, whatever its state:

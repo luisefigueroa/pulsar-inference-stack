@@ -326,14 +326,20 @@ ssh_node() {
         self.assertEqual(self.store.get('services', replacement['service_id'])['plan_id'], replacement['plan_id'])
         self.assertEqual(self.store.get('service-plans', replacement['plan_id']), replacement)
 
-    def test_ordinary_stop_still_refuses_live_nondefault_guarded_placement(self):
-        self.make_session((2, 1))
-        result = subprocess.run([str(self.installation / 'pulsar'), 'stop', self.plan['spec_id'],
-            '--spec-file', str(self.output / 'spec.json'), '--json'], env={**self.env, 'OCCUPIED_NODE': '2'},
-            cwd=self.root, text=True, capture_output=True, timeout=20)
-        self.assert_preserved(result)
-        self.assertIn('nondefault guarded placement', result.stderr)
-        self.assertFalse((self.root / 'probes').exists())
+    def test_unreconcilable_runs_point_to_ordinary_stop_without_a_traceback(self):
+        result = json.loads((self.output / 'result.json').read_text())
+        result['phases']['cleanup'] = {'complete': False, 'error': 'incomplete guarded rank phase: cleanup'}
+        self.put('result.json', result)
+        for case in ('incomplete cleanup', 'missing result'):
+            if case == 'missing result':
+                (self.output / 'result.json').unlink()
+            with self.subTest(case=case):
+                failed = self.run_cli(json_output=False)
+                self.assertNotEqual(failed.returncode, 0, failed.stdout)
+                self.assertNotIn('Traceback', failed.stderr)
+                self.assertIn(f"Next: ./pulsar stop {self.plan['selected_spec_id']} stops the trial's containers",
+                              failed.stderr)
+                self.assertEqual(self.store.get('services', self.plan['service_id'])['plan_id'], self.plan['plan_id'])
 
     def test_invalid_historical_records_refuse_before_any_probe_or_locator_mutation(self):
         cases = [('result.json', lambda r: r.update(run_id='d' * 64)),

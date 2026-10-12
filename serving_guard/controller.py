@@ -168,9 +168,12 @@ def stop(output, run_id):
     if plan["guard_run_id"] != run_id or controller["run_id"] != run_id:
         raise ValueError("guard invocation changed")
     if (output / "result.json").exists():
-        raise ValueError("guarded session already completed")
+        raise ValueError(f"guarded run {run_id[:12]} already finished; nothing to stop. Its outcome is in "
+                         f"{output / 'result.json'}")
     if process_identity(controller["owner"][0]) != controller["owner"]:
-        raise ValueError("controller no longer alive; reconcile physical state")
+        raise ValueError(f"guarded run {run_id[:12]}'s controller exited without finishing. Next: ./pulsar stop "
+                         f"{plan['selected_spec_id']} stops the trial's containers on its recorded nodes "
+                         "and retires its service record")
     path = output / "stop-request.json"
     if not path.exists():
         write(path, {"run_id": run_id, "requested_stop": True})

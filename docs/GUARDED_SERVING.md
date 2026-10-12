@@ -94,8 +94,11 @@ pinned views and their bytes are retained. Its output directory must not exist.
 
 Ordinary real start supports its existing default placement; a nondefault
 multi-node placement requires the guarded path. Stop that session through
-`guarded stop` with its exact run ID. Ordinary stop refuses a recorded
-nondefault guarded placement before removing containers. Recorded observation
+`guarded stop` with its exact run ID. While its controller runs, ordinary stop
+refuses a recorded nondefault guarded placement before removing containers and
+names `guarded stop`. After the controller has exited, `./pulsar stop SPEC`
+recovers the trial (see [Recover an exited trial](#recover-an-exited-trial)).
+Recorded observation
 and service resource sampling use the saved rank/node bindings rather than a
 future selection or overlay. A remote API head does not write the controller's
 `ready.json`; use public status or observation to inspect readiness.
@@ -193,8 +196,30 @@ receipt publication fails, the command reports failure with the receipt path.
 A pending receipt records an attempted removal, not proof that it completed;
 inspect the current locator before recovery. Retries append fresh receipts and
 do not rewrite a previous pending receipt.
-Incomplete historical cleanup or a missing final
-result requires separate physical recovery and cannot authorize reconciliation.
+Incomplete cleanup or a missing final result cannot authorize
+reconciliation; the refusal names the recovery below.
+
+### Recover an exited trial
+
+When a trial's controller has exited without verified cleanup on every rank,
+for example after a cleanup failure or an abrupt termination, stop it like an
+ordinary service:
+
+```sh
+./pulsar stop SPEC_ID
+```
+
+Stop holds the lifecycle lock exclusively, which a running guarded controller
+holds for its whole life, so a running trial is refused and left to `guarded
+stop`. It uses the trial's recorded rank-to-node bindings, including a
+nondefault placement, and removes only the trial's exact container on each
+recorded node: its recorded name and its guard-run, launch-plan, spec and rank
+labels. Every recorded node is probed first; an unobservable node removes
+nothing. After confirming absence it retires the trial's service locator. The
+run directory, including `result.json` with its incomplete cleanup, is not
+changed. A trial always stops on all its nodes together, so `--node` is
+refused, and `stop --all` does not stop a guarded trial on a nondefault
+placement.
 
 A failed prerequisite check retains its full private stdout/stderr captures and
 writes a failed `result.json` with no run/service identity. Its preflight,

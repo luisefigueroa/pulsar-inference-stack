@@ -286,7 +286,12 @@ class GuardContracts(unittest.TestCase):
             (root/'controller.json').write_text(json.dumps({'run_id':plan['guard_run_id'],'owner':[12345,'99']}))
             with patch.object(controller,'process_identity',return_value=[12345,'100']),patch.object(controller.os,'kill') as kill:
                 with self.assertRaises(ValueError):controller.stop(root,'e'*64)
-                with self.assertRaisesRegex(ValueError,'no longer alive'):controller.stop(root,plan['guard_run_id'])
+                # An exited controller points to ordinary stop, which recovers the trial.
+                with self.assertRaisesRegex(ValueError,"controller exited without finishing. Next: ./pulsar stop "
+                                            + plan['selected_spec_id']):controller.stop(root,plan['guard_run_id'])
+                (root/'result.json').write_text('{}')
+                with self.assertRaisesRegex(ValueError,'already finished; nothing to stop'):
+                    controller.stop(root,plan['guard_run_id'])
             kill.assert_not_called()
 
 
