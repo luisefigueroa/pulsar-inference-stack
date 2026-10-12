@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from .catalog import ROOT, age_text, archive_facts, archive_text, files_text, recipe_text
+from .catalog import ROOT, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
@@ -158,7 +158,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if age is None or age > STALE_SECONDS:
         return "check", "last check " + age_text(age)
     local = row.get("local_state", "unknown")
-    blocker = "saved blocker: " + names.prefixed(str(row["blockers"][0])) if row.get("blockers") else None
+    blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     snapshots = members(row)

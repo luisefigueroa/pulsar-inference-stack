@@ -67,6 +67,41 @@ def combined_observation(members):
         'blockers':[name+': '+b for name in names for b in members[name].get('blockers',[])]}
 
 
+# A saved blocker repeats its snapshot ("target: required snapshot target: ...")
+# and names a rank without its node; people see each once, with the node.
+SNAPSHOT_BLOCKER = re.compile(r"^(?P<name>[\w.-]+): required snapshot (?P=name): (?P<rest>.*)$", re.S)
+RANK_BLOCKER = re.compile(r"^rank (?P<rank>\d+): (?P<message>.*)$", re.S)
+
+
+def rank_node(row: dict, rank: int, snapshot: str | None) -> str | None:
+    """The node_id saved prepared-copy records give for one rank, when unambiguous."""
+    manifest = ((row.get("snapshots") or {}).get(snapshot) or {}).get("snapshot_manifest_id") if snapshot else None
+    nodes = {copy.get("node_id") for copy in row.get("prepared_copies") or []
+             if copy.get("rank") == rank and copy.get("node_id")
+             and (manifest is None or copy.get("snapshot_manifest_id") == manifest)}
+    return nodes.pop() if len(nodes) == 1 else None
+
+
+def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
+    """A saved blocker for people: its snapshot named once and each rank shown with its node.
+
+    Display only; the saved observation keeps its original text.
+    """
+    if not isinstance(blocker, str):
+        return blocker
+    prefix, snapshot = "", None
+    match = SNAPSHOT_BLOCKER.match(blocker)
+    if match:
+        snapshot, blocker = match["name"], match["rest"]
+        prefix = f"{snapshot} snapshot · "
+    rank = RANK_BLOCKER.match(blocker)
+    if rank:
+        node = rank_node(row, int(rank["rank"]), snapshot)
+        where = f"{names(node)} (rank {rank['rank']})" if node else f"rank {rank['rank']} (node unknown)"
+        return f"{prefix}{where}: {rank['message']}"
+    return prefix + names.prefixed(blocker)
+
+
 # Why this Stack cannot start a spec, as the start blocker code a start would
 # report, and the human wording for it.
 START_UNSUPPORTED_LABELS = {"guard_unsupported": "serving guard", "historical_spec": "historical schema-1 spec"}
@@ -442,7 +477,7 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
                          initial_indent="    ", subsequent_indent="      ", break_on_hyphens=True)
         if details:
             for blocker in row["blockers"]:
-                field("Blocker", names.prefixed(blocker) if isinstance(blocker, str) else blocker)
+                field("Blocker", blocker_text(blocker, row, names))
         command = suggested_command(row, location, names, now=now)
         if command:
             _command_field(out, "Suggested", command, label_width=label_width)
