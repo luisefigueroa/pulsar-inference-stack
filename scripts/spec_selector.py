@@ -25,9 +25,10 @@ HEX = re.compile(r"^[0-9a-f]+$")
 FULL_ID_OPERATIONS = {"purge", "remove"}
 VALUE_OPTIONS = {
     "--snapshot", "--spec-file", "--manifest", "--model-id", "--model-commit",
-    "--revision", "--node", "--manifest-out", "--verification-jobs",
+    "--revision", "--node", "--placement-nodes", "--manifest-out", "--verification-jobs",
     "--override-file", "--memory-estimate-file", "--memory-estimate-id",
     "--backend", "--transport", "--copy-streams", "--repo-root", "--state-root",
+    "--service-id",
 }
 
 
@@ -83,8 +84,11 @@ def _first_positional(args: list[str], start: int = 0) -> int | None:
 
 def spec_position(command: str, args: list[str]) -> tuple[int | None, str | None]:
     """Locate the spec argument and whether its operation requires the full ID."""
-    if command in ("start", "stop", "status"):
+    if command in ("start", "stop"):
         return (0 if args and not args[0].startswith("-") else None), None
+    if command == "status":
+        # status accepts its options before or after the spec.
+        return _first_positional(args), None
     if command == "models":
         # models check forwards to the model parser, so flags may precede the spec.
         return (_first_positional(args, 1) if args[:1] in (["show"], ["check"], ["results"]) else None), None
