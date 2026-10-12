@@ -330,15 +330,20 @@ ssh_node() {
         result = json.loads((self.output / 'result.json').read_text())
         result['phases']['cleanup'] = {'complete': False, 'error': 'incomplete guarded rank phase: cleanup'}
         self.put('result.json', result)
-        for case in ('incomplete cleanup', 'missing result'):
+        for case in ('incomplete cleanup', 'missing result', 'malformed result'):
             if case == 'missing result':
                 (self.output / 'result.json').unlink()
+            if case == 'malformed result':
+                self.put('result.json', {k: v for k, v in result.items() if k != 'phases'})
             with self.subTest(case=case):
                 failed = self.run_cli(json_output=False)
                 self.assertNotEqual(failed.returncode, 0, failed.stdout)
                 self.assertNotIn('Traceback', failed.stderr)
-                self.assertIn(f"Next: ./pulsar stop {self.plan['selected_spec_id']} stops the trial's containers",
-                              failed.stderr)
+                # One error line: the public CLI does not repeat the script's diagnostic.
+                self.assertEqual(failed.stderr.count('error:'), 1, failed.stderr)
+                expected = ('the saved guarded run records are malformed' if case == 'malformed result' else
+                            f"Next: ./pulsar stop {self.plan['selected_spec_id']} stops the trial's containers")
+                self.assertIn(expected, failed.stderr)
                 self.assertEqual(self.store.get('services', self.plan['service_id'])['plan_id'], self.plan['plan_id'])
 
     def test_invalid_historical_records_refuse_before_any_probe_or_locator_mutation(self):

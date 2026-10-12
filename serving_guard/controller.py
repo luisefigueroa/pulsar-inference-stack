@@ -225,9 +225,13 @@ def finish(output, state_root=None):
         (output / "execute" / f"{rank}.program").unlink(missing_ok=True)
     phases = {}
     for phase in ("preflight", "execute", "cleanup"):
-        if not (output / phase / "batch.json").exists():
-            # The phase never ran a batch, as a failed prerequisite check records it.
+        if not (output / phase).exists():
+            # Nothing was dispatched for the phase, as a failed prerequisite check records it.
             phases[phase] = {"complete": False, "not_started": True}
+            continue
+        if not (output / phase / "batch.json").exists():
+            # Dispatched without a final report: what ran is not established.
+            phases[phase] = {"complete": False, "error": f"no {phase} batch report; its outcome is unknown"}
             continue
         try:
             phases[phase] = {"complete": True, "ranks": check(output, phase)}

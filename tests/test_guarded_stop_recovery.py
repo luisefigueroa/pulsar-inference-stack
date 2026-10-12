@@ -63,8 +63,11 @@ reload_cluster_topology() { load_cluster_topology; }
 require_topology_ssh_trust() { [ "${UNKNOWN_TRUST:-0}" != 1 ]; }
 ssh_node() { local node="$1"; shift; PULSAR_TEST_NODE="$node" bash -c "${1/#docker/$PULSAR_DOCKER}"; }
 stop_named_service_by_labels() { STOP_NAMED_NOTHING_FOUND=1; }
+list_managed_container_ids_on_node() { [ "$1" != "${UNOBSERVABLE_INDEX:-}" ]; }
 ''')
         self.env['BASH_ENV'] = str(overrides)
+        # The reused setup saved a default-placement session; this test's trial replaces it.
+        self.store.remove('services', self.plan['service_id'])
         # The trial ran on node-2 (rank 0) and node-1 (rank 1); its controller has exited.
         self.make_session((2, 1), status='failed')
         result = json.loads((self.output / 'result.json').read_text())
@@ -77,6 +80,17 @@ stop_named_service_by_labels() { STOP_NAMED_NOTHING_FOUND=1; }
         unrelated = {**owned('2', 0), 'id': 'e' * 64,
                      'labels': {**owned('2', 0)['labels'], PREFIX + 'guard-run': 'd' * 64}}
         (self.root / 'containers.json').write_text(json.dumps([owned('2', 0), owned('1', 1), unrelated]))
+
+    def hold_lock(self):
+        # A running guarded run holds the lifecycle lock shared for its whole life.
+        lock = Path(self.env['PULSAR_MODEL_LIBRARY_DIR']) / 'lifecycle.lock'
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        holder = subprocess.Popen(['flock', '-s', str(lock), 'sleep', '30'])
+        self.addCleanup(lambda: (holder.kill(), holder.wait()))
+        deadline = time.monotonic() + 5
+        while subprocess.run(['flock', '-n', '-x', str(lock), 'true']).returncode == 0 and time.monotonic() < deadline:
+            time.sleep(.05)
+        return holder
 
     def stop(self, *args, **extra):
         return subprocess.run([str(self.installation / 'pulsar'), 'stop', *args], env={**self.env, **extra},
@@ -115,21 +129,41 @@ stop_named_service_by_labels() { STOP_NAMED_NOTHING_FOUND=1; }
         self.assert_untouched()
 
     def test_a_running_controller_is_left_to_guarded_stop(self):
-        lock = Path(self.env['PULSAR_MODEL_LIBRARY_DIR']) / 'lifecycle.lock'
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        # A running guarded run holds the lifecycle lock shared for its whole life.
-        holder = subprocess.Popen(['flock', '-s', str(lock), 'sleep', '30'])
-        self.addCleanup(lambda: (holder.kill(), holder.wait()))
-        deadline = time.monotonic() + 5
-        while subprocess.run(['flock', '-n', '-x', str(lock), 'true']).returncode == 0 and time.monotonic() < deadline:
-            time.sleep(.05)
+        self.hold_lock()
         result = self.stop(self.plan['selected_spec_id'])
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn(f"runs as guarded trial {self.plan['guard_run_id'][:12]} on rank-2, rank-1", result.stderr)
         self.assertIn(f"Next: ./pulsar guarded stop --output-dir <its output directory> --run-id "
                       f"{self.plan['guard_run_id']}", result.stderr)
+        # The spec is a candidate, not a catalog file, so the command names its complete ID.
+        self.assertIn(f"./pulsar stop {self.plan['selected_spec_id']} stops what remains", result.stderr)
         self.assertFalse((self.root / 'probes').exists())
         self.assert_untouched()
+
+    def test_any_unobservable_confirmed_node_removes_nothing(self):
+        # rank-0 holds no trial rank, but stop probes every confirmed node before removing.
+        result = self.stop(self.plan['selected_spec_id'], UNOBSERVABLE_INDEX='0')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('error: stop did not run: rank-0 cannot be observed', result.stderr)
+        self.assert_untouched()
+
+    def test_a_trial_with_no_container_left_is_not_reported_as_stopped(self):
+        (self.root / 'containers.json').write_text(json.dumps([]))
+        result = self.stop(self.plan['selected_spec_id'], '--json')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertFalse(json.loads(result.stdout)['result']['stopped'])
+        self.assertIn('had no container left', result.stderr)
+        self.assertIsNone(self.store.get('services', self.plan['service_id']))
+
+    def test_a_running_trial_on_the_default_placement_is_refused_at_once(self):
+        self.store.remove('services', self.plan['service_id'])
+        self.make_session((0, 1), status='failed')
+        holder = self.hold_lock()
+        started = time.monotonic()
+        result = self.stop(self.plan['selected_spec_id'])
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('Ordinary stop does not stop a running guarded trial', result.stderr)
 
     def test_node_selection_cannot_split_a_trial(self):
         result = self.stop(self.plan['selected_spec_id'], '--node', 'rank-1')

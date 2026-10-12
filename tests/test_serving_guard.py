@@ -893,7 +893,11 @@ list_managed_container_ids_remote() { :; }
         self.assertIn('synthetic task setup failure', err)
         self.assertFalse(list((self.output/'execute').glob('*.program')))
         self.assertNotIn('synthetic-guard-api-canary', out+err)
-        self.assertTrue(json.loads((self.output/'result.json').read_text())['phases']['cleanup']['complete'])
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertTrue(result['phases']['cleanup']['complete'])
+        # Dispatch began without a final report: the phase is unknown, never "not started".
+        self.assertEqual(result['phases']['execute'],
+                         {'complete': False, 'error': 'no execute batch report; its outcome is unknown'})
 
     def test_prerequisite_failure_public_human_and_json_keep_diagnostic_and_evidence(self):
         (self.root/'scripts/up.sh').write_text(

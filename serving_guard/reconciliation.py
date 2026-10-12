@@ -178,6 +178,11 @@ def main():
         # A refusal is one line; the service locator is unchanged.
         print(f'error: {exc}', file=sys.stderr)
         raise SystemExit(1) from None
+    except (KeyError, TypeError, AttributeError) as exc:
+        # Valid JSON with a missing or mistyped field is a malformed record, not a defect here.
+        print(f'error: the saved guarded run records are malformed ({type(exc).__name__}: {exc}); '
+              'the service locator is unchanged', file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == '__main__':

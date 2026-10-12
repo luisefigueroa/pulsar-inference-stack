@@ -17,6 +17,10 @@ from scripts.document_cli import CommandParser, UsageError, emit, failure
 from model_library.verification_process import Cancelled, run_command
 
 
+class ActionFailed(RuntimeError):
+    """A Stack script exited unsuccessfully; its diagnostic is already on stderr."""
+
+
 class StackOutputError(Exception):
     """A Stack script succeeded but its stdout was not the promised JSON."""
 
@@ -94,7 +98,7 @@ def execute(script, args, *, json_result=False, env=None):
         if result.returncode == USAGE_EXIT:
             lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
             raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('error: ', 1)[-1])
-        raise RuntimeError((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
+        raise ActionFailed((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
     if json_result:
         try:
             return json.loads(result.stdout)
@@ -512,6 +516,9 @@ def main(argv=None):
     except StatusFailed as exc:
         return failure(exc,json_output=json_output,code=exc.code)
     except RuntimeError as exc:
+        if isinstance(exc, ActionFailed) and not json_output:
+            # The script's own error line is already on stderr; one copy is enough.
+            return 3
         return failure(exc,json_output=json_output,code='prerequisite_failed',exit_code=3)
 
 

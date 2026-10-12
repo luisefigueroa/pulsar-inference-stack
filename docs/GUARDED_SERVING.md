@@ -217,8 +217,8 @@ holds for its whole life, so a running trial is refused and left to `guarded
 stop`. It uses the trial's recorded rank-to-node bindings, including a
 nondefault placement, and removes only the trial's exact container on each
 recorded node: its recorded name and its guard-run, launch-plan, spec and rank
-labels. Every recorded node is probed first; an unobservable node removes
-nothing. After confirming absence it retires the trial's service locator. The
+labels. Every confirmed node is probed first; an unobservable node removes
+nothing. A trial whose containers are already gone is reported as not stopped. After confirming absence it retires the trial's service locator. The
 run directory, including `result.json` with its incomplete cleanup, is not
 changed. A trial always stops on all its nodes together, so `--node` is
 refused, and `stop --all` does not stop a guarded trial on a nondefault

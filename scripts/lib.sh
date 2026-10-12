@@ -2577,7 +2577,7 @@ for row in plan["ranks"]:
   for i in "${!indexes[@]}"; do
     [ -n "${found[$i]}" ] || continue
     guarded_trial_docker "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
-      error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop ${spec:0:12}"
+      error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
       return 1
     }
     removed=$((removed + 1))
@@ -2585,7 +2585,7 @@ for row in plan["ranks"]:
   # Confirm absence on every recorded node before retiring the service record.
   for i in "${!indexes[@]}"; do
     if ! ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") || [ -n "$ids" ]; then
-      error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop ${spec:0:12}"
+      error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
       return 1
     fi
   done
@@ -2596,18 +2596,34 @@ from scripts.service_state import retire_plan
 store = Store(sys.argv[1])
 retire_plan(store, store.get("service-plans", sys.argv[2]))
 ' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" \
-    || { error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status ${spec:0:12}"; return 1; }
-  GUARDED_TRIAL_STOPPED=1
+    || { error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"; return 1; }
   where=$(printf '%s, ' "${hosts[@]}"); where="${where%, }"
-  log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
+  if [ "$removed" -gt 0 ]; then
+    GUARDED_TRIAL_STOPPED=1
+    log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
+  else
+    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; retired its stale service record. The trial's run directory keeps its own result."
+  fi
+}
+
+# spec_reference SPEC_ID — how a suggested command names a spec: its 12-character
+# prefix when that selects exactly one catalog spec, otherwise the complete ID
+# (a candidate is not in the catalog, so a prefix would not resolve).
+spec_reference() {
+  local spec="$1" releases="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}" matches
+  if [[ "$spec" =~ ^[0-9a-f]{64}$ ]] && [ -f "$releases/$spec.json" ]; then
+    matches=$(find "$releases" -maxdepth 1 -name "${spec:0:12}*.json" | wc -l)
+    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return; }
+  fi
+  printf '%s\n' "$spec"
 }
 
 # stop_unobservable_error INDEX CONF [NODE_SELECTOR] — stop found a node it
 # cannot observe before removing anything; say so, why, and what to run next.
 # The retry keeps the operator's --node so it never widens the stop's scope.
 stop_unobservable_error() {
-  local index="$1" conf="$2" node_selector="${3:-}" selector="$2"
-  [[ ! "$conf" =~ ^[0-9a-f]{64}$ ]] || selector="${conf:0:12}"
+  local index="$1" conf="$2" node_selector="${3:-}" selector
+  selector=$(spec_reference "$conf")
   [ -z "$node_selector" ] || selector+=" --node $node_selector"
   error_line "stop did not run: $(human_node_name "$index") cannot be observed, so no container of $(conf_label_display "$conf") was removed. Stopping only the reachable nodes could strand a live rank. Next: ./pulsar topology check, then rerun ./pulsar stop $selector"
 }
