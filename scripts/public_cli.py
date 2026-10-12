@@ -480,6 +480,8 @@ def main(argv=None):
                 (argv[1] == 'run' and not json_output) or any(a in ('--help', '-h') for a in argv[2:])):
             os.chdir(ROOT)
             script = 'guarded-serving.sh' if argv[1] == 'run' else 'guarded-reconcile.sh'
+            # A person reading the run gets a summary; --json keeps result.json's JSON.
+            os.environ['PULSAR_HUMAN_OUTPUT'] = '1'
             os.execvp('bash', ['bash', str(ROOT/'scripts'/script), *argv[2:]])
         if argv[0] == 'image' and argv[1:2] in (['check'], ['stage']) and (
                 not json_output or any(a in ('--help', '-h') for a in argv[2:])):

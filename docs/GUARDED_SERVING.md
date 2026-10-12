@@ -102,7 +102,10 @@ Recorded observation
 and service resource sampling use the saved rank/node bindings rather than a
 future selection or overlay. A remote API head does not write the controller's
 `ready.json`; use public status or observation to inspect readiness.
-The command stays active for the lifetime of the session. `--yes` acknowledges
+The command stays active for the lifetime of the session. Without `--json` it
+ends with a summary: the outcome, each phase, which ranks verified cleanup, the
+`result.json` path and, when cleanup is incomplete, the recovery command. With
+`--json` it returns the final result unchanged. `--yes` acknowledges
 the reviewed start, not acquisition, replacement or publication.
 
 ## Enforcement and identity

@@ -648,6 +648,41 @@ def execute(context,root):
         self.assertTrue(result['phases']['cleanup']['complete'])
         self.assertFalse(list((self.root/'docker-state').glob('guard-*')))
 
+    def public_run(self, *extra_args, extra=None):
+        return subprocess.Popen(['bash', str(self.root/'pulsar'), 'guarded', 'run',
+            '--spec-file', str(self.root/'guard-spec.json'), '--spec-id', self.spec_id,
+            '--output-dir', str(self.output), '--yes', *extra_args], cwd=self.root,
+            env={**self.env, **(extra or {})}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_a_person_gets_a_run_summary_and_json_stays_json(self):
+        process = self.public_run(extra={'PULSAR_TEST_REJECT_RANK': '1'})
+        out, err = process.communicate(timeout=30)
+        self.assertNotEqual(process.returncode, 0, err)
+        lines = out.splitlines()
+        self.assertRegex(lines[0], r'^Guarded run [0-9a-f]{12} failed in preflight \(without a stop request\)\.$')
+        self.assertIn('  execute    not started', lines)
+        self.assertIn('  cleanup    verified on 3 of 3 ranks; no active service record', lines)
+        self.assertIn(f"  result     {self.output/'result.json'}", lines)
+        # A phase that never ran is recorded as not started, not as a missing-file error.
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertEqual(result['phases']['execute'], {'complete': False, 'not_started': True})
+        self.output = self.root/'json-run'
+        process = self.public_run('--json', extra={'PULSAR_TEST_REJECT_RANK': '1'})
+        out, err = process.communicate(timeout=30)
+        self.assertEqual(json.loads(out)['error']['code'], 'prerequisite_failed')
+
+    def test_the_summary_names_unverified_ranks_and_the_recovery(self):
+        process = self.public_run(extra={'PULSAR_TEST_CLEANUP_FAIL_RANK': '0'})
+        self.wait_started(process)
+        plan = json.loads((self.output/'active-plan.json').read_text())
+        controller.stop(self.output, plan['guard_run_id'])
+        out, err = process.communicate(timeout=30)
+        self.assertNotEqual(process.returncode, 0, err)
+        self.assertIn('failed in execute (after a stop request).', out.splitlines()[0])
+        self.assertIn(f"  cleanup    not verified on {plan['ranks'][0]['hostname']} (rank 0); their containers may "
+                      "still be running", out)
+        self.assertIn(f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers", out)
+
     def test_two_rank_recipe_preserves_three_member_topology(self):
         self.select_two_ranks()
         before = (self.root/'scripts/lib.sh').read_bytes()

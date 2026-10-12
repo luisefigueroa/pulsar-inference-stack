@@ -225,6 +225,10 @@ def finish(output, state_root=None):
         (output / "execute" / f"{rank}.program").unlink(missing_ok=True)
     phases = {}
     for phase in ("preflight", "execute", "cleanup"):
+        if not (output / phase / "batch.json").exists():
+            # The phase never ran a batch, as a failed prerequisite check records it.
+            phases[phase] = {"complete": False, "not_started": True}
+            continue
         try:
             phases[phase] = {"complete": True, "ranks": check(output, phase)}
         except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -244,6 +248,65 @@ def finish(output, state_root=None):
         result["service_locator_retired"] = retire_plan(Store(state_root), plan)
     write(output / "result.json", result)
     return result
+
+
+def unverified_ranks(output, count):
+    """Ranks whose cleanup was not verified; every rank when the batch is unreadable."""
+    try:
+        results = {row["index"]: row for row in json.loads(read_regular(output / "cleanup" / "batch.json"))["results"]}
+    except (ValueError, OSError, KeyError, TypeError):
+        return list(range(count))
+    missing = []
+    for rank in range(count):
+        try:
+            verified = (results[rank]["returncode"] == 0 and json.loads(
+                read_regular(output / "cleanup" / "jobs" / f"{rank}.out")).get("cleanup_verified") is True)
+        except (ValueError, OSError, KeyError, TypeError):
+            verified = False
+        if not verified:
+            missing.append(rank)
+    return missing
+
+
+def summary(output, result, plan):
+    """The run's outcome for people; --json and direct callers keep result.json's JSON."""
+    run, phases, count = result["run_id"][:12], result["phases"], len(plan["ranks"])
+    why = "after a stop request" if result["requested_stop"] else "without a stop request"
+    if result["status"] == "stopped":
+        head = f"Guarded run {run} stopped as requested."
+    elif phases["preflight"].get("not_started"):
+        head = f"Guarded run {run} ended before any rank started ({why})."
+    else:
+        failed = next((name for name in ("preflight", "execute", "cleanup") if not phases[name]["complete"]), None)
+        head = (f"Guarded run {run} failed in {failed} ({why})." if failed
+                else f"Guarded run {run} ended {why}; it is recorded as failed.")
+
+    def state(name):
+        phase = phases[name]
+        if phase.get("not_started"):
+            return "not started"
+        return f"complete on {phase['ranks']} of {count} ranks" if phase["complete"] else "incomplete"
+
+    lines = [head, f"  preflight  {state('preflight')}", f"  execute    {state('execute')}"]
+    cleanup, next_step = phases["cleanup"], None
+    if cleanup["complete"]:
+        record = "service record retired" if result.get("service_locator_retired") else "no active service record"
+        lines.append(f"  cleanup    verified on {cleanup['ranks']} of {count} ranks; {record}")
+    elif cleanup.get("not_started"):
+        lines.append("  cleanup    not needed; no rank started")
+    else:
+        where = ", ".join(f"{plan['ranks'][rank].get('hostname') or plan['ranks'][rank]['node_id']} (rank {rank})"
+                          for rank in unverified_ranks(output, count))
+        lines.append(f"  cleanup    not verified on {where}; their containers may still be running")
+        next_step = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
+                     "recorded nodes and retires its service record")
+    lines.append(f"  result     {output / 'result.json'}")
+    if next_step:
+        lines.append(next_step)
+    elif result["status"] != "stopped" and not phases["preflight"].get("not_started"):
+        ran = [f"{output / name / 'jobs'}" for name in ("preflight", "execute") if not phases[name].get("not_started")]
+        lines.append("Rank reports: " + ", ".join(ran))
+    return "\n".join(lines)
 
 
 def main():
@@ -279,7 +342,11 @@ def main():
             check(args.output, args.phase)
         else:
             result = finish(args.output, args.state_root)
-            print(json.dumps(result))
+            if os.environ.get("PULSAR_HUMAN_OUTPUT") == "1":
+                plan = json.loads(read_regular(args.output / "active-plan.json"))
+                print(summary(args.output, result, plan))
+            else:
+                print(json.dumps(result))
             return 0 if result["status"] == "stopped" else 3
     except (ValueError, OSError) as exc:
         # An expected refusal is one line; a defect elsewhere keeps its traceback.
