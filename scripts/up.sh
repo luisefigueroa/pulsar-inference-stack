@@ -509,6 +509,18 @@ write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo "$
 plan_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema_version"])' "$PLAN_FILE")
 echo "PASS  plan      schema=$plan_schema ranks=$NODES; prerequisites checked separately"
 
+# Suggested follow-up commands name the node by hostname and a catalog spec by
+# its 12-character prefix when that prefix is unique; a candidate keeps its full ID.
+SUGGEST_SPEC="$NAME"
+if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; then
+  shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
+  [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
+fi
+SUGGEST_ARGS=("${PLACEMENT_ARGS[@]}")
+if [ "${PLACEMENT_ARGS[0]:-}" = --node ] && [ -n "${SINGLE_NODE_HOSTNAME:-}" ]; then
+  SUGGEST_ARGS=(--node "$SINGLE_NODE_HOSTNAME")
+fi
+
 if [ "$DRY" = 1 ]; then
   cat <<EOF
 
@@ -517,7 +529,7 @@ DRY-RUN OK
   served:   $SERVED_NAME
   plan:     $PLAN_FILE
   would:    $([ "$NODES" -gt 1 ] && echo "cluster/start-cluster.sh $NAME ${spec_flag[*]:-} ${launch_flags[*]:-}" || echo "serve.sh $NAME -d ${PLACEMENT_ARGS[*]:-} ${spec_flag[*]:-} ${launch_flags[*]:-}")
-  live:     ./pulsar status $NAME ${PLACEMENT_ARGS[*]:-}
+  live:     ./pulsar status $SUGGEST_SPEC ${SUGGEST_ARGS[*]:-}
   note:     no containers changed
 EOF
   exit 0
@@ -629,7 +641,7 @@ READY
   served:   $SERVED_NAME
   url:      ${SERVICE_API_BASE}/v1
   inspect:  ./pulsar inventory
-  status:   ./pulsar status $NAME ${PLACEMENT_ARGS[*]:-}
-  stop:     ./pulsar stop $NAME ${PLACEMENT_ARGS[*]:-}
+  status:   ./pulsar status $SUGGEST_SPEC ${SUGGEST_ARGS[*]:-}
+  stop:     ./pulsar stop $SUGGEST_SPEC ${SUGGEST_ARGS[*]:-}
   security: do not expose :${PORT} without authentication
 EOF
