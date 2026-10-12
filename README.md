@@ -11,6 +11,9 @@ Its **recipe** is the execution configuration. You can browse, restore, prepare,
 and serve published specs using this public repository alone. The separate
 private `pulsar-inference-workbench` owns model onboarding and experiments.
 
+**[MiMo V2.6 Flash image provenance and credits](docs/IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md)**
+— upstream base image, contributors, patches, and component licenses.
+
 ## Before you start
 
 Use Python 3.11 or newer, Bash, Git, and util-linux `flock`. Serving nodes need
