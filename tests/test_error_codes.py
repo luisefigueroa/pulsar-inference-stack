@@ -90,7 +90,9 @@ class ErrorCodes(unittest.TestCase):
             for args, detail in (((spec[:12],), f"{spec[:12]} matches {spec}"),
                                  ((absent,), f"{absent} is not a catalog spec ID; see ./pulsar models list --json"),
                                  (("not-a-spec",), "not-a-spec is not a catalog spec ID")):
-                for command in (["status"], ["start"], ["stop"], ["model", "info"]):
+                # status also takes its options before the spec.
+                for command in (["status"], ["status", "--node", "spark-1"], ["start"], ["stop"],
+                                ["model", "info"]):
                     with self.subTest(command=command, args=args):
                         result = subprocess.run([str(ROOT / "pulsar"), *command, *args, "--json"],
                                                 env=env, text=True, capture_output=True, timeout=60)

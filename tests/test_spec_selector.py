@@ -51,6 +51,10 @@ class SpecSelector(unittest.TestCase):
         cases = {
             ("start", (OTHER[:12], "--dry-run")): (0, None),
             ("stop", ("--all",)): (None, None),
+            ("status", ("--node", "n1", OTHER[:12])): (2, None),
+            ("status", (OTHER[:12], "--node", "n1")): (0, None),
+            ("status", ("--node", "n1")): (None, None),
+            ("status", ("--service-id", "abc")): (None, None),
             ("models", ("show", OTHER[:12])): (1, None),
             ("models", ("results", OTHER[:12])): (1, None),
             ("models", ("list",)): (None, None),
@@ -97,6 +101,10 @@ class SpecSelector(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), ["start", OTHER, "--node", "has space"])
         self.assertIn(f"Using spec {OTHER}", result.stderr)
+        # status takes its options before or after the spec.
+        result = subprocess.run([str(shell / "pulsar"), "status", "--node", "n1", OTHER[:12]],
+                                text=True, capture_output=True, env=env)
+        self.assertEqual(json.loads(result.stdout), ["status", "--node", "n1", OTHER])
         result = subprocess.run([str(shell / "pulsar"), "stop", "0a60"], text=True, capture_output=True, env=env)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
