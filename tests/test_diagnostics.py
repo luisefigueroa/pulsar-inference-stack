@@ -108,6 +108,11 @@ ssh_node() {{
             with self.subTest(mode=mode):
                 self.assertNotEqual(result.returncode,0,result.stdout)
                 self.assertEqual(json.loads(result.stdout)['result'],'fail')
+                # Every failed row says what to do next, not only what is wrong.
+                failed=[c['message'] for c in json.loads(result.stdout)['checks'] if c['level']=='fail']
+                self.assertTrue(failed)
+                for message in failed:
+                    self.assertRegex(message,r'; (run|install|fix|free|inspect|start|this (host|node))|scripts/check-catalog',message)
                 self.assertFalse((self.root/'mutations').exists())
 
     def test_narrow_doctor_and_image_output(self):
