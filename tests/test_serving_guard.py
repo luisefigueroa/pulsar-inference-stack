@@ -609,6 +609,23 @@ def execute(context,root):
         plan['plan_id'] = canonical_json_digest({k:v for k,v in plan.items() if k != 'plan_id'})
         path.write_text(json.dumps(plan))
 
+    def test_expected_refusals_are_one_line_errors_before_any_action(self):
+        def run(spec_id, output):
+            return subprocess.run(['bash', str(self.root/'scripts/guarded-serving.sh'),
+                '--spec-file', str(self.root/'guard-spec.json'), '--spec-id', spec_id,
+                '--output-dir', str(output), '--yes'], cwd=self.root, env=self.env,
+                text=True, capture_output=True, timeout=60)
+        for spec_id, output, message in (
+                ('f' * 64, self.root/'fresh', f"error: --spec-id {'f' * 12} is not the ID of "),
+                (self.spec_id, self.root, 'already exists; each run needs a new directory'),
+                (self.spec_id, self.root/'missing-parent'/'run', 'the parent directory of ')):
+            with self.subTest(message=message):
+                result = run(spec_id, output)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertIn(message, result.stderr)
+        self.assertFalse((self.root/'fresh').exists())
+
     def test_two_rank_recipe_preserves_three_member_topology(self):
         self.select_two_ranks()
         before = (self.root/'scripts/lib.sh').read_bytes()

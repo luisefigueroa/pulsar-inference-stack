@@ -44,11 +44,21 @@ def read_regular(path, limit=64 * 1024**2, *, dir_fd=None):
 
 def initialize(spec_file, spec_id, output):
     spec = serving.load_spec(spec_file)
-    if spec["spec_id"] != spec_id or "guard" not in spec["recipe"]["container"]:
-        raise ValueError("exact guarded serving spec required")
+    if spec["spec_id"] != spec_id:
+        raise ValueError(f"--spec-id {spec_id[:12]} is not the ID of {spec_file} ({spec['spec_id'][:12]}); "
+                         "pass the reviewed spec's complete ID")
+    if "guard" not in spec["recipe"]["container"]:
+        raise ValueError(f"{spec_file} has no serving guard (recipe.container.guard); "
+                         "serve it with ./pulsar start")
     if spec["recipe"]["container"]["guard"]["program_sha256"] != digest(program()):
-        raise ValueError("installed guard program differs from reviewed recipe")
-    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+        raise ValueError("the installed guard program differs from the one this spec was reviewed with; "
+                         "create a new candidate with ./pulsar guarded template (docs/GUARDED_SERVING.md)")
+    try:
+        output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError:
+        raise ValueError(f"output directory {output} already exists; each run needs a new directory") from None
+    except FileNotFoundError:
+        raise ValueError(f"the parent directory of {output} does not exist") from None
     write(output / "spec.json", spec)
     code = output / "code"
     hashes = {}
@@ -251,22 +261,28 @@ def main():
         index = argv.index("--")
         command, argv = argv[index + 1:], argv[:index]
     args = parser.parse_args(argv)
-    if args.operation == "initialize":
-        initialize(args.spec_file, args.spec_id, args.output)
-    elif args.operation == "activate":
-        activate(args.output, args.owner)
-    elif args.operation == "task":
-        task(args.output, args.phase, args.rank, command, local_head=args.local_head)
-    elif args.operation == "tasks":
-        tasks(args.output, args.phase)
-    elif args.operation == "fail-prerequisites":
-        fail_prerequisites(args.output, args.returncode)
-    elif args.operation == "check":
-        check(args.output, args.phase)
-    else:
-        result = finish(args.output, args.state_root)
-        print(json.dumps(result))
-        return 0 if result["status"] == "stopped" else 3
+    try:
+        if args.operation == "initialize":
+            initialize(args.spec_file, args.spec_id, args.output)
+        elif args.operation == "activate":
+            activate(args.output, args.owner)
+        elif args.operation == "task":
+            task(args.output, args.phase, args.rank, command, local_head=args.local_head)
+        elif args.operation == "tasks":
+            tasks(args.output, args.phase)
+        elif args.operation == "fail-prerequisites":
+            fail_prerequisites(args.output, args.returncode)
+        elif args.operation == "check":
+            check(args.output, args.phase)
+        else:
+            result = finish(args.output, args.state_root)
+            print(json.dumps(result))
+            return 0 if result["status"] == "stopped" else 3
+    except (ValueError, OSError) as exc:
+        # An expected refusal is one line; a defect elsewhere keeps its traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        # Nothing has been created when initialization refuses its inputs.
+        return 2 if args.operation == "initialize" else 1
     return 0
 
 

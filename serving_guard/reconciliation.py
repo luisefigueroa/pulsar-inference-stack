@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import secrets
+import sys
 
 from model_library.integrity import atomic_json, directory
 from model_library.state import Store, checked_id, ensure_directory, now
@@ -157,14 +158,19 @@ def main():
     parser.add_argument('--topology-id')
     parser.add_argument('--member', action='append', default=[])
     args = parser.parse_args()
-    if args.operation == 'validate':
-        print(json.dumps(completed_plan(args.output, args.run_id)))
-    elif args.operation == 'placement':
-        for index in placement(completed_plan(args.output, args.run_id), args.topology_id, args.member):
-            print(index)
-    else:
-        print(json.dumps(reconcile(args.output, args.run_id, args.state_root, args.observed,
-                                   args.topology_id, args.member)))
+    try:
+        if args.operation == 'validate':
+            print(json.dumps(completed_plan(args.output, args.run_id)))
+        elif args.operation == 'placement':
+            for index in placement(completed_plan(args.output, args.run_id), args.topology_id, args.member):
+                print(index)
+        else:
+            print(json.dumps(reconcile(args.output, args.run_id, args.state_root, args.observed,
+                                       args.topology_id, args.member)))
+    except (ValueError, OSError) as exc:
+        # A refusal is one line; the service locator is unchanged.
+        print(f'error: {exc}', file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == '__main__':
