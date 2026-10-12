@@ -638,6 +638,8 @@ class ModelLibraryCLI(unittest.TestCase):
         result = f.run('restore', '--node', 'node-1', '--yes', spec=True)
         self.failure(result, 'no archive of the model files in ')
         self.assertIn('; nothing was restored. Next: ./pulsar model acquire ', result.stderr)
+        # The suggestion selects the same candidate: its ID and --spec-file.
+        self.assertIn(f"./pulsar model acquire {f.spec['spec_id']} --spec-file {f.spec_path} --node ", result.stderr)
         self.assertNotIn('does not match', result.stderr)
         self.assertEqual(f.events('transfer'), [])
 

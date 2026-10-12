@@ -206,10 +206,10 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   if [ -z "${PULSAR_COLD_ROOT}" ]; then
     record ok cold_storage "archives are disabled"
   elif [ ! -d "${PULSAR_COLD_ROOT}" ]; then
-    record fail cold_storage "archive location is missing or not a directory (./pulsar configure archive-root)"
+    record fail cold_storage "archive location is missing or not a directory; choose one with ./pulsar configure archive-root set PATH --yes"
   elif [ ! -r "${PULSAR_COLD_ROOT}" ] || [ ! -x "${PULSAR_COLD_ROOT}" ]; then
     record fail cold_storage \
-      "archive location ${PULSAR_COLD_ROOT} is not readable and searchable; fix its permissions or run ./pulsar configure archive-root"
+      "archive location ${PULSAR_COLD_ROOT} is not readable and searchable; fix its permissions or choose another with ./pulsar configure archive-root set PATH --yes"
   elif [ ! -w "${PULSAR_COLD_ROOT}" ]; then
     record warn cold_storage \
       "archive location is configured · current write access unavailable"
@@ -218,7 +218,7 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   fi
 else
   record warn cold_storage \
-    "archive location is not configured (./pulsar configure archive-root)"
+    "archive location is not configured; choose one with ./pulsar configure archive-root set PATH --yes"
 fi
 
 avail=$(mem_available_gib_local)
@@ -258,6 +258,9 @@ words={"gpu":("GPU {}","GPU {} (want "+sys.argv[1]+"); this node does not match 
  "node_id":("node identity matches saved membership","node identity differs from saved membership; run ./pulsar topology check")}
 for field,expected in (("gpu",sys.argv[1]),("docker_ok",True),("docker_nvidia",True),("qualified",True),("node_id",sys.argv[3])):
  value=p.get(field); valid=value==expected and type(value) is type(expected)
+ if field=="docker_nvidia" and p.get("docker_ok") is not True:
+  # The runtime query needs Docker, so its absence is not observed.
+  print("warn|docker_nvidia|Docker NVIDIA runtime not observed because Docker is unavailable"); continue
  print(("ok" if valid else "fail")+"|"+field+"|"+words[field][0 if valid else 1].format(value))
 arch_ok=p.get("arch") in sys.argv[2].split()
 print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+"); this node does not match the selected platform"))

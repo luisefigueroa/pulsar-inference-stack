@@ -153,6 +153,11 @@ class Deprecations(unittest.TestCase):
             env = {**os.environ, "CLUSTER_TOPOLOGY_FILE": str(Path(temp) / "absent.json"),
                    "PULSAR_MODEL_LIBRARY_DIR": str(Path(temp) / "library")}
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+            # A retry after a stop scoped with --node keeps that scope.
+            scoped = subprocess.run(["bash", "-c", script.replace(f"labels {spec}", f"labels {spec} spark-1")],
+                                    env=env, text=True, capture_output=True, timeout=60)
+        self.assertTrue(scoped.stderr.strip().endswith(f"then rerun ./pulsar stop {spec[:12]} --node spark-1"),
+                        scoped.stderr)
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(result.stderr.strip(),
                          "error: stop did not run: spark-2 cannot be observed, so no container of spec "

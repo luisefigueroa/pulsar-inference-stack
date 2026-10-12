@@ -69,7 +69,7 @@ def combined_observation(members):
 
 # A saved blocker names its snapshot ("required snapshot target: ..."; schema-3
 # aggregates repeat it as "target: required snapshot target: ...") and a rank
-# without its node; people see the snapshot once and the rank with its node.
+# without its node; people see the snapshot once and where the rank's copy was recorded.
 SNAPSHOT_BLOCKER = re.compile(r"^(?:(?P<label>[\w.-]+): )?required snapshot (?P<name>[\w.-]+): (?P<rest>.*)$", re.S)
 RANK_BLOCKER = re.compile(r"^rank (?P<rank>\d+): (?P<message>.*)$", re.S)
 
@@ -84,7 +84,7 @@ def rank_node(row: dict, rank: int, snapshot: str | None) -> str | None:
 
 
 def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
-    """A saved blocker for people: its snapshot named once and each rank shown with its node.
+    """A saved blocker for people: its snapshot named once and each rank with its recorded copy.
 
     Display only; the saved observation keeps its original text.
     """
@@ -97,8 +97,11 @@ def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
         prefix = f"{snapshot} snapshot · "
     rank = RANK_BLOCKER.match(blocker)
     if rank:
+        # The observation does not keep the placement it checked, so a copy record
+        # says where that rank's copy was recorded, which may differ after a move.
         node = rank_node(row, int(rank["rank"]), snapshot)
-        where = f"{names(node)} (rank {rank['rank']})" if node else f"rank {rank['rank']} (node unknown)"
+        where = (f"rank {rank['rank']} (copy recorded on {names(node)})" if node
+                 else f"rank {rank['rank']} (no recorded copy)")
         return f"{prefix}{where}: {rank['message']}"
     return prefix + names.prefixed(blocker)
 

@@ -95,7 +95,7 @@ class ConfigurationTests(unittest.TestCase):
                 config.run_locked(self.repo, ['true'])
         message = str(raised.exception)
         self.assertIn(f'archive location {self.archive} is unavailable', message)
-        self.assertIn('./pulsar configure archive-root', message)
+        self.assertIn('./pulsar configure archive-root set PATH --yes', message)
 
     def test_show_marks_disappeared_directory_as_unavailable(self):
         config.set_root(self.repo, str(self.archive))

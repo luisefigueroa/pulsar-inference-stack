@@ -85,16 +85,16 @@ class Catalog(unittest.TestCase):
                                    {"rank": 0, "node_id": "node-b", "snapshot_manifest_id": "m-draft"}]}
         message = "required prepared copy is missing or placement changed"
         self.assertEqual(blocker_text(f"target: required snapshot target: rank 0: {message}", row, names),
-                         f"target snapshot · spark-1 (rank 0): {message}")
+                         f"target snapshot · rank 0 (copy recorded on spark-1): {message}")
         self.assertEqual(blocker_text(f"draft: required snapshot draft: rank 0: {message}", row, names),
-                         f"draft snapshot · spark-2 (rank 0): {message}")
-        # A rank without a saved copy is not given a guessed node.
+                         f"draft snapshot · rank 0 (copy recorded on spark-2): {message}")
+        # A rank without a copy record is not given a guessed node.
         self.assertEqual(blocker_text(f"target: required snapshot target: rank 1: {message}", row, names),
-                         f"target snapshot · rank 1 (node unknown): {message}")
+                         f"target snapshot · rank 1 (no recorded copy): {message}")
         # Schema-2 blockers name the snapshot once, without the aggregate label.
         schema2 = {"prepared_copies": [{"rank": 0, "node_id": "node-a"}]}
         self.assertEqual(blocker_text(f"required snapshot target: rank 0: {message}", schema2, names),
-                         f"target snapshot · spark-1 (rank 0): {message}")
+                         f"target snapshot · rank 0 (copy recorded on spark-1): {message}")
         self.assertEqual(blocker_text("node-a: files missing", row, names), "spark-1: files missing")
         self.assertEqual(blocker_text("files missing", row, names), "files missing")
 

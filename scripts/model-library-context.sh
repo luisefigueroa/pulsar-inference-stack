@@ -114,8 +114,8 @@ prepared_snapshot_info() {
 }
 
 require_archive_root() {
-  [ -n "${PULSAR_COLD_ROOT:-}" ] || die "archive location is not configured; use ./pulsar configure archive-root"
-  [ -d "$PULSAR_COLD_ROOT" ] || die "archive location $PULSAR_COLD_ROOT is unavailable (directory missing or not mounted); check it, or choose another with ./pulsar configure archive-root"
+  [ -n "${PULSAR_COLD_ROOT:-}" ] || die "archive location is not configured; choose one with ./pulsar configure archive-root set PATH --yes"
+  [ -d "$PULSAR_COLD_ROOT" ] || die "archive location $PULSAR_COLD_ROOT is unavailable (directory missing or not mounted); check it, or choose another with ./pulsar configure archive-root set PATH --yes"
 }
 
 archive_snapshot_verify() {

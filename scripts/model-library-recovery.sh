@@ -64,10 +64,16 @@ restore_model() {
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
   archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
-  # Name a catalog spec by its unique 12-character prefix; a candidate keeps its complete ID.
-  local spec_ref="$SPEC_ID" what="${SNAPSHOT:+snapshot $SNAPSHOT}"
-  [ -n "$SPEC_FILE" ] || [ ! -f "$REPO_DIR/releases/$SPEC_ID.json" ] || spec_ref="${SPEC_ID:0:12}"
-  [ -n "$spec_ref" ] || spec_ref=SPEC
+  # Suggested commands select the same snapshot as this restore: a catalog spec by
+  # its 12-character prefix, a candidate with its --spec-file, or the --manifest.
+  local spec_ref what="${SNAPSHOT:+snapshot $SNAPSHOT}"
+  local -a selector=()
+  if [ -n "$SPEC_ID" ]; then
+    if [ -z "$SPEC_FILE" ] && [ -f "$REPO_DIR/releases/$SPEC_ID.json" ]; then selector+=("${SPEC_ID:0:12}"); else selector+=("$SPEC_ID"); fi
+  fi
+  [ -z "$SPEC_FILE" ] || selector+=(--spec-file "$SPEC_FILE")
+  [ -n "$SPEC_ID$SPEC_FILE" ] || [ -z "$MANIFEST_FILE" ] || selector+=(--manifest "$MANIFEST_FILE")
+  spec_ref=$(printf '%q ' "${selector[@]}"); spec_ref="${spec_ref% }"
   # A missing archive is not a mismatch: point to Download instead of to corruption.
   [ -d "$archive_path" ] || die "no archive of ${what:-the model files} in $PULSAR_COLD_ROOT; nothing was restored. Next: ./pulsar model acquire $spec_ref${SNAPSHOT:+ --snapshot $SNAPSHOT} --node $(human_node_name "$rank") --yes"
   phase 1 4 "verifying the archive against the expected file hashes"
