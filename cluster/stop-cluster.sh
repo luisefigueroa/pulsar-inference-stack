@@ -23,16 +23,14 @@ if [ "$ARG" = --all ]; then
 
   # Prove every Docker endpoint before the first mutation.
   if ! list_managed_container_ids_local >/dev/null; then
-    echo "error: rank 0 Docker unavailable" >&2
-    log "No containers were removed." >&2
+    echo "error: stop --all did not run: Docker is unavailable on $(human_node_name 0) (rank 0), so no container was removed. Next: ./pulsar doctor, then rerun ./pulsar stop --all --yes" >&2
     exit 1
   fi
 
   for ((rank = 1; rank < CLUSTER_TOPOLOGY_COUNT; rank++)); do
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
     if ! list_managed_container_ids_remote "$host" >/dev/null; then
-      echo "error: rank $rank unreachable or Docker error on $host" >&2
-      log "No containers were removed." >&2
+      echo "error: stop --all did not run: $(human_node_name "$rank") (rank $rank) is unreachable or its Docker failed, so no container was removed. Next: ./pulsar topology check, then rerun ./pulsar stop --all --yes" >&2
       exit 1
     fi
   done

@@ -1,9 +1,11 @@
 """Human messages share one prefix convention; deprecated aliases warn once."""
 import os
 import re
+import shlex
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -137,6 +139,25 @@ class Deprecations(unittest.TestCase):
                 warning = (f"warning: pulsar {flag} is deprecated: {entry['note']}. "
                            f"It is removed in CLI contract {entry['removed_in_cli_contract']}.\n")
                 self.assertEqual(result.stderr.count(warning), 1, result.stderr)
+
+    def test_stop_refuses_an_unobservable_node_with_the_next_step(self):
+        # The real named stop, with a second node that cannot be observed; nothing is removed.
+        spec = "ab" * 32
+        with tempfile.TemporaryDirectory() as temp:
+            script = (f". {shlex.quote(str(ROOT / 'scripts/lib.sh'))}\n"
+                      "load_cluster_topology() { CLUSTER_TOPOLOGY_COUNT=2; CLUSTER_TOPOLOGY_ID=t; "
+                      "CLUSTER_NODE_IDS=(node-a node-b); CLUSTER_NODE_HOSTNAMES=(spark-1 spark-2); "
+                      "CLUSTER_NODE_SSH_HOSTS=(local spark-2); }\n"
+                      "list_managed_container_ids_on_node() { [ \"$1\" = 0 ]; }\n"
+                      f"stop_named_service_by_labels {spec}\n")
+            env = {**os.environ, "CLUSTER_TOPOLOGY_FILE": str(Path(temp) / "absent.json"),
+                   "PULSAR_MODEL_LIBRARY_DIR": str(Path(temp) / "library")}
+            result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stderr.strip(),
+                         "error: stop did not run: spark-2 cannot be observed, so no container of spec "
+                         f"{spec[:12]} was removed. Stopping only the reachable nodes could strand a live rank. "
+                         f"Next: ./pulsar topology check, then rerun ./pulsar stop {spec[:12]}")
 
     def test_release_list_warns_wherever_list_appears(self):
         result = self.run_pulsar("release", "--json", "list")

@@ -2502,6 +2502,14 @@ remove_safe_managed_id_on_node() {
   return 0
 }
 
+# stop_unobservable_error INDEX CONF — stop found a node it cannot observe
+# before removing anything; say so, why, and what to run next.
+stop_unobservable_error() {
+  local index="$1" conf="$2" selector="$2"
+  [[ ! "$conf" =~ ^[0-9a-f]{64}$ ]] || selector="${conf:0:12}"
+  error_line "stop did not run: $(human_node_name "$index") cannot be observed, so no container of $(conf_label_display "$conf") was removed. Stopping only the reachable nodes could strand a live rank. Next: ./pulsar topology check, then rerun ./pulsar stop $selector"
+}
+
 # Named stop by proven labels. Conf file is extra geometry when present.
 # Every confirmed Docker endpoint is probed before mutation. An unobservable
 # node blocks removal (a live rank could be stranded).
@@ -2519,7 +2527,7 @@ stop_named_service_by_labels() {
 
   for ((index = 0; index < count; index++)); do
     if ! list_managed_container_ids_on_node "$index" >/dev/null; then
-      warn "$(human_node_name "$index") is unobservable — not removing $(conf_label_display "$conf") (an unobserved live rank could be stranded)"
+      stop_unobservable_error "$index" "$conf"
       return 1
     fi
   done
@@ -2527,7 +2535,7 @@ stop_named_service_by_labels() {
   for ((index = 0; index < count; index++)); do
     placement=$(single_node_key_for_index "$index") || return 1
     ids=$(list_managed_container_ids_on_node "$index") || {
-      warn "$(human_node_name "$index") is unobservable — not removing $(conf_label_display "$conf")"
+      stop_unobservable_error "$index" "$conf"
       return 1
     }
     for id in $ids; do
@@ -2538,7 +2546,7 @@ stop_named_service_by_labels() {
         continue
       fi
       if [ "$probe" -ne 0 ]; then
-        warn "$(human_node_name "$index") is unobservable — not removing $(conf_label_display "$conf")"
+        stop_unobservable_error "$index" "$conf"
         return 1
       fi
       IFS=$'\t' read -r _ _ _ have_conf rank < <(container_ownership_fields "$meta")
