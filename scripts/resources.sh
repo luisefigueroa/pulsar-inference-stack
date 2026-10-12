@@ -122,11 +122,18 @@ for ((rank=0;rank<count;rank++)); do
   setsid bash "$REPO_DIR/scripts/resource-rank.sh" "$work/context.json" "$rank" "$INTERVAL" "$token" "$work/relay.lock" &
   pids+=("$!")
 done
-# Samplers run until stopped, so one ending on its own fails the stream: name it.
-ended_pid=""
-wait -n -p ended_pid "${pids[@]}" || true
-ended_rank=0
-for ((rank=0;rank<count;rank++)); do [ "${pids[$rank]}" != "$ended_pid" ] || ended_rank=$rank; done
+# Samplers run until stopped, so one ending on its own fails the stream: name
+# it. wait -n (bash 4.3) reaps the first to end; it is the one no longer alive.
+wait -n "${pids[@]}" || true
+ended_rank=""
+for ((rank=0;rank<count;rank++)); do
+  kill -0 "${pids[$rank]}" 2>/dev/null || { ended_rank=$rank; break; }
+done
+if [ -z "$ended_rank" ]; then
+  python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --error sampler_ended
+  error_line "a resource sampler ended; the stream stopped"
+  exit 1
+fi
 mapfile -t ended < <(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["ranks"][int(sys.argv[2])]; print(r["rank_label"]); print(r["node_id"])' "$work/context.json" "$ended_rank")
 python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --rank "${ended[0]}" --error sampler_ended
 where="${ended[1]}"
