@@ -19,7 +19,7 @@ import json
 import sys
 from typing import Any
 
-from .catalog import ROOT, age_text, archive_facts, archive_text, files_text, recipe_text
+from .catalog import ROOT, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
@@ -158,7 +158,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if age is None or age > STALE_SECONDS:
         return "check", "last check " + age_text(age)
     local = row.get("local_state", "unknown")
-    blocker = "saved blocker: " + names.prefixed(str(row["blockers"][0])) if row.get("blockers") else None
+    blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     snapshots = members(row)
@@ -276,9 +276,13 @@ def menu_label(row: dict, width: int) -> str:
         critical.append("start unsupported")
     if critical:
         warning = " · ".join(critical)
-        identity = f" [{row['spec_id'][:8]}]"
+        identity = f" [{row['spec_id'][:12]}]"
         if len(warning + identity) > budget:
             warning = warning.replace("start unsupported", "start blocked")
+        if len(warning + identity) > budget:
+            # At the narrowest widths the warning outranks the copyable prefix;
+            # the selected view shows the complete spec ID.
+            identity = f" [{row['spec_id'][:8]}]"
         if len(warning + identity) > budget:
             # At the minimum width the withdrawal warning has priority; the
             # selected view still explains every launch restriction in full.
@@ -292,7 +296,7 @@ def menu_label(row: dict, width: int) -> str:
         if len(context) > room:
             context = context[:room - 3] + "..."
         return heading + " " + context
-    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
+    suffix = f" [{row['spec_id'][:12]}] {short_state(row)}"
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
     text = model + suffix
@@ -318,7 +322,7 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
            published=None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
-    out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
+    out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
     for line in withdrawal_notice(row):
         out.emit(line)
     out.emit("Selected recipe: " + recipe_text(row["geometry"]))

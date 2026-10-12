@@ -115,7 +115,7 @@ DOCKER = '#!/usr/bin/env bash\necho "$*" >>"$FIXTURE_DIR/docker-calls"\n[ "$1" !
 
 # Blockers that no ./pulsar command resolves; their note says why. Adding a
 # code here needs the same justification.
-NO_COMMAND = {"guard_unsupported": "docs/SERVING_GUARD_SCHEMA.md", "historical_spec": "docs/OPERATIONS.md",
+NO_COMMAND = {"guard_unsupported": "docs/GUARDED_SERVING.md", "historical_spec": "docs/OPERATIONS.md",
               "service_stopped": None}
 ALL_START_FLAGS = "--dry-run --pull-image --accept-memory-warn --replace --verbose --skip-preflight"
 
@@ -164,7 +164,7 @@ class Catalog(unittest.TestCase):
         self.assertEqual(start_blockers.human(record),
                          "BLOCKED guard_unsupported: this spec requires serving-guard enforcement "
                          "(recipe.container.guard), which ordinary start cannot enforce (added by --override-file). "
-                         "Note: Use an explicitly scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md.")
+                         "Note: Use an explicitly scoped pulsar guarded run; see docs/GUARDED_SERVING.md.")
 
     def test_record_names_node_rank_and_fills_spec_and_placement(self):
         record = start_blockers.blocker("model_files_not_ready", spec=SPEC, placement="--node spark-2")
@@ -419,8 +419,21 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual(codes, [])
         self.assertIn("INFO  image     missing on fixture-host-0; --pull-image would stage it", result.stdout)
         self.assertIn("DRY-RUN OK", result.stdout)
+        # The follow-up command names the node by hostname, like the blocker fixes; a
+        # spec that is not a catalog file keeps its complete ID.
+        self.assertIn(f"  live:     ./pulsar status {SPEC} --node spark-1\n", result.stdout)
         self.assertFalse(self.ran("synced"))
         self.assertFalse(self.ran("launched"))
+
+    def test_catalog_follow_up_uses_a_unique_twelve_character_prefix(self):
+        releases = self.root / "releases"; releases.mkdir()
+        (releases / f"{SPEC}.json").write_text("{}")
+        result, _ = self.start("--dry-run", "--pull-image")
+        self.assertIn(f"  live:     ./pulsar status {SPEC[:12]} --node spark-1\n", result.stdout)
+        # A prefix shared with another catalog spec would be ambiguous, so the full ID stays.
+        (releases / f"{SPEC[:12]}{'c' * 52}.json").write_text("{}")
+        result, _ = self.start("--dry-run", "--pull-image")
+        self.assertIn(f"  live:     ./pulsar status {SPEC} --node spark-1\n", result.stdout)
 
     def test_existing_service_ends_the_checks_before_memory(self):
         result, codes = self.start(image="ok", existing=0)

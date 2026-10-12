@@ -74,7 +74,7 @@ BLOCKERS = {
     # Ordinary start cannot resolve these; the note explains the supported path.
     "guard_unsupported": Kind("this spec requires serving-guard enforcement (recipe.container.guard), "
                               "which ordinary start cannot enforce", None,
-                              note="Use an explicitly scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md."),
+                              note="Use an explicitly scoped pulsar guarded run; see docs/GUARDED_SERVING.md."),
     "historical_spec": Kind("this is a historical schema-1 spec, which this Stack reads but cannot start", None,
                             note="No start is possible from this Stack; use a schema-2 or 3 spec for this model "
                                  "(see docs/OPERATIONS.md)."),

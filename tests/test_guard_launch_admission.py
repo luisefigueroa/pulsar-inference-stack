@@ -84,7 +84,7 @@ class GuardLaunchAdmission(unittest.TestCase):
                 self.assertEqual(result.stdout.count('BLOCKED '), 1, result.stdout)
                 self.assertIn('BLOCKED guard_unsupported: this spec requires serving-guard enforcement '
                               '(recipe.container.guard), which ordinary start cannot enforce. Note: Use an explicitly '
-                              'scoped pulsar guarded run; see docs/SERVING_GUARD_SCHEMA.md.', result.stdout)
+                              'scoped pulsar guarded run; see docs/GUARDED_SERVING.md.', result.stdout)
                 self.assertEqual(recorded, [start_blockers.blocker('guard_unsupported')])
                 self.assertFalse((self.base.root / 'mutations').exists())
 

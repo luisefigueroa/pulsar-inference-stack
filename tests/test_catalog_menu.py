@@ -294,7 +294,7 @@ class View(unittest.TestCase):
         lines = menu.view_lines(checked(home=HOME, local_state="ready"), "not-configured", width=60, names=NAMES)
         self.assertEqual(lines[0], "recipe\t3\torg/model")
         text = "\n".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
-        self.assertIn("org/model [abababab]", text)
+        self.assertIn("org/model [abababababab]", text)
         self.assertIn("checked 2 hours ago", text)
         self.assertIn("Suggested: Start", text)
         self.assertIn("no archive location is configured", " ".join(text.split()))
@@ -371,7 +371,8 @@ class Labels(unittest.TestCase):
                                     **(GUARDED if unsupported else {}))
                     label = menu.menu_label(state, width)
                     self.assertLessEqual(len(label), width - 6)
-                    self.assertIn("[abababab]", label)
+                    # 12 characters where they fit; a narrow label with two warnings keeps 8.
+                    self.assertIn("[abababababab]" if width == 80 else "[abababab", label)
                     if withdrawn:
                         self.assertIn("withdrawn", label)
                     if unsupported and (not withdrawn or width >= 44):
@@ -391,7 +392,7 @@ class Labels(unittest.TestCase):
                 with self.subTest(width=width, state=expected):
                     text = menu.menu_label(state, width)
                     self.assertLessEqual(len(text), width - 6)
-                    self.assertIn("[abababab]", text)
+                    self.assertIn("[abababababab]", text)
                     self.assertNotIn("not specified", text)
                     if width == 80:
                         for part in expected.split(" · "):
@@ -405,8 +406,8 @@ class Labels(unittest.TestCase):
                 patch.dict("os.environ", {"COLUMNS": "80"}):
             self.assertEqual(menu.main(["labels"]), 0)
         self.assertEqual(output.getvalue().splitlines(),
-                         ["ab" * 32 + "\torg/model [abababab] never checked",
-                          "cd" * 32 + "\torg/model [cdcdcdcd] files prepared"])
+                         ["ab" * 32 + "\torg/model [abababababab] never checked",
+                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] files prepared"])
 
 
 class Question(unittest.TestCase):

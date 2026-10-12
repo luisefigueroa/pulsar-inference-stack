@@ -75,6 +75,29 @@ class Catalog(unittest.TestCase):
         self.assertIsNone(row["checked_at"])
         self.assertFalse(self.store.root.exists())
 
+    def test_blocker_text_names_the_snapshot_once_and_each_rank_with_its_node(self):
+        from model_library.catalog import blocker_text
+        from model_library.node_names import NodeNames
+        names = NodeNames({"node-a": "spark-1", "node-b": "spark-2"})
+        row = {"snapshots": {"target": {"snapshot_manifest_id": "m-target"},
+                             "draft": {"snapshot_manifest_id": "m-draft"}},
+               "prepared_copies": [{"rank": 0, "node_id": "node-a", "snapshot_manifest_id": "m-target"},
+                                   {"rank": 0, "node_id": "node-b", "snapshot_manifest_id": "m-draft"}]}
+        message = "required prepared copy is missing or placement changed"
+        self.assertEqual(blocker_text(f"target: required snapshot target: rank 0: {message}", row, names),
+                         f"target snapshot · rank 0 (copy recorded on spark-1): {message}")
+        self.assertEqual(blocker_text(f"draft: required snapshot draft: rank 0: {message}", row, names),
+                         f"draft snapshot · rank 0 (copy recorded on spark-2): {message}")
+        # A rank without a copy record is not given a guessed node.
+        self.assertEqual(blocker_text(f"target: required snapshot target: rank 1: {message}", row, names),
+                         f"target snapshot · rank 1 (no recorded copy): {message}")
+        # Schema-2 blockers name the snapshot once, without the aggregate label.
+        schema2 = {"prepared_copies": [{"rank": 0, "node_id": "node-a"}]}
+        self.assertEqual(blocker_text(f"required snapshot target: rank 0: {message}", schema2, names),
+                         f"target snapshot · rank 0 (copy recorded on spark-1): {message}")
+        self.assertEqual(blocker_text("node-a: files missing", row, names), "spark-1: files missing")
+        self.assertEqual(blocker_text("files missing", row, names), "files missing")
+
     def test_snapshot_blockers_survive_json_key_reordering(self):
         from tests.test_container_runtime import fixture
         spec = fixture(speculative=True)[0]

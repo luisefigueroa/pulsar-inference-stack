@@ -63,12 +63,24 @@ restore_model() {
       destination_root "$destination_root" destination_space: "$space")"; return
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
+  archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
+  # Suggested commands select the same snapshot as this restore: a catalog spec by
+  # its 12-character prefix, a candidate with its --spec-file, or the --manifest.
+  local spec_ref what="${SNAPSHOT:+snapshot $SNAPSHOT}"
+  local -a selector=()
+  if [ -n "$SPEC_ID" ]; then
+    if [ -z "$SPEC_FILE" ] && [ -f "$REPO_DIR/releases/$SPEC_ID.json" ]; then selector+=("${SPEC_ID:0:12}"); else selector+=("$SPEC_ID"); fi
+  fi
+  [ -z "$SPEC_FILE" ] || selector+=(--spec-file "$SPEC_FILE")
+  [ -n "$SPEC_ID$SPEC_FILE" ] || [ -z "$MANIFEST_FILE" ] || selector+=(--manifest "$MANIFEST_FILE")
+  spec_ref=$(printf '%q ' "${selector[@]}"); spec_ref="${spec_ref% }"
+  # A missing archive is not a mismatch: point to Download instead of to corruption.
+  [ -d "$archive_path" ] || die "no archive of ${what:-the model files} in $PULSAR_COLD_ROOT; nothing was restored. Next: ./pulsar model acquire $spec_ref${SNAPSHOT:+ --snapshot $SNAPSHOT} --node $(human_node_name "$rank") --yes"
   phase 1 4 "verifying the archive against the expected file hashes"
-  archive_verify >/dev/null || die "archive does not match the selected manifest"
+  archive_verify >/dev/null || die "the archive of ${what:-the model files} in $PULSAR_COLD_ROOT does not match the spec's manifest; nothing was restored. Next: ./pulsar model archive verify $spec_ref shows the failing files"
   phase 2 4 "staging on $(human_node_name "$rank")"
   stage=$(model_node "$rank" "$(model_node_request begin-home)") || die "restore staging failed"
   phase 3 4 "copying from the archive to $(human_node_name "$rank")"
-  archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   if [ "$rank" -eq 0 ]; then
     python3 -c 'from model_library.local import copy_files; from pathlib import Path; import json,sys; copy_files(Path(sys.argv[1]),Path(sys.argv[2]),json.loads(sys.argv[3]))' "$archive_path" "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "restore copy failed"
   else

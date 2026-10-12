@@ -80,7 +80,7 @@ if [ "$arch_ok" = 1 ]; then
 else
   primary_arch="${PULSAR_ARCHITECTURES%% *}"
   record fail arch \
-    "arch=$arch (selected platform requires ${primary_arch} ${PULSAR_PLATFORM_DISPLAY_NAME})"
+    "arch=$arch (selected platform requires ${primary_arch} ${PULSAR_PLATFORM_DISPLAY_NAME}); run doctor on a ${PULSAR_PLATFORM_DISPLAY_NAME} node"
 fi
 
 if [ ! -r /proc/meminfo ]; then
@@ -92,10 +92,10 @@ if command -v "${PULSAR_NVIDIA_SMI:-nvidia-smi}" >/dev/null 2>&1; then
   if [ "$gpu" = "$PULSAR_GPU_NAME" ]; then
     record ok gpu "GPU $gpu"
   else
-    record fail gpu "GPU '$gpu' (want ${PULSAR_GPU_NAME})"
+    record fail gpu "GPU '$gpu' (want ${PULSAR_GPU_NAME}); this host does not match the selected platform"
   fi
 else
-  record fail gpu "nvidia-smi missing"
+  record fail gpu "nvidia-smi not found; install the NVIDIA driver utilities (docs/OPERATIONS.md#installation-prerequisites)"
 fi
 
 if command -v "$PULSAR_DOCKER" >/dev/null 2>&1; then
@@ -110,13 +110,13 @@ if command -v "$PULSAR_DOCKER" >/dev/null 2>&1; then
       || command -v nvidia-container-cli >/dev/null 2>&1; then
       record warn docker_nvidia "nvidia container tools installed but runtime is not listed in docker info; inspect the Docker NVIDIA configuration"
     else
-      record fail docker_nvidia "docker nvidia runtime missing (expected Runtimes includes nvidia)"
+      record fail docker_nvidia "docker nvidia runtime missing (expected Runtimes includes nvidia); install and configure the NVIDIA Container Toolkit (docs/OPERATIONS.md#installation-prerequisites)"
     fi
   else
     record fail docker "docker present but daemon unavailable (start/fix Docker, then retry)"
   fi
 else
-  record fail docker "docker missing"
+  record fail docker "docker not found; install Docker with NVIDIA GPU access (docs/OPERATIONS.md#installation-prerequisites)"
 fi
 
 port="${PORT:-8000}"
@@ -191,7 +191,7 @@ for storage_path in "${PULSAR_HOME_ROOT:-$HOME/.cache/pulsar-inference-stack}" "
   if [ -d "$storage_path" ] && [ -r "$storage_path" ] && [ -w "$storage_path" ] && [ -x "$storage_path" ]; then
     record ok model_storage "Managed storage directory accessible: $storage_path"
   elif [ -e "$storage_path" ]; then
-    record fail model_storage "Managed storage path is not an accessible directory: $storage_path"
+    record fail model_storage "Managed storage path is not an accessible directory: $storage_path; fix its ownership or permissions"
   else
     record warn model_storage "Managed storage directory does not exist yet: $storage_path"
   fi
@@ -206,10 +206,10 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   if [ -z "${PULSAR_COLD_ROOT}" ]; then
     record ok cold_storage "archives are disabled"
   elif [ ! -d "${PULSAR_COLD_ROOT}" ]; then
-    record fail cold_storage "archive location is missing or not a directory (./pulsar configure archive-root)"
+    record fail cold_storage "archive location is missing or not a directory; choose one with ./pulsar configure archive-root set PATH --yes"
   elif [ ! -r "${PULSAR_COLD_ROOT}" ] || [ ! -x "${PULSAR_COLD_ROOT}" ]; then
     record fail cold_storage \
-      "archive location is not readable and searchable"
+      "archive location ${PULSAR_COLD_ROOT} is not readable and searchable; fix its permissions or choose another with ./pulsar configure archive-root set PATH --yes"
   elif [ ! -w "${PULSAR_COLD_ROOT}" ]; then
     record warn cold_storage \
       "archive location is configured · current write access unavailable"
@@ -218,31 +218,31 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   fi
 else
   record warn cold_storage \
-    "archive location is not configured (./pulsar configure archive-root)"
+    "archive location is not configured; choose one with ./pulsar configure archive-root set PATH --yes"
 fi
 
 avail=$(mem_available_gib_local)
 if awk -v a="$avail" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 < f)}'; then
-  record fail memory "MemAvailable ${avail} GiB < hard floor ${HARD_FLOOR_AVAILABLE_GIB} GiB"
+  record fail memory "MemAvailable ${avail} GiB < hard floor ${HARD_FLOOR_AVAILABLE_GIB} GiB; free memory or stop other GPU work (./pulsar inventory)"
 else
   record ok memory "MemAvailable ${avail} GiB"
 fi
 
 [ "$JSON" = 1 ] || log "confirmed topology"
 if ! load_cluster_topology; then
-  record fail topology "Confirmed topology or saved SSH identity configuration is invalid"
+  record fail topology "Confirmed topology or saved SSH identity configuration is invalid; inspect it with ./pulsar topology show"
 elif [ "$CLUSTER_TOPOLOGY_COUNT" -lt 1 ] || [ -z "$CLUSTER_TOPOLOGY_ID" ]; then
   record fail topology "No confirmed topology; run ./pulsar topology setup to confirm cluster membership"
 else
   record ok topology "Confirmed membership: $CLUSTER_TOPOLOGY_COUNT nodes"
   if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
-    record fail ssh_trust "Multi-node operation requires enrolled SSH identities"
+    record fail ssh_trust "Multi-node operation requires enrolled SSH identities; run ./pulsar ssh-trust enroll"
   fi
   if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ]; then
     if local_fabric=$(probe_node_json_for_rank 0 2>/dev/null) && printf '%s' "$local_fabric" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("qualified") is True else 1)'; then
       record ok local_fabric "Local platform and active RDMA prerequisites are available"
     else
-      record fail local_fabric "Local platform or active RDMA prerequisites could not be verified"
+      record fail local_fabric "Local platform or active RDMA prerequisites could not be verified; run ./pulsar topology check"
     fi
   fi
   for ((rank=1; rank<CLUSTER_TOPOLOGY_COUNT; rank++)); do
@@ -251,11 +251,20 @@ else
 import json,sys
 p=json.load(sys.stdin)
 if not isinstance(p,dict): raise SystemExit(1)
+words={"gpu":("GPU {}","GPU {} (want "+sys.argv[1]+"); this node does not match the selected platform"),
+ "docker_ok":("Docker reachable","Docker unavailable; start or install Docker on this node"),
+ "docker_nvidia":("Docker NVIDIA runtime present","Docker NVIDIA runtime missing; install the NVIDIA Container Toolkit"),
+ "qualified":("platform and RDMA prerequisites verified","platform or RDMA prerequisites not verified; run ./pulsar topology check"),
+ "node_id":("node identity matches saved membership","node identity differs from saved membership; run ./pulsar topology check")}
 for field,expected in (("gpu",sys.argv[1]),("docker_ok",True),("docker_nvidia",True),("qualified",True),("node_id",sys.argv[3])):
  value=p.get(field); valid=value==expected and type(value) is type(expected)
- print(("ok" if valid else "fail")+"|"+field+"|"+field+": "+str(value))
-print(("ok" if p.get("arch") in sys.argv[2].split() else "fail")+"|arch|arch: "+str(p.get("arch")))
-' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe"
+ if field=="docker_nvidia" and p.get("docker_ok") is not True:
+  # The runtime query needs Docker, so its absence is not observed.
+  print("warn|docker_nvidia|Docker NVIDIA runtime not observed because Docker is unavailable"); continue
+ print(("ok" if valid else "fail")+"|"+field+"|"+words[field][0 if valid else 1].format(value))
+arch_ok=p.get("arch") in sys.argv[2].split()
+print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+"); this node does not match the selected platform"))
+' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe; run ./pulsar topology check"
       while IFS='|' read -r level id message; do
         record "$level" "rank_${rank}_${id}" "$(human_node_name "$rank"): $message"
       done <<<"$probe_rows"
@@ -263,10 +272,10 @@ print(("ok" if p.get("arch") in sys.argv[2].split() else "fail")+"|arch|arch: "+
       if awk -v a="$remote_available" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 >= f)}'; then
         record ok "rank_${rank}_memory" "$(human_node_name "$rank"): MemAvailable $remote_available GiB"
       else
-        record fail "rank_${rank}_memory" "$(human_node_name "$rank"): memory unavailable or below the hard floor"
+        record fail "rank_${rank}_memory" "$(human_node_name "$rank"): memory unavailable or below the hard floor; run ./pulsar inventory"
       fi
     else
-      record fail "rank_${rank}_probe" "$(human_node_name "$rank") cannot be inspected through its confirmed control endpoint"
+      record fail "rank_${rank}_probe" "$(human_node_name "$rank") cannot be inspected through its confirmed control endpoint; run ./pulsar topology check"
     fi
   done
 fi
@@ -276,7 +285,7 @@ if catalog=$("$REPO_DIR/scripts/release.sh" list --json 2>/dev/null); then
   count=$(printf '%s' "$catalog" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["releases"]))')
   record ok catalog "$count catalog specs readable; use models check for selected storage readiness"
 else
-  record fail catalog "Catalog contains an unreadable or invalid spec"
+  record fail catalog "Catalog contains an unreadable or invalid spec; scripts/check-catalog.py names it"
 fi
 
 result=pass

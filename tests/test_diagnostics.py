@@ -73,7 +73,8 @@ mem_available_gib_remote() {{ [ "$DIAG_MODE" != remote-memory-unreadable ] || re
 profile_service_is_proven_running() {{ return 1; }}
 probe_node_json_for_rank() {{
  [ "$DIAG_MODE" != remote-probe-fail ] || return 1
- printf '{{"gpu":"NVIDIA GB10","arch":"aarch64","docker_ok":true,"docker_nvidia":true,"qualified":true,"node_id":"node-%s"}}\\n' "$1"
+ local docker=true; [ "$DIAG_MODE" != remote-docker-down ] || [ "$1" = 0 ] || docker=false
+ printf '{{"gpu":"NVIDIA GB10","arch":"aarch64","docker_ok":%s,"docker_nvidia":%s,"qualified":true,"node_id":"node-%s"}}\\n' "$docker" "$docker" "$1"
 }}
 ssh_node() {{
  local rank="$1" cmd="$2"
@@ -108,7 +109,21 @@ ssh_node() {{
             with self.subTest(mode=mode):
                 self.assertNotEqual(result.returncode,0,result.stdout)
                 self.assertEqual(json.loads(result.stdout)['result'],'fail')
+                # Every failed row says what to do next, not only what is wrong.
+                failed=[c['message'] for c in json.loads(result.stdout)['checks'] if c['level']=='fail']
+                self.assertTrue(failed)
+                for message in failed:
+                    self.assertRegex(message,r'; (run|install|fix|free|inspect|start|this (host|node))|scripts/check-catalog',message)
                 self.assertFalse((self.root/'mutations').exists())
+
+    def test_remote_docker_down_leaves_its_nvidia_runtime_unobserved(self):
+        result=self.run_tool('doctor.sh',['--json'],'remote-docker-down')
+        rows={c['id']:c for c in json.loads(result.stdout)['checks']}
+        self.assertEqual(rows['rank_1_docker_ok']['level'],'fail')
+        self.assertIn('start or install Docker',rows['rank_1_docker_ok']['message'])
+        # The runtime query needs Docker; its absence is not reported as a missing toolkit.
+        self.assertEqual(rows['rank_1_docker_nvidia']['level'],'warn')
+        self.assertNotIn('install the NVIDIA Container Toolkit',rows['rank_1_docker_nvidia']['message'])
 
     def test_narrow_doctor_and_image_output(self):
         result=self.run_tool('doctor.sh');self.assertEqual(result.returncode,0,result.stderr)
