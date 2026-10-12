@@ -62,6 +62,17 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(Store(f.state).get('observations',f.spec['spec_id'])['local_state'],'missing')
         # Without --json the exit status says what it found: 1, missing files.
         self.assertEqual(check().returncode,1)
+        # A check that cannot run exits 3 in both modes; under --json it is check_incomplete.
+        def unreadable(*flags):
+            return subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model','check','f'*64,*flags],
+                cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+        self.assertEqual(unreadable().returncode,3)
+        result=unreadable('--json')
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(3,'check_incomplete'))
+        # A usage mistake keeps its own status.
+        result=subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model','check','--json'],
+            cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(2,'usage_error'))
 
     def test_long_operations_report_phases_on_stderr_only(self):
         f=self.fixture(nodes=2)

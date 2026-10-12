@@ -295,6 +295,7 @@ publishes this table as `error_codes` and `exit_statuses`.
 | `service_absent` | 1 | Status observed every node and found no service for the spec. |
 | `privacy_check_failed` | 1 | A publication privacy check ran and found problems; details name the rules. |
 | `service_state_unknown` | 3 | Status could not observe every node, so whether a service exists is not established; details name the nodes. |
+| `check_incomplete` | 3 | A check could not run or finish, so what it checks is not established; the message says why. |
 | `invalid_stack_output` | 3 | A Stack script produced output that is not JSON. This is a Stack defect. |
 | `cancelled` | 128+signal | Interrupted; cleanup of the command and its node workers was confirmed. |
 | `cleanup_incomplete` | 128+signal | Interrupted; worker exit could not be confirmed. |
@@ -306,7 +307,7 @@ Each exit status has one meaning, with or without `--json`:
 | 0 | Success. Under --json a check that ran returns its report as the result, whatever it found. |
 | 1 | The answer is no: the action was refused or failed, a check found a problem, or nothing was found. |
 | 2 | The request was rejected before any action: a usage, file or document error. |
-| 3 | The outcome is not established: a node could not be observed, or Stack found its own defect. |
+| 3 | The outcome is not established: a node could not be observed, a check could not run, or Stack found its own defect. |
 | 128+signal | Interrupted by the signal; see cancelled and cleanup_incomplete. |
 
 Without `--json`, `start`, `stop`, `status` and `model` run their operator
@@ -323,8 +324,9 @@ exits 0, so `image check --json` and `model check --json` return their report
 as the result whatever they found (`result.state`, `result.observation`).
 Without `--json`, `model check` exits 1 for missing or changed files and 3 when
 it could not observe them; `image check` exits 1 for any state other than `ok`.
-Both exit 3 without `--json` when the check itself could not run, such as for
-an unreadable spec; under `--json` that is `prerequisite_failed`.
+When either check cannot run at all, such as for an unreadable spec or a busy
+model library, it exits 3: without `--json`, and under `--json` as
+`check_incomplete`.
 
 `--help` prints help and exits 0, with or without `--json`; `image --help --json`
 and `guarded --help --json` keep their usage dictionary.
@@ -348,7 +350,10 @@ Git checkout, and an `--entrypoint-json` that is not JSON, are `usage_error`; a
 privacy root that is not a regular directory, or that holds a symlink, is
 `file_error`. `image check --json` and
 `model check --json` return a report that found a problem as their result
-instead of `prerequisite_failed` with the report as text. `image stage` without
+instead of `prerequisite_failed` with the report as text; a check that cannot
+run is the new `check_incomplete` (exit 3). A `model` operation without a spec,
+or with `--snapshot` where it does not apply or missing where a schema-3 recipe
+needs it, is a `usage_error` instead of `prerequisite_failed`. `image stage` without
 `--yes` or `--plan` refuses with exit 1 after checking the nodes and names
 them; its usage mistakes are `usage_error`. `--help` never fails. A `resources`
 stream whose sampler ended names its rank and exits 1 instead of 3. New start

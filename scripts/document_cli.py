@@ -27,6 +27,8 @@ ERROR_CODES = {
     "privacy_check_failed": (1, "A publication privacy check ran and found problems; details name the rules."),
     "service_state_unknown": (3, "Status could not observe every node, so whether a service exists is not "
                                  "established; details name the nodes."),
+    "check_incomplete": (3, "A check could not run or finish, so what it checks is not established; the message "
+                            "says why."),
     "invalid_stack_output": (3, "A Stack script produced output that is not JSON. This is a Stack defect."),
     "cancelled": ("128+signal", "Interrupted; cleanup of the command and its node workers was confirmed."),
     "cleanup_incomplete": ("128+signal", "Interrupted; worker exit could not be confirmed."),
@@ -36,7 +38,8 @@ EXIT_STATUSES = {
     "0": "Success. Under --json a check that ran returns its report as the result, whatever it found.",
     "1": "The answer is no: the action was refused or failed, a check found a problem, or nothing was found.",
     "2": "The request was rejected before any action: a usage, file or document error.",
-    "3": "The outcome is not established: a node could not be observed, or Stack found its own defect.",
+    "3": "The outcome is not established: a node could not be observed, a check could not run, "
+         "or Stack found its own defect.",
     "128+signal": "Interrupted by the signal; see cancelled and cleanup_incomplete.",
 }
 

@@ -323,10 +323,12 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
                 human=subprocess.run([str(ROOT/'pulsar'),'image','check',spec_id],
                                      env={**self.env,'DIAG_MODE':mode},cwd=ROOT,text=True,capture_output=True)
                 self.assertEqual(human.returncode,1,human.stderr)
-        # A check that could not run printed no report: it stays an error.
+        # A check that could not run printed no report: 3 in both modes, check_incomplete under --json.
         result=subprocess.run([str(ROOT/'pulsar'),'image','check','f'*64,'--json'],
                               env=self.env,cwd=ROOT,text=True,capture_output=True)
-        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(1,'prerequisite_failed'))
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(3,'check_incomplete'))
+        human=subprocess.run([str(ROOT/'pulsar'),'image','check','f'*64],env=self.env,cwd=ROOT,text=True,capture_output=True)
+        self.assertEqual(human.returncode,3,human.stderr)
 
     def test_image_usage_mistakes_are_usage_errors(self):
         spec_id=self.spec['spec_id']

@@ -101,6 +101,10 @@ case "$OP" in help|-h|--help) usage; exit 0 ;; esac
 [ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || usage_die "--plan and --yes are separate operations"
 case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) usage_die "unknown operation: $OP" ;; esac
 if [ "$OP" = archive ]; then case "$ARCHIVE_ACTION" in create|verify) ;; *) usage_die "archive requires create or verify" ;; esac; fi
+# Before anything is resolved or locked: a spec file also selects the spec.
+case "$OP" in
+  prepare|info|check|pin|unpin|purge) [ -n "$SPEC_ID$SPEC_FILE" ] || usage_die "$OP requires a spec id" ;;
+esac
 MANIFEST_JSON="" SPEC_JSON="" MANIFEST_ID="" HOME_JSON="null"
 
 . "$REPO_DIR/scripts/model-library-context.sh"
@@ -126,18 +130,21 @@ case "$OP" in archive|restore|remove|check)
   ;;
 esac
 
+# model check follows the check scripts' exit convention: 0 ready, 1 missing or
+# changed files, 3 the check could not run or observe them.
+[ "$OP" != check ] || check_exit_convention keep-usage
 if [ "$OP" != budget ]; then
   if [ "$OP" != acquire ] || [ -n "$SPEC_ID$SPEC_FILE$MANIFEST_FILE" ]; then
     resolve_selected || die "selected spec or manifest is invalid"
   fi
 fi
 if [ -n "$SNAPSHOT" ]; then
-  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:*) ;; *) die "$OP always covers the complete recipe; omit --snapshot" ;; esac
+  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:*) ;; *) usage_die "$OP always covers the complete recipe; omit --snapshot" ;; esac
 elif [ "$VIEW_SCHEMA" = 2 ]; then
-  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:create) die "$OP requires --snapshot NAME for a schema-3 recipe" ;; esac
+  case "$OP:$ARCHIVE_ACTION" in acquire:|restore:|move:|remove:|archive:create) usage_die "$OP requires --snapshot NAME for a schema-3 recipe" ;; esac
 fi
 case "$OP" in
-  prepare|info|check|pin|unpin|purge) [ -n "$SPEC_ID" ] || die "$OP requires a spec id" ;;
+  prepare|info|check|pin|unpin|purge) [ -n "$SPEC_ID" ] || usage_die "$OP requires a spec id" ;;
 esac
 # Preview commands and archive verification never write model-library records.
 if [ "$PLAN" -eq 0 ]; then
@@ -150,7 +157,7 @@ case "$OP" in
   acquire) acquire_model ;;
   prepare) prepare_model ;;
   info) result=$(prepared_info) || exit $?; emit_result "$result" ;;
-  check) check_model ;;
+  check) check_rc=0; check_model || check_rc=$?; check_result "$check_rc" ;;
   archive)
     if [ "$ARCHIVE_ACTION" = verify ]; then
       phase 1 1 "verifying archive contents against the expected file hashes"

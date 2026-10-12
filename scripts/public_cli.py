@@ -49,6 +49,10 @@ def privacy_findings(scope, findings):
                                       'message': f'{f.rule} at {f.path}:{f.location}'} for f in findings])
 
 
+class CheckIncomplete(RuntimeError):
+    """A check could not run or finish; it printed no report, so nothing was established."""
+
+
 class StackOutputError(Exception):
     """A Stack script succeeded but its stdout was not the promised JSON."""
 
@@ -137,6 +141,9 @@ def execute(script, args, *, json_result=False, env=None, report=None):
         found = check_report(result.stdout, report) if report and result.returncode != USAGE_EXIT else None
         if found is not None:
             return found
+        if report and result.returncode == ERROR_CODES['check_incomplete'][0]:
+            # The check's own status for "could not run": the same exit as without --json.
+            raise CheckIncomplete((diagnostic.strip() or 'the check could not run')[-4000:])
         if result.stdout:
             print(redact_diagnostic(result.stdout), file=sys.stderr, end='')
         if result.returncode == USAGE_EXIT:
@@ -631,6 +638,8 @@ def main(argv=None):
         return failure(exc,json_output=json_output,code=exc.code)
     except PrivacyCheckFailed as exc:
         return failure(exc,json_output=json_output,code='privacy_check_failed')
+    except CheckIncomplete as exc:
+        return failure(exc,json_output=json_output,code='check_incomplete')
     except RuntimeError as exc:
         if isinstance(exc, ActionFailed) and not json_output:
             # The script's own error line is already on stderr; one copy is enough.

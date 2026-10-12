@@ -19,11 +19,10 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# A usage mistake above exits 2; from here any unexpected exit is a check that could not run.
-check_exit_convention
+# From here an unexpected exit is a check that could not run; usage_die keeps its status.
+check_exit_convention keep-usage
 load_conf "$NAME"
-[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] \
-  || { CHECK_RESULT_EXIT=usage; usage_die "--placement-nodes requires a multi-node spec; use --node"; }
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 node_indices=() states=()
 topology_ready=1
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then topology_ready=0; fi
