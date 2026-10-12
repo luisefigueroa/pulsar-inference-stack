@@ -48,8 +48,9 @@ mandatory publication safeguard.
 
 Every new or modified catalog spec must declare three engine arguments in
 `recipe.engine_args`: `--enable-auto-tool-choice`, `--tool-call-parser NAME`,
-and `--reasoning-parser NAME`. Publication checks only that the flags are present
-and that each parser has a non-empty name. Parser names are model-specific;
+and `--reasoning-parser NAME`. Publication checks only that the flags are present,
+that each parser has a non-empty name, and that `--enable-auto-tool-choice` is
+a bare switch without a value. Parser names are model-specific;
 whether the serving image provides a named parser is established by serving the
 recipe, not by this check. `check-catalog.py` applies the rule to every
 schema-2 and schema-3 catalog member, and `check-new-specs.py` to added and

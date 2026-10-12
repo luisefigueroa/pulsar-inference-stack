@@ -41,6 +41,20 @@ class RequiredEngineArgs(unittest.TestCase):
         self.assert_missing(['--tool-call-parser', '--enable-auto-tool-choice',
                              '--reasoning-parser', 'example_reasoning'], '--tool-call-parser value')
 
+    def test_tool_choice_switch_takes_no_value(self):
+        # vLLM's --enable-auto-tool-choice is a switch; a stray value breaks its argument parsing.
+        parsers = ['--tool-call-parser', 'example_tools', '--reasoning-parser', 'example_reasoning']
+        for switch in (['--enable-auto-tool-choice=false'], ['--enable-auto-tool-choice=true'],
+                       ['--enable-auto-tool-choice='], ['--enable-auto-tool-choice', 'false']):
+            with self.subTest(switch=switch):
+                self.assert_missing(switch + parsers, '--enable-auto-tool-choice as a switch without a value')
+        check_required_engine_args(spec_with(parsers + ['--enable-auto-tool-choice']), label='example.json')
+        # A short option such as vLLM's -q (--quantization) after the bare switch is not its value.
+        check_required_engine_args(spec_with(['--enable-auto-tool-choice', '-q', 'awq'] + parsers),
+                                   label='example.json')
+        self.assert_missing(['--enable-auto-tool-choice', '-1'] + parsers,
+                            '--enable-auto-tool-choice as a switch without a value')
+
     def test_assignment_form_is_accepted(self):
         check_required_engine_args(spec_with([
             '--enable-auto-tool-choice', '--tool-call-parser=example_tools',
