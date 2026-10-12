@@ -626,6 +626,23 @@ def execute(context,root):
                 self.assertIn(message, result.stderr)
         self.assertFalse((self.root/'fresh').exists())
 
+    def test_a_stop_as_soon_as_the_run_is_stoppable_still_finishes(self):
+        # guarded stop can signal the controller once controller.json exists; the run
+        # must still clean up and write its result instead of dying from the signal.
+        process = self.start()
+        deadline = time.monotonic() + 20
+        while not (self.output/'controller.json').exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        run_id = json.loads((self.output/'controller.json').read_text())['run_id']
+        controller.stop(self.output, run_id)
+        out, err = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 0, out+err)
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(result['requested_stop'])
+        self.assertTrue(result['phases']['cleanup']['complete'])
+        self.assertFalse(list((self.root/'docker-state').glob('guard-*')))
+
     def test_two_rank_recipe_preserves_three_member_topology(self):
         self.select_two_ranks()
         before = (self.root/'scripts/lib.sh').read_bytes()
