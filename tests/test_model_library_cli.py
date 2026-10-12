@@ -47,6 +47,33 @@ class ModelLibraryCLI(unittest.TestCase):
         fixture.candidate(nodes)
         return result
 
+    def test_check_json_returns_its_observation_whatever_it_found(self):
+        f=self.fixture();self.acquire_candidate(f)
+        def check(*flags):
+            return subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model','check',
+                f.spec['spec_id'],'--spec-file',str(f.spec_path),*flags],
+                cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+        # No prepared copy yet: the check ran, so its observation is the result, not a stringified error.
+        result=check('--json')
+        self.assertEqual(result.returncode,0,result.stderr)
+        observation=json.loads(result.stdout)['result']['observation']
+        self.assertEqual((observation['local_state'],observation['prepared']),('missing',{'required':1,'verified':0}))
+        self.assertNotIn('"observation"',result.stderr)
+        self.assertEqual(Store(f.state).get('observations',f.spec['spec_id'])['local_state'],'missing')
+        # Without --json the exit status says what it found: 1, missing files.
+        self.assertEqual(check().returncode,1)
+        # A check that cannot run exits 3 in both modes; under --json it is check_incomplete.
+        def unreadable(*flags):
+            return subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model','check','f'*64,*flags],
+                cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+        self.assertEqual(unreadable().returncode,3)
+        result=unreadable('--json')
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(3,'check_incomplete'))
+        # A usage mistake keeps its own status.
+        result=subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model','check','--json'],
+            cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(2,'usage_error'))
+
     def test_long_operations_report_phases_on_stderr_only(self):
         f=self.fixture(nodes=2)
         acquired=f.acquire(1)
@@ -233,10 +260,17 @@ class ModelLibraryCLI(unittest.TestCase):
                 result=subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model',operation,
                     f.spec['spec_id'],'--spec-file',str(f.spec_path),'--full','--json'],
                     cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=20)
-                self.assertNotEqual(result.returncode,0)
                 response=json.loads(result.stdout)
-                self.assertEqual(response['error']['code'],'prerequisite_failed',response)
-                self.assertIn('controller lease expired',response['error']['message'])
+                if operation=='info':
+                    self.assertEqual(result.returncode,1)
+                    self.assertEqual(response['error']['code'],'prerequisite_failed',response)
+                    self.assertIn('controller lease expired',response['error']['message'])
+                else:
+                    # check saved what it found, an unknown rank and why, and returns it as its result.
+                    self.assertEqual(result.returncode,0,result.stderr)
+                    observation=response['result']['observation']
+                    self.assertEqual(observation['local_state'],'unknown')
+                    self.assertIn('controller lease expired',' '.join(observation['blockers']))
                 for marker in f.root.glob('ready-*'):
                     identity=json.loads(marker.read_text())
                     self.assertNotEqual(process_identity(identity[0]),identity)

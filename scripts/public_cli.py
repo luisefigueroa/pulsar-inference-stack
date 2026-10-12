@@ -13,12 +13,52 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from release_spec import serving
-from scripts.document_cli import CommandParser, UsageError, emit, failure
+from scripts.document_cli import ERROR_CODES, CommandParser, UsageError, emit, failure
 from model_library.verification_process import Cancelled, run_command
 
 
 class ActionFailed(RuntimeError):
     """A Stack script exited unsuccessfully; its diagnostic is already on stderr."""
+    def __init__(self, message, returncode=None):
+        super().__init__(message)
+        self.returncode = returncode
+
+
+class ScriptUsageError(UsageError):
+    """A Stack script rejected its command line; its error line is already on stderr."""
+
+
+class Refused(RuntimeError):
+    """The command line was fine, but the recorded or observed state refused the action."""
+
+
+class PrivacyCheckFailed(RuntimeError):
+    """A publication privacy check ran and found problems; details hold one record per finding."""
+    def __init__(self, scope, findings):
+        rules = sorted({finding['rule'] for finding in findings})
+        super().__init__(f"{scope} privacy check found {len(findings)} problem(s): {', '.join(rules)}")
+        self.envelope_details = [{'field': 'privacy', **finding} for finding in findings]
+
+
+def privacy_findings(scope, findings):
+    """Report scanner findings on stderr, as the scanners do, then refuse.
+
+    A scanner message can quote what it matched, such as an address, so the
+    envelope's details name only the rule and where it matched. A finding in a
+    file name is the name itself, so its path is left out (null).
+    """
+    for f in findings:
+        print(f"  {f.path}:{f.location}: [{f.rule}] {f.message}", file=sys.stderr)
+    rows = []
+    for f in findings:
+        in_name = f.location == 'path'
+        rows.append({'rule': f.rule, 'path': None if in_name else f.path, 'location': f.location,
+                     'message': f'{f.rule} in a file name' if in_name else f'{f.rule} at {f.path}:{f.location}'})
+    raise PrivacyCheckFailed(scope, rows)
+
+
+class CheckIncomplete(RuntimeError):
+    """A check could not run or finish; it printed no report, so nothing was established."""
 
 
 class StackOutputError(Exception):
@@ -80,7 +120,19 @@ def status_error(path):
 USAGE_EXIT = 64
 
 
-def execute(script, args, *, json_result=False, env=None):
+def check_report(stdout, is_report):
+    """The report a check printed before exiting with its failed-condition status, or None."""
+    try:
+        document = json.loads(stdout)
+    except json.JSONDecodeError:
+        return None
+    return document if isinstance(document, dict) and is_report(document) else None
+
+
+def execute(script, args, *, json_result=False, env=None, report=None):
+    """Run a Stack script. report, for a check command, recognizes the report the
+    check printed when its condition failed: under --json that report is the
+    result, not an error, so callers read what it found."""
     env = {**(os.environ if env is None else env), 'PULSAR_USAGE_EXIT': str(USAGE_EXIT)}
     try:
         result = run_command(['bash', str(ROOT / script), *map(str, args)], env=env, cwd=ROOT)
@@ -91,14 +143,22 @@ def execute(script, args, *, json_result=False, env=None):
         raise
     diagnostic=redact_diagnostic(result.stderr)
     if diagnostic:
-        print(diagnostic, file=sys.stderr, end='')
+        # Worker reporting can drop the final newline; the next shell prompt needs it.
+        print(diagnostic, file=sys.stderr, end='' if diagnostic.endswith('\n') else '\n')
     if result.returncode:
+        found = check_report(result.stdout, report) if report and result.returncode != USAGE_EXIT else None
+        if found is not None:
+            return found
+        if report and result.returncode == ERROR_CODES['check_incomplete'][0]:
+            # The check's own status for "could not run": the same exit as without --json.
+            raise CheckIncomplete((diagnostic.strip() or 'the check could not run')[-4000:])
         if result.stdout:
             print(redact_diagnostic(result.stdout), file=sys.stderr, end='')
         if result.returncode == USAGE_EXIT:
             lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
-            raise UsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('error: ', 1)[-1])
-        raise ActionFailed((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
+            raise ScriptUsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('error: ', 1)[-1])
+        raise ActionFailed((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:],
+                           result.returncode)
     if json_result:
         try:
             return json.loads(result.stdout)
@@ -206,6 +266,40 @@ Each command accepts --help. Stage the pinned image first; see pulsar image --he
 }
 
 
+# Help for commands without subcommands whose scripts print no help of their
+# own. --help prints it and exits 0, with or without --json.
+HELP = {
+    'observe': """\
+usage: pulsar observe (SPEC | --service-id ID) [--node NODE] [--full] [--verification-jobs N] [--json]
+
+Verify a recorded service on every rank: its effective recipe, container configuration and prepared files. Nothing changes.
+
+  SPEC                   The spec ID of the recorded service
+  --service-id ID        Select the recorded service by its service ID
+  --node NODE            One-node spec: the recorded service's node, by hostname or node ID
+  --full                 Hash every prepared file instead of reusing valid metadata
+  --verification-jobs N  Run at most N verification jobs at once, at most one per node (default 3)
+  --json                 Print the observation as JSON
+""",
+    'policy': """\
+usage: pulsar policy show baseline-v1|baseline-v2 [--json]
+
+Print a supported baseline policy and its digest.
+
+  show NAME  The fixed policy, baseline-v1 or baseline-v2
+  --json     Print the result as JSON
+""",
+    'selftest': """\
+usage: pulsar selftest [--checks-only] [--json]
+
+Run this checkout's deterministic checks: unit tests, then syntax, catalog and privacy checks. Nothing reaches a node.
+
+  --checks-only  Run the syntax, catalog and privacy checks without the unit tests
+  --json         Print the result as JSON
+""",
+}
+
+
 # Commands that act only through a subcommand: what the command does, then
 # each subcommand with a one-line description for --help.
 SUBCOMMANDS = {
@@ -270,7 +364,8 @@ def dispatch(command, args):
                     'stage': 'image stage SPEC [--spec-file FILE] (--plan | --yes) [--export-tag TAG] [--json]',
                     'scope': 'Exact images on selected confirmed serving ranks; named exports never pull.'}
         if args[0] == 'check':
-            return execute('scripts/check-image.sh', [*args[1:], '--json'], json_result=True)
+            return execute('scripts/check-image.sh', [*args[1:], '--json'], json_result=True,
+                           report=lambda document: document.get('kind') == 'pulsar-image-check')
         if args[0] == 'stage':
             return execute('scripts/sync-image.sh', [*args[1:], '--json'], json_result=True)
         raise UsageError('command', 'usage: pulsar image check|stage --help')
@@ -296,7 +391,11 @@ def dispatch(command, args):
             parser.add_argument('--max-host-swap-growth-bytes', type=int,
                                 help='Explicit 0-256 MiB allowance; selects guard schema 2')
             options = parser.parse_args(args[1:])
-            value = template(json.loads(options.entrypoint_json), minimum=options.min_host_available_bytes,
+            try:
+                entrypoint = json.loads(options.entrypoint_json)
+            except json.JSONDecodeError as exc:
+                raise UsageError('--entrypoint-json', f'is not a JSON array ({exc})') from None
+            value = template(entrypoint, minimum=options.min_host_available_bytes,
                              startup=options.startup_timeout_seconds, timeout=options.timeout_seconds,
                              max_host_swap_growth_bytes=options.max_host_swap_growth_bytes)
             from release_spec.serving_guard import validate
@@ -312,11 +411,15 @@ def dispatch(command, args):
                 raise ValueError('spec must select the installed serving guard program')
             return {'spec_id': spec['spec_id'], 'guard': guard, 'physical_execution': False}
         if args[0] == 'stop':
-            from serving_guard.controller import stop
+            from serving_guard.controller import StopRefused, stop
             parser.add_argument('--output-dir', required=True, type=Path)
             parser.add_argument('--run-id', required=True)
             options = parser.parse_args(args[1:])
-            return stop(options.output_dir.absolute(), options.run_id)
+            try:
+                return stop(options.output_dir.absolute(), options.run_id)
+            except StopRefused as exc:
+                # The run's state refused the stop; malformed records stay invalid_spec.
+                raise Refused(str(exc)) from exc
         raise ValueError('usage: pulsar guarded template|validate|run|stop|reconcile --help')
     if command == 'memory' and args[:1] == ['verify']:
         from release_spec.memory_estimate import load
@@ -327,7 +430,13 @@ def dispatch(command, args):
         options=parser.parse_args(args[1:])
         return load(options.file,serving.load_spec(options.spec_file),expected_id=options.estimate_id)
     if command == 'observe':
-        result = execute('scripts/observe-serving.sh', args, json_result=True)
+        try:
+            result = execute('scripts/observe-serving.sh', args, json_result=True)
+        except ActionFailed as exc:
+            # SSH's own status: a rank's node could not be reached, so nothing was established.
+            if exc.returncode == 255:
+                raise CheckIncomplete(str(exc)) from exc
+            raise
         result['producer'] = producer_provenance()
         return result
     if command == 'resources':
@@ -340,8 +449,17 @@ def dispatch(command, args):
             try:
                 execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path),
                                                   'PULSAR_START_BLOCKERS_FILE':str(blockers)})
-            except Cancelled:
-                raise
+            except Cancelled as exc:
+                # Interrupted after launch: cancellation reaped this command, not the
+                # service it started. Say so first, and name the service in details.
+                # Check blockers recorded before an interrupt do not mean a launch.
+                recorded=[r for r in read_blockers(blockers) if r.get('blocker')=='start_interrupted']
+                if not recorded:
+                    raise
+                lines=[f"{r['message']}. Next: {r['fix']}" if r.get('fix') else r['message'] for r in recorded]
+                interrupted=Cancelled('\n'.join([*lines,str(exc)]),signum=exc.exit_code-128,confirmed=exc.confirmed)
+                interrupted.envelope_details=recorded
+                raise interrupted from exc
             except RuntimeError as exc:
                 recorded=read_blockers(blockers)
                 if recorded:
@@ -352,7 +470,9 @@ def dispatch(command, args):
         if not args or args[0].startswith('-'):
             raise UsageError('command', 'pulsar model needs an operation such as acquire, prepare, info or restore; '
                                         'see ./pulsar model --help')
-        result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True)
+        # model check saves and prints its observation, whatever it found.
+        observation = (lambda document: {'spec_id', 'observation'} <= set(document)) if args[0] == 'check' else None
+        result=execute('scripts/model-library.sh', [*args, '--json'], json_result=True, report=observation)
         if isinstance(result,dict) and result.get('kind')=='pulsar-archive-verification':
             from datetime import datetime,timezone
             return {'schema_version':2,'kind':'pulsar-archive-observation',
@@ -389,7 +509,7 @@ def dispatch(command, args):
         _, findings=scan_files((name,read_stable_bytes(Path(options.package)/name,label='package privacy'))
                               for name in [*result['files'],'package.json'])
         if findings:
-            raise ValueError('package privacy check failed: '+', '.join(sorted({finding.rule for finding in findings})))
+            privacy_findings('package', findings)
         return result
     if command == 'evidence' and args:
         if args[0] == 'measurement':
@@ -413,39 +533,54 @@ def dispatch(command, args):
     if command == 'selftest':
         return execute('scripts/selftest.sh', args)
     if command == 'privacy' and args[:1] == ['check']:
+        from scripts.check_publishable_privacy import PrivacyError, scan_files, scan_repository
         parser=CommandParser(prog='pulsar privacy check')
         parser.add_argument('--root',required=True)
         parser.add_argument('--staged',action='store_true')
         options=parser.parse_args(args[1:])
         root=Path(options.root).absolute()
         if not (root/'.git').exists():
-            if options.staged: raise ValueError('staged privacy checks require a Git checkout')
-            if root.is_symlink() or not root.is_dir(): raise ValueError('privacy root must be a regular directory')
-            from scripts.check_publishable_privacy import scan_files
+            if options.staged: raise UsageError('--staged', 'requires a Git checkout as --root')
+            if root.is_symlink() or not root.is_dir(): raise NotADirectoryError(f'privacy root {root} is not a regular directory')
             from release_spec.measurement import read_stable_bytes
             files=[]
             for path in root.rglob('*'):
                 if path.is_symlink() or not (path.is_file() or path.is_dir()):
-                    raise ValueError('privacy input contains a symlink or special file')
+                    raise OSError(f'privacy input {path.relative_to(root)} is a symlink or special file; '
+                                  'the check reads regular files only')
                 if path.is_file(): files.append((path.relative_to(root).as_posix(),read_stable_bytes(path,label='privacy input')))
             count,findings=scan_files(files)
-            if findings: raise ValueError('publication privacy check failed: '+', '.join(sorted({finding.rule for finding in findings})))
+            if findings: privacy_findings('publication', findings)
             return {'checked':True,'file_count':count}
-        result=subprocess.run([sys.executable,str(ROOT/'scripts/check_publishable_privacy.py'),
-            '--repo-root',options.root,*(['--staged'] if options.staged else [])],text=True,capture_output=True)
-        print(result.stdout+result.stderr,file=sys.stderr,end='')
-        if result.returncode:
-            raise ValueError('publication privacy check failed')
+        try:
+            count,findings=scan_repository(root.resolve(),staged=options.staged)
+        except (PrivacyError,UnicodeError) as exc:
+            raise Refused(f'publication privacy check could not read {root}: {exc}') from exc
+        if findings: privacy_findings('publication', findings)
         return {'checked':True}
     if command == 'privacy' and args[:1] == ['commits']:
+        from scripts.check_commit_privacy import CommitPrivacyError, check, commits
         parser=CommandParser(prog='pulsar privacy commits')
         parser.add_argument('--root',required=True)
         parser.add_argument('--range',required=True)
         options=parser.parse_args(args[1:])
-        result=subprocess.run([sys.executable,str(ROOT/'scripts/check_commit_privacy.py'),
-            '--repo-root',options.root,'--range',options.range],text=True,capture_output=True)
-        print(result.stdout+result.stderr,file=sys.stderr,end='')
-        if result.returncode: raise ValueError('commit metadata privacy check failed')
+        root=Path(options.root).absolute()
+        if not root.is_dir(): raise NotADirectoryError(f'privacy root {root} is not a directory')
+        if not (root/'.git').exists(): raise UsageError('--root', 'privacy commits requires a Git checkout')
+        try:
+            commits(root.resolve(),options.range)
+        except CommitPrivacyError as exc:
+            # Nothing was checked: the range names no commits in this checkout.
+            raise UsageError('--range', f'is not a non-empty commit range in {root}: {exc}') from None
+        try:
+            _,findings=check(root.resolve(),options.range)
+        except (CommitPrivacyError,UnicodeError) as exc:
+            raise Refused(f'commit metadata privacy check could not read {options.range}: {exc}') from exc
+        if findings:
+            for commit,rule,message in findings:
+                print(f'  {commit}: [{rule}] {message}', file=sys.stderr)
+            raise PrivacyCheckFailed('commit metadata', [{'rule':rule,'commit':commit,'message':f'{rule} in commit {commit}'}
+                                                        for commit,rule,_ in findings])
         return {'checked':True}
     raise UsageError('command', f'unknown command: {command}; see ./pulsar help')
 
@@ -476,9 +611,14 @@ def main(argv=None):
         if json_output and argv[0] in ('start', 'stop', 'status', 'model') \
                 and not any(a in ('--help', '-h') for a in argv[1:]):
             require_complete_spec_id(argv[0], argv[1:])
-        if argv[0] in SUBCOMMANDS and argv[1:] in (['--help'], ['-h']) and not json_output:
+        # --help is for people: it prints help and exits 0, with or without --json.
+        if argv[0] in SUBCOMMANDS and argv[1:] in (['--help'], ['-h']):
             from scripts.terminal_format import emit_help
             emit_help(subcommand_help(argv[0]))
+            return 0
+        if argv[0] in HELP and any(a in ('--help', '-h') for a in argv[1:]):
+            from scripts.terminal_format import emit_help
+            emit_help(HELP[argv[0]])
             return 0
         if argv[0] == 'guarded' and argv[1:2] in (['run'], ['reconcile']) and (
                 (argv[1] == 'run' and not json_output) or any(a in ('--help', '-h') for a in argv[2:])):
@@ -509,17 +649,26 @@ def main(argv=None):
     except StackOutputError as exc:
         return failure(exc,json_output=json_output,code='invalid_stack_output')
     except (ValueError,OSError,TypeError,KeyError) as exc:
+        if isinstance(exc, ScriptUsageError) and not json_output:
+            return ERROR_CODES['usage_error'][0]
         return failure(exc,json_output=json_output)
     except Cancelled as exc:
         return failure(exc,json_output=json_output,
                        code='cancelled' if exc.confirmed else 'cleanup_incomplete',exit_code=exc.exit_code)
     except StatusFailed as exc:
         return failure(exc,json_output=json_output,code=exc.code)
+    except PrivacyCheckFailed as exc:
+        return failure(exc,json_output=json_output,code='privacy_check_failed')
+    except CheckIncomplete as exc:
+        if not json_output:
+            # The script's own error line is already on stderr.
+            return ERROR_CODES['check_incomplete'][0]
+        return failure(exc,json_output=json_output,code='check_incomplete')
     except RuntimeError as exc:
         if isinstance(exc, ActionFailed) and not json_output:
             # The script's own error line is already on stderr; one copy is enough.
-            return 3
-        return failure(exc,json_output=json_output,code='prerequisite_failed',exit_code=3)
+            return ERROR_CODES['prerequisite_failed'][0]
+        return failure(exc,json_output=json_output,code='prerequisite_failed')
 
 
 if __name__=='__main__':

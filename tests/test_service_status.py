@@ -225,7 +225,7 @@ class Defects(unittest.TestCase):
                        {**good, "services": [{"conf": SPEC, "state": "stale", "ranks": "0"}]},
                        {**good, "worker": None}):
             with self.subTest(broken=json.dumps(broken)[:60]):
-                self.assertEqual(self.inventory_status(broken), (1, "invalid_stack_output"))
+                self.assertEqual(self.inventory_status(broken), (3, "invalid_stack_output"))
         self.assertEqual(self.inventory_status(good), (0, None))
 
     def test_a_malformed_observation_is_a_stack_defect(self):
@@ -235,7 +235,7 @@ class Defects(unittest.TestCase):
                   {**valid, "ranks": [{}]}, {**valid, "ranks": []}]
         for content in ("not json", "{}", *map(json.dumps, broken)):
             with self.subTest(content=content[:20]):
-                self.assertEqual(self.status(content), (1, "invalid_stack_output"))
+                self.assertEqual(self.status(content), (3, "invalid_stack_output"))
         self.assertEqual(self.status(json.dumps(observation("http://127.0.0.1:1")))[1], None)
 
 
@@ -333,6 +333,15 @@ esac
         self.assertIn("Start it with ./pulsar start abababababab", " ".join(result.stderr.split()))
         self.assertEqual(json.loads(error_file.read_text())["code"], "service_absent")
 
+    def test_status_that_cannot_tell_exits_3_not_1(self):
+        # "No service" (1) means start is safe; "could not tell" (3) does not.
+        nodes = {**inventory()["nodes"], "worker": {"hostname": "spark-2", "node_id": "node-1", "confirmed": True,
+                                                    "probe_status": "unreachable", "probe_reason": "SSH timed out"}}
+        (self.root / "inventory.json").write_text(json.dumps(inventory(nodes=nodes, worker_status="unreachable")))
+        result = self.status(SPEC, observe="fail")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("spark-2: SSH timed out", result.stderr)
+
 
 class Envelope(unittest.TestCase):
     def main(self, error):
@@ -365,7 +374,9 @@ class Envelope(unittest.TestCase):
             details = [{"field": "node", "node": "spark-2", "node_id": "node-1", "message": "SSH timed out"}]
             with self.subTest(code=code):
                 status, error = self.main({"code": code, "message": "fixture", "details": details})
-                self.assertEqual((status, error["code"], error["details"]), (3, code, details))
+                # Absent is a known answer (1); the other two leave the outcome unknown (3).
+                self.assertEqual((status, error["code"], error["details"]),
+                                 (1 if code == "service_absent" else 3, code, details))
 
 
 if __name__ == "__main__":

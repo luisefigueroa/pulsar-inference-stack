@@ -374,6 +374,9 @@ then apply the same selection:
 ./pulsar image stage <spec-id> --node <node> --pull --yes
 ```
 
+Without `--plan` or `--yes`, staging checks the nodes and changes nothing: an
+image already present on every node is reported as such, and a missing one is
+refused with the nodes that lack it and the `--plan` command to run next.
 Staging finishes by checking the exact image reference on every selected node.
 It does not start or replace a service. For a verified image held on the
 controller, `--export-tag TAG` instead of `--pull` selects a named export to
@@ -531,7 +534,9 @@ qualification or determine whether the serving runtime changed.
 To begin before launch, use `--spec-file FILE` and, for a one-node recipe,
 optional `--node NODE`; it never starts the model. Container metrics remain
 unavailable until the matching owned recipe appears. Stop the stream to end
-sampling; model services are unaffected.
+sampling; model services are unaffected. Each node's sampler runs until then:
+if one ends on its own, such as when its SSH session drops, the stream writes
+an error record naming its rank, says which node it was on stderr and exits 1.
 
 ## Move, archive and restore
 
@@ -705,6 +710,19 @@ guard is refused by ordinary start before any check as `guard_unsupported`.
 Use the separately owned [bounded guarded serving](GUARDED_SERVING.md) path
 for an explicitly scoped foreground trial. Read-only `start --dry-run` remains
 available for its prerequisite planning.
+
+### Interrupt a start
+
+Ctrl-C (or a stop signal) ends start and removes nothing. Before launch, start
+says `Interrupted before launch; nothing was started.` After launch, an
+`INTERRUPTED start_interrupted` line names the service's node and what start
+was doing, for example
+`INTERRUPTED start_interrupted: spark-1: start was interrupted while the service was loading; it keeps loading. Next: ./pulsar status <spec-id> --node spark-1`,
+followed by the stop command that removes it. A multi-node start interrupted
+while its ranks were starting names the rank; that cluster is incomplete and
+cannot serve until it is stopped and started again. Removing a service is
+`stop`'s job: it takes the lock, probes every rank and confirms the containers
+are gone. `start --json` reports the same record in its `cancelled` error.
 
 ## Menu reference
 

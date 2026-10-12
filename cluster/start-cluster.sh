@@ -51,6 +51,48 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# Ctrl-C or a stop signal says what this launch left and removes nothing;
+# stop removes a service after probing every rank. scripts/up.sh leaves the
+# report to this script while it runs.
+CLUSTER_PHASE=preparing LAUNCHING_RANK=0
+cluster_interrupted() {
+  local detail=""
+  local -a where=() noted=()
+  trap - INT TERM HUP
+  case "$CLUSTER_PHASE" in
+    preparing)
+      if [ "${LAUNCH_AFTER_REPLACE:-0}" = 1 ]; then
+        printf 'Interrupted before launch; nothing was started. %s\n' "$AFTER_REPLACE_NOTE" >&2 || true
+      else
+        printf 'Interrupted before launch; nothing was started.\n' >&2 || true
+      fi ;;
+    launching)
+      where=(--node "$(human_node_name "$LAUNCHING_RANK")" --node-id "${CLUSTER_NODE_IDS[$LAUNCHING_RANK]:-}"
+             --rank "$LAUNCHING_RANK")
+      detail="while this rank was starting; the cluster is incomplete and cannot serve" ;;
+    loading)
+      where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
+      detail="while the service was loading; it keeps loading on all $NODES ranks" ;;
+    verifying)
+      where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
+      detail="after the service became healthy, while every rank was being verified; it is running on all $NODES ranks" ;;
+    replacing)
+      detail="while --replace was removing the previous service; some of its containers may remain"
+      noted=(--note "Nothing was started. To remove what remains of the previous service: {stop}") ;;
+    removing)
+      detail="while the failed launch's containers were being removed; some may remain"
+      noted=(--note "Some may already be removed. To remove the rest: {stop}") ;;
+  esac
+  if [ -n "$detail" ]; then
+    START_BLOCKER_SPEC="$MODEL_NAME" start_blocker start_interrupted ${where[@]+"${where[@]}"} \
+      --service-id "${SERVICE_ID:-}" --detail "$detail" ${noted[@]+"${noted[@]}"} || true
+  fi
+  exit $((128 + $1))
+}
+trap 'cluster_interrupted 2' INT
+trap 'cluster_interrupted 15' TERM
+trap 'cluster_interrupted 1' HUP
+
 acquire_model_library_lifecycle_lock shared
 load_conf "$MODEL_NAME"
 if [ -n "$MEMORY_ESTIMATE_FILE$MEMORY_ESTIMATE_FROZEN$MEMORY_ESTIMATE_ID" ]; then
@@ -148,6 +190,7 @@ declare -A TRACKED_CIDS=()
 # Best-effort teardown by immutable IDs created by this invocation only.
 cluster_abort() {
   local why="${1:-cluster start failed}" rank host
+  CLUSTER_PHASE=removing
   error_line "$why — removing launch-tracked IDs only"
   if [ -n "${TRACKED_CIDS[0]:-}" ]; then
     log "abort: remove rank 0 id=${TRACKED_CIDS[0]:0:12}" >&2
@@ -201,7 +244,11 @@ fi
 if [ "$REPLACE" = 1 ]; then
   log "removing existing stack-managed ranks (ownership required)"
   stale_rc=0
+  # The service ID is the same for the service being replaced.
+  SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
+  CLUSTER_PHASE=replacing
   remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
+  CLUSTER_PHASE=preparing
   if [ "$stale_rc" -eq 2 ]; then
     error_line "ownership not proven on every existing rank of $CONTAINER"
     log "No ambiguous rank was removed. Inspect labels or stop manually." >&2
@@ -236,7 +283,9 @@ done
 STARTUP_STARTED_NS=$(date +%s%N)
 persist_launch_plan_file "$PLAN_FILE"
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
+CLUSTER_PHASE=launching
 for ((rank = 1; rank < NODES; rank++)); do
+  LAUNCHING_RANK=$rank
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
   log "starting rank $rank on $host"
   raw_id=""
@@ -259,6 +308,7 @@ for ((rank = 1; rank < NODES; rank++)); do
   log "rank $rank id=${TRACKED_CIDS[$rank]:0:12}"
 done
 
+LAUNCHING_RANK=0
 log "starting rank 0 locally"
 HEAD_RUN=("${HEAD_CMD[@]}")
 HEAD_RUN[0]="$PULSAR_DOCKER"
@@ -279,6 +329,7 @@ if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
   exit 1
 fi
 log "rank 0 id=${TRACKED_CIDS[0]:0:12}"
+CLUSTER_PHASE=loading
 # Every rank's container exists; its references protect its files from here.
 release_model_library_locks
 
@@ -296,6 +347,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
         "$STARTUP_STARTED_NS" "$STARTUP_HEALTHY_NS"
     )
     log "healthy · first-health=${STARTUP_ELAPSED}s."
+    CLUSTER_PHASE=verifying
     # Qualification/warmup belongs to the workbench; serving checks health only.
     # A busy model library defers this verification; it never aborts a healthy
     # cluster. PULSAR_LOCK_BUSY_EXIT marks that case apart from a mismatch.

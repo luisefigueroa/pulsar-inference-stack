@@ -7,26 +7,34 @@ if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image st
 SCRIPT_NAME=sync-image
 PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-NAME="${1:?spec id required}"; shift
+case "${1:-}" in ""|-*) usage_die "image stage requires a spec ID; see ./pulsar image --help" ;; esac
+NAME="$1"; shift
 PULL=0 YES=0 PLAN=0 JSON=0 NODE_SELECTOR="" PULL_FALLBACK=0 EXPORT_TAG=""
+# The operator's selection and transfer flags, repeated in a suggested --plan command.
+selection_flags=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
-    --pull) PULL=1 ;;
-    --pull-if-stream-incomplete) PULL_FALLBACK=1 ;;
+    --placement-nodes|--export-tag|--node|--spec-file)
+      case "${2:-}" in ""|-*) usage_die "$1 requires a value" ;; esac
+      case "$1" in
+        --placement-nodes) PLACEMENT_NODES="$2" ;;
+        --export-tag) EXPORT_TAG="$2" ;;
+        --node) NODE_SELECTOR="$2" ;;
+        --spec-file) export PULSAR_SPEC_FILE="$2" ;;
+      esac
+      selection_flags+=("$1" "$2"); shift ;;
+    --pull) PULL=1; selection_flags+=("$1") ;;
+    --pull-if-stream-incomplete) PULL_FALLBACK=1; selection_flags+=("$1") ;;
     --yes|-y) YES=1 ;;
     --plan) PLAN=1 ;;
     --json) JSON=1 ;;
-    --export-tag) EXPORT_TAG="${2:?export tag required}"; shift ;;
-    --node) NODE_SELECTOR="${2:?node required}"; shift ;;
-    --spec-file) export PULSAR_SPEC_FILE="${2:?spec file required}"; shift ;;
-    *) die "unknown argument: $1" 2 ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
-[ "$YES" = 0 ] || [ "$PLAN" = 0 ] || die "preview and apply are separate operations" 2
+[ "$YES" = 0 ] || [ "$PLAN" = 0 ] || usage_die "preview and apply are separate operations; use --plan or --yes"
 [ -z "$EXPORT_TAG" ] || { [ "$PULL" = 0 ] && [ "$PULL_FALLBACK" = 0 ]; } \
-  || die "named export and registry pulling are separate modes" 2
+  || usage_die "named export and registry pulling are separate modes"
 load_conf "$NAME"
 [ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 export_image="$IMAGE"
@@ -94,7 +102,20 @@ if [ "$state" = ok ]; then
   if [ "$JSON" = 1 ]; then printf '%s\n' "$report"; else log "Exact spec image already present on all $NODES serving ranks."; fi
   exit 0
 fi
-[ "$YES" = 1 ] || die "image staging requires --yes after reviewing --plan" 2
+if [ "$YES" != 1 ]; then
+  # Not a usage mistake: like every approval gate, this refuses after looking,
+  # and says what staging would change.
+  missing_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+  missing_nodes=$(while read -r rank physical; do printf '%s (rank %s), ' "$(human_node_name "$physical")" "$rank"; done <<<"$missing_rows")
+  why="" suggested=(${selection_flags[@]+"${selection_flags[@]}"})
+  # Without --pull, staging copies from this node; when this node lacks the image too, only a pull works.
+  if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s\n' "$missing_rows" | grep -q ' 0$'; then
+    why=" This node lacks it too, so staging must pull the exact digest from its registry."
+    suggested+=(--pull)
+  fi
+  suggestion=$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${suggested[@]+"${suggested[@]}"})
+  die "the pinned image is missing on ${missing_nodes%, }; nothing was staged.$why Next: ./pulsar image stage $suggestion --plan, then rerun it with --yes"
+fi
 if [ "$PULL" = 0 ]; then
   # Docker save/load can omit registry references. A stream never falls back to
   # a registry pull unless the caller passed --pull-if-stream-incomplete.

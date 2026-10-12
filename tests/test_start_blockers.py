@@ -7,9 +7,11 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -37,7 +39,10 @@ usage_die() { die "$1"; }
 log() { echo "$*"; }
 warn() { echo "warning: $*" >&2; }
 error_line() { echo "error: $*" >&2; }
-acquire_model_library_lifecycle_lock() { :; }
+acquire_model_library_lifecycle_lock() {
+  # "hang": start is still waiting for the lock when it is interrupted.
+  [ "${FIXTURE_LOCK:-}" != hang ] || { touch "$FIXTURE_DIR/lock-waiting"; sleep 30; }
+}
 acquire_model_library_hot_lock() { :; }
 release_model_library_locks() { touch "$FIXTURE_DIR/locks-released"; }
 load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS=mesh; MIN_RAILS_PER_PAIR=2; }
@@ -72,6 +77,8 @@ LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
                    _source_lib.index('resolve_single_node_placement() {')]
 IMAGE = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/image-checked"
+# "hang": a check still running when start is interrupted.
+if [ "$FIXTURE_IMAGE" = hang ]; then sleep 30; fi
 state="$FIXTURE_IMAGE"; [ ! -e "$FIXTURE_DIR/synced" ] || state=ok
 # "crash": the check itself failed and printed no report.
 if [ "$state" = crash ]; then echo "error: cannot read the selected spec" >&2; exit 3; fi
@@ -84,6 +91,8 @@ case " $* " in *" --json "*) printf '{"state":"%s","ranks":[%s]}\n' "$state" "$r
 '''
 WEIGHTS = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/weights-checked"
+# "hang": a check still running when start is interrupted.
+if [ "$FIXTURE_WEIGHTS_RC" = hang ]; then sleep 30; fi
 [ "$FIXTURE_WEIGHTS_RC" != 3 ] || echo "error: cannot resolve the prepared copies" >&2
 exit "$FIXTURE_WEIGHTS_RC"
 '''
@@ -94,15 +103,19 @@ case " $* " in *" --json "*) echo '{"reason":"fixture-host: available 10 GiB << 
 exit "$FIXTURE_MEMORY_RC"
 '''
 LAUNCHER = ('#!/usr/bin/env bash\necho "${0##*/} $*" >>"$FIXTURE_DIR/launched"\n'
-            'env | grep "^START_BLOCKER_MEMORY_ESTIMATE" | sort >>"$FIXTURE_DIR/launch-env" || true\n')
+            'env | grep "^START_BLOCKER_MEMORY_ESTIMATE" | sort >>"$FIXTURE_DIR/launch-env" || true\n'
+            # "hang": a launcher still running when start is interrupted.
+            '[ "${FIXTURE_LAUNCH:-}" != hang ] || sleep 30\n')
 CURL = r'''#!/usr/bin/env bash
 url="${*: -1}"
 case "$url" in
-  */health) [ "${FIXTURE_HEALTH:-ok}" = ok ] ;;
+  */health) touch "$FIXTURE_DIR/health-polled"; [ "${FIXTURE_HEALTH:-ok}" = ok ] ;;
   */v1/completions)
+    touch "$FIXTURE_DIR/smoke-sent"
     out=""
     while [ $# -gt 0 ]; do [ "$1" != -o ] || out="$2"; shift; done
     case "${FIXTURE_SMOKE:-200}" in
+      hang) sleep 30 ;;
       timeout) echo "curl: (28) Operation timed out after 120001 milliseconds with 0 bytes received" >&2; exit 28 ;;
       200) printf '{"choices":[{"text":" 4"}]}' >"$out"; printf 200 ;;
       *) printf '{"error":"engine failure"}' >"$out"; printf '%s' "$FIXTURE_SMOKE" ;;
@@ -278,7 +291,7 @@ class Catalog(unittest.TestCase):
             record = start_blockers.blocker(code, spec=SPEC, service_id=SERVICE_ID)
             with self.subTest(code=code):
                 self.assertEqual(start_blockers.human(record).split()[0],
-                                 "FAILED" if kind.stage == "launch" else "BLOCKED")
+                                 kind.label or ("FAILED" if kind.stage == "launch" else "BLOCKED"))
                 self.assertEqual(record["service_id"], SERVICE_ID)
 
     def test_contract_publishes_the_codes(self):
@@ -535,6 +548,198 @@ class StartScenarios(unittest.TestCase):
                 self.assertIn(f"FAILED {code}: spark-1: ", result.stdout)
 
 
+class Interrupts(unittest.TestCase):
+    """Ctrl-C or a stop signal during start says what start left and removes nothing."""
+
+    def setUp(self):
+        self.scenario = StartScenarios("test_ready_only_after_the_test_completion_answers")
+        self.scenario.setUp()
+        self.addCleanup(self.scenario.doCleanups)
+        self.root = self.scenario.root
+
+    def env(self, **fixture):
+        env = {**os.environ, "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT),
+               "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_START_BLOCKERS_FILE": str(self.scenario.blockers),
+               "PULSAR_MODEL_LIBRARY_DIR": str(self.root / "library"),
+               "PULSAR_DOCKER": str(self.root / "bin/docker"), "FIXTURE_DIR": str(self.root),
+               "FIXTURE_WEIGHTS_RC": "0", "FIXTURE_MEMORY_RC": "0", "FIXTURE_SERVICE_ID": SERVICE_ID,
+               "WAIT_ATTEMPTS": "100", "WAIT_SECONDS": "1"}
+        for key in ("PULSAR_SPEC_FILE", "PULSAR_VERBOSE", "PULSAR_LAUNCH_PLAN_OUT"):
+            env.pop(key, None)
+        env.update({f"FIXTURE_{key.upper()}": str(value) for key, value in fixture.items()})
+        return env
+
+    def interrupt(self, command, marker, signum=signal.SIGINT, **fixture):
+        process = subprocess.Popen(command, env=self.env(**fixture), text=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True)
+        deadline = time.monotonic() + 30
+        while not (self.root / marker).exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        time.sleep(0.2)
+        os.killpg(process.pid, signum)  # a terminal's Ctrl-C reaches the whole foreground group
+        stdout, stderr = process.communicate(timeout=30)
+        return process.returncode, stdout, stderr, start_blockers.read(self.scenario.blockers)
+
+    def start(self, marker, signum=signal.SIGINT, **fixture):
+        return self.interrupt(["bash", str(self.root / "scripts/up.sh"), SPEC], marker, signum, **fixture)
+
+    def test_during_the_checks_nothing_was_started(self):
+        status, stdout, stderr, records = self.start("image-checked", image="hang")
+        self.assertEqual(status, 130)
+        self.assertEqual(stderr.strip().splitlines()[-1], "Interrupted before launch; nothing was started.")
+        self.assertEqual(records, [])
+        self.assertFalse((self.root / "launched").exists())
+
+    def test_while_waiting_for_the_lock_nothing_was_started(self):
+        status, stdout, stderr, records = self.start("lock-waiting", lock="hang")
+        self.assertEqual(status, 130)
+        self.assertEqual(stderr.strip().splitlines()[-1], "Interrupted before launch; nothing was started.")
+        self.assertEqual(records, [])
+
+    def cluster_record(self, phase, **env):
+        """The record cluster/start-cluster.sh's interrupt handler writes in PHASE."""
+        blockers = self.root / f"{phase}.jsonl"
+        script = "\n".join([
+            f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
+            f"CLUSTER_PHASE={phase} LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
+            'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            lib_function("start_blocker"),
+            lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
+            "cluster_interrupted 2",
+        ])
+        environment = {**os.environ, "PULSAR_START_BLOCKERS_FILE": str(blockers), **env}
+        environment.pop("START_BLOCKER_PLACEMENT", None)
+        result = subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        (record,) = start_blockers.read(blockers)
+        return record
+
+    def test_after_health_a_cluster_is_running_not_loading(self):
+        record = self.cluster_record("verifying")
+        self.assertEqual(record["message"], "spark-1: start was interrupted after the service became healthy, while "
+                                            "every rank was being verified; it is running on all 2 ranks")
+
+    def test_an_interrupt_while_replace_removes_the_old_service_names_it(self):
+        record = self.cluster_record("replacing")
+        self.assertEqual(record["message"], "start was interrupted while --replace was removing the previous "
+                                            "service; some of its containers may remain")
+        self.assertEqual(record["note"], "Nothing was started. To remove what remains of the previous service: "
+                                         "./pulsar stop abababababab")
+        self.assertEqual(record["service_id"], SERVICE_ID)
+
+    def test_an_interrupted_replacement_says_the_previous_service_was_removed(self):
+        record = self.cluster_record("loading", LAUNCH_AFTER_REPLACE="1")
+        self.assertEqual(record["note"], "The previous service was removed before this launch. Nothing this start "
+                                         "launched was removed. To remove it: ./pulsar stop abababababab")
+        # One node: start knows a service existed and that the launcher replaced it once launched.
+        for marker, fixture, note in (
+                ("health-polled", {"health": "fail"}, "The previous service was removed before this launch."),
+                ("launched", {"launch": "hang"}, "Start was replacing the previous service, which may already be "
+                                                 "removed.")):
+            with self.subTest(phase=marker):
+                for name in ("blockers.jsonl", "health-polled", "launched"):
+                    (self.root / name).unlink(missing_ok=True)
+                status, _, stderr, records = self.interrupt(
+                    ["bash", str(self.root / "scripts/up.sh"), SPEC, "--replace"], marker,
+                    image="ok", existing=0, **fixture)
+                self.assertEqual(status, 130, stderr)
+                (record,) = records
+                self.assertTrue(record["note"].startswith(note), record["note"])
+                self.assertNotIn("Nothing was removed.", record["note"])
+
+    def test_an_interrupted_removal_does_not_claim_nothing_was_removed(self):
+        blockers = self.root / "removal.jsonl"
+        script = "\n".join([
+            f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
+            "CLUSTER_PHASE=removing LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
+            'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            lib_function("start_blocker"),
+            lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
+            "cluster_interrupted 2",
+        ])
+        env = {**os.environ, "PULSAR_START_BLOCKERS_FILE": str(blockers)}
+        env.pop("START_BLOCKER_PLACEMENT", None)
+        result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        (record,) = start_blockers.read(blockers)
+        self.assertEqual(record["message"], "start was interrupted while the failed launch's containers were being "
+                                            "removed; some may remain")
+        self.assertEqual(record["note"], "Some may already be removed. To remove the rest: ./pulsar stop abababababab")
+
+    def test_after_launch_it_names_the_service_and_suggests_status(self):
+        for marker, fixture, detail in (
+                ("health-polled", {"image": "ok", "health": "fail"},
+                 "while the service was loading; it keeps loading"),
+                ("smoke-sent", {"image": "ok", "smoke": "hang"},
+                 "during the test completion; the service is running and passed its health check")):
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                with self.subTest(phase=marker, signal=signum.name):
+                    for name in ("blockers.jsonl", "health-polled", "smoke-sent", "launched"):
+                        (self.root / name).unlink(missing_ok=True)
+                    status, stdout, stderr, records = self.start(marker, signum, **fixture)
+                    self.assertEqual(status, 128 + signum, stderr)
+                    (record,) = records
+                    self.assertEqual((record["blocker"], record["stage"], record["node"], record["service_id"]),
+                                     ("start_interrupted", "launch", "spark-1", SERVICE_ID))
+                    self.assertEqual(record["message"], f"spark-1: start was interrupted {detail}")
+                    self.assertEqual(record["fix"], "./pulsar status abababababab --node spark-1")
+                    self.assertEqual(record["note"],
+                                     "Nothing was removed. To remove it: ./pulsar stop abababababab --node spark-1")
+                    self.assertIn(f"INTERRUPTED start_interrupted: spark-1: start was interrupted {detail}.", stdout)
+                    # An interrupt never stops or removes the service; the fixture Docker saw no call.
+                    self.assertFalse((self.root / "docker-calls").exists())
+
+    def test_while_launching_one_node_the_container_may_exist(self):
+        status, stdout, stderr, records = self.start("launched", image="ok", launch="hang")
+        self.assertEqual(status, 130, stderr)
+        (record,) = records
+        self.assertEqual(record["message"],
+                         "spark-1: start was interrupted while its container was being created; the container may exist")
+        self.assertEqual(record["fix"], "./pulsar status abababababab --node spark-1")
+
+    def test_a_cluster_launch_reports_for_itself(self):
+        # cluster/start-cluster.sh reports its own phases; start adds nothing of its own.
+        status, stdout, stderr, records = self.interrupt(
+            ["bash", str(self.root / "scripts/up.sh"), SPEC, "--skip-preflight"], "launched",
+            image="ok", launch="hang", nodes=2)
+        self.assertEqual(status, 130, stderr)
+        self.assertEqual(records, [])
+        self.assertNotIn("Interrupted", stdout + stderr)
+
+    def test_json_callers_get_the_record_in_the_cancelled_envelope(self):
+        driver = ("import sys; from pathlib import Path; import scripts.public_cli as pc; "
+                  f"pc.ROOT = Path({str(self.root)!r}); raise SystemExit(pc.main(['start', {SPEC!r}, '--json']))")
+        status, stdout, stderr, _ = self.interrupt([sys.executable, "-c", driver], "health-polled",
+                                                   image="ok", health="fail")
+        self.assertEqual(status, 130, stderr)
+        error = json.loads(stdout)["error"]
+        self.assertEqual(error["code"], "cancelled")
+        self.assertEqual([record["blocker"] for record in error["details"]], ["start_interrupted"])
+        self.assertEqual(error["details"][0]["service_id"], SERVICE_ID)
+        # The message leads with the service, not only the reaped command.
+        self.assertTrue(error["message"].startswith("spark-1: start was interrupted while the service was loading; "
+                                                    "it keeps loading. Next: ./pulsar status abababababab"),
+                        error["message"])
+
+    def test_an_interrupt_during_the_checks_is_a_plain_cancellation(self):
+        # A check blocker recorded before the interrupt does not mean a launch.
+        driver = ("import sys; from pathlib import Path; import scripts.public_cli as pc; "
+                  f"pc.ROOT = Path({str(self.root)!r}); raise SystemExit(pc.main(['start', {SPEC!r}, '--json']))")
+        # image_missing is recorded (in the public CLI's own blocker file) before the
+        # model-file check, which is still running when the interrupt arrives.
+        status, stdout, stderr, _ = self.interrupt([sys.executable, "-c", driver], "weights-checked",
+                                                   image="missing-on-head", weights_rc="hang")
+        self.assertEqual(status, 130, stderr)
+        error = json.loads(stdout)["error"]
+        self.assertEqual(error["code"], "cancelled")
+        self.assertEqual([detail["field"] for detail in error["details"]], ["$"])
+        self.assertIn("Interrupted before launch; nothing was started.", error["message"])
+
+    def test_the_stop_in_the_note_is_runnable(self):
+        record = start_blockers.blocker("start_interrupted", spec=SPEC, placement="--node spark-2")
+        Catalog.assert_runnable(Catalog(), record["note"].split("To remove it: ", 1)[1])
+
+
 class ClusterCleanup(unittest.TestCase):
     """A multi-node launch failure says its containers were removed only when it
     confirmed that on every node."""
@@ -606,7 +811,8 @@ class StatusWithoutService(unittest.TestCase):
         self.assertEqual(complete.returncode, 1)
         self.assertIn("Start it with ./pulsar start abababababab", " ".join(complete.stderr.split()))
         unknown = self.status({"status": "unreachable", "reason": "spark-2 · SSH unreachable"})
-        self.assertEqual(unknown.returncode, 1)
+        # Absent is a known answer (1); could not tell is not (3).
+        self.assertEqual(unknown.returncode, 3)
         self.assertIn("is unknown: spark-2 · SSH unreachable", " ".join(unknown.stderr.split()))
         self.assertNotIn("pulsar start", unknown.stderr)
 
@@ -624,7 +830,8 @@ class JsonEnvelope(unittest.TestCase):
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
             status = public_cli.main(["start", SPEC, "--json"])
         error = json.loads(output.getvalue())["error"]
-        self.assertEqual(status, 3)
+        # A refusal exits 1 with or without --json.
+        self.assertEqual(status, 1)
         self.assertEqual(error["code"], "prerequisite_failed")
         self.assertEqual(error["details"], records)
 

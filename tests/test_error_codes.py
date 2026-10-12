@@ -142,6 +142,105 @@ class ErrorCodes(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(response["error"]["code"], "invalid_spec", response)
 
+    def test_privacy_findings_are_their_own_code_and_name_only_the_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A non-documentation address the scanner reports by value on stderr.
+            address = "10.20." + "30.40"
+            (root / "notes.txt").write_text(f"host = {address}\n")
+            status, response = pulsar("privacy", "check", "--root", str(root))
+            self.assertEqual((status, response["error"]["code"]), (1, "privacy_check_failed"))
+            self.assertEqual(response["error"]["details"],
+                             [{"field": "privacy", "rule": "network-address", "path": "notes.txt", "location": "1",
+                               "message": "network-address at notes.txt:1"}])
+            # The envelope never repeats what the scanner matched.
+            self.assertNotIn(address, json.dumps(response))
+            human = subprocess.run([str(ROOT / "pulsar"), "privacy", "check", "--root", str(root)],
+                                   text=True, capture_output=True)
+            self.assertEqual(human.returncode, 1)
+            self.assertIn("notes.txt:1: [network-address]", human.stderr)
+            self.assertTrue(human.stderr.endswith(
+                "error: publication privacy check found 1 problem(s): network-address\n"), human.stderr)
+
+    def test_a_privacy_finding_in_a_file_name_leaves_the_name_out(self):
+        with tempfile.TemporaryDirectory() as temp:
+            name = "dgx-" + "spark-987.md"
+            (Path(temp) / name).write_text("plain\n")
+            status, response = pulsar("privacy", "check", "--root", temp)
+        self.assertEqual((status, response["error"]["code"]), (1, "privacy_check_failed"))
+        self.assertEqual(response["error"]["details"],
+                         [{"field": "privacy", "rule": "stable-hostname", "path": None, "location": "path",
+                           "message": "stable-hostname in a file name"}])
+        self.assertNotIn(name, json.dumps(response))
+
+    def test_a_commit_range_that_names_no_commits_is_a_usage_error(self):
+        for revision_range in ("definitely-not-a-ref", "HEAD..HEAD"):
+            with self.subTest(revision_range=revision_range):
+                status, response = pulsar("privacy", "commits", "--root", str(ROOT), "--range", revision_range)
+                self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+                self.assertEqual(response["error"]["details"][0]["field"], "--range")
+
+    def test_observe_that_cannot_reach_a_node_did_not_establish_anything(self):
+        # SSH exits 255 when it cannot connect; that is not a failed verification.
+        unreachable = Completed(returncode=255)
+        unreachable.stderr = "ssh: connect to host spark-2 port 22: No route to host\n"
+        with patch.object(public_cli, "run_command", return_value=unreachable):
+            status, response = self.main("observe", "--service-id", "a" * 64)
+        self.assertEqual((status, response["error"]["code"]), (3, "check_incomplete"))
+        self.assertIn("No route to host", response["error"]["message"])
+        failed = Completed(returncode=1)
+        failed.stderr = "error: rank 1 container differs from its launch record\n"
+        with patch.object(public_cli, "run_command", return_value=failed):
+            status, response = self.main("observe", "--service-id", "a" * 64)
+        self.assertEqual((status, response["error"]["code"]), (1, "prerequisite_failed"))
+        with patch.object(public_cli, "run_command", return_value=unreachable), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(public_cli.main(["observe", "--service-id", "a" * 64]), 3)
+        self.assertEqual(stderr.getvalue().count("No route to host"), 1)
+
+    def test_privacy_argument_and_file_mistakes_are_not_spec_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "file.txt").write_text("plain\n")
+            for args, code in ((["--root", temp, "--staged"], "usage_error"),
+                               (["--root", str(root / "file.txt")], "file_error")):
+                with self.subTest(args=args):
+                    status, response = pulsar("privacy", "check", *args)
+                    self.assertEqual((status, response["error"]["code"]), (2, code))
+            (root / "link").symlink_to(root / "file.txt")
+            status, response = pulsar("privacy", "check", "--root", temp)
+            self.assertEqual((status, response["error"]["code"]), (2, "file_error"))
+            self.assertIn("link is a symlink or special file", response["error"]["message"])
+
+    def test_a_commit_privacy_root_that_cannot_be_read_is_not_a_refusal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for root, code in ((str(Path(temp) / "missing"), "file_error"), (temp, "usage_error")):
+                with self.subTest(code=code):
+                    status, response = pulsar("privacy", "commits", "--root", root, "--range", "HEAD~1..HEAD")
+                    self.assertEqual((status, response["error"]["code"]), (2, code))
+
+    def test_a_bad_entrypoint_is_a_usage_error_naming_the_flag(self):
+        status, response = pulsar("guarded", "template", "--entrypoint-json", "[oops")
+        self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+        self.assertEqual(response["error"]["details"][0]["field"], "--entrypoint-json")
+
+    def test_a_guarded_stop_the_run_refuses_is_a_refusal_not_an_invalid_spec(self):
+        from serving_guard import controller
+        refused = controller.StopRefused("guarded run abababababab already finished; nothing to stop")
+        with tempfile.TemporaryDirectory() as temp, patch.object(controller, "stop", side_effect=refused):
+            status, response = self.main("guarded", "stop", "--output-dir", temp, "--run-id", "ab" * 32)
+        self.assertEqual((status, response["error"]["code"]), (1, "prerequisite_failed"))
+        self.assertIn("already finished; nothing to stop", response["error"]["message"])
+        # A malformed run record is a document error, not a refusal.
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "active-plan.json").write_text("{truncated")
+            status, response = self.main("guarded", "stop", "--output-dir", temp, "--run-id", "ab" * 32)
+        self.assertEqual((status, response["error"]["code"]), (2, "invalid_spec"))
+
+    def test_a_script_usage_mistake_is_printed_once(self):
+        result = subprocess.run([str(ROOT / "pulsar"), "observe", "--bogus"], text=True, capture_output=True)
+        self.assertEqual((result.returncode, result.stderr), (2, "error: unknown argument: --bogus\n"))
+
     def main(self, *argv):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):

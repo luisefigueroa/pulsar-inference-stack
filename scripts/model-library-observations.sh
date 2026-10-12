@@ -47,10 +47,13 @@ except (ValueError,OSError): print("unavailable")
   fi
   observation=$(model_json local_state "$local_state" home "$home_state" prepared: "$(model_json verified: "$prepared" required: "$required")" blockers: "$details" archive_state "$archive_state")
   if [ "${CHECK_MEMBER:-0}" != 1 ]; then
-    model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || die "could not save catalog observation"
+    model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null \
+      || { error_line "could not save catalog observation"; return 3; }
   fi
   emit_result "$(model_json spec_id "$SPEC_ID" observation: "$observation")"
-  return "$rc"
+  # The public exit statuses: missing or changed files are a known "no" (1);
+  # files that could not be observed leave the outcome unknown (3).
+  case "$local_state" in ready) return 0 ;; unknown) return 3 ;; *) return 1 ;; esac
 }
 
 show_budget() {
@@ -71,7 +74,8 @@ check_model() (
   trap 'rm -rf "$PREPARED_INSPECTION_DIR"' EXIT
   inspect_prepared "$PREPARED_INSPECTION_DIR" || batch_rc=$?
   case "$batch_rc" in 129|130|143) return "$batch_rc" ;; esac
-  [ -f "$PREPARED_INSPECTION_DIR/members.json" ] || return 2
+  # Without an inspection result the check could not run: 3.
+  [ -f "$PREPARED_INSPECTION_DIR/members.json" ] || return 3
   if [ "$VIEW_SCHEMA" != 2 ]; then check_snapshot; return; fi
   local name result tmp observation rc=0 member_rc saved_json="$JSON"
   tmp=$(mktemp)
@@ -80,8 +84,9 @@ check_model() (
     select_snapshot "$name"
     member_rc=0
     result=$(CHECK_MEMBER=1 CHECK_SNAPSHOT="$name" check_snapshot) || member_rc=$?
-    if [ "$member_rc" -ne 0 ]; then rc=1; fi
-    [ -n "$result" ] || { rm -f "$tmp"; return 2; }
+    # A known "no" for one snapshot outweighs another that could not be observed.
+    case "$member_rc" in 0) ;; 3) [ "$rc" = 1 ] || rc=3 ;; *) rc=1 ;; esac
+    [ -n "$result" ] || { rm -f "$tmp"; return 3; }
     printf '%s\n' "$(model_json name "$name" result: "$result")" >>"$tmp"
   done 3< <(snapshot_names)
   observation=$(python3 - "$tmp" <<'PYCODE'
@@ -90,10 +95,10 @@ from model_library.catalog import combined_observation
 members={r['name']:r['result']['observation'] for r in map(json.loads,open(sys.argv[1]))}
 print(json.dumps(combined_observation(members)))
 PYCODE
-  ) || { rm -f "$tmp"; return 2; }
+  ) || { rm -f "$tmp"; return 3; }
   rm -f "$tmp"
   JSON="$saved_json"
-  model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || return 2
+  model_ctl "$(model_json operation save-observation spec_id "$SPEC_ID" observation: "$observation")" >/dev/null || return 3
   emit_result "$(model_json spec_id "$SPEC_ID" observation: "$observation")"
   return "$rc"
 )

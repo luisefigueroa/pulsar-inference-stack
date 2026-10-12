@@ -546,6 +546,11 @@ def scan_files(files: Iterable[tuple[str, bytes]]) -> tuple[int, list[Finding]]:
     return count, sorted(set(findings))
 
 
+def scan_repository(repo_root: pathlib.Path, *, staged: bool = False) -> tuple[int, list[Finding]]:
+    """Scan a Git checkout's staged or working-tree files."""
+    return scan_files(_staged_files(repo_root) if staged else _working_tree_files(repo_root))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -570,8 +575,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo_root = _repo_root(args.repo_root)
         mode = "staged" if args.staged else "working-tree"
-        files = _staged_files(repo_root) if args.staged else _working_tree_files(repo_root)
-        count, findings = scan_files(files)
+        count, findings = scan_repository(repo_root, staged=args.staged)
     except (OSError, PrivacyError, UnicodeError) as exc:
         print(f"error: publishable privacy: {exc}", file=sys.stderr)
         return 2

@@ -10,7 +10,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --service-id|--spec-file|--node|--interval|--override-file)
-      case "${2:-}" in ""|-*) die "$1 requires a value" 2 ;; esac
+      case "${2:-}" in ""|-*) usage_die "$1 requires a value" ;; esac
       case "$1" in
         --service-id) SERVICE_ID="$2" ;;
         --spec-file) SPEC_FILE="$2" ;;
@@ -24,16 +24,17 @@ while [ $# -gt 0 ]; do
       echo 'usage: pulsar resources (--service-id ID | --spec-file FILE [--node NODE | --placement-nodes LIST] [--override-file FILE]) [--interval SECONDS] --jsonl'
       echo 'Samples confirmed nodes before launch; container metrics remain unavailable until an exact owned recipe appears.'
       exit 0 ;;
-    *) die "unknown argument: $1" 2 ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
-[ -n "$SERVICE_ID" ] || [ -n "$SPEC_FILE" ] || die 'select a service or spec' 2
-[ -z "$SERVICE_ID" ] || [ -z "$SPEC_FILE$OVERRIDE_FILE$NODE_SELECTOR$PLACEMENT_NODES" ] || die 'service and spec selectors are exclusive' 2
-python3 - "$INTERVAL" <<'PY'
+[ -n "$SERVICE_ID" ] || [ -n "$SPEC_FILE" ] || usage_die 'select a service with --service-id or a spec with --spec-file'
+[ -z "$SERVICE_ID" ] || [ -z "$SPEC_FILE$OVERRIDE_FILE$NODE_SELECTOR$PLACEMENT_NODES" ] || usage_die 'service and spec selectors are exclusive'
+python3 - "$INTERVAL" <<'PY' || usage_die "--interval must be a number of seconds from 0.1 to 60"
 import math,sys
-value=float(sys.argv[1])
-if not math.isfinite(value) or not 0.1<=value<=60: raise SystemExit('interval must be finite and between 0.1 and 60 seconds')
+try: value=float(sys.argv[1])
+except ValueError: raise SystemExit(1)
+if not math.isfinite(value) or not 0.1<=value<=60: raise SystemExit(1)
 PY
 work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-resources.XXXXXX")
 declare -a pids=()
@@ -121,6 +122,22 @@ for ((rank=0;rank<count;rank++)); do
   setsid bash "$REPO_DIR/scripts/resource-rank.sh" "$work/context.json" "$rank" "$INTERVAL" "$token" "$work/relay.lock" &
   pids+=("$!")
 done
+# Samplers run until stopped, so one ending on its own fails the stream: name
+# it. wait -n (bash 4.3) reaps the first to end; it is the one no longer alive.
 wait -n "${pids[@]}" || true
-python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --error sampler_ended
-exit 3
+ended_rank=""
+for ((rank=0;rank<count;rank++)); do
+  kill -0 "${pids[$rank]}" 2>/dev/null || { ended_rank=$rank; break; }
+done
+if [ -z "$ended_rank" ]; then
+  python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --error sampler_ended
+  error_line "a resource sampler ended; the stream stopped"
+  exit 1
+fi
+mapfile -t ended < <(python3 -c 'import json,sys; r=json.load(open(sys.argv[1]))["ranks"][int(sys.argv[2])]; print(r["rank_label"]); print(r["node_id"])' "$work/context.json" "$ended_rank")
+python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --rank "${ended[0]}" --error sampler_ended
+where="${ended[1]}"
+if index=$(model_physical_rank "${ended[1]}" 2>/dev/null); then where=$(human_node_name "$index"); fi
+what="rank ${ended[0]} on $where"; [ "${ended[0]}" != single ] || what="$where"
+error_line "the resource sampler for $what ended; the stream stopped"
+exit 1

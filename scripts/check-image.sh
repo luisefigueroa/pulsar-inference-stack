@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # Read-only inspection of the pinned spec image on every selected physical node.
-# Exit: 0 pass · 1 the condition failed · 3 the check could not run.
+# Exit: 0 pass · 1 the condition failed · 2 a usage mistake · 3 the check could not run.
 set -euo pipefail
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image check SPEC [--spec-file FILE] [--node NODE | --placement-nodes LIST] [--json]"; exit 0; fi
 SCRIPT_NAME=check-image
 PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-check_exit_convention
-[ -n "${1:-}" ] || die "spec id required" 3
+case "${1:-}" in ""|-*) usage_die "image check requires a spec ID; see ./pulsar image --help" ;; esac
 NAME="$1"; shift
 JSON=0 NODE_SELECTOR=""
+# The operator's selection, repeated in a suggested image stage command.
+selection_flags=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
+    --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; selection_flags+=("$1" "$2"); shift ;;
     --json) JSON=1 ;;
-    --node) [ -n "${2:-}" ] || die "--node requires a node" 3; NODE_SELECTOR="$2"; shift ;;
-    --spec-file) [ -n "${2:-}" ] || die "--spec-file requires a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
-    *) die "unknown argument: $1" 3 ;;
+    --node) case "${2:-}" in ""|-*) usage_die "--node requires a node" ;; esac; NODE_SELECTOR="$2"; selection_flags+=("$1" "$2"); shift ;;
+    --spec-file) case "${2:-}" in ""|-*) usage_die "--spec-file requires a file" ;; esac; export PULSAR_SPEC_FILE="$2"; selection_flags+=("$1" "$2"); shift ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
+# From here an unexpected exit is a check that could not run; usage_die keeps its status.
+check_exit_convention keep-usage
 load_conf "$NAME"
 [ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
 node_indices=() states=()
@@ -74,9 +77,44 @@ print(json.dumps(dict(schema_version=1,kind='pulsar-image-check',model=name,imag
 PY
 )
 state=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
+# image_failure — what the check found, by node, and one next step. Start runs
+# this check too and gives its own next step in its blocker lines.
+image_failure() {
+  local rank where missing="" unreachable="" docker="" topology=0 controller=0 next="" message="" problem
+  local -a problems=() stage=(${selection_flags[@]+"${selection_flags[@]}"})
+  for ((rank = 0; rank < NODES; rank++)); do
+    [ "${states[$rank]}" != need-topology ] || { topology=1; continue; }
+    where="$(human_node_name "${node_indices[$rank]}") (rank $rank)"
+    case "${states[$rank]}" in
+      missing) missing+="${missing:+, }$where"; [ "${node_indices[$rank]}" != 0 ] || controller=1 ;;
+      unreachable) unreachable+="${unreachable:+, }$where" ;;
+      docker-error) docker+="${docker:+, }$where" ;;
+    esac
+  done
+  if [ "$topology" = 1 ]; then
+    problems+=("the confirmed topology has fewer nodes than this spec needs"); next="./pulsar topology setup"
+  fi
+  if [ -n "$unreachable" ]; then
+    problems+=("$unreachable could not be reached, so the image there is unknown"); next="${next:-./pulsar topology check}"
+  fi
+  if [ -n "$docker" ]; then
+    problems+=("on $docker, Docker is unavailable or holds an image other than the pinned arm64 digest")
+    next="${next:-./pulsar doctor}"
+  fi
+  if [ -n "$missing" ]; then
+    problems+=("the pinned image is missing on $missing")
+    # Staging copies from this node, so when it lacks the image only a pull works.
+    [ "$controller" = 0 ] || stage+=(--pull)
+    next="${next:-./pulsar image stage $(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${stage[@]+"${stage[@]}"}) --plan}"
+  fi
+  for problem in "${problems[@]}"; do message+="${message:+; }$problem"; done
+  print_hanging 'FAIL  image  ' "$message"
+  # The command stays whole on its own line so it can be copied.
+  [ -n "${PULSAR_RUN_BY_START:-}" ] || [ -z "$next" ] || printf '             Next: %s\n' "$next"
+}
 if [ "$JSON" = 1 ]; then printf '%s\n' "$report"; else
   if [ "$state" = ok ]; then print_hanging 'PASS  image  ' "Pinned arm64 image verified on all $NODES serving ranks."; else
-    print_hanging 'FAIL  image  ' "$state; inspect the required nodes before image staging."
+    image_failure
   fi
 fi
 [ "$state" = ok ] || check_result 1

@@ -10,7 +10,8 @@ local catalog records to choose between download and prepare.
 `fix` is always one command that can be pasted as written, or null when no
 command resolves the blocker. Any explanation goes in `note`. Codes with
 stage "check" refused the start; codes with stage "launch" describe a service
-that was started (or removed) after the checks passed.
+that was started (or removed) after the checks passed, including a start that
+was interrupted after it launched one.
 """
 from __future__ import annotations
 
@@ -47,6 +48,10 @@ class Kind:
     # A launch record that can say nothing runs once --replace removed the
     # previous service; check-stage records always can.
     nothing_runs: bool = False
+    # The human line's first word, when neither BLOCKED nor FAILED fits.
+    label: str | None = None
+    # The detail continues the summary's sentence instead of following it in parentheses.
+    detail_inline: bool = False
 
 
 BLOCKERS = {
@@ -89,6 +94,11 @@ BLOCKERS = {
                              note="Stop clears the exited container; its logs are shown above.", stage="launch"),
     "service_stopped": Kind("the service was removed before it became healthy, for example by pulsar stop", None,
                             note="Nothing is running for this spec now.", stage="launch"),
+    # Ctrl-C or a stop signal after launch. An interrupt never removes what start
+    # launched: stop takes the lock, probes every rank and confirms absence.
+    "start_interrupted": Kind("start was interrupted", "./pulsar status {spec} {candidate}{placement}",
+                              note="Nothing was removed. To remove it: {stop}", stage="launch",
+                              label="INTERRUPTED", detail_inline=True),
 }
 
 
@@ -167,6 +177,14 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         fix = " ".join(fix.split())
     if note is not None:
         resolved_note = note
+    if code == "start_interrupted" and after_replace:
+        # --replace removed the previous service before this launch; say so, not "Nothing was removed".
+        replaced = "The previous service was removed before this launch."
+        resolved_note = (f"{replaced} Nothing this start launched was removed. To remove it: {{stop}}"
+                         if note is None else f"{note} {replaced}")
+    if resolved_note and "{stop}" in resolved_note:
+        resolved_note = resolved_note.replace(
+            "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))
     if unconfirmed:
         fix = " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split())
         resolved_note = f"Removing its containers could not be confirmed on {unconfirmed}; stop removes what remains."
@@ -175,14 +193,15 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
     where = f"{node} (rank {rank})" if node and rank is not None else (node or "")
     message = f"{where}: {kind.summary}" if where else kind.summary
     if detail:
-        message += f" ({detail})"
+        message += f" {detail}" if kind.detail_inline else f" ({detail})"
     return {"field": "blocker", "blocker": code, "stage": kind.stage, "node": node, "node_id": node_id,
             "rank": rank, "message": message, "fix": fix, "note": resolved_note,
             "service_id": service_id}
 
 
 def human(record: dict) -> str:
-    prefix = "FAILED" if record.get("stage") == "launch" else "BLOCKED"
+    kind = BLOCKERS.get(record.get("blocker"))
+    prefix = (kind and kind.label) or ("FAILED" if record.get("stage") == "launch" else "BLOCKED")
     line = f"{prefix} {record['blocker']}: {record['message']}."
     if record.get("fix"):
         line += f" Next: {record['fix']}"

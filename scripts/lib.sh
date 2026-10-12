@@ -122,8 +122,9 @@ error_line() { printf '%serror: %s\n' "$(_message_tag)" "$*" >&2; }
 die()  { error_line "$1"; exit "${2:-1}"; }
 # usage_die MESSAGE — a command-line mistake: exit 2, or PULSAR_USAGE_EXIT
 # when the public CLI asks for a distinct status so --json can report
-# usage_error instead of prerequisite_failed.
-usage_die() { die "$1" "${PULSAR_USAGE_EXIT:-2}"; }
+# usage_error instead of prerequisite_failed. A check script keeps that status
+# only with check_exit_convention keep-usage.
+usage_die() { [ "${CHECK_KEEPS_USAGE:-0}" != 1 ] || CHECK_RESULT_EXIT=usage; die "$1" "${PULSAR_USAGE_EXIT:-2}"; }
 
 # Human-facing name for a confirmed node position: its saved hostname. Machine
 # data and launcher arguments keep node_id and rank; people read hostnames.
@@ -3288,15 +3289,24 @@ container_exists_exact() {
 }
 
 # The check scripts share one exit convention: 0 pass, 1 the condition failed,
-# 2 memory warning (memory check only), 3 the check could not run. A check
-# script calls check_exit_convention once and ends with check_result; any other
+# 2 memory warning (memory check only), 3 the check could not run. The public
+# image and model checks pass keep-usage, so their usage mistakes keep
+# usage_die's status; in the memory check 2 is a warning, so its usage mistakes
+# stay 3. A check script ends with check_result; any other
 # failing exit, such as a die in a shared helper, is reported as 3, so a caller
 # never reads a broken check as a missing image or a memory warning.
 _check_exit() {
   local status=$?
+  # An interrupt keeps its 128+signal status, even when a child caught the
+  # signal and exited with it instead of being killed by it.
+  if [ "$status" -gt 128 ] && [ "$status" -le 160 ]; then return; fi
   [ "$status" = 0 ] || [ -n "$CHECK_RESULT_EXIT" ] || exit 3
 }
-check_exit_convention() { CHECK_RESULT_EXIT=""; trap _check_exit EXIT; }
+check_exit_convention() {
+  CHECK_RESULT_EXIT="" CHECK_KEEPS_USAGE=0
+  [ "${1:-}" != keep-usage ] || CHECK_KEEPS_USAGE=1
+  trap _check_exit EXIT
+}
 check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 
 # Launch scripts recheck under their own locks just before launch. The image

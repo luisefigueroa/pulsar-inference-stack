@@ -25,7 +25,7 @@ def fixture(root,nodes=2,speculative=False):
 
 
 class ObservationShell(unittest.TestCase):
-    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1'),selection=None,head_ip=None):
+    def run_scenario(self,nodes,mode='ok',launcher=False,public=False,replacing=False,speculative=False,full=False,verification_jobs=None,node=None,topology_nodes=None,topology_ids=('node-0','node-1'),topology_hostnames=('rank-0','rank-1'),selection=None,head_ip=None,interrupt=None,signum=2):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);spec,path,prepared,facts,plan,containers,images=fixture(root,nodes,speculative=speculative)
             if selection is not None:
@@ -129,6 +129,8 @@ library_hot_info_for_profile() {
   cat "$FIXTURE_ROOT/prepared.json"
 }
 ''')
+            if interrupt:
+                return self.interrupted_launch(root,envfile,env,spec,interrupt,signum)
             script=ROOT/('serve.sh' if nodes==1 else 'cluster/start-cluster.sh') if launcher else ROOT/'scripts/observe-serving.sh'
             flags=['--replace'] if replacing else ['--dry-run'] if launcher else ['--json']
             if launcher and nodes>1:flags += ['--skip-preflight']
@@ -143,6 +145,66 @@ library_hot_info_for_profile() {
             trace=root/'verification-jobs'
             result.verification_jobs=trace.read_text().splitlines() if trace.exists() else []
             return result
+
+    def interrupted_launch(self,root,envfile,env,spec,phase,signum):
+        """Run the real cluster launcher, send SIGNUM in PHASE, and return what it reported.
+
+        Doubles stand in for Docker, SSH and the health endpoint; each touches
+        a marker so the signal arrives in the intended phase."""
+        import signal,time
+        from scripts import start_blockers
+        with envfile.open('a') as stream:
+            stream.write('''
+require_launch_image_check() { :; }
+require_launch_memory_check() { :; }
+container_ownership_inspect_local() { return 3; }
+container_ownership_inspect_remote() { return 3; }
+port_free() { return 0; }
+container_state_exact() { echo running; }
+''')
+        binaries=root/'bin';binaries.mkdir()
+        doubles={
+            # A remote docker run that hangs in the launching phase.
+            'ssh':f'#!/usr/bin/env bash\ntouch {root}/ssh-running\n'
+                  + ('sleep 30\n' if phase=='launching' else '')+'echo '+'a'*64+'\n',
+            'docker-run':f'#!/usr/bin/env bash\nif [ "$1" = run ]; then echo {"b"*64}; else exec python3 {root}/docker.py "$@"; fi\n',
+            'curl':f'#!/usr/bin/env bash\ntouch {root}/health-polled\nexit 7\n'}
+        for name,body in doubles.items():
+            (binaries/name).write_text(body);(binaries/name).chmod(0o755)
+        blockers=root/'blockers.jsonl'
+        env={**env,'PATH':f"{binaries}:{env['PATH']}",'PULSAR_SSH':str(binaries/'ssh'),
+             'PULSAR_DOCKER':str(binaries/'docker-run'),'PULSAR_START_BLOCKERS_FILE':str(blockers),
+             'WAIT_ATTEMPTS':'100','WAIT_SECONDS':'1'}
+        process=subprocess.Popen(['bash',str(ROOT/'cluster/start-cluster.sh'),spec['spec_id'],'--skip-preflight'],
+                                 cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
+                                 start_new_session=True)
+        marker=root/('ssh-running' if phase=='launching' else 'health-polled')
+        deadline=time.monotonic()+30
+        while not marker.exists() and process.poll() is None and time.monotonic()<deadline:
+            time.sleep(.05)
+        # A terminal's Ctrl-C, and --json cancellation's SIGTERM, reach the whole process group.
+        os.killpg(process.pid,signum)
+        stdout,stderr=process.communicate(timeout=30)
+        return process.returncode,stdout,stderr,start_blockers.read(blockers)
+
+    def test_an_interrupted_cluster_launch_says_what_it_left_and_removes_nothing(self):
+        for phase,signum,node,rank,detail in (
+                ('launching',2,'rank-1',1,'while this rank was starting; the cluster is incomplete and cannot serve'),
+                ('loading',2,'rank-0',None,'while the service was loading; it keeps loading on all 2 ranks'),
+                ('loading',15,'rank-0',None,'while the service was loading; it keeps loading on all 2 ranks')):
+            with self.subTest(phase=phase,signum=signum):
+                status,stdout,stderr,records=self.run_scenario(2,launcher=True,interrupt=phase,signum=signum)
+                self.assertEqual(status,128+signum,stderr+stdout)
+                (record,)=records
+                self.assertEqual((record['blocker'],record['stage'],record['node'],record['rank']),
+                                 ('start_interrupted','launch',node,rank))
+                self.assertTrue(record['message'].endswith('start was interrupted '+detail),record['message'])
+                self.assertRegex(record['service_id'],r'^[0-9a-f]{64}$')
+                self.assertTrue(record['fix'].startswith('./pulsar status '),record['fix'])
+                self.assertIn('Nothing was removed. To remove it: ./pulsar stop ',record['note'])
+                self.assertIn('INTERRUPTED start_interrupted: ',stdout)
+                # Nothing is removed on an interrupt; that is stop's job.
+                self.assertNotIn('removing launch-tracked IDs',stderr)
 
     def test_required_snapshots_through_public_observation_and_launcher(self):
         for nodes in (1,2):

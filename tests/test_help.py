@@ -21,6 +21,7 @@ COMMANDS = [
     ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
     ("image", "--help"), ("guarded", "--help"),
     ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
+    ("observe", "--help"), ("policy", "--help"), ("selftest", "--help"),
 ]
 
 
@@ -71,6 +72,17 @@ class Help(unittest.TestCase):
                 if args[0] != "start":  # start keeps its option list and notes unchanged
                     self.assertFalse(blocks[1].startswith(" "), text)
                     self.assertTrue(blocks[1].rstrip().endswith("."), text)
+
+    def test_help_never_fails_with_or_without_json(self):
+        # --help is for people: help on stdout and exit 0, even with --json. image and
+        # guarded keep their usage dictionary under --json for integrations.
+        for args in [*COMMANDS, ("resources", "--help")]:
+            if args[0] in ("help", "image", "guarded"):
+                continue
+            for extra in ((), ("--json",)):
+                with self.subTest(command=" ".join(args + extra)):
+                    # run_help also requires exit 0.
+                    self.assertRegex(self.run_help(args + extra, 80), r"^(?i:usage):")
 
     def test_models_help_documents_its_commands_and_hides_internal_options(self):
         text = self.run_help(("models", "--help"), 80)

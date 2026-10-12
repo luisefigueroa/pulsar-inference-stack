@@ -82,6 +82,39 @@ done
 # the operator's own estimate arguments.
 export START_BLOCKER_MEMORY_ESTIMATE_FILE="$MEMORY_ESTIMATE_FILE" START_BLOCKER_MEMORY_ESTIMATE_ID="$MEMORY_ESTIMATE_ID"
 
+# Ctrl-C or a stop signal says what this start left and removes nothing:
+# removing a service is stop's job, which takes the lock, probes every rank and
+# confirms absence. START_PHASE says how far start got, from the first lock
+# wait on; a multi-node launch reports its own phases from cluster/start-cluster.sh.
+START_PHASE=checks
+start_interrupted() {
+  local detail=""
+  trap - INT TERM HUP
+  case "$START_PHASE" in
+    checks) printf 'Interrupted before launch; nothing was started.\n' >&2 || true ;;
+    creating) detail="while its container was being created; the container may exist" ;;
+    loading) detail="while the service was loading; it keeps loading" ;;
+    testing) detail="during the test completion; the service is running and passed its health check" ;;
+  esac
+  if [ -n "$detail" ]; then
+    # With --replace, the launcher removed the existing service before launching.
+    local -a noted=()
+    if [ "$REPLACE" = 1 ] && [ "${#existing_hosts[@]}" -gt 0 ]; then
+      if [ "$START_PHASE" = creating ]; then
+        noted=(--note "Start was replacing the previous service, which may already be removed. To remove what remains: {stop}")
+      else
+        LAUNCH_AFTER_REPLACE=1
+      fi
+    fi
+    blocked start_interrupted --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "${SERVICE_ID:-}" \
+      --detail "$detail" ${noted[@]+"${noted[@]}"} || true
+  fi
+  exit $((128 + $1))
+}
+trap 'start_interrupted 2' INT
+trap 'start_interrupted 15' TERM
+trap 'start_interrupted 1' HUP
+
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
 [ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
@@ -128,6 +161,8 @@ resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
 if [ "$VERBOSE" = 1 ]; then export QUIET=0 PULSAR_VERBOSE=1; fi
+# The check scripts leave the next step to start's own blocker lines.
+export PULSAR_RUN_BY_START=1
 
 echo "┌─ up  $NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ]; then
@@ -550,15 +585,18 @@ api_auth_args=()
 api_auth_curl_args api_auth_args
 if [ "$NODES" -gt 1 ]; then
   log "starting exact $NODES-node cluster…"
+  SERVICE_NODE="$(human_node_name 0)" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[0]:-}"
+  START_PHASE=cluster
   "$REPO_DIR/cluster/start-cluster.sh" "$NAME" \
     ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}"
-  SERVICE_NODE="$(human_node_name 0)" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[0]:-}"
 else
   log "starting single-node…"
+  SERVICE_NODE="${SINGLE_NODE_HOSTNAME:-}" SERVICE_NODE_ID="${SINGLE_NODE_ID:-}"
+  START_PHASE=creating
   "$REPO_DIR/serve.sh" "$NAME" -d \
     "${PLACEMENT_ARGS[@]}" \
     ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}"
-  SERVICE_NODE="${SINGLE_NODE_HOSTNAME:-}" SERVICE_NODE_ID="${SINGLE_NODE_ID:-}"
+  START_PHASE=loading
   state_host=""
   [ "$SINGLE_NODE_REMOTE" != 1 ] || state_host="$SINGLE_NODE_SSH_HOST"
   service_logs() {
@@ -607,6 +645,7 @@ else
 fi
 
 # --- smoke test: READY only after the model answers a request ---
+START_PHASE=testing
 log "healthy — sending a test completion"
 smoke_body=$(mktemp "${TMPDIR:-/tmp}/pulsar-smoke.XXXXXX")
 smoke_status=0
@@ -631,6 +670,7 @@ if [ "$smoke_status" != 0 ] || [ "${smoke_http:-000}" != 200 ]; then
     --detail "$smoke_detail"
   exit 1
 fi
+START_PHASE=ready
 head -c 400 "$smoke_body"; echo
 rm -f "$smoke_body" "$smoke_body.err"
 

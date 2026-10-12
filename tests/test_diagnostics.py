@@ -25,7 +25,7 @@ import json,os,pathlib,sys
 root=pathlib.Path(os.environ['DIAG_ROOT']);args=sys.argv[1:];rank=int(os.environ.get('DIAG_RANK','0'));mode=os.environ['DIAG_MODE']
 if args[0]=='info':print('nvidia' if '-f' in args else 'Runtimes: nvidia');sys.exit(0)
 if args[:2]==['image','inspect']:
- if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2):sys.exit(1)
+ if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2) or (mode=='missing-controller' and rank==0):sys.exit(1)
  if mode in ('named-success','export-tag-collision','export-tag-unobservable','export-tag-drift','export-ref-missing') and rank>0 and not (root/('loaded-'+str(rank))).exists():sys.exit(1)
  image=json.loads((root/'image.json').read_text())
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
@@ -149,10 +149,16 @@ ssh_node() {{
         # 0 pass, 1 the condition failed, 2 memory warning, 3 the check could not run.
         spec_id,wrong=self.spec['spec_id'],'f'*64
         for name,args in (('check-image.sh',[wrong]),('check-memory.sh',[wrong]),('check-weights.sh',[wrong]),
-                          ('check-image.sh',[]),('check-memory.sh',[spec_id,'--bogus']),('check-weights.sh',[spec_id,'--node'])):
+                          ('check-memory.sh',[spec_id,'--bogus']),('check-weights.sh',[spec_id,'--node'])):
             with self.subTest(name=name,args=args):
                 result=self.run_tool(name,args)
                 self.assertEqual(result.returncode,3,result.stderr)
+        # pulsar image check runs check-image.sh directly: a usage mistake there exits 2.
+        for args in ([],['--json'],[spec_id,'--bogus'],[spec_id,'--node'],[spec_id,'--node','--json']):
+            with self.subTest(name='check-image.sh',args=args):
+                result=self.run_tool('check-image.sh',args)
+                self.assertEqual(result.returncode,2,result.stderr)
+                self.assertTrue(result.stderr.startswith('error: '),result.stderr)
         # An unreadable node is a check that could not run, never a node with 0 GiB available.
         result=self.run_tool('check-memory.sh',[spec_id,'--json'],'remote-memory-unreadable')
         self.assertEqual(result.returncode,3,result.stderr)
@@ -162,11 +168,60 @@ ssh_node() {{
         self.assertEqual(rows['rank_1_memory']['level'],'fail')
         self.assertIn('memory unavailable',rows['rank_1_memory']['message'])
 
+    def test_the_check_convention_keeps_interrupts_and_usage_mistakes(self):
+        # 3 is a check that could not run; an interrupt stays 128+signal even when a
+        # child caught the signal and exited with it, and keep-usage keeps usage_die's 2.
+        for body,status in (('exit 130',130),('exit 143',143),('exit 1',3),('exit 255',3),
+                            ('usage_die "bad flag"',2),('check_result 1',1)):
+            with self.subTest(body=body):
+                result=subprocess.run(['bash','-c',f". {shlex.quote(str(ROOT/'scripts/lib.sh'))}; "
+                                       f"check_exit_convention keep-usage; {body}"],text=True,capture_output=True)
+                self.assertEqual(result.returncode,status,result.stderr)
+
     def test_image_preview_and_confirmation(self):
+        spec_id=self.spec['spec_id']
         for flags in (['--plan'],[]):
-            result=self.run_tool('sync-image.sh',[self.spec['spec_id'],*flags],'missing-pull')
-            self.assertEqual(result.returncode,0 if flags else 2,result.stderr)
+            result=self.run_tool('sync-image.sh',[spec_id,*flags],'missing-pull')
+            # Without --yes, staging refuses after looking (1), like every approval gate; 2 means nothing ran.
+            self.assertEqual(result.returncode,0 if flags else 1,result.stderr)
             self.assertFalse((self.root/'mutations').exists())
+        self.assertEqual(result.stderr.strip(),
+                         f'error: the pinned image is missing on rank-1 (rank 1); nothing was staged. '
+                         f'Next: ./pulsar image stage {spec_id} --plan, then rerun it with --yes')
+        # The suggestion repeats the operator's selection and mode.
+        result=self.run_tool('sync-image.sh',[spec_id,'--pull','--placement-nodes','rank-0,rank-1,rank-2'],'missing-pull')
+        self.assertIn(f'Next: ./pulsar image stage {spec_id} --pull --placement-nodes rank-0,rank-1,rank-2 --plan',
+                      result.stderr)
+        # Following it keeps the registry fallback the operator already granted.
+        result=self.run_tool('sync-image.sh',[spec_id,'--pull-if-stream-incomplete'],'missing-pull')
+        self.assertIn(f'Next: ./pulsar image stage {spec_id} --pull-if-stream-incomplete --plan',result.stderr)
+        # An image already present needs no approval.
+        result=self.run_tool('sync-image.sh',[spec_id])
+        self.assertEqual(result.returncode,0,result.stderr)
+        # Staging copies from this node; when it lacks the image too, the next step pulls.
+        result=self.run_tool('sync-image.sh',[spec_id],'missing-controller')
+        self.assertEqual(result.returncode,1,result.stderr)
+        self.assertIn('missing on rank-0 (rank 0); nothing was staged. This node lacks it too, so staging must pull '
+                      f'the exact digest from its registry. Next: ./pulsar image stage {spec_id} --pull --plan',
+                      ' '.join(result.stderr.split()))
+
+    def test_image_check_names_the_nodes_and_one_next_step(self):
+        spec_id=self.spec['spec_id']
+        for mode,text,next_step in (
+                ('missing-pull',f'the pinned image is missing on rank-1 (rank 1)',f'./pulsar image stage {spec_id} --plan'),
+                ('missing-controller',f'the pinned image is missing on rank-0 (rank 0)',f'./pulsar image stage {spec_id} --pull --plan'),
+                ('lost-and-missing','rank-1 (rank 1) could not be reached, so the image there is unknown; the pinned '
+                                    'image is missing on rank-2 (rank 2)','./pulsar topology check')):
+            with self.subTest(mode=mode):
+                result=self.run_tool('check-image.sh',[spec_id],mode)
+                self.assertEqual(result.returncode,1,result.stderr)
+                *problem,last=result.stdout.splitlines()
+                self.assertEqual(' '.join(' '.join(problem).split()),'FAIL image '+text)
+                # The next command is never wrapped, so it can be copied whole.
+                self.assertEqual(last.strip(),'Next: '+next_step)
+        # Start runs the same check and gives its own next step.
+        result=self.run_tool('check-image.sh',[spec_id],'missing-pull',{'PULSAR_RUN_BY_START':'1'})
+        self.assertEqual(' '.join(result.stdout.split()),'FAIL image the pinned image is missing on rank-1 (rank 1)')
         result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--pull','--yes'],'missing-pull')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
@@ -282,9 +337,44 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
             with self.subTest(mode=mode):
                 result = subprocess.run([str(ROOT/'pulsar'), 'image', 'check', self.spec['spec_id'], '--json'],
                     env={**self.env, 'DIAG_MODE': mode}, cwd=ROOT, text=True, capture_output=True)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse(json.loads(result.stdout)['ok'])
+                report = json.loads(result.stdout)['result']
+                self.assertNotEqual(report['state'], 'ok')
+                self.assertFalse(any(rank['ok'] for rank in report['ranks']))
                 self.assertFalse((self.root/'mutations').exists())
+
+    def test_image_check_json_returns_its_report_whatever_it_found(self):
+        spec_id=self.spec['spec_id']
+        for mode,state,ranks in (('missing-pull','missing-on-rank',['ok','missing','ok']),
+                                 ('lost-and-missing','rank-unreachable',['ok','unreachable','missing'])):
+            with self.subTest(mode=mode):
+                result=subprocess.run([str(ROOT/'pulsar'),'image','check',spec_id,'--json'],
+                                      env={**self.env,'DIAG_MODE':mode},cwd=ROOT,text=True,capture_output=True)
+                # The check ran: its report is the result, and nothing is copied to stderr.
+                self.assertEqual((result.returncode,result.stderr),(0,''))
+                report=json.loads(result.stdout)['result']
+                self.assertEqual((report['state'],[rank['state'] for rank in report['ranks']]),(state,ranks))
+                # People and shell chains keep the check convention: 1 when the condition failed.
+                human=subprocess.run([str(ROOT/'pulsar'),'image','check',spec_id],
+                                     env={**self.env,'DIAG_MODE':mode},cwd=ROOT,text=True,capture_output=True)
+                self.assertEqual(human.returncode,1,human.stderr)
+        # A check that could not run printed no report: 3 in both modes, check_incomplete under --json.
+        result=subprocess.run([str(ROOT/'pulsar'),'image','check','f'*64,'--json'],
+                              env=self.env,cwd=ROOT,text=True,capture_output=True)
+        self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(3,'check_incomplete'))
+        human=subprocess.run([str(ROOT/'pulsar'),'image','check','f'*64],env=self.env,cwd=ROOT,text=True,capture_output=True)
+        self.assertEqual(human.returncode,3,human.stderr)
+
+    def test_image_usage_mistakes_are_usage_errors(self):
+        spec_id=self.spec['spec_id']
+        for args in (['image','stage'],['image','stage','--plan'],['image','stage',spec_id,'--plan','--yes'],
+                     ['image','stage',spec_id,'--node'],['image','stage',spec_id,'--bogus'],
+                     ['image','check'],['image','check',spec_id,'--bogus']):
+            with self.subTest(args=args):
+                result=subprocess.run([str(ROOT/'pulsar'),*args,'--json'],env=self.env,cwd=ROOT,text=True,capture_output=True)
+                self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(2,'usage_error'))
+                human=subprocess.run([str(ROOT/'pulsar'),*args],env=self.env,cwd=ROOT,text=True,capture_output=True)
+                self.assertEqual(human.returncode,2,human.stderr)
+        self.assertFalse((self.root/'mutations').exists())
 
     def test_named_export_forbids_explicit_registry_fallback(self):
         tag = self.spec['source']['image_repository']+':staging-test'
