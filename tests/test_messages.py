@@ -163,6 +163,23 @@ class Deprecations(unittest.TestCase):
                          "error: stop did not run: spark-2 cannot be observed, so no container of spec "
                          f"{spec[:12]} was removed. Stopping only the reachable nodes could strand a live rank. "
                          f"Next: ./pulsar topology check, then rerun ./pulsar stop {spec[:12]}")
+    def test_guarded_run_names_each_missing_input(self):
+        # Argument checks run before any file, lock or node is touched.
+        script = str(ROOT / "scripts/guarded-serving.sh")
+        for args, message in (
+                (["--spec-id", "y", "--output-dir", "z", "--yes"],
+                 "guarded run requires --spec-file FILE (the reviewed guarded spec)"),
+                (["--spec-file", "x", "--output-dir", "z", "--yes"],
+                 "guarded run requires --spec-id SHA256 (the reviewed spec's complete ID)"),
+                (["--spec-file", "x", "--spec-id", "y", "--yes"],
+                 "guarded run requires --output-dir NEW_DIR (a directory that does not exist yet)"),
+                (["--spec-file", "x", "--spec-id", "y", "--output-dir", "z"],
+                 "guarded run starts a trial only with --yes, after reviewing the spec"),
+                (["--spec-file", "x", "--spec-id"], "--spec-id requires a value"),
+                (["--spec-file", "--yes"], "--spec-file requires a value")):
+            with self.subTest(args=args):
+                result = subprocess.run(["bash", script, *args], text=True, capture_output=True, timeout=60)
+                self.assertEqual((result.returncode, result.stderr), (2, f"error: {message}\n"))
 
     def test_release_list_warns_wherever_list_appears(self):
         result = self.run_pulsar("release", "--json", "list")

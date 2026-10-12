@@ -6,13 +6,17 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
 spec="" spec_id="" output="" approved=0 placement_nodes=""
 declare -a admission=()
+# A command-line mistake exits 2, or the public CLI's usage status under --json.
+usage_error() { printf 'error: %s\n' "$1" >&2; exit "${PULSAR_USAGE_EXIT:-2}"; }
+# value_of OPTION VALUE — the option's value, never the next option.
+value_of() { case "${2:-}" in ""|-*) usage_error "$1 requires a value" ;; esac; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --spec-file) spec="${2:?spec required}"; shift ;;
-    --spec-id) spec_id="${2:?reviewed spec ID required}"; shift ;;
-    --output-dir) output="${2:?fresh output directory required}"; shift ;;
-    --memory-estimate-file|--memory-estimate-id) admission+=("$1" "${2:?value required}"); shift ;;
-    --placement-nodes) placement_nodes="${2:?ordered node list required}"; admission+=("$1" "$placement_nodes"); shift ;;
+    --spec-file) value_of "$1" "${2:-}"; spec="$2"; shift ;;
+    --spec-id) value_of "$1" "${2:-}"; spec_id="$2"; shift ;;
+    --output-dir) value_of "$1" "${2:-}"; output="$2"; shift ;;
+    --memory-estimate-file|--memory-estimate-id) value_of "$1" "${2:-}"; admission+=("$1" "$2"); shift ;;
+    --placement-nodes) value_of "$1" "${2:-}"; placement_nodes="$2"; admission+=("$1" "$placement_nodes"); shift ;;
     --accept-memory-warn) admission+=("$1") ;;
     --yes) approved=1 ;;
     --help|-h)
@@ -26,11 +30,14 @@ Foreground lease owner. No pulls, replacement or acquisition.
 Stop through guarded stop with the exact run ID.
 HELP
       exit 0 ;;
-    *) echo "guarded serving: unsupported argument: $1" >&2; exit 2 ;;
+    *) usage_error "guarded run does not accept $1; see ./pulsar guarded run --help" ;;
   esac
   shift
 done
-[ "$approved" = 1 ] && [ -n "$spec$spec_id$output" ] && [ -n "$spec" ] && [ -n "$spec_id" ] && [ -n "$output" ] || { echo 'explicit reviewed inputs and --yes required' >&2; exit 2; }
+[ -n "$spec" ] || usage_error "guarded run requires --spec-file FILE (the reviewed guarded spec)"
+[ -n "$spec_id" ] || usage_error "guarded run requires --spec-id SHA256 (the reviewed spec's complete ID)"
+[ -n "$output" ] || usage_error "guarded run requires --output-dir NEW_DIR (a directory that does not exist yet)"
+[ "$approved" = 1 ] || usage_error "guarded run starts a trial only with --yes, after reviewing the spec"
 output=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).absolute())' "$output")
 python3 -m serving_guard.controller initialize --spec-file "$spec" --spec-id "$spec_id" --output "$output"
 . "$repo/scripts/lib.sh"
