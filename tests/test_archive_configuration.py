@@ -85,6 +85,18 @@ class ConfigurationTests(unittest.TestCase):
         self.assertFalse((self.repo / '.env').exists())
         self.assertFalse((self.repo / '.pulsar').exists())
 
+    def test_an_unavailable_location_is_named_with_the_next_step(self):
+        config.set_root(self.repo, str(self.archive))
+        self.other.unlink()
+        self.archive.rmdir()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop(config.KEY, None)
+            with self.assertRaises(StorageError) as raised:
+                config.run_locked(self.repo, ['true'])
+        message = str(raised.exception)
+        self.assertIn(f'archive location {self.archive} is unavailable', message)
+        self.assertIn('./pulsar configure archive-root', message)
+
     def test_show_marks_disappeared_directory_as_unavailable(self):
         config.set_root(self.repo, str(self.archive))
         self.other.unlink()

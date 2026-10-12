@@ -631,6 +631,16 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual({p: p.read_bytes() for p in f.state.rglob('*.json')}, before)
         self.assertEqual(f.events('transfer'), [])
 
+    def test_restore_without_an_archive_says_it_is_missing_not_mismatched(self):
+        f = self.fixture(nodes=2)
+        acquired = self.acquire_candidate(f, nodes=2)
+        shutil.rmtree(acquired['home']['hub_path'])  # Synthetic loss; no archive was ever created.
+        result = f.run('restore', '--node', 'node-1', '--yes', spec=True)
+        self.failure(result, 'no archive of the model files in ')
+        self.assertIn('; nothing was restored. Next: ./pulsar model acquire ', result.stderr)
+        self.assertNotIn('does not match', result.stderr)
+        self.assertEqual(f.events('transfer'), [])
+
     def test_two_nodes_with_remote_home(self):
         f = self.fixture(nodes=2)
         acquired = self.acquire_candidate(f, nodes=2, home=1)

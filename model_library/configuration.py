@@ -184,7 +184,8 @@ def run_locked(repo, command, *, allow_unconfigured=False):
         if not allow_unconfigured and state['status'] != 'configured':
             raise StorageError('configure an archive location (./pulsar configure archive-root) before using archive operations')
         if not allow_unconfigured and not state['health']['directory_exists']:
-            raise StorageError('configured archive location is unavailable')
+            raise StorageError(f"archive location {state['path']} is unavailable (directory missing or not "
+                               'mounted); check it, or choose another with ./pulsar configure archive-root')
         env = dict(os.environ)
         env[KEY] = state['path'] or ''
         env['PULSAR_ARCHIVE_CONFIG_LOCKED'] = '1'

@@ -63,12 +63,18 @@ restore_model() {
       destination_root "$destination_root" destination_space: "$space")"; return
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
+  archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
+  # Name a catalog spec by its unique 12-character prefix; a candidate keeps its complete ID.
+  local spec_ref="$SPEC_ID" what="${SNAPSHOT:+snapshot $SNAPSHOT}"
+  [ -n "$SPEC_FILE" ] || [ ! -f "$REPO_DIR/releases/$SPEC_ID.json" ] || spec_ref="${SPEC_ID:0:12}"
+  [ -n "$spec_ref" ] || spec_ref=SPEC
+  # A missing archive is not a mismatch: point to Download instead of to corruption.
+  [ -d "$archive_path" ] || die "no archive of ${what:-the model files} in $PULSAR_COLD_ROOT; nothing was restored. Next: ./pulsar model acquire $spec_ref${SNAPSHOT:+ --snapshot $SNAPSHOT} --node $(human_node_name "$rank") --yes"
   phase 1 4 "verifying the archive against the expected file hashes"
-  archive_verify >/dev/null || die "archive does not match the selected manifest"
+  archive_verify >/dev/null || die "the archive of ${what:-the model files} in $PULSAR_COLD_ROOT does not match the spec's manifest; nothing was restored. Next: ./pulsar model archive verify $spec_ref shows the failing files"
   phase 2 4 "staging on $(human_node_name "$rank")"
   stage=$(model_node "$rank" "$(model_node_request begin-home)") || die "restore staging failed"
   phase 3 4 "copying from the archive to $(human_node_name "$rank")"
-  archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   if [ "$rank" -eq 0 ]; then
     python3 -c 'from model_library.local import copy_files; from pathlib import Path; import json,sys; copy_files(Path(sys.argv[1]),Path(sys.argv[2]),json.loads(sys.argv[3]))' "$archive_path" "$(json_fields "$stage" path)" "$MANIFEST_JSON" || die "restore copy failed"
   else
