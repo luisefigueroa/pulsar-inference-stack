@@ -286,8 +286,48 @@ class GuardContracts(unittest.TestCase):
             (root/'controller.json').write_text(json.dumps({'run_id':plan['guard_run_id'],'owner':[12345,'99']}))
             with patch.object(controller,'process_identity',return_value=[12345,'100']),patch.object(controller.os,'kill') as kill:
                 with self.assertRaises(ValueError):controller.stop(root,'e'*64)
-                with self.assertRaisesRegex(ValueError,'no longer alive'):controller.stop(root,plan['guard_run_id'])
+                # An exited controller points to ordinary stop, which recovers the trial.
+                with self.assertRaisesRegex(ValueError,"controller exited without finishing. Next: ./pulsar stop "
+                                            + plan['selected_spec_id']):controller.stop(root,plan['guard_run_id'])
+                (root/'result.json').write_text('{}')
+                with self.assertRaisesRegex(ValueError,'already finished; nothing to stop'):
+                    controller.stop(root,plan['guard_run_id'])
             kill.assert_not_called()
+
+
+    def test_run_summary_claims_only_what_records_show(self):
+        _, _, _, plan, *_ = guarded_fixture()
+        names = [rank.get('hostname') or rank['node_id'] for rank in plan['ranks']]
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            done = {'complete': True, 'ranks': 3}
+            result = {'run_id': plan['guard_run_id'], 'requested_stop': True, 'status': 'failed',
+                      'phases': {'preflight': done, 'execute': done,
+                                 'cleanup': {'complete': False, 'error': 'incomplete'}}}
+            (output/'cleanup'/'jobs').mkdir(parents=True)
+            (output/'cleanup'/'batch.json').write_text(json.dumps(
+                {'results': [{'index': r, 'returncode': 0} for r in range(3)]}))
+            for rank in range(3):
+                (output/'cleanup'/'jobs'/f'{rank}.out').write_text(json.dumps(
+                    {'rank': rank, 'run_id': plan['guard_run_id'], 'spec_id': plan['spec_id'], 'cleanup_verified': True}))
+            # Rank 1 reports verified cleanup for a different run: not verified.
+            (output/'cleanup'/'jobs'/'1.out').write_text(json.dumps(
+                {'rank': 1, 'run_id': 'e'*64, 'spec_id': plan['spec_id'], 'cleanup_verified': True}))
+            text = controller.summary(output, result, plan)
+            self.assertIn(f'not verified on {names[1]} (rank 1); their containers may still be running', text)
+            self.assertIn(f"Next: ./pulsar stop {plan['selected_spec_id']}", text)
+            # Ranks started but cleanup never dispatched: not "not needed".
+            result['phases']['cleanup'] = {'complete': False, 'not_started': True}
+            text = controller.summary(output, result, plan)
+            self.assertIn("cleanup    did not run; the trial's containers may still be running", text)
+            self.assertIn('Next: ./pulsar stop', text)
+            # Nothing started: cleanup really was not needed.
+            result['phases'] = {name: {'complete': False, 'not_started': True} for name in ('preflight', 'execute', 'cleanup')}
+            self.assertIn('cleanup    not needed; no rank started', controller.summary(output, result, plan))
+            # A false retirement may be a preserved newer plan's locator, never "no active record".
+            result.update(status='stopped', service_locator_retired=False,
+                          phases={'preflight': done, 'execute': done, 'cleanup': done})
+            self.assertIn("no service record of this run's launch plan was active", controller.summary(output, result, plan))
 
 
 class GuardRuntime(unittest.TestCase):
@@ -609,6 +649,75 @@ def execute(context,root):
         plan['plan_id'] = canonical_json_digest({k:v for k,v in plan.items() if k != 'plan_id'})
         path.write_text(json.dumps(plan))
 
+    def test_expected_refusals_are_one_line_errors_before_any_action(self):
+        def run(spec_id, output):
+            return subprocess.run(['bash', str(self.root/'scripts/guarded-serving.sh'),
+                '--spec-file', str(self.root/'guard-spec.json'), '--spec-id', spec_id,
+                '--output-dir', str(output), '--yes'], cwd=self.root, env=self.env,
+                text=True, capture_output=True, timeout=60)
+        for spec_id, output, message in (
+                ('f' * 64, self.root/'fresh', f"error: --spec-id {'f' * 12} is not the ID of "),
+                (self.spec_id, self.root, 'already exists; each run needs a new directory'),
+                (self.spec_id, self.root/'missing-parent'/'run', 'the parent directory of ')):
+            with self.subTest(message=message):
+                result = run(spec_id, output)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertNotIn('Traceback', result.stderr)
+                self.assertIn(message, result.stderr)
+        self.assertFalse((self.root/'fresh').exists())
+
+    def test_a_stop_as_soon_as_the_run_is_stoppable_still_finishes(self):
+        # guarded stop can signal the controller once controller.json exists; the run
+        # must still clean up and write its result instead of dying from the signal.
+        process = self.start()
+        deadline = time.monotonic() + 20
+        while not (self.output/'controller.json').exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.001)
+        run_id = json.loads((self.output/'controller.json').read_text())['run_id']
+        controller.stop(self.output, run_id)
+        out, err = process.communicate(timeout=30)
+        self.assertEqual(process.returncode, 0, out+err)
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertEqual(result['status'], 'stopped')
+        self.assertTrue(result['requested_stop'])
+        self.assertTrue(result['phases']['cleanup']['complete'])
+        self.assertFalse(list((self.root/'docker-state').glob('guard-*')))
+
+    def public_run(self, *extra_args, extra=None):
+        return subprocess.Popen(['bash', str(self.root/'pulsar'), 'guarded', 'run',
+            '--spec-file', str(self.root/'guard-spec.json'), '--spec-id', self.spec_id,
+            '--output-dir', str(self.output), '--yes', *extra_args], cwd=self.root,
+            env={**self.env, **(extra or {})}, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    def test_a_person_gets_a_run_summary_and_json_stays_json(self):
+        process = self.public_run(extra={'PULSAR_TEST_REJECT_RANK': '1'})
+        out, err = process.communicate(timeout=30)
+        self.assertNotEqual(process.returncode, 0, err)
+        lines = out.splitlines()
+        self.assertRegex(lines[0], r'^Guarded run [0-9a-f]{12} failed in preflight \(without a stop request\)\.$')
+        self.assertIn('  execute    not started', lines)
+        self.assertIn("  cleanup    verified on 3 of 3 ranks; no service record of this run's launch plan was active", lines)
+        self.assertIn(f"  result     {self.output/'result.json'}", lines)
+        # A phase that never ran is recorded as not started, not as a missing-file error.
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertEqual(result['phases']['execute'], {'complete': False, 'not_started': True})
+        self.output = self.root/'json-run'
+        process = self.public_run('--json', extra={'PULSAR_TEST_REJECT_RANK': '1'})
+        out, err = process.communicate(timeout=30)
+        self.assertEqual(json.loads(out)['error']['code'], 'prerequisite_failed')
+
+    def test_the_summary_names_unverified_ranks_and_the_recovery(self):
+        process = self.public_run(extra={'PULSAR_TEST_CLEANUP_FAIL_RANK': '0'})
+        self.wait_started(process)
+        plan = json.loads((self.output/'active-plan.json').read_text())
+        controller.stop(self.output, plan['guard_run_id'])
+        out, err = process.communicate(timeout=30)
+        self.assertNotEqual(process.returncode, 0, err)
+        self.assertIn('failed in execute (after a stop request).', out.splitlines()[0])
+        self.assertIn(f"  cleanup    not verified on {plan['ranks'][0]['hostname']} (rank 0); their containers may "
+                      "still be running", out)
+        self.assertIn(f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers", out)
+
     def test_two_rank_recipe_preserves_three_member_topology(self):
         self.select_two_ranks()
         before = (self.root/'scripts/lib.sh').read_bytes()
@@ -819,7 +928,11 @@ list_managed_container_ids_remote() { :; }
         self.assertIn('synthetic task setup failure', err)
         self.assertFalse(list((self.output/'execute').glob('*.program')))
         self.assertNotIn('synthetic-guard-api-canary', out+err)
-        self.assertTrue(json.loads((self.output/'result.json').read_text())['phases']['cleanup']['complete'])
+        result = json.loads((self.output/'result.json').read_text())
+        self.assertTrue(result['phases']['cleanup']['complete'])
+        # Dispatch began without a final report: the phase is unknown, never "not started".
+        self.assertEqual(result['phases']['execute'],
+                         {'complete': False, 'error': 'no execute batch report; its outcome is unknown'})
 
     def test_prerequisite_failure_public_human_and_json_keep_diagnostic_and_evidence(self):
         (self.root/'scripts/up.sh').write_text(

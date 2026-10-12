@@ -44,11 +44,21 @@ def read_regular(path, limit=64 * 1024**2, *, dir_fd=None):
 
 def initialize(spec_file, spec_id, output):
     spec = serving.load_spec(spec_file)
-    if spec["spec_id"] != spec_id or "guard" not in spec["recipe"]["container"]:
-        raise ValueError("exact guarded serving spec required")
+    if spec["spec_id"] != spec_id:
+        raise ValueError(f"--spec-id {spec_id[:12]} is not the ID of {spec_file} ({spec['spec_id'][:12]}); "
+                         "pass the reviewed spec's complete ID")
+    if "guard" not in spec["recipe"]["container"]:
+        raise ValueError(f"{spec_file} has no serving guard (recipe.container.guard); "
+                         "serve it with ./pulsar start")
     if spec["recipe"]["container"]["guard"]["program_sha256"] != digest(program()):
-        raise ValueError("installed guard program differs from reviewed recipe")
-    output.mkdir(mode=0o700, parents=False, exist_ok=False)
+        raise ValueError("the installed guard program differs from the one this spec was reviewed with; "
+                         "create a new candidate with ./pulsar guarded template (docs/GUARDED_SERVING.md)")
+    try:
+        output.mkdir(mode=0o700, parents=False, exist_ok=False)
+    except FileExistsError:
+        raise ValueError(f"output directory {output} already exists; each run needs a new directory") from None
+    except FileNotFoundError:
+        raise ValueError(f"the parent directory of {output} does not exist") from None
     write(output / "spec.json", spec)
     code = output / "code"
     hashes = {}
@@ -158,9 +168,12 @@ def stop(output, run_id):
     if plan["guard_run_id"] != run_id or controller["run_id"] != run_id:
         raise ValueError("guard invocation changed")
     if (output / "result.json").exists():
-        raise ValueError("guarded session already completed")
+        raise ValueError(f"guarded run {run_id[:12]} already finished; nothing to stop. Its outcome is in "
+                         f"{output / 'result.json'}")
     if process_identity(controller["owner"][0]) != controller["owner"]:
-        raise ValueError("controller no longer alive; reconcile physical state")
+        raise ValueError(f"guarded run {run_id[:12]}'s controller exited without finishing. Next: ./pulsar stop "
+                         f"{plan['selected_spec_id']} stops the trial's containers on its recorded nodes "
+                         "and retires its service record")
     path = output / "stop-request.json"
     if not path.exists():
         write(path, {"run_id": run_id, "requested_stop": True})
@@ -212,6 +225,14 @@ def finish(output, state_root=None):
         (output / "execute" / f"{rank}.program").unlink(missing_ok=True)
     phases = {}
     for phase in ("preflight", "execute", "cleanup"):
+        if not (output / phase).exists():
+            # Nothing was dispatched for the phase, as a failed prerequisite check records it.
+            phases[phase] = {"complete": False, "not_started": True}
+            continue
+        if not (output / phase / "batch.json").exists():
+            # Dispatched without a final report: what ran is not established.
+            phases[phase] = {"complete": False, "error": f"no {phase} batch report; its outcome is unknown"}
+            continue
         try:
             phases[phase] = {"complete": True, "ranks": check(output, phase)}
         except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -233,6 +254,79 @@ def finish(output, state_root=None):
     return result
 
 
+def unverified_ranks(output, plan):
+    """Ranks whose cleanup check() would not accept; every rank when the batch is unreadable."""
+    count = len(plan["ranks"])
+    try:
+        results = {row["index"]: row for row in json.loads(read_regular(output / "cleanup" / "batch.json"))["results"]}
+    except (ValueError, OSError, KeyError, TypeError):
+        return list(range(count))
+    expected = {"run_id": plan["guard_run_id"], "spec_id": plan["spec_id"]}
+    missing = []
+    for rank in range(count):
+        try:
+            value = json.loads(read_regular(output / "cleanup" / "jobs" / f"{rank}.out"))
+            # The same identity and result check() requires of a verified rank.
+            verified = (results[rank]["returncode"] == 0 and value.get("rank") == rank
+                        and all(value.get(k) == v for k, v in expected.items())
+                        and value.get("cleanup_verified") is True)
+        except (ValueError, OSError, KeyError, TypeError, AttributeError):
+            verified = False
+        if not verified:
+            missing.append(rank)
+    return missing
+
+
+def summary(output, result, plan):
+    """The run's outcome for people; --json and direct callers keep result.json's JSON."""
+    run, phases, count = result["run_id"][:12], result["phases"], len(plan["ranks"])
+    why = "after a stop request" if result["requested_stop"] else "without a stop request"
+    if result["status"] == "stopped":
+        head = f"Guarded run {run} stopped as requested."
+    elif phases["preflight"].get("not_started"):
+        head = f"Guarded run {run} ended before any rank started ({why})."
+    else:
+        failed = next((name for name in ("preflight", "execute", "cleanup") if not phases[name]["complete"]), None)
+        head = (f"Guarded run {run} failed in {failed} ({why})." if failed
+                else f"Guarded run {run} ended {why}; it is recorded as failed.")
+
+    def state(name):
+        phase = phases[name]
+        if phase.get("not_started"):
+            return "not started"
+        return f"complete on {phase['ranks']} of {count} ranks" if phase["complete"] else "incomplete"
+
+    lines = [head, f"  preflight  {state('preflight')}", f"  execute    {state('execute')}"]
+    cleanup, next_step = phases["cleanup"], None
+    recover = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
+               "recorded nodes and retires its service record")
+    if cleanup["complete"]:
+        # False also covers a newer plan's locator that this run correctly preserved.
+        record = ("service record retired" if result.get("service_locator_retired")
+                  else "no service record of this run's launch plan was active")
+        lines.append(f"  cleanup    verified on {cleanup['ranks']} of {count} ranks; {record}")
+    elif cleanup.get("not_started") and phases["preflight"].get("not_started"):
+        lines.append("  cleanup    not needed; no rank started")
+    elif cleanup.get("not_started"):
+        # Ranks may have started; cleanup never dispatched, so nothing was verified.
+        lines.append("  cleanup    did not run; the trial's containers may still be running")
+        next_step = recover
+    else:
+        missing = unverified_ranks(output, plan)
+        where = ", ".join(f"{plan['ranks'][rank].get('hostname') or plan['ranks'][rank]['node_id']} (rank {rank})"
+                          for rank in missing)
+        lines.append(f"  cleanup    not verified on {where}; their containers may still be running" if missing
+                     else "  cleanup    incomplete (the cleanup batch did not complete); containers may still be running")
+        next_step = recover
+    lines.append(f"  result     {output / 'result.json'}")
+    if next_step:
+        lines.append(next_step)
+    elif result["status"] != "stopped" and not phases["preflight"].get("not_started"):
+        ran = [f"{output / name / 'jobs'}" for name in ("preflight", "execute") if not phases[name].get("not_started")]
+        lines.append("Rank reports: " + ", ".join(ran))
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("operation", choices=["initialize", "activate", "task", "tasks", "check", "finish", "fail-prerequisites"])
@@ -251,22 +345,32 @@ def main():
         index = argv.index("--")
         command, argv = argv[index + 1:], argv[:index]
     args = parser.parse_args(argv)
-    if args.operation == "initialize":
-        initialize(args.spec_file, args.spec_id, args.output)
-    elif args.operation == "activate":
-        activate(args.output, args.owner)
-    elif args.operation == "task":
-        task(args.output, args.phase, args.rank, command, local_head=args.local_head)
-    elif args.operation == "tasks":
-        tasks(args.output, args.phase)
-    elif args.operation == "fail-prerequisites":
-        fail_prerequisites(args.output, args.returncode)
-    elif args.operation == "check":
-        check(args.output, args.phase)
-    else:
-        result = finish(args.output, args.state_root)
-        print(json.dumps(result))
-        return 0 if result["status"] == "stopped" else 3
+    try:
+        if args.operation == "initialize":
+            initialize(args.spec_file, args.spec_id, args.output)
+        elif args.operation == "activate":
+            activate(args.output, args.owner)
+        elif args.operation == "task":
+            task(args.output, args.phase, args.rank, command, local_head=args.local_head)
+        elif args.operation == "tasks":
+            tasks(args.output, args.phase)
+        elif args.operation == "fail-prerequisites":
+            fail_prerequisites(args.output, args.returncode)
+        elif args.operation == "check":
+            check(args.output, args.phase)
+        else:
+            result = finish(args.output, args.state_root)
+            if os.environ.get("PULSAR_HUMAN_OUTPUT") == "1":
+                plan = json.loads(read_regular(args.output / "active-plan.json"))
+                print(summary(args.output, result, plan))
+            else:
+                print(json.dumps(result))
+            return 0 if result["status"] == "stopped" else 3
+    except (ValueError, OSError) as exc:
+        # An expected refusal is one line; a defect elsewhere keeps its traceback.
+        print(f"error: {exc}", file=sys.stderr)
+        # Nothing has been created when initialization refuses its inputs.
+        return 2 if args.operation == "initialize" else 1
     return 0
 
 

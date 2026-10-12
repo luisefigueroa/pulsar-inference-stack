@@ -2502,12 +2502,176 @@ remove_safe_managed_id_on_node() {
   return 0
 }
 
+# guarded_controller_holds_lock LOCK_PATH — whether a running guarded controller
+# (guarded-serving.sh) has the lifecycle lock open. Other holders, such as a
+# batch supervisor still shutting down after its controller exited, are waited
+# for through the ordinary lock instead.
+guarded_controller_holds_lock() {
+  python3 -c '
+import os, sys
+lock = os.path.realpath(sys.argv[1])
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        descriptors = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        continue
+    for fd in descriptors:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{fd}") != lock:
+                continue
+            command = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        if any(part.endswith(b"guarded-serving.sh") for part in command):
+            raise SystemExit(0)
+raise SystemExit(1)
+' "$1"
+}
+
+# guarded_trial_node_still INDEX NODE_ID TOPOLOGY_ID — whether confirmed
+# membership is unchanged and position INDEX still holds the recorded node.
+# Reloaded before every probe and removal so a changed topology never sends an
+# operation to a different machine.
+guarded_trial_node_still() {
+  reload_cluster_topology >/dev/null 2>&1 || return 1
+  [ "$CLUSTER_TOPOLOGY_ID" = "$3" ] && [ "${CLUSTER_NODE_IDS[$1]:-}" = "$2" ]
+}
+
+# guarded_trial_docker INDEX ARGS... — run one docker command on a confirmed
+# node: locally for index 0, over the node's SSH transport otherwise.
+guarded_trial_docker() {
+  local index="$1"; shift
+  if [ "$index" = 0 ]; then
+    "$PULSAR_DOCKER" "$@"
+  else
+    ssh_node "$index" "$(shell_join_q docker "$@")" </dev/null
+  fi
+}
+
+# guarded_trial_container INDEX FILTERS — the IDs of the containers matching
+# every '|'-separated docker filter on one confirmed node.
+guarded_trial_container() {
+  local index="$1" part
+  local -a parts=() filters=()
+  IFS='|' read -r -a parts <<<"$2"
+  for part in "${parts[@]}"; do filters+=(--filter "$part"); done
+  guarded_trial_docker "$index" container ls -aq --no-trunc "${filters[@]}"
+}
+
+# stop_recorded_guarded_service SPEC PLAN_ID — stop a guarded trial whose
+# controller has exited, on the rank-to-node bindings its launch plan records.
+# The caller holds the exclusive lifecycle lock; a running guarded controller
+# holds it shared for its whole life, so holding it proves the controller is
+# gone. Only the trial's exact container is removed: its recorded name and its
+# guard-run, launch-plan, spec and rank labels, as the trial's own cleanup
+# requires. Every recorded node is probed before anything is removed, and an
+# unobservable node removes nothing. Then the trial's service record retires.
+stop_recorded_guarded_service() {
+  local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rows prefix
+  local rank label node_id host name run plan spec_label topology index i ids removed=0 where trial_run=""
+  local trial_topology="" changed
+  local -a indexes=() hosts=() filters_of=() found=() node_ids=()
+  prefix="${PULSAR_MANAGED_LABEL%managed}"
+  rows=$(python3 -c '
+import sys
+from model_library.state import Store
+from scripts.container_runtime import validate_plan
+plan = validate_plan(Store(sys.argv[1]).get("service-plans", sys.argv[2]))
+single = len(plan["ranks"]) == 1
+for row in plan["ranks"]:
+    print("\t".join([str(row["rank"]), "single" if single else str(row["rank"]), row["node_id"],
+                     row.get("hostname") or row["node_id"], plan["container_name"], plan["guard_run_id"],
+                     plan["plan_id"], plan["spec_id"], plan["topology_id"]]))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id") \
+    || { error_line "cannot read the saved launch plan of spec ${spec:0:12}; nothing was removed"; return 1; }
+  while IFS=$'\t' read -r rank label node_id host name run plan spec_label topology; do
+    index=""
+    for i in "${!CLUSTER_NODE_IDS[@]}"; do [ "${CLUSTER_NODE_IDS[$i]}" != "$node_id" ] || index="$i"; done
+    if [ -z "$index" ]; then
+      error_line "guarded trial ${run:0:12} recorded rank $rank on $host, which is not in the confirmed membership; nothing was removed. Next: ./pulsar topology show"
+      return 1
+    fi
+    indexes+=("$index"); hosts+=("$host (rank $rank)"); node_ids+=("$node_id"); trial_run="$run"
+    trial_topology="$topology"
+    filters_of+=("name=^/$name\$|label=${prefix}guard-run=$run|label=${prefix}launch-plan=$plan|label=${prefix}spec-id=$spec_label|label=${prefix}rank=$label")
+  done <<<"$rows"
+  changed="confirmed membership changed while stop was running; the service record is kept. Next: ./pulsar topology show, then rerun ./pulsar stop $(spec_reference "$spec")"
+  if [ "$CLUSTER_TOPOLOGY_ID" != "$trial_topology" ]; then
+    error_line "guarded trial ${trial_run:0:12} was recorded under a different confirmed membership; nothing was removed. Next: ./pulsar topology show"
+    return 1
+  fi
+  for i in "${!indexes[@]}"; do
+    if [ "${indexes[$i]}" != 0 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
+      error_line "reaching ${hosts[$i]} needs confirmed SSH trust; nothing was removed. Next: ./pulsar ssh-trust check"
+      return 1
+    fi
+  done
+  # Probe every recorded node before removing anything.
+  for i in "${!indexes[@]}"; do
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "nothing was removed: $changed"; return 1; }
+    ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") \
+      || { stop_unobservable_error "${indexes[$i]}" "$spec"; return 1; }
+    if [ "$(printf '%s\n' "$ids" | grep -c .)" -gt 1 ]; then
+      error_line "more than one container matches the guarded trial on ${hosts[$i]}; nothing was removed. Next: ./pulsar inventory"
+      return 1
+    fi
+    found+=("$ids")
+  done
+  for i in "${!indexes[@]}"; do
+    [ -n "${found[$i]}" ] || continue
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "removed $removed container(s) before $changed"; return 1; }
+    guarded_trial_docker "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
+      error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
+      return 1
+    }
+    removed=$((removed + 1))
+  done
+  # Confirm absence on every recorded node before retiring the service record.
+  for i in "${!indexes[@]}"; do
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "removed $removed container(s) before $changed"; return 1; }
+    if ! ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") || [ -n "$ids" ]; then
+      error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
+      return 1
+    fi
+  done
+  python3 -c '
+import sys
+from model_library.state import Store
+from scripts.service_state import retire_plan
+store = Store(sys.argv[1])
+retire_plan(store, store.get("service-plans", sys.argv[2]))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" \
+    || { error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"; return 1; }
+  where=$(printf '%s, ' "${hosts[@]}"); where="${where%, }"
+  if [ "$removed" -gt 0 ]; then
+    GUARDED_TRIAL_STOPPED=1
+    log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
+  else
+    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; retired its stale service record. The trial's run directory keeps its own result."
+  fi
+}
+
+# spec_reference SPEC_ID — how a suggested command names a spec: its 12-character
+# prefix when that selects exactly one catalog spec, otherwise the complete ID
+# (a candidate is not in the catalog, so a prefix would not resolve).
+spec_reference() {
+  local spec="$1" releases="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}" matches
+  if [[ "$spec" =~ ^[0-9a-f]{64}$ ]] && [ -f "$releases/$spec.json" ]; then
+    matches=$(find "$releases" -maxdepth 1 -name "${spec:0:12}*.json" | wc -l)
+    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return; }
+  fi
+  printf '%s\n' "$spec"
+}
+
 # stop_unobservable_error INDEX CONF [NODE_SELECTOR] — stop found a node it
 # cannot observe before removing anything; say so, why, and what to run next.
 # The retry keeps the operator's --node so it never widens the stop's scope.
 stop_unobservable_error() {
-  local index="$1" conf="$2" node_selector="${3:-}" selector="$2"
-  [[ ! "$conf" =~ ^[0-9a-f]{64}$ ]] || selector="${conf:0:12}"
+  local index="$1" conf="$2" node_selector="${3:-}" selector
+  selector=$(spec_reference "$conf")
   [ -z "$node_selector" ] || selector+=" --node $node_selector"
   error_line "stop did not run: $(human_node_name "$index") cannot be observed, so no container of $(conf_label_display "$conf") was removed. Stopping only the reachable nodes could strand a live rank. Next: ./pulsar topology check, then rerun ./pulsar stop $selector"
 }

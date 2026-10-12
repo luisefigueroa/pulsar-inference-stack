@@ -6,13 +6,17 @@ repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
 spec="" spec_id="" output="" approved=0 placement_nodes=""
 declare -a admission=()
+# A command-line mistake exits 2, or the public CLI's usage status under --json.
+usage_error() { printf 'error: %s\n' "$1" >&2; exit "${PULSAR_USAGE_EXIT:-2}"; }
+# value_of OPTION VALUE — the option's value, never the next option.
+value_of() { case "${2:-}" in ""|-*) usage_error "$1 requires a value" ;; esac; }
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --spec-file) spec="${2:?spec required}"; shift ;;
-    --spec-id) spec_id="${2:?reviewed spec ID required}"; shift ;;
-    --output-dir) output="${2:?fresh output directory required}"; shift ;;
-    --memory-estimate-file|--memory-estimate-id) admission+=("$1" "${2:?value required}"); shift ;;
-    --placement-nodes) placement_nodes="${2:?ordered node list required}"; admission+=("$1" "$placement_nodes"); shift ;;
+    --spec-file) value_of "$1" "${2:-}"; spec="$2"; shift ;;
+    --spec-id) value_of "$1" "${2:-}"; spec_id="$2"; shift ;;
+    --output-dir) value_of "$1" "${2:-}"; output="$2"; shift ;;
+    --memory-estimate-file|--memory-estimate-id) value_of "$1" "${2:-}"; admission+=("$1" "$2"); shift ;;
+    --placement-nodes) value_of "$1" "${2:-}"; placement_nodes="$2"; admission+=("$1" "$placement_nodes"); shift ;;
     --accept-memory-warn) admission+=("$1") ;;
     --yes) approved=1 ;;
     --help|-h)
@@ -26,11 +30,14 @@ Foreground lease owner. No pulls, replacement or acquisition.
 Stop through guarded stop with the exact run ID.
 HELP
       exit 0 ;;
-    *) echo "guarded serving: unsupported argument: $1" >&2; exit 2 ;;
+    *) usage_error "guarded run does not accept $1; see ./pulsar guarded run --help" ;;
   esac
   shift
 done
-[ "$approved" = 1 ] && [ -n "$spec$spec_id$output" ] && [ -n "$spec" ] && [ -n "$spec_id" ] && [ -n "$output" ] || { echo 'explicit reviewed inputs and --yes required' >&2; exit 2; }
+[ -n "$spec" ] || usage_error "guarded run requires --spec-file FILE (the reviewed guarded spec)"
+[ -n "$spec_id" ] || usage_error "guarded run requires --spec-id SHA256 (the reviewed spec's complete ID)"
+[ -n "$output" ] || usage_error "guarded run requires --output-dir NEW_DIR (a directory that does not exist yet)"
+[ "$approved" = 1 ] || usage_error "guarded run starts a trial only with --yes, after reviewing the spec"
 output=$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).absolute())' "$output")
 python3 -m serving_guard.controller initialize --spec-file "$spec" --spec-id "$spec_id" --output "$output"
 . "$repo/scripts/lib.sh"
@@ -47,33 +54,7 @@ if [ "$prerequisite_rc" != 0 ]; then
   exit "$prerequisite_rc"
 fi
 load_cluster_topology || die 'confirmed topology required'
-python3 -m serving_guard.controller activate --output "$output" --owner "$$"
-mapfile -t binding < <(python3 - "$output/active-plan.json" <<'PY'
-import json,sys
-p=json.load(open(sys.argv[1]));print(p['topology_id']);print(len(p['ranks']))
-for row in p['ranks']: print(row['node_id'])
-PY
-)
-[ "$CLUSTER_TOPOLOGY_ID" = "${binding[0]}" ] && [ "$CLUSTER_TOPOLOGY_COUNT" -ge "${binding[1]}" ] || die 'guard requires unchanged complete confirmed membership'
-serving_ranks="${binding[1]}"
-serving_indexes=()
-expected_nodes=()
-if [ -n "$placement_nodes" ]; then
-  IFS=, read -r -a selectors <<<"$placement_nodes"
-  [ "${#selectors[@]}" = "$serving_ranks" ] || die 'guarded placement count differs'
-  for selector in "${selectors[@]}"; do
-    node_id=$(resolve_single_node_placement "$selector" >/dev/null && printf '%s' "$SINGLE_NODE_ID") || die 'guarded placement is not confirmed'
-    expected_nodes+=("$node_id")
-  done
-else
-  expected_nodes=("${CLUSTER_NODE_IDS[@]:0:$serving_ranks}")
-fi
-for ((rank=0;rank<serving_ranks;rank++)); do
-  [ "${expected_nodes[$rank]}" = "${binding[$((rank+2))]}" ] || die 'guarded rank placement differs'
-  index=$(model_physical_rank "${binding[$((rank+2))]}") || die 'guarded rank placement differs from confirmed membership'
-  serving_indexes+=("$index")
-done
-batch_pid="" finalized=0
+batch_pid="" finalized=0 serving_ready=0 pending_signal=""
 phase() {
   local action="$1" rank rc=0
   local -a MODEL_NODE_COMMAND=() options=() ready_args=()
@@ -105,8 +86,11 @@ finish() {
   [ "$finalized" = 0 ] || return 0
   finalized=1
   trap '' INT TERM HUP
+  # Nothing to finish before activation records the run.
+  [ -f "$output/active-plan.json" ] || return 0
   cancel_batch
-  phase cleanup || true
+  # Before the ranks are resolved no rank has started, so there is nothing to clean.
+  [ "$serving_ready" = 0 ] || phase cleanup || true
   python3 -m serving_guard.controller finish --output "$output" --state-root "$PULSAR_MODEL_LIBRARY_DIR"
 }
 stop_signal() {
@@ -118,8 +102,39 @@ stop_signal() {
   finish || true
   exit 143
 }
+# Activation makes the run stoppable (guarded stop signals the owner it records).
+# Hold any signal until the ranks are resolved and cleanup can address them.
+trap 'pending_signal=1' INT TERM HUP
 trap 'finish || true' EXIT
+python3 -m serving_guard.controller activate --output "$output" --owner "$$"
+mapfile -t binding < <(python3 - "$output/active-plan.json" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]));print(p['topology_id']);print(len(p['ranks']))
+for row in p['ranks']: print(row['node_id'])
+PY
+)
+[ "$CLUSTER_TOPOLOGY_ID" = "${binding[0]}" ] && [ "$CLUSTER_TOPOLOGY_COUNT" -ge "${binding[1]}" ] || die 'guard requires unchanged complete confirmed membership'
+serving_ranks="${binding[1]}"
+serving_indexes=()
+expected_nodes=()
+if [ -n "$placement_nodes" ]; then
+  IFS=, read -r -a selectors <<<"$placement_nodes"
+  [ "${#selectors[@]}" = "$serving_ranks" ] || die 'guarded placement count differs'
+  for selector in "${selectors[@]}"; do
+    node_id=$(resolve_single_node_placement "$selector" >/dev/null && printf '%s' "$SINGLE_NODE_ID") || die 'guarded placement is not confirmed'
+    expected_nodes+=("$node_id")
+  done
+else
+  expected_nodes=("${CLUSTER_NODE_IDS[@]:0:$serving_ranks}")
+fi
+for ((rank=0;rank<serving_ranks;rank++)); do
+  [ "${expected_nodes[$rank]}" = "${binding[$((rank+2))]}" ] || die 'guarded rank placement differs'
+  index=$(model_physical_rank "${binding[$((rank+2))]}") || die 'guarded rank placement differs from confirmed membership'
+  serving_indexes+=("$index")
+done
+serving_ready=1
 trap stop_signal INT TERM HUP
+[ -z "$pending_signal" ] || stop_signal
 phase preflight
 persist_launch_plan_file "$output/active-plan.json"
 phase execute

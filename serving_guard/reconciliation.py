@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import secrets
+import sys
 
 from model_library.integrity import atomic_json, directory
 from model_library.state import Store, checked_id, ensure_directory, now
@@ -44,6 +45,12 @@ def completed_plan(output, run_id):
         raise ValueError('saved guarded controller identity differs')
     if process_identity(owner[0]) == owner:
         raise ValueError('guarded controller is still alive; wait for completion')
+    # After the controller has exited, ordinary stop recovers what reconciliation cannot.
+    recover = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
+               "recorded nodes and retires its service record")
+    if not (output / 'result.json').exists():
+        raise ValueError(f'guarded run {run_id[:12]} has no final result.json: its controller exited '
+                         f'without finishing, so reconciliation cannot retire its service record. {recover}')
     result = record(output / 'result.json')
     if (type(result.get('schema_version')) is not int or result['schema_version'] != 1
             or result.get('kind') != 'pulsar-guarded-serving-result'
@@ -56,7 +63,8 @@ def completed_plan(output, run_id):
     phase = result['phases']['cleanup']
     if (phase != {'complete': True, 'ranks': count} or phase.get('complete') is not True
             or type(phase.get('ranks')) is not int):
-        raise ValueError('saved cleanup is incomplete')
+        raise ValueError('the saved cleanup is incomplete, so reconciliation cannot retire the service '
+                         f'record. {recover}')
     batch = record(output / 'cleanup' / 'batch.json')
     if (batch.get('outcome') != 'complete' or type(batch.get('returncode')) is not int
             or batch['returncode'] != 0 or len(batch['results']) != count):
@@ -157,14 +165,24 @@ def main():
     parser.add_argument('--topology-id')
     parser.add_argument('--member', action='append', default=[])
     args = parser.parse_args()
-    if args.operation == 'validate':
-        print(json.dumps(completed_plan(args.output, args.run_id)))
-    elif args.operation == 'placement':
-        for index in placement(completed_plan(args.output, args.run_id), args.topology_id, args.member):
-            print(index)
-    else:
-        print(json.dumps(reconcile(args.output, args.run_id, args.state_root, args.observed,
-                                   args.topology_id, args.member)))
+    try:
+        if args.operation == 'validate':
+            print(json.dumps(completed_plan(args.output, args.run_id)))
+        elif args.operation == 'placement':
+            for index in placement(completed_plan(args.output, args.run_id), args.topology_id, args.member):
+                print(index)
+        else:
+            print(json.dumps(reconcile(args.output, args.run_id, args.state_root, args.observed,
+                                       args.topology_id, args.member)))
+    except (ValueError, OSError) as exc:
+        # A refusal is one line; the service locator is unchanged.
+        print(f'error: {exc}', file=sys.stderr)
+        raise SystemExit(1) from None
+    except (KeyError, TypeError, AttributeError) as exc:
+        # Valid JSON with a missing or mistyped field is a malformed record, not a defect here.
+        print(f'error: the saved guarded run records are malformed ({type(exc).__name__}: {exc}); '
+              'the service locator is unchanged', file=sys.stderr)
+        raise SystemExit(1) from None
 
 
 if __name__ == '__main__':

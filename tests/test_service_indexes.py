@@ -232,7 +232,8 @@ stop_named_service_by_labels() {{ touch '{marker}'; }}
             env={**os.environ, 'BASH_ENV':str(envfile), 'PULSAR_MODEL_LIBRARY_DIR':str(self.store.root)},
             text=True, capture_output=True, timeout=10)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('guarded stop', result.stderr)
+        # Not a guarded run: no guarded labels prove ownership, so nothing is touched.
+        self.assertIn('not by a guarded run, so stop cannot prove which containers are its own', result.stderr)
         self.assertFalse(marker.exists())
         self.assertIsNotNone(self.store.get('services', plan['service_id']))
 
