@@ -19,6 +19,9 @@ from model_library.verification_process import Cancelled, run_command
 
 class ActionFailed(RuntimeError):
     """A Stack script exited unsuccessfully; its diagnostic is already on stderr."""
+    def __init__(self, message, returncode=None):
+        super().__init__(message)
+        self.returncode = returncode
 
 
 class ScriptUsageError(UsageError):
@@ -41,12 +44,17 @@ def privacy_findings(scope, findings):
     """Report scanner findings on stderr, as the scanners do, then refuse.
 
     A scanner message can quote what it matched, such as an address, so the
-    envelope's details name only the rule and where it matched.
+    envelope's details name only the rule and where it matched. A finding in a
+    file name is the name itself, so its path is left out (null).
     """
     for f in findings:
         print(f"  {f.path}:{f.location}: [{f.rule}] {f.message}", file=sys.stderr)
-    raise PrivacyCheckFailed(scope, [{'rule': f.rule, 'path': f.path, 'location': f.location,
-                                      'message': f'{f.rule} at {f.path}:{f.location}'} for f in findings])
+    rows = []
+    for f in findings:
+        in_name = f.location == 'path'
+        rows.append({'rule': f.rule, 'path': None if in_name else f.path, 'location': f.location,
+                     'message': f'{f.rule} in a file name' if in_name else f'{f.rule} at {f.path}:{f.location}'})
+    raise PrivacyCheckFailed(scope, rows)
 
 
 class CheckIncomplete(RuntimeError):
@@ -149,7 +157,8 @@ def execute(script, args, *, json_result=False, env=None, report=None):
         if result.returncode == USAGE_EXIT:
             lines = [line for line in diagnostic.strip().splitlines() if line.strip()]
             raise ScriptUsageError('arguments', (lines[-1] if lines else 'invalid arguments').split('error: ', 1)[-1])
-        raise ActionFailed((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:])
+        raise ActionFailed((diagnostic.strip() or redact_diagnostic(result.stdout).strip() or 'Stack action failed')[-4000:],
+                           result.returncode)
     if json_result:
         try:
             return json.loads(result.stdout)
@@ -421,7 +430,13 @@ def dispatch(command, args):
         options=parser.parse_args(args[1:])
         return load(options.file,serving.load_spec(options.spec_file),expected_id=options.estimate_id)
     if command == 'observe':
-        result = execute('scripts/observe-serving.sh', args, json_result=True)
+        try:
+            result = execute('scripts/observe-serving.sh', args, json_result=True)
+        except ActionFailed as exc:
+            # SSH's own status: a rank's node could not be reached, so nothing was established.
+            if exc.returncode == 255:
+                raise CheckIncomplete(str(exc)) from exc
+            raise
         result['producer'] = producer_provenance()
         return result
     if command == 'resources':
@@ -437,7 +452,8 @@ def dispatch(command, args):
             except Cancelled as exc:
                 # Interrupted after launch: cancellation reaped this command, not the
                 # service it started. Say so first, and name the service in details.
-                recorded=read_blockers(blockers)
+                # Check blockers recorded before an interrupt do not mean a launch.
+                recorded=[r for r in read_blockers(blockers) if r.get('blocker')=='start_interrupted']
                 if not recorded:
                     raise
                 lines=[f"{r['message']}. Next: {r['fix']}" if r.get('fix') else r['message'] for r in recorded]
@@ -543,7 +559,7 @@ def dispatch(command, args):
         if findings: privacy_findings('publication', findings)
         return {'checked':True}
     if command == 'privacy' and args[:1] == ['commits']:
-        from scripts.check_commit_privacy import CommitPrivacyError, check
+        from scripts.check_commit_privacy import CommitPrivacyError, check, commits
         parser=CommandParser(prog='pulsar privacy commits')
         parser.add_argument('--root',required=True)
         parser.add_argument('--range',required=True)
@@ -551,6 +567,11 @@ def dispatch(command, args):
         root=Path(options.root).absolute()
         if not root.is_dir(): raise NotADirectoryError(f'privacy root {root} is not a directory')
         if not (root/'.git').exists(): raise UsageError('--root', 'privacy commits requires a Git checkout')
+        try:
+            commits(root.resolve(),options.range)
+        except CommitPrivacyError as exc:
+            # Nothing was checked: the range names no commits in this checkout.
+            raise UsageError('--range', f'is not a non-empty commit range in {root}: {exc}') from None
         try:
             _,findings=check(root.resolve(),options.range)
         except (CommitPrivacyError,UnicodeError) as exc:
@@ -639,6 +660,9 @@ def main(argv=None):
     except PrivacyCheckFailed as exc:
         return failure(exc,json_output=json_output,code='privacy_check_failed')
     except CheckIncomplete as exc:
+        if not json_output:
+            # The script's own error line is already on stderr.
+            return ERROR_CODES['check_incomplete'][0]
         return failure(exc,json_output=json_output,code='check_incomplete')
     except RuntimeError as exc:
         if isinstance(exc, ActionFailed) and not json_output:

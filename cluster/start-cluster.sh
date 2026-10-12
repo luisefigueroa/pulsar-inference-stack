@@ -73,6 +73,9 @@ cluster_interrupted() {
     loading)
       where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
       detail="while the service was loading; it keeps loading on all $NODES ranks" ;;
+    verifying)
+      where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
+      detail="after the service became healthy, while every rank was being verified; it is running on all $NODES ranks" ;;
     removing)
       detail="while the failed launch's containers were being removed; some may remain"
       noted=(--note "Some may already be removed. To remove the rest: {stop}") ;;
@@ -337,6 +340,7 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
         "$STARTUP_STARTED_NS" "$STARTUP_HEALTHY_NS"
     )
     log "healthy · first-health=${STARTUP_ELAPSED}s."
+    CLUSTER_PHASE=verifying
     # Qualification/warmup belongs to the workbench; serving checks health only.
     # A busy model library defers this verification; it never aborts a healthy
     # cluster. PULSAR_LOCK_BUSY_EXIT marks that case apart from a mismatch.

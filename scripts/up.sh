@@ -97,8 +97,17 @@ start_interrupted() {
     testing) detail="during the test completion; the service is running and passed its health check" ;;
   esac
   if [ -n "$detail" ]; then
+    # With --replace, the launcher removed the existing service before launching.
+    local -a noted=()
+    if [ "$REPLACE" = 1 ] && [ "${#existing_hosts[@]}" -gt 0 ]; then
+      if [ "$START_PHASE" = creating ]; then
+        noted=(--note "Start was replacing the previous service, which may already be removed. To remove what remains: {stop}")
+      else
+        LAUNCH_AFTER_REPLACE=1
+      fi
+    fi
     blocked start_interrupted --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "${SERVICE_ID:-}" \
-      --detail "$detail" || true
+      --detail "$detail" ${noted[@]+"${noted[@]}"} || true
   fi
   exit $((128 + $1))
 }
@@ -152,6 +161,8 @@ resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
 if [ "$VERBOSE" = 1 ]; then export QUIET=0 PULSAR_VERBOSE=1; fi
+# The check scripts leave the next step to start's own blocker lines.
+export PULSAR_RUN_BY_START=1
 
 echo "┌─ up  $NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ]; then

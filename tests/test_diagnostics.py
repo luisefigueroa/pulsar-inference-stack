@@ -25,7 +25,7 @@ import json,os,pathlib,sys
 root=pathlib.Path(os.environ['DIAG_ROOT']);args=sys.argv[1:];rank=int(os.environ.get('DIAG_RANK','0'));mode=os.environ['DIAG_MODE']
 if args[0]=='info':print('nvidia' if '-f' in args else 'Runtimes: nvidia');sys.exit(0)
 if args[:2]==['image','inspect']:
- if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2):sys.exit(1)
+ if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2) or (mode=='missing-controller' and rank==0):sys.exit(1)
  if mode in ('named-success','export-tag-collision','export-tag-unobservable','export-tag-drift','export-ref-missing') and rank>0 and not (root/('loaded-'+str(rank))).exists():sys.exit(1)
  image=json.loads((root/'image.json').read_text())
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
@@ -188,6 +188,30 @@ ssh_node() {{
         # An image already present needs no approval.
         result=self.run_tool('sync-image.sh',[spec_id])
         self.assertEqual(result.returncode,0,result.stderr)
+        # Staging copies from this node; when it lacks the image too, the next step pulls.
+        result=self.run_tool('sync-image.sh',[spec_id],'missing-controller')
+        self.assertEqual(result.returncode,1,result.stderr)
+        self.assertIn('missing on rank-0 (rank 0); nothing was staged. This node lacks it too, so staging must pull '
+                      f'the exact digest from its registry. Next: ./pulsar image stage {spec_id} --pull --plan',
+                      ' '.join(result.stderr.split()))
+
+    def test_image_check_names_the_nodes_and_one_next_step(self):
+        spec_id=self.spec['spec_id']
+        for mode,text,next_step in (
+                ('missing-pull',f'the pinned image is missing on rank-1 (rank 1)',f'./pulsar image stage {spec_id} --plan'),
+                ('missing-controller',f'the pinned image is missing on rank-0 (rank 0)',f'./pulsar image stage {spec_id} --pull --plan'),
+                ('lost-and-missing','rank-1 (rank 1) could not be reached, so the image there is unknown; the pinned '
+                                    'image is missing on rank-2 (rank 2)','./pulsar topology check')):
+            with self.subTest(mode=mode):
+                result=self.run_tool('check-image.sh',[spec_id],mode)
+                self.assertEqual(result.returncode,1,result.stderr)
+                *problem,last=result.stdout.splitlines()
+                self.assertEqual(' '.join(' '.join(problem).split()),'FAIL image '+text)
+                # The next command is never wrapped, so it can be copied whole.
+                self.assertEqual(last.strip(),'Next: '+next_step)
+        # Start runs the same check and gives its own next step.
+        result=self.run_tool('check-image.sh',[spec_id],'missing-pull',{'PULSAR_RUN_BY_START':'1'})
+        self.assertEqual(' '.join(result.stdout.split()),'FAIL image the pinned image is missing on rank-1 (rank 1)')
         result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--pull','--yes'],'missing-pull')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')

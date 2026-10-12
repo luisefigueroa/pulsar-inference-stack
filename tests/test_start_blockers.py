@@ -91,6 +91,8 @@ case " $* " in *" --json "*) printf '{"state":"%s","ranks":[%s]}\n' "$state" "$r
 '''
 WEIGHTS = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/weights-checked"
+# "hang": a check still running when start is interrupted.
+if [ "$FIXTURE_WEIGHTS_RC" = hang ]; then sleep 30; fi
 [ "$FIXTURE_WEIGHTS_RC" != 3 ] || echo "error: cannot resolve the prepared copies" >&2
 exit "$FIXTURE_WEIGHTS_RC"
 '''
@@ -594,6 +596,49 @@ class Interrupts(unittest.TestCase):
         self.assertEqual(stderr.strip().splitlines()[-1], "Interrupted before launch; nothing was started.")
         self.assertEqual(records, [])
 
+    def cluster_record(self, phase, **env):
+        """The record cluster/start-cluster.sh's interrupt handler writes in PHASE."""
+        blockers = self.root / f"{phase}.jsonl"
+        script = "\n".join([
+            f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
+            f"CLUSTER_PHASE={phase} LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
+            'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            lib_function("start_blocker"),
+            lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
+            "cluster_interrupted 2",
+        ])
+        environment = {**os.environ, "PULSAR_START_BLOCKERS_FILE": str(blockers), **env}
+        environment.pop("START_BLOCKER_PLACEMENT", None)
+        result = subprocess.run(["bash", "-c", script], env=environment, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        (record,) = start_blockers.read(blockers)
+        return record
+
+    def test_after_health_a_cluster_is_running_not_loading(self):
+        record = self.cluster_record("verifying")
+        self.assertEqual(record["message"], "spark-1: start was interrupted after the service became healthy, while "
+                                            "every rank was being verified; it is running on all 2 ranks")
+
+    def test_an_interrupted_replacement_says_the_previous_service_was_removed(self):
+        record = self.cluster_record("loading", LAUNCH_AFTER_REPLACE="1")
+        self.assertEqual(record["note"], "The previous service was removed before this launch. Nothing this start "
+                                         "launched was removed. To remove it: ./pulsar stop abababababab")
+        # One node: start knows a service existed and that the launcher replaced it once launched.
+        for marker, fixture, note in (
+                ("health-polled", {"health": "fail"}, "The previous service was removed before this launch."),
+                ("launched", {"launch": "hang"}, "Start was replacing the previous service, which may already be "
+                                                 "removed.")):
+            with self.subTest(phase=marker):
+                for name in ("blockers.jsonl", "health-polled", "launched"):
+                    (self.root / name).unlink(missing_ok=True)
+                status, _, stderr, records = self.interrupt(
+                    ["bash", str(self.root / "scripts/up.sh"), SPEC, "--replace"], marker,
+                    image="ok", existing=0, **fixture)
+                self.assertEqual(status, 130, stderr)
+                (record,) = records
+                self.assertTrue(record["note"].startswith(note), record["note"])
+                self.assertNotIn("Nothing was removed.", record["note"])
+
     def test_an_interrupted_removal_does_not_claim_nothing_was_removed(self):
         blockers = self.root / "removal.jsonl"
         script = "\n".join([
@@ -667,6 +712,20 @@ class Interrupts(unittest.TestCase):
         self.assertTrue(error["message"].startswith("spark-1: start was interrupted while the service was loading; "
                                                     "it keeps loading. Next: ./pulsar status abababababab"),
                         error["message"])
+
+    def test_an_interrupt_during_the_checks_is_a_plain_cancellation(self):
+        # A check blocker recorded before the interrupt does not mean a launch.
+        driver = ("import sys; from pathlib import Path; import scripts.public_cli as pc; "
+                  f"pc.ROOT = Path({str(self.root)!r}); raise SystemExit(pc.main(['start', {SPEC!r}, '--json']))")
+        # image_missing is recorded (in the public CLI's own blocker file) before the
+        # model-file check, which is still running when the interrupt arrives.
+        status, stdout, stderr, _ = self.interrupt([sys.executable, "-c", driver], "weights-checked",
+                                                   image="missing-on-head", weights_rc="hang")
+        self.assertEqual(status, 130, stderr)
+        error = json.loads(stdout)["error"]
+        self.assertEqual(error["code"], "cancelled")
+        self.assertEqual([detail["field"] for detail in error["details"]], ["$"])
+        self.assertIn("Interrupted before launch; nothing was started.", error["message"])
 
     def test_the_stop_in_the_note_is_runnable(self):
         record = start_blockers.blocker("start_interrupted", spec=SPEC, placement="--node spark-2")

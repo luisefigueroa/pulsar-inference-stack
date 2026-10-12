@@ -105,10 +105,16 @@ fi
 if [ "$YES" != 1 ]; then
   # Not a usage mistake: like every approval gate, this refuses after looking,
   # and says what staging would change.
-  missing_nodes=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]' \
-    | while read -r rank physical; do printf '%s (rank %s), ' "$(human_node_name "$physical")" "$rank"; done)
-  suggestion=$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${selection_flags[@]+"${selection_flags[@]}"})
-  die "the pinned image is missing on ${missing_nodes%, }; nothing was staged. Next: ./pulsar image stage $suggestion --plan, then rerun it with --yes"
+  missing_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+  missing_nodes=$(while read -r rank physical; do printf '%s (rank %s), ' "$(human_node_name "$physical")" "$rank"; done <<<"$missing_rows")
+  why="" suggested=(${selection_flags[@]+"${selection_flags[@]}"})
+  # Without --pull, staging copies from this node; when this node lacks the image too, only a pull works.
+  if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s\n' "$missing_rows" | grep -q ' 0$'; then
+    why=" This node lacks it too, so staging must pull the exact digest from its registry."
+    suggested+=(--pull)
+  fi
+  suggestion=$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${suggested[@]+"${suggested[@]}"})
+  die "the pinned image is missing on ${missing_nodes%, }; nothing was staged.$why Next: ./pulsar image stage $suggestion --plan, then rerun it with --yes"
 fi
 if [ "$PULL" = 0 ]; then
   # Docker save/load can omit registry references. A stream never falls back to

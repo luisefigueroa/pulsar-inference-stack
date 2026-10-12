@@ -177,6 +177,11 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         fix = " ".join(fix.split())
     if note is not None:
         resolved_note = note
+    if code == "start_interrupted" and after_replace:
+        # --replace removed the previous service before this launch; say so, not "Nothing was removed".
+        replaced = "The previous service was removed before this launch."
+        resolved_note = (f"{replaced} Nothing this start launched was removed. To remove it: {{stop}}"
+                         if note is None else f"{note} {replaced}")
     if resolved_note and "{stop}" in resolved_note:
         resolved_note = resolved_note.replace(
             "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))

@@ -326,7 +326,9 @@ Without `--json`, `model check` exits 1 for missing or changed files and 3 when
 it could not observe them; `image check` exits 1 for any state other than `ok`.
 When either check cannot run at all, such as for an unreadable spec or a busy
 model library, it exits 3: without `--json`, and under `--json` as
-`check_incomplete`.
+`check_incomplete`. `observe` that cannot reach a rank's node over SSH is
+`check_incomplete` too; a verification that ran and failed is
+`prerequisite_failed`.
 
 `--help` prints help and exits 0, with or without `--json`; `image --help --json`
 and `guarded --help --json` keep their usage dictionary.
@@ -335,7 +337,8 @@ and `guarded --help --json` keep their usage dictionary.
 privacy check in `contribution verify`. Each `details` entry has `field`
 `privacy`, the `rule`, and where it matched: `path` and `location` for files,
 `commit` for commit metadata. It does not repeat the matched text, which the
-report on stderr shows.
+report on stderr shows; a finding in a file name has `location` `path` and a
+null `path`. A `--range` that names no commits is a `usage_error`.
 
 Change note, 2026-10-12: exit statuses mean the same with or without `--json`.
 `prerequisite_failed` and `service_absent` exit 1 instead of 3. Without
@@ -426,8 +429,9 @@ When `start --json` is interrupted after it launched a service, the error is
 `start_interrupted` record with `stage` `launch`: its `service_id`, the node
 and, during a multi-node launch, the rank being started. Start removes nothing
 on an interrupt. `fix` is the status command, and `note` names the stop command
-that removes the service. Interrupted before launch, `details` has no record
-and nothing was started.
+that removes the service; with `--replace` it also says the previous service
+was removed, or may have been. Interrupted before launch, `details` has no
+record and nothing was started.
 
 Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `service_id`; `fix` became a runnable command or null (it was prose for

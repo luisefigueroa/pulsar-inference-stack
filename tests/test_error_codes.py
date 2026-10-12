@@ -162,6 +162,42 @@ class ErrorCodes(unittest.TestCase):
             self.assertTrue(human.stderr.endswith(
                 "error: publication privacy check found 1 problem(s): network-address\n"), human.stderr)
 
+    def test_a_privacy_finding_in_a_file_name_leaves_the_name_out(self):
+        with tempfile.TemporaryDirectory() as temp:
+            name = "dgx-" + "spark-987.md"
+            (Path(temp) / name).write_text("plain\n")
+            status, response = pulsar("privacy", "check", "--root", temp)
+        self.assertEqual((status, response["error"]["code"]), (1, "privacy_check_failed"))
+        self.assertEqual(response["error"]["details"],
+                         [{"field": "privacy", "rule": "stable-hostname", "path": None, "location": "path",
+                           "message": "stable-hostname in a file name"}])
+        self.assertNotIn(name, json.dumps(response))
+
+    def test_a_commit_range_that_names_no_commits_is_a_usage_error(self):
+        for revision_range in ("definitely-not-a-ref", "HEAD..HEAD"):
+            with self.subTest(revision_range=revision_range):
+                status, response = pulsar("privacy", "commits", "--root", str(ROOT), "--range", revision_range)
+                self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+                self.assertEqual(response["error"]["details"][0]["field"], "--range")
+
+    def test_observe_that_cannot_reach_a_node_did_not_establish_anything(self):
+        # SSH exits 255 when it cannot connect; that is not a failed verification.
+        unreachable = Completed(returncode=255)
+        unreachable.stderr = "ssh: connect to host spark-2 port 22: No route to host\n"
+        with patch.object(public_cli, "run_command", return_value=unreachable):
+            status, response = self.main("observe", "--service-id", "a" * 64)
+        self.assertEqual((status, response["error"]["code"]), (3, "check_incomplete"))
+        self.assertIn("No route to host", response["error"]["message"])
+        failed = Completed(returncode=1)
+        failed.stderr = "error: rank 1 container differs from its launch record\n"
+        with patch.object(public_cli, "run_command", return_value=failed):
+            status, response = self.main("observe", "--service-id", "a" * 64)
+        self.assertEqual((status, response["error"]["code"]), (1, "prerequisite_failed"))
+        with patch.object(public_cli, "run_command", return_value=unreachable), \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(public_cli.main(["observe", "--service-id", "a" * 64]), 3)
+        self.assertEqual(stderr.getvalue().count("No route to host"), 1)
+
     def test_privacy_argument_and_file_mistakes_are_not_spec_errors(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
