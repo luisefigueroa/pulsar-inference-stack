@@ -175,11 +175,11 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
             if download:
                 fix, resolved_note = download
         fix = " ".join(fix.split())
-    if resolved_note and "{stop}" in resolved_note:
-        resolved_note = resolved_note.format(
-            stop=" ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))
     if note is not None:
         resolved_note = note
+    if resolved_note and "{stop}" in resolved_note:
+        resolved_note = resolved_note.replace(
+            "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))
     if unconfirmed:
         fix = " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split())
         resolved_note = f"Removing its containers could not be confirmed on {unconfirmed}; stop removes what remains."

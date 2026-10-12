@@ -57,7 +57,7 @@ done
 CLUSTER_PHASE=preparing LAUNCHING_RANK=0
 cluster_interrupted() {
   local detail=""
-  local -a where=()
+  local -a where=() noted=()
   trap - INT TERM HUP
   case "$CLUSTER_PHASE" in
     preparing)
@@ -74,11 +74,12 @@ cluster_interrupted() {
       where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
       detail="while the service was loading; it keeps loading on all $NODES ranks" ;;
     removing)
-      detail="while the failed launch's containers were being removed; some may remain" ;;
+      detail="while the failed launch's containers were being removed; some may remain"
+      noted=(--note "Some may already be removed. To remove the rest: {stop}") ;;
   esac
   if [ -n "$detail" ]; then
     START_BLOCKER_SPEC="$MODEL_NAME" start_blocker start_interrupted ${where[@]+"${where[@]}"} \
-      --service-id "${SERVICE_ID:-}" --detail "$detail" || true
+      --service-id "${SERVICE_ID:-}" --detail "$detail" ${noted[@]+"${noted[@]}"} || true
   fi
   exit $((128 + $1))
 }

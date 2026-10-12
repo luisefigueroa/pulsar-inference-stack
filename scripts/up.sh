@@ -82,6 +82,30 @@ done
 # the operator's own estimate arguments.
 export START_BLOCKER_MEMORY_ESTIMATE_FILE="$MEMORY_ESTIMATE_FILE" START_BLOCKER_MEMORY_ESTIMATE_ID="$MEMORY_ESTIMATE_ID"
 
+# Ctrl-C or a stop signal says what this start left and removes nothing:
+# removing a service is stop's job, which takes the lock, probes every rank and
+# confirms absence. START_PHASE says how far start got, from the first lock
+# wait on; a multi-node launch reports its own phases from cluster/start-cluster.sh.
+START_PHASE=checks
+start_interrupted() {
+  local detail=""
+  trap - INT TERM HUP
+  case "$START_PHASE" in
+    checks) printf 'Interrupted before launch; nothing was started.\n' >&2 || true ;;
+    creating) detail="while its container was being created; the container may exist" ;;
+    loading) detail="while the service was loading; it keeps loading" ;;
+    testing) detail="during the test completion; the service is running and passed its health check" ;;
+  esac
+  if [ -n "$detail" ]; then
+    blocked start_interrupted --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "${SERVICE_ID:-}" \
+      --detail "$detail" || true
+  fi
+  exit $((128 + $1))
+}
+trap 'start_interrupted 2' INT
+trap 'start_interrupted 15' TERM
+trap 'start_interrupted 1' HUP
+
 acquire_model_library_lifecycle_lock shared
 load_conf "$NAME"
 [ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
@@ -128,30 +152,6 @@ resolve_spec_decode "$SPEC_MODE"
 SPEC_REVIEW_CELL="${SPEC_REVIEW_STATUS:-not specified}"
 export QUIET=1
 if [ "$VERBOSE" = 1 ]; then export QUIET=0 PULSAR_VERBOSE=1; fi
-
-# Ctrl-C or a stop signal says what this start left and removes nothing:
-# removing a service is stop's job, which takes the lock, probes every rank and
-# confirms absence. START_PHASE says how far start got; a multi-node launch
-# reports its own phases from cluster/start-cluster.sh.
-START_PHASE=checks
-start_interrupted() {
-  local detail=""
-  trap - INT TERM HUP
-  case "$START_PHASE" in
-    checks) printf 'Interrupted before launch; nothing was started.\n' >&2 || true ;;
-    creating) detail="while its container was being created; the container may exist" ;;
-    loading) detail="while the service was loading; it keeps loading" ;;
-    testing) detail="during the test completion; the service is running and passed its health check" ;;
-  esac
-  if [ -n "$detail" ]; then
-    blocked start_interrupted --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "${SERVICE_ID:-}" \
-      --detail "$detail" || true
-  fi
-  exit $((128 + $1))
-}
-trap 'start_interrupted 2' INT
-trap 'start_interrupted 15' TERM
-trap 'start_interrupted 1' HUP
 
 echo "┌─ up  $NAME"
 if [ "${CONF_SOURCE:-conf}" = spec ]; then

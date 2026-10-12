@@ -341,10 +341,12 @@ Change note, 2026-10-12: exit statuses mean the same with or without `--json`.
 that cannot observe its files exit 3 (instead of 1 and 255), and a refusal
 from `observe`, `selftest` or another command run through the public CLI exits
 1 instead of 3. New `privacy_check_failed` replaces `invalid_spec` for privacy
-findings. `guarded stop` refusals are `prerequisite_failed`, not `invalid_spec`;
-`privacy check --staged` without a Git checkout and an `--entrypoint-json` that
-is not JSON are `usage_error`; a privacy root that is not a regular directory,
-or that holds a symlink, is `file_error`. `image check --json` and
+findings. `guarded stop` refusals (the run already finished, or its controller
+exited) are `prerequisite_failed`, not `invalid_spec`; a malformed run record
+stays `invalid_spec`. `privacy check --staged` and `privacy commits` without a
+Git checkout, and an `--entrypoint-json` that is not JSON, are `usage_error`; a
+privacy root that is not a regular directory, or that holds a symlink, is
+`file_error`. `image check --json` and
 `model check --json` return a report that found a problem as their result
 instead of `prerequisite_failed` with the report as text. `image stage` without
 `--yes` or `--plan` refuses with exit 1 after checking the nodes and names

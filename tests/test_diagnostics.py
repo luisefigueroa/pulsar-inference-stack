@@ -182,6 +182,9 @@ ssh_node() {{
         result=self.run_tool('sync-image.sh',[spec_id,'--pull','--placement-nodes','rank-0,rank-1,rank-2'],'missing-pull')
         self.assertIn(f'Next: ./pulsar image stage {spec_id} --pull --placement-nodes rank-0,rank-1,rank-2 --plan',
                       result.stderr)
+        # Following it keeps the registry fallback the operator already granted.
+        result=self.run_tool('sync-image.sh',[spec_id,'--pull-if-stream-incomplete'],'missing-pull')
+        self.assertIn(f'Next: ./pulsar image stage {spec_id} --pull-if-stream-incomplete --plan',result.stderr)
         # An image already present needs no approval.
         result=self.run_tool('sync-image.sh',[spec_id])
         self.assertEqual(result.returncode,0,result.stderr)

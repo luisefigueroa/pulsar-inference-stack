@@ -176,6 +176,13 @@ class ErrorCodes(unittest.TestCase):
             self.assertEqual((status, response["error"]["code"]), (2, "file_error"))
             self.assertIn("link is a symlink or special file", response["error"]["message"])
 
+    def test_a_commit_privacy_root_that_cannot_be_read_is_not_a_refusal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            for root, code in ((str(Path(temp) / "missing"), "file_error"), (temp, "usage_error")):
+                with self.subTest(code=code):
+                    status, response = pulsar("privacy", "commits", "--root", root, "--range", "HEAD~1..HEAD")
+                    self.assertEqual((status, response["error"]["code"]), (2, code))
+
     def test_a_bad_entrypoint_is_a_usage_error_naming_the_flag(self):
         status, response = pulsar("guarded", "template", "--entrypoint-json", "[oops")
         self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
@@ -183,11 +190,16 @@ class ErrorCodes(unittest.TestCase):
 
     def test_a_guarded_stop_the_run_refuses_is_a_refusal_not_an_invalid_spec(self):
         from serving_guard import controller
-        with tempfile.TemporaryDirectory() as temp, patch.object(
-                controller, "stop", side_effect=ValueError("guarded run abababababab already finished; nothing to stop")):
+        refused = controller.StopRefused("guarded run abababababab already finished; nothing to stop")
+        with tempfile.TemporaryDirectory() as temp, patch.object(controller, "stop", side_effect=refused):
             status, response = self.main("guarded", "stop", "--output-dir", temp, "--run-id", "ab" * 32)
         self.assertEqual((status, response["error"]["code"]), (1, "prerequisite_failed"))
         self.assertIn("already finished; nothing to stop", response["error"]["message"])
+        # A malformed run record is a document error, not a refusal.
+        with tempfile.TemporaryDirectory() as temp:
+            (Path(temp) / "active-plan.json").write_text("{truncated")
+            status, response = self.main("guarded", "stop", "--output-dir", temp, "--run-id", "ab" * 32)
+        self.assertEqual((status, response["error"]["code"]), (2, "invalid_spec"))
 
     def test_a_script_usage_mistake_is_printed_once(self):
         result = subprocess.run([str(ROOT / "pulsar"), "observe", "--bogus"], text=True, capture_output=True)

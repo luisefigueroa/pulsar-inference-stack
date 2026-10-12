@@ -39,7 +39,10 @@ usage_die() { die "$1"; }
 log() { echo "$*"; }
 warn() { echo "warning: $*" >&2; }
 error_line() { echo "error: $*" >&2; }
-acquire_model_library_lifecycle_lock() { :; }
+acquire_model_library_lifecycle_lock() {
+  # "hang": start is still waiting for the lock when it is interrupted.
+  [ "${FIXTURE_LOCK:-}" != hang ] || { touch "$FIXTURE_DIR/lock-waiting"; sleep 30; }
+}
 acquire_model_library_hot_lock() { :; }
 release_model_library_locks() { touch "$FIXTURE_DIR/locks-released"; }
 load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS=mesh; MIN_RAILS_PER_PAIR=2; }
@@ -584,6 +587,31 @@ class Interrupts(unittest.TestCase):
         self.assertEqual(stderr.strip().splitlines()[-1], "Interrupted before launch; nothing was started.")
         self.assertEqual(records, [])
         self.assertFalse((self.root / "launched").exists())
+
+    def test_while_waiting_for_the_lock_nothing_was_started(self):
+        status, stdout, stderr, records = self.start("lock-waiting", lock="hang")
+        self.assertEqual(status, 130)
+        self.assertEqual(stderr.strip().splitlines()[-1], "Interrupted before launch; nothing was started.")
+        self.assertEqual(records, [])
+
+    def test_an_interrupted_removal_does_not_claim_nothing_was_removed(self):
+        blockers = self.root / "removal.jsonl"
+        script = "\n".join([
+            f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
+            "CLUSTER_PHASE=removing LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
+            'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            lib_function("start_blocker"),
+            lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
+            "cluster_interrupted 2",
+        ])
+        env = {**os.environ, "PULSAR_START_BLOCKERS_FILE": str(blockers)}
+        env.pop("START_BLOCKER_PLACEMENT", None)
+        result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        (record,) = start_blockers.read(blockers)
+        self.assertEqual(record["message"], "start was interrupted while the failed launch's containers were being "
+                                            "removed; some may remain")
+        self.assertEqual(record["note"], "Some may already be removed. To remove the rest: ./pulsar stop abababababab")
 
     def test_after_launch_it_names_the_service_and_suggests_status(self):
         for marker, fixture, detail in (

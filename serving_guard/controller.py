@@ -162,16 +162,20 @@ def check(output, phase):
     return count
 
 
+class StopRefused(ValueError):
+    """The run's state refuses a stop: it already finished, or its controller exited."""
+
+
 def stop(output, run_id):
     plan = validate_plan(json.loads(read_regular(output / "active-plan.json")))
     controller = json.loads(read_regular(output / "controller.json"))
     if plan["guard_run_id"] != run_id or controller["run_id"] != run_id:
         raise ValueError("guard invocation changed")
     if (output / "result.json").exists():
-        raise ValueError(f"guarded run {run_id[:12]} already finished; nothing to stop. Its outcome is in "
+        raise StopRefused(f"guarded run {run_id[:12]} already finished; nothing to stop. Its outcome is in "
                          f"{output / 'result.json'}")
     if process_identity(controller["owner"][0]) != controller["owner"]:
-        raise ValueError(f"guarded run {run_id[:12]}'s controller exited without finishing. Next: ./pulsar stop "
+        raise StopRefused(f"guarded run {run_id[:12]}'s controller exited without finishing. Next: ./pulsar stop "
                          f"{plan['selected_spec_id']} stops the trial's containers on its recorded nodes "
                          "and retires its service record")
     path = output / "stop-request.json"

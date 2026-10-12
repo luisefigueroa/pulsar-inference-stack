@@ -10,7 +10,7 @@ PLACEMENT_NODES=""
 case "${1:-}" in ""|-*) usage_die "image stage requires a spec ID; see ./pulsar image --help" ;; esac
 NAME="$1"; shift
 PULL=0 YES=0 PLAN=0 JSON=0 NODE_SELECTOR="" PULL_FALLBACK=0 EXPORT_TAG=""
-# The operator's selection flags, repeated in a suggested --plan command.
+# The operator's selection and transfer flags, repeated in a suggested --plan command.
 selection_flags=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
       esac
       selection_flags+=("$1" "$2"); shift ;;
     --pull) PULL=1; selection_flags+=("$1") ;;
-    --pull-if-stream-incomplete) PULL_FALLBACK=1 ;;
+    --pull-if-stream-incomplete) PULL_FALLBACK=1; selection_flags+=("$1") ;;
     --yes|-y) YES=1 ;;
     --plan) PLAN=1 ;;
     --json) JSON=1 ;;

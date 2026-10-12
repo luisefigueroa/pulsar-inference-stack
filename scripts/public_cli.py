@@ -395,14 +395,14 @@ def dispatch(command, args):
                 raise ValueError('spec must select the installed serving guard program')
             return {'spec_id': spec['spec_id'], 'guard': guard, 'physical_execution': False}
         if args[0] == 'stop':
-            from serving_guard.controller import stop
+            from serving_guard.controller import StopRefused, stop
             parser.add_argument('--output-dir', required=True, type=Path)
             parser.add_argument('--run-id', required=True)
             options = parser.parse_args(args[1:])
             try:
                 return stop(options.output_dir.absolute(), options.run_id)
-            except ValueError as exc:
-                # The run's records refused the stop; the command line was fine.
+            except StopRefused as exc:
+                # The run's state refused the stop; malformed records stay invalid_spec.
                 raise Refused(str(exc)) from exc
         raise ValueError('usage: pulsar guarded template|validate|run|stop|reconcile --help')
     if command == 'memory' and args[:1] == ['verify']:
@@ -541,8 +541,11 @@ def dispatch(command, args):
         parser.add_argument('--root',required=True)
         parser.add_argument('--range',required=True)
         options=parser.parse_args(args[1:])
+        root=Path(options.root).absolute()
+        if not root.is_dir(): raise NotADirectoryError(f'privacy root {root} is not a directory')
+        if not (root/'.git').exists(): raise UsageError('--root', 'privacy commits requires a Git checkout')
         try:
-            _,findings=check(Path(options.root).resolve(),options.range)
+            _,findings=check(root.resolve(),options.range)
         except (CommitPrivacyError,UnicodeError) as exc:
             raise Refused(f'commit metadata privacy check could not read {options.range}: {exc}') from exc
         if findings:
