@@ -217,9 +217,8 @@ class MenuEntries(unittest.TestCase):
     def test_menus_on_a_terminal_without_gum_name_their_commands(self):
         entries = {
             (): "error: the Pulsar menu needs an interactive terminal with Gum; use: pulsar",
-            ("models",): "error: the catalog menu needs an interactive terminal with Gum; "
-                         "use: pulsar models list | show SPEC | check SPEC",
-            ("models", "menu"): "error: the catalog menu needs",
+            ("models", "menu"): "error: the catalog menu needs an interactive terminal with Gum; "
+                                "use: pulsar models list | show SPEC | check SPEC",
             ("inventory", "menu"): "error: the inventory menu needs an interactive terminal with Gum",
             ("wizard",): "error: the catalog menu needs",
             ("topology", "menu"): "error: the topology menu needs an interactive terminal with Gum; "
@@ -236,6 +235,14 @@ class MenuEntries(unittest.TestCase):
                     self.assertIn(expected, " ".join(output.split()))
                     self.assertFalse((self.root / "model-library").exists())
                     self.assertFalse((self.root / "topology.json").exists())
+        # pulsar models, which names no menu, shows the catalog list instead.
+        for term in ("xterm-256color", "dumb"):
+            with self.subTest(args=("models",), term=term):
+                rc, output = self.run_in_terminal("models", term=term)
+                self.assertEqual(rc, 0, output)
+                self.assertIn("warning: the catalog menu needs Gum on this terminal; showing pulsar models list",
+                              " ".join(output.split()))
+                self.assertIn("Saved records.", output)
 
 
 if __name__ == "__main__":
