@@ -34,13 +34,6 @@ select_node() {
 declare -A LAST_RESULT=()
 OPERATION_RC=0 OPERATION_INTERRUPTED=0
 
-elapsed_text() {
-  local seconds="$1"
-  if [ "$seconds" -ge 3600 ]; then printf '%dh %dm' $((seconds / 3600)) $((seconds % 3600 / 60))
-  elif [ "$seconds" -ge 60 ]; then printf '%dm %ds' $((seconds / 60)) $((seconds % 60))
-  else printf '%ds' "$seconds"; fi
-}
-
 # run_operation ACTION LABEL SPEC MODEL COMMAND...
 # Runs one explicit operation and reports its outcome. The command owns
 # interruption and cleanup; the menu cannot independently confirm its effects.
@@ -372,7 +365,16 @@ browse() {
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
-  "") if [ -t 0 ]; then browse; else catalog list; fi ;;
+  "")
+    if [ -t 0 ]; then
+      # shellcheck source=ui.sh
+      . "$REPO_DIR/scripts/ui.sh"
+      if gum_available; then browse; else
+        # Asked for no menu by name: show the same saved state as a list.
+        printf 'warning: the catalog menu needs Gum on this terminal; showing pulsar models list\n' >&2
+        catalog list
+      fi
+    else catalog list; fi ;;
   menu)
     for arg in "$@"; do
       [ "$arg" != --json ] || { echo "error: the catalog menu is interactive; use ./pulsar models list --json" >&2; exit 2; }

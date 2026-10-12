@@ -8,7 +8,11 @@
 # are already resident — free RAM is OS headroom, not cold capacity).
 set -euo pipefail
 # shellcheck disable=SC2034  # read by lib.sh log/warn/die
-if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: check-memory.sh SPEC [--spec-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--node NODE] [--cold-start] [--json]"; exit 0; fi
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+  echo "usage: scripts/check-memory.sh SPEC [--spec-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--node NODE] [--cold-start] [--json]"
+  echo "The memory check that pulsar start runs; ./pulsar start SPEC --dry-run runs every start check."
+  exit 0
+fi
 SCRIPT_NAME=check-memory
 PLACEMENT_NODES=""
 # shellcheck disable=SC1091
@@ -22,7 +26,7 @@ FORCE_COLD_START=0
 unset PULSAR_MEMORY_ESTIMATE_JSON
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
 NAME="${1:-}"
-[ -n "$NAME" ] || die "usage: $0 SPEC_ID [--node NODE_ID] [--cold-start] [--max-model-len N] [--json]" 3
+[ -n "$NAME" ] || die "the memory check needs a spec ID; ./pulsar start SPEC --dry-run runs it with every start check" 3
 shift || true
 while [ $# -gt 0 ]; do
   case "$1" in

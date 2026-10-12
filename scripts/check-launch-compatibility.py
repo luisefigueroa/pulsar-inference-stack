@@ -33,7 +33,8 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try: result=check_launch_compatibility(serving.load_spec(args.spec))
     except (ValueError,OSError) as exc:
-        print(f'error: launch compatibility: {exc}',file=sys.stderr);return 1
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='launch compatibility');return 1
     print(json.dumps(result,sort_keys=True) if args.json else 'Spec contract and platform supported; live prerequisites were not checked.')
     return 0
 if __name__=='__main__': raise SystemExit(main())

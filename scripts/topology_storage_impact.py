@@ -82,7 +82,8 @@ def main(argv=None) -> int:
             raise ValueError('proposed topology is missing')
         document = assess(old, new, Store(args.state_root))
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f'error: topology storage impact: {exc}', file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='topology storage impact')
         return 2
     if args.json:
         print(json.dumps(document, sort_keys=True))

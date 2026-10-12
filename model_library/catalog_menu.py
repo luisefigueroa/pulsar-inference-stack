@@ -596,7 +596,8 @@ def main(argv: list[str] | None = None) -> int:
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"error: catalog menu: {exc}", file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='catalog menu')
         return 2
 
 

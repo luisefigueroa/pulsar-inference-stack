@@ -14,7 +14,7 @@ import sys
 from typing import Any
 
 try:
-    from scripts.terminal_format import TerminalWriter
+    from scripts.terminal_format import TerminalWriter, error_line
     from scripts.topology_manifest import (
         TopologyError,
         extract_topology,
@@ -25,7 +25,7 @@ try:
         validate_ssh_config_file,
     )
 except ModuleNotFoundError:
-    from terminal_format import TerminalWriter
+    from terminal_format import TerminalWriter, error_line
     from topology_manifest import (
         TopologyError,
         extract_topology,
@@ -552,7 +552,7 @@ def main() -> int:
             render_human(report)
         return 0 if report["ok"] else 1
     except (TopologyError, OSError) as exc:
-        print(f"error: topology-ssh-trust: {exc}", file=sys.stderr)
+        error_line(exc, tag='topology-ssh-trust')
         return 2
 
 

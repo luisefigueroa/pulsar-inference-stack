@@ -708,17 +708,22 @@ def cmd_show(
 
 
 def main(argv=None):
-    parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['list','verify','show','shell-values'])
-    parser.add_argument('spec_id',nargs='?')
-    parser.add_argument('--repo-root',default=str(_REPO_ROOT))
-    parser.add_argument('--releases-root')
-    parser.add_argument('--spec-file')
-    parser.add_argument('--overlay')
-    parser.add_argument('--image-repo')
-    parser.add_argument('--platform-id')
-    parser.add_argument('--json',action='store_true')
-    parser.add_argument('--markdown',action='store_true')
+    # People see show, verify and the deprecated list; the rest serve Stack scripts.
+    parser=argparse.ArgumentParser(prog='pulsar release',
+        usage='pulsar release show|verify SPEC_ID [--json]',
+        description='Print a catalog spec as JSON (show), or its state and review (verify). '
+                    'SPEC_ID is the complete 64-character ID. pulsar release list is deprecated; '
+                    'use pulsar models list.')
+    parser.add_argument('command',choices=['list','verify','show','shell-values'],help=argparse.SUPPRESS)
+    parser.add_argument('spec_id',nargs='?',help=argparse.SUPPRESS)
+    parser.add_argument('--repo-root',default=str(_REPO_ROOT),help=argparse.SUPPRESS)
+    parser.add_argument('--releases-root',help=argparse.SUPPRESS)
+    parser.add_argument('--spec-file',help=argparse.SUPPRESS)
+    parser.add_argument('--overlay',help=argparse.SUPPRESS)
+    parser.add_argument('--image-repo',help=argparse.SUPPRESS)
+    parser.add_argument('--platform-id',help=argparse.SUPPRESS)
+    parser.add_argument('--json',action='store_true',help='print JSON')
+    parser.add_argument('--markdown',action='store_true',help=argparse.SUPPRESS)
     args=parser.parse_args(argv)
     try:
         root=pathlib.Path(args.repo_root)

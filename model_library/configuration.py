@@ -238,7 +238,8 @@ def main(argv=None):
         else:
             display(state)
     except (ValueError, OSError) as exc:
-        print(f'error: archive configuration: {exc}', file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='archive configuration')
         return 2
     return 0
 

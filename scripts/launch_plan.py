@@ -167,7 +167,8 @@ def main(argv=None):
         print(json.dumps(result,sort_keys=True,indent=2))
         return 0
     except (ValueError,OSError,KeyError,TypeError) as exc:
-        print(f'error: launch plan: {exc}',file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='launch plan')
         return 2
 
 if __name__=='__main__': raise SystemExit(main())

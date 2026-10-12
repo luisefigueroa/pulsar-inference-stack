@@ -43,7 +43,7 @@ load_service() {
 service_actions() {
   local spec="$1" index choice rc
   local -a options=() STATUS_ARGS=() STOP_ARGS=()
-  local STOP_QUESTION=""
+  local STOP_QUESTION="" started
   while load_service "$spec"; do
     options=("Detailed status")
     [ "${#STOP_ARGS[@]}" -eq 0 ] || options+=("Stop service")
@@ -64,9 +64,16 @@ service_actions() {
         [ "${#STOP_ARGS[@]}" -gt 0 ] || continue
         confirm "$STOP_QUESTION" no \
           || { rc=$?; echo 'Nothing was stopped.'; [ "$rc" -ne 130 ] || return 130; continue; }
-        rc=0
+        rc=0 started=$SECONDS
         "$REPO_DIR/pulsar" stop "${STOP_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
+        # The same outcome line as the catalog menu's operations.
+        if [ "$rc" -eq 0 ]; then
+          printf '✓ Stop finished for spec %s in %s\n' "${spec:0:12}" "$(elapsed_text $((SECONDS - started)))"
+        else
+          printf '✗ Stop failed for spec %s (exit %d) after %s; details above\n' "${spec:0:12}" "$rc" \
+            "$(elapsed_text $((SECONDS - started)))"
+        fi
         ;;
       "Refresh inventory") ;;
       *) return 0 ;;

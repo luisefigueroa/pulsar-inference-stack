@@ -111,6 +111,7 @@ def main():
         print(f'Current spec format checked: {count} changed catalog file(s).')
         return 0
     except (ValueError,OSError) as exc:
-        print(f'error: catalog changes: {exc}',file=sys.stderr);return 2
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='catalog changes');return 2
 
 if __name__=='__main__': raise SystemExit(main())

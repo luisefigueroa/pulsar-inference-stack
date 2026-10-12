@@ -598,7 +598,8 @@ def main():
         print(str(exc), file=sys.stderr)
         return exc.exit_code if exc.confirmed else 4
     except (OSError, ValueError, RuntimeError) as exc:
-        print(f'error: verification transport: {exc}', file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='verification transport')
         return 2
 
 

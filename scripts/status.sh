@@ -3,7 +3,8 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [ $# = 0 ]; then
-  "$ROOT/scripts/release.sh" list
+  # The same catalog list as pulsar models list, then how to check one live.
+  "$ROOT/scripts/model-storage.sh" list
   printf '\nSelect a spec for a live check: ./pulsar status <spec_id>\n'
   exit 0
 fi

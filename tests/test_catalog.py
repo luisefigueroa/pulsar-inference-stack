@@ -98,6 +98,54 @@ class Catalog(unittest.TestCase):
         self.assertEqual(blocker_text("node-a: files missing", row, names), "spark-1: files missing")
         self.assertEqual(blocker_text("files missing", row, names), "files missing")
 
+    def test_models_and_bare_status_show_the_same_list(self):
+        import pty
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_", "GUM"))}
+        env.update(COLUMNS="80", PULSAR_MODEL_LIBRARY_DIR=str(self.store.root), TERM="dumb",
+                   PYTHONDONTWRITEBYTECODE="1")
+        listed = subprocess.run([str(ROOT / "pulsar"), "models", "list"], env=env, text=True,
+                                capture_output=True, timeout=60)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        # status without a spec: the same list, then how to check one spec live.
+        status = subprocess.run([str(ROOT / "pulsar"), "status"], env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(status.stdout, listed.stdout + "\nSelect a spec for a live check: ./pulsar status <spec_id>\n")
+        # On a terminal without Gum, pulsar models shows the list instead of refusing.
+        primary, secondary = pty.openpty()
+        try:
+            browse = subprocess.run([str(ROOT / "pulsar"), "models"], env=env, stdin=secondary, text=True,
+                                    capture_output=True, timeout=60)
+        finally:
+            os.close(primary); os.close(secondary)
+        self.assertEqual(browse.returncode, 0, browse.stderr)
+        self.assertEqual(browse.stdout, listed.stdout)
+        self.assertEqual(browse.stderr, "warning: the catalog menu needs Gum on this terminal; showing pulsar models list\n")
+
+    def test_copy_records_show_when_they_were_verified(self):
+        from model_library.catalog import blocker_text, _details
+        from model_library.node_names import NodeNames
+        from scripts.terminal_format import TerminalWriter
+        names = NodeNames({"node-a": "spark-1"})
+        now = datetime(2026, 10, 12, tzinfo=timezone.utc)
+        copy = {"rank": 0, "node_id": "node-a", "path": "/copies/rank-0", "pinned": False,
+                "verified_at": "2026-10-10T00:00:00Z"}
+        row = {"prepared_copies": [copy]}
+        message = "required prepared copy is missing or placement changed"
+        # A copy's age can be weighed against the check's age.
+        self.assertEqual(blocker_text(f"required snapshot target: rank 0: {message}", row, names, now),
+                         f"target snapshot · rank 0 (copy recorded on spark-1, verified 2 days ago): {message}")
+        # An unreadable time is left out rather than guessed.
+        row = {"prepared_copies": [{**copy, "verified_at": "not a time"}]}
+        self.assertEqual(blocker_text(f"required snapshot target: rank 0: {message}", row, names, now),
+                         f"target snapshot · rank 0 (copy recorded on spark-1): {message}")
+        out = io.StringIO()
+        detail = {"spec_id": "a" * 64, "snapshot_revision": "b" * 40, "snapshot_manifest_id": "c" * 64,
+                  "image": {"digest": "sha256:" + "d" * 64}, "engine_args": [],
+                  "home": {"node_id": "node-a", "path": "/homes/model", "verified_at": "2026-10-11T00:00:00Z"},
+                  "prepared_copies": [copy]}
+        _details(TerminalWriter(width=80, stream=out), detail, names, 13, now)
+        self.assertIn("Home         spark-1 · verified 1 day ago", out.getvalue())
+        self.assertIn("rank 0  spark-1 · not pinned · verified 2 days ago", out.getvalue())
+
     def test_snapshot_blockers_survive_json_key_reordering(self):
         from tests.test_container_runtime import fixture
         spec = fixture(speculative=True)[0]
@@ -345,7 +393,7 @@ class Catalog(unittest.TestCase):
                 line = next(line for line in lines if re.search(rf"(^| ){re.escape(flag)}( |$)", line))
                 # The value starts on the flag's line; only an overlong value breaks later.
                 self.assertIn(f"{flag} {shlex.quote(value)[:10]}", line, text)
-            self.assertRegex(text, r"(?m)^  Home +spark-1$")
+            self.assertRegex(text, r"(?m)^  Home +spark-1 · verified \d+ hours? ago$")
             self.assertIn("/nonexistent/home/snapshot", text)
             self.assertRegex(text, r"(?m)^  Prepared copies +none recorded$")
 
@@ -477,7 +525,7 @@ confirm() {
   printf '%s\n' "$1" >>"$CONFIRM_LOG"
   case "$(_pop "$MENU_CONFIRMS")" in yes) return 0 ;; "<ctrl-c>") return 130 ;; *) return 1 ;; esac
 }
-'''
+''' + re.search(r"^elapsed_text\(\) \{\n.*?^\}\n", (ROOT / "scripts/ui.sh").read_text(), re.S | re.M).group(0)
     ACTION = """#!/usr/bin/env python3
 import json,os,sys
 open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")

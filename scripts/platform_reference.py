@@ -322,7 +322,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.stdout.write(export_shell(platform))
     except PlatformReferenceError as exc:
-        print(f"error: platform-reference: {exc}", file=sys.stderr)
+        from terminal_format import error_line
+        error_line(exc, tag='platform-reference')
         return 1
     return 0
 

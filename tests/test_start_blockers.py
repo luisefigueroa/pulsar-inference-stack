@@ -413,6 +413,18 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual(codes, ["image_missing", "memory_insufficient"])
         self.assertIn("Next: ./pulsar start abababababab --node spark-1 --dry-run --pull-image", result.stdout)
 
+    def test_a_dry_run_says_in_words_what_start_would_do(self):
+        for flags, nodes, would in (
+                ((), 1, "start the service on spark-1"),
+                (("--replace",), 1, "replace the existing service, then start the service on spark-1"),
+                (("--skip-preflight",), 2, "start a 2-node service on fixture-host-0 (rank 0), fixture-host-1 (rank 1)")):
+            with self.subTest(flags=flags, nodes=nodes):
+                self.reset()
+                result, codes = self.start("--dry-run", *flags, image="ok", nodes=nodes)
+                self.assertEqual((result.returncode, codes), (0, []), result.stderr)
+                self.assertIn(f"\n  would:    {would}\n", result.stdout)
+                self.assertNotIn(".sh", result.stdout.split("would:", 1)[1].splitlines()[0])
+
     def test_dry_run_with_pull_image_reports_the_staging_it_would_do(self):
         result, codes = self.start("--dry-run", "--pull-image")
         self.assertEqual(result.returncode, 0, result.stderr)

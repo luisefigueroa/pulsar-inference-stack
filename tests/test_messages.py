@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
@@ -38,11 +39,25 @@ class Prefixes(unittest.TestCase):
             for number, line in enumerate(path.read_text().splitlines(), 1):
                 if "] ERROR:" in line or "] warn:" in line or 'log "WARNING' in line:
                     offenders.append(f"{path.relative_to(ROOT)}:{number}")
+        # Python errors lead with the message too: no "error: tool name: {exc}".
+        tagged = re.compile(r"error: [a-z][a-z -]+: \{exc\}")
         for path in [*ROOT.glob("scripts/*.py"), *ROOT.glob("model_library/*.py"), *ROOT.glob("release_spec/*.py")]:
             for number, line in enumerate(path.read_text().splitlines(), 1):
-                if "sys.stderr" in line and ": ERROR: {" in line:
+                if "sys.stderr" in line and (": ERROR: {" in line or tagged.search(line)):
                     offenders.append(f"{path.relative_to(ROOT)}:{number}")
         self.assertEqual(offenders, [])
+
+    def test_python_errors_name_their_tool_only_when_verbose(self):
+        import io
+        from scripts.terminal_format import error_line
+        for verbose, expected in (("0", "error: spec input is too broad\n"),
+                                  ("1", "[launch compatibility] error: spec input is too broad\n")):
+            with self.subTest(verbose=verbose):
+                stream = io.StringIO()
+                env = {**os.environ, "PULSAR_VERBOSE": verbose}
+                with unittest.mock.patch.dict(os.environ, env):
+                    error_line("spec input is too broad", tag="launch compatibility", stream=stream)
+                self.assertEqual(stream.getvalue(), expected)
 
     def test_start_verbose_tags_even_argument_errors(self):
         result = subprocess.run([str(ROOT / "pulsar"), "start", "ab" * 32, "--verbose", "--bogus"],
