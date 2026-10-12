@@ -171,6 +171,11 @@ def stop(output, run_id):
     controller = json.loads(read_regular(output / "controller.json"))
     if plan["guard_run_id"] != run_id or controller["run_id"] != run_id:
         raise ValueError("guard invocation changed")
+    owner = controller.get("owner")
+    if (not isinstance(owner, list) or len(owner) != 2 or type(owner[0]) is not int or owner[0] <= 0
+            or not isinstance(owner[1], str) or not owner[1].isdigit()):
+        # A malformed record establishes nothing about the controller.
+        raise ValueError("saved guarded controller identity is malformed")
     if (output / "result.json").exists():
         raise StopRefused(f"guarded run {run_id[:12]} already finished; nothing to stop. Its outcome is in "
                          f"{output / 'result.json'}")

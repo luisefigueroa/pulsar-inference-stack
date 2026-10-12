@@ -619,6 +619,14 @@ class Interrupts(unittest.TestCase):
         self.assertEqual(record["message"], "spark-1: start was interrupted after the service became healthy, while "
                                             "every rank was being verified; it is running on all 2 ranks")
 
+    def test_an_interrupt_while_replace_removes_the_old_service_names_it(self):
+        record = self.cluster_record("replacing")
+        self.assertEqual(record["message"], "start was interrupted while --replace was removing the previous "
+                                            "service; some of its containers may remain")
+        self.assertEqual(record["note"], "Nothing was started. To remove what remains of the previous service: "
+                                         "./pulsar stop abababababab")
+        self.assertEqual(record["service_id"], SERVICE_ID)
+
     def test_an_interrupted_replacement_says_the_previous_service_was_removed(self):
         record = self.cluster_record("loading", LAUNCH_AFTER_REPLACE="1")
         self.assertEqual(record["note"], "The previous service was removed before this launch. Nothing this start "

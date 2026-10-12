@@ -76,6 +76,9 @@ cluster_interrupted() {
     verifying)
       where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
       detail="after the service became healthy, while every rank was being verified; it is running on all $NODES ranks" ;;
+    replacing)
+      detail="while --replace was removing the previous service; some of its containers may remain"
+      noted=(--note "Nothing was started. To remove what remains of the previous service: {stop}") ;;
     removing)
       detail="while the failed launch's containers were being removed; some may remain"
       noted=(--note "Some may already be removed. To remove the rest: {stop}") ;;
@@ -241,7 +244,11 @@ fi
 if [ "$REPLACE" = 1 ]; then
   log "removing existing stack-managed ranks (ownership required)"
   stale_rc=0
+  # The service ID is the same for the service being replaced.
+  SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
+  CLUSTER_PHASE=replacing
   remove_stack_owned_cluster "$MODEL_NAME" "$CONTAINER" "$NODES" || stale_rc=$?
+  CLUSTER_PHASE=preparing
   if [ "$stale_rc" -eq 2 ]; then
     error_line "ownership not proven on every existing rank of $CONTAINER"
     log "No ambiguous rank was removed. Inspect labels or stop manually." >&2

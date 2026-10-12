@@ -292,6 +292,13 @@ class GuardContracts(unittest.TestCase):
                 (root/'result.json').write_text('{}')
                 with self.assertRaisesRegex(ValueError,'already finished; nothing to stop'):
                     controller.stop(root,plan['guard_run_id'])
+                # A malformed owner establishes nothing: a document error, never a state refusal.
+                for owner in ([12345], [12345, 99], ['12345', '99'], None):
+                    with self.subTest(owner=owner):
+                        (root/'controller.json').write_text(json.dumps({'run_id':plan['guard_run_id'],'owner':owner}))
+                        with self.assertRaisesRegex(ValueError,'controller identity is malformed') as raised:
+                            controller.stop(root,plan['guard_run_id'])
+                        self.assertNotIsInstance(raised.exception,controller.StopRefused)
             kill.assert_not_called()
 
 
