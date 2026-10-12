@@ -187,16 +187,27 @@ list_managed_container_ids_remote() { return 0; }
             for selector in (plan['selected_spec_id'],'--all'):
                 save(self.store,plan)
                 for rc in (1,0):
-                    result=subprocess.run([str(ROOT/'pulsar'),'stop',selector,'--json'],
+                    approval=['--yes'] if selector=='--all' else []
+                    result=subprocess.run([str(ROOT/'pulsar'),'stop',selector,*approval,'--json'],
                         env={**env,'FIXTURE_STOP_RC':str(rc),'FIXTURE_NODE_COUNT':str(nodes)},
                         text=True,capture_output=True,timeout=10)
                     with self.subTest(nodes=nodes,selector=selector,rc=rc):
+                        self.assertNotIn('without --yes',result.stderr)
                         self.assertEqual(result.returncode==0,rc==0,result.stderr+result.stdout)
                         self.assertEqual(self.store.get('services',plan['service_id']) is None,rc==0)
                         self.assertIsNotNone(self.store.get('service-plans',plan['plan_id']))
                         if rc==0:
                             stopped=None if selector=='--all' else True
                             self.assertEqual(json.loads(result.stdout)['result']['stopped'],stopped)
+        # Until CLI contract 2, stop --all without --yes warns once and still runs.
+        save(self.store,self.plan)
+        result=subprocess.run([str(ROOT/'pulsar'),'stop','--all','--json'],
+            env={**env,'FIXTURE_STOP_RC':'0','FIXTURE_NODE_COUNT':'2'},text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr.count('warning: pulsar stop --all without --yes is deprecated: it stops '
+                                             'every Stack-managed service on all 2 confirmed nodes. '
+                                             'CLI contract 2 requires --yes.'),1,result.stderr)
+        self.assertIsNone(self.store.get('services',self.plan['service_id']))
         result=subprocess.run([str(ROOT/'pulsar'),'stop',self.plan['selected_spec_id'],'--json'],
             env={**env,'FIXTURE_STOP_RC':'0','FIXTURE_NODE_COUNT':'1','FIXTURE_NOTHING_FOUND':'1'},
             text=True,capture_output=True,timeout=10)

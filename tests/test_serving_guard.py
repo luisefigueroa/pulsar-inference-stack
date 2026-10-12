@@ -735,7 +735,7 @@ remove_all_stack_managed_remote() { :; }
 list_managed_container_ids_local() { :; }
 list_managed_container_ids_remote() { :; }
 """)
-        result = subprocess.run([str(ROOT/'pulsar'), 'stop', '--all', '--json'],
+        result = subprocess.run([str(ROOT/'pulsar'), 'stop', '--all', '--yes', '--json'],
             env={**self.env, 'BASH_ENV':str(envfile)}, text=True, capture_output=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
 

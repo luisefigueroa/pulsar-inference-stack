@@ -591,6 +591,10 @@ Stop a service independently of storage cleanup:
 Omit `--node` for a multi-node service. For a guarded trial, follow its
 [owned stop procedure](GUARDED_SERVING.md#observe-and-stop).
 
+Stopping one spec asks no confirmation. To stop every Stack-managed service on
+all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
+and still runs until CLI contract 2 requires it.
+
 ### Pin or reclaim prepared copies
 
 The commands below are alternatives, not a sequence to run together. Pinning

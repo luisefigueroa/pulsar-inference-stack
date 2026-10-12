@@ -322,6 +322,8 @@ Change note, 2026-10-12: `start --yes` is deprecated and listed in
 `deprecated_flags`. Start asks no confirmation, and the flag has granted
 nothing since `--pull-image` and `--replace` took over its permissions; it
 warns on stderr and is removed in CLI contract 2.
+`stop SPEC --yes` is a `usage_error` that says stop of one spec asks no
+confirmation. `stop --all` without `--yes` warns that CLI contract 2 requires it.
 
 Change note, 2026-09-29: `invalid_stack_output` exits 3 instead of 2. Without
 `--json`, refusals (a serving guard, a historical spec, another platform) exit
@@ -383,6 +385,10 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,
 `stopped` is `null` because the result is not established per spec.
+`stop --all` stops every Stack-managed service on all confirmed nodes, and
+`--yes` approves it. Without `--yes` it warns on stderr and still runs; CLI
+contract 2 requires `--yes`. `stop SPEC` asks no confirmation, and `--yes`
+with it is a `usage_error`.
 
 `status --json SPEC` reports what status established about the spec's service.
 `ok` is true whenever a service exists, whatever its state:
