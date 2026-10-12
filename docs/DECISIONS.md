@@ -39,3 +39,12 @@ with the stored effective spec. New measurements live in separate run directorie
 Old specs/evidence are historical only for future operations. Inventory and safe
 stop still recognize existing services. No service is restarted or evidence
 rewritten merely because Stack code changes. See [CONTRACT.md](CONTRACT.md).
+
+## Historical planning
+
+The [spec-contract implementation proposal](SPEC_CONTRACT_IMPLEMENTATION_PLAN.md)
+preserves the September 9, 2026 design and sequencing discussion. Its baseline,
+future-tense instructions, and review checkpoints describe that planning task.
+Use [the public contract](CONTRACT.md) for current interfaces and
+[Operations](OPERATIONS.md) for current procedures. The proposal is not a
+completion record or evidence of physical validation.

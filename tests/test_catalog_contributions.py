@@ -84,12 +84,60 @@ class CatalogContributions(unittest.TestCase):
         from release_spec import serving
         spec=serving.load_spec(ROOT/'tests/fixtures/contracts/spec.json')
         spec['recipe']['geometry']['platform_id']='future-platform'
+        spec['recipe']['engine_args'] += ['--enable-auto-tool-choice','--tool-call-parser','example_tools',
+                                          '--reasoning-parser','example_reasoning']  # catalog members need them
         spec['spec_id']=serving.spec_id(spec['recipe'])
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);(root/'releases').mkdir()
             (root/'releases'/(spec['spec_id']+'.json')).write_bytes(pretty_json_bytes(spec))
             self.assertTrue(catalog.check_catalog(root)['verified'])
             with self.assertRaises(compat.CompatibilityError): compat.check_launch_compatibility(spec)
+
+    def test_current_candidate_specs_need_no_measurements_for_catalog_admission(self):
+        from release_spec import serving
+        fixtures = ROOT / 'tests/fixtures/contracts'
+        manifest = json.loads((fixtures / 'manifest.json').read_text())
+        for version in (1, 2):
+            draft = json.loads((fixtures / 'draft.json').read_text())
+            draft['schema_version'] = version
+            if version == 2:
+                draft['recipe']['required_snapshots'] = {}
+            # freeze emits a current-schema spec from either draft version, so both need the catalog flags
+            draft['recipe']['engine_args'] += ['--enable-auto-tool-choice', '--tool-call-parser', 'example_tools',
+                                               '--reasoning-parser', 'example_reasoning']
+            spec = serving.freeze(draft, manifest if version == 1 else {'target': manifest})
+            with self.subTest(schema=spec['schema_version']), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                (root / 'releases').mkdir()
+                path = root / 'releases' / (spec['spec_id'] + '.json')
+                raw = pretty_json_bytes(spec)
+                path.write_bytes(raw)
+                result = catalog.check_catalog(root)
+                self.assertTrue(result['verified'])
+                self.assertEqual(result['spec_count'], 1)
+                self.assertEqual(path.read_bytes(), raw)
+                self.assertEqual(json.loads(path.read_bytes())['state'], 'candidate')
+                self.assertFalse((root / 'results').exists())
+
+    def test_catalog_member_without_parser_arguments_is_rejected(self):
+        # Every current catalog member must declare the tool-choice and parser engine
+        # arguments; schema-1 history (the fixture above) is readable but not re-admitted.
+        from release_spec import serving
+        from release_spec.catalog_policy import CatalogPolicyError
+        fixtures = ROOT / 'tests/fixtures/contracts'
+        manifest = json.loads((fixtures / 'manifest.json').read_text())
+        draft = json.loads((fixtures / 'draft.json').read_text())
+        draft['schema_version'] = 2
+        draft['recipe']['required_snapshots'] = {}
+        spec = serving.freeze(draft, {'target': manifest})
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / 'releases').mkdir()
+            (root / 'releases' / (spec['spec_id'] + '.json')).write_bytes(pretty_json_bytes(spec))
+            with self.assertRaises(CatalogPolicyError) as raised:
+                catalog.check_catalog(root)
+            self.assertIn('--tool-call-parser', str(raised.exception))
+        self.assertTrue(self.check()['verified'])
 
     def test_withdrawn_recipe_retains_same_baseline_provenance(self):
         self.spec['review'].update(status='withdrawn',reason='A later observation requires caution.')

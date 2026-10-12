@@ -16,7 +16,7 @@ from .identity import _canonical_container_env, _canonical_engine_args, _canonic
 from .immutable_io import ImmutableDescriptorDirectoryError, parse_strict_json, read_absolute_file
 from .manifest import verify_snapshot_manifest
 from .normalize import canonical_json_digest, normalize_container_env, normalize_engine_args
-from .schema import ReleaseSpecError, IMAGE_DIGEST_RE, require_commit, require_model_id, require_public_string
+from .schema import ReleaseSpecError, IMAGE_DIGEST_RE, STATES, require_commit, require_model_id, require_public_string
 from .verify import _verify_review, verify_spec as verify_historical_spec
 
 SUPPORTED_SPEC_SCHEMAS = (2, 3)
@@ -303,8 +303,9 @@ def verify_spec(document: Any) -> dict:
         invalid("recipe", "must use canonical ordering and token spelling; freeze the draft first")
     if document["spec_id"] != spec_id(recipe):
         invalid("spec_id", "does not match the canonical recipe")
-    if document["state"] not in (None, "measured", "released"):
-        invalid("state", "expected null, measured, or released")
+    state = document["state"]
+    if state is not None and (not isinstance(state, str) or state not in STATES):
+        invalid("state", "expected null, candidate, measured, or released")
     return {**copy.deepcopy(document), "source": source_location(document["source"]),
             "review": _verify_review(document["review"], path="review")}
 
@@ -350,7 +351,7 @@ def freeze(draft: Any, manifest: Any) -> dict:
     snapshot_engine_args(recipe)
     return verify_spec({"schema_version": version + 1, "kind": SPEC_KIND,
                         "spec_id": spec_id(recipe), "recipe": recipe,
-                        "source": source_location(draft["source"]), "state": None, "review": None})
+                        "source": source_location(draft["source"]), "state": "candidate", "review": None})
 
 
 def apply_overrides(selected: dict, overrides: Any) -> dict:
@@ -370,7 +371,7 @@ def apply_overrides(selected: dict, overrides: Any) -> dict:
     recipe = canonical_recipe(recipe)
     effective = {**selected, "recipe": recipe, "spec_id": spec_id(recipe)}
     if effective["spec_id"] != selected["spec_id"]:
-        effective.update(state=None, review=None)
+        effective.update(state="candidate", review=None)
     return verify_spec(effective)
 
 

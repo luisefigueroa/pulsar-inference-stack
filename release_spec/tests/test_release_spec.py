@@ -408,6 +408,10 @@ class ReleaseSpecTests(unittest.TestCase):
         verified = verify_spec(nullable)
         self.assertIsNone(verified["state"])
         self.assertIsNone(verified["review"])
+        candidate = _copy(self.measured)
+        candidate["state"] = "candidate"
+        with self.assertRaisesRegex(ReleaseSpecError, "state"):
+            verify_spec(candidate)  # Schema 1 retains its historical state contract.
         invalid = _copy(nullable)
         invalid["review"] = "unreviewed"
         with self.assertRaisesRegex(ReleaseSpecError, "null or an object"):

@@ -5,6 +5,9 @@ those same services to experiment with recipes and produce catalog
 contributions. Operator serving and archive restoration require no private
 workbench checkout.
 
+For the operator workflow, start with [Operations](OPERATIONS.md). The
+[public contract](CONTRACT.md) defines exact document formats and CLI results.
+
 ```mermaid
 flowchart TD
     lab[Private workbench: draft and approve variant] --> candidate[Exact candidate spec]
@@ -118,6 +121,12 @@ and prepared-file state.
 ## Qualification and contribution
 
 The workbench retains complete attempts and detailed diagnostics privately.
+New campaigns use baseline-v2: five graded criteria plus the retained greedy
+repeatability diagnostic. Baseline-v1 remains available for historical campaigns;
+its six-outcome policy is unchanged. See
+[measurements and history](CONTRACT.md#measurements-and-history) for the evidence
+contract. Neither policy determines catalog membership.
+
 Baseline-v1 keeps six minimum checks: exact snapshot identity, serving smoke,
 same-boot repeatability, pinned GSM8K accuracy, the 60-minute soak and required
 performance measurements. Every participating node is checked before and after
@@ -131,7 +140,7 @@ results never add or remove membership. Deterministic evidence checks establish
 document consistency only; physical execution claims still require maintainer
 judgement.
 
-The catalog starts empty, with no imported experiments or recipes. The deeper
+The catalog began empty, with no imported experiments or recipes. The deeper
 `validated` suite is deferred. State and review metadata do not authorize or block serving;
 operational prerequisites still apply.
 

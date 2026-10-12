@@ -86,7 +86,9 @@ def failure(exc, *, json_output: bool, code=None, exit_code=None):
         print(json.dumps({"schema_version": 1, "ok": False,
                           "error": {"code": code, "message": str(exc), "details": details}}, sort_keys=True))
     else:
-        print(f"error: {exc}", file=sys.stderr)
+        # A command-line mistake names the command itself; its field label adds nothing.
+        command_mistake = isinstance(exc, UsageError) and exc.field == "command"
+        print(f"error: {exc.reason if command_mistake else exc}", file=sys.stderr)
     return exit_code
 
 

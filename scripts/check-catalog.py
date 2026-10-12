@@ -21,6 +21,7 @@ STACK_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(STACK_ROOT))
 
 from release_spec import load_spec
+from release_spec.catalog_policy import check_required_engine_args
 from release_spec.catalog_removals import LEDGER_PATH, parse_removals
 
 
@@ -64,6 +65,8 @@ def check_catalog(repo_root: str | Path) -> dict:
         spec_id = spec['spec_id']
         if name != f'{spec_id}.json':
             raise CatalogError(f'releases/{name}: filename differs from catalog identity')
+        if spec['schema_version'] in (2, 3):  # historical schema-1 records stay readable
+            check_required_engine_args(spec, label=f'releases/{name}')
         declared_evidence_count += len(spec.get('evidence', []))
         specs.append(spec)
     ledger = root / LEDGER_PATH

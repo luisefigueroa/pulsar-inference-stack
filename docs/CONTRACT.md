@@ -5,6 +5,9 @@ Stack modules, source its shell library, or require a matching Git commit.
 `pulsar contract --json` lists implemented operations and supported document
 versions. Check the operations needed for an action before performing it.
 
+For setup and lifecycle procedures, use [Operations](OPERATIONS.md). This page
+is the reference for document identity, command results, and compatibility.
+
 ## Documents and identity
 
 A schema-2 or schema-3 `pulsar-serving-spec` contains `schema_version`, `kind`,
@@ -22,6 +25,9 @@ The recipe contains the model ID and model commit, complete snapshot manifest,
 image digest, engine argument tokens, literal container environment, hardware
 geometry, and explicit container settings. Snapshot manifests retain schema 1
 and their original `snapshot_revision` field and hashing for storage reuse.
+Schema verification does not require tool-choice or parser engine arguments;
+catalog publication does, as described in
+[catalog contribution review](CONTRIBUTIONS.md).
 
 Container settings may include the optional [guard policy](SERVING_GUARD_SCHEMA.md).
 `contract` advertises its supported document versions through
@@ -41,6 +47,10 @@ refuses destination tag conflicts, and requires exact repository/digest readback
 Image IDs alone do not establish a pinned reference. Named export and registry
 pulling are separate modes; an incomplete named stream never falls back to a
 pull. `--plan` observes only, while `--yes` applies the selected stage.
+
+Optional [memory estimates](MEMORY_ESTIMATES.md) supply reviewed resident-weight
+inputs for an exact effective spec. They affect admission calculations and the
+recorded launch plan, not recipe identity or evidence of physical fit.
 
 An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
 not recipe data. It selects ordered confirmed members for preparation, file and
@@ -235,7 +245,7 @@ Execution operations independently check their live prerequisites.
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
 | `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
-| `contribution verify --package DIR` | Validate the exact package, identities, hashes, and publication privacy |
+| `contribution verify --package DIR` | Validate the exact package, identities, hashes, required catalog engine arguments, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
 
@@ -258,7 +268,8 @@ successful command results or snapshot, prepared-set and evidence schemas.
 positive integer, default 3). Prepared-file verification runs at most N jobs
 and at most one per physical node. `1` selects serial execution; `--full`
 independently requests full hashes. Every required snapshot and rank must
-verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#historical-specs-and-current-observations).
+verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#inspect-a-running-service)
+and [file verification](OPERATIONS.md#verify-model-files).
 
 For non-streaming `--json` operations, stdout is one envelope with schema version
 1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human
@@ -297,6 +308,15 @@ Each exit status has one meaning, with or without `--json`:
 Without `--json`, `start`, `stop`, `status` and `model` run their operator
 scripts directly, so a refused or failed action exits 1 and a command-line
 mistake exits 2.
+
+Under `--json`, these four commands require the complete 64-character spec ID.
+A shortened or invalid ID is a `usage_error`, reported before any lock is taken
+or node is contacted; its message names the matching catalog spec IDs.
+
+Change note, 2026-10-11: a shortened spec ID under `--json` is a `usage_error`
+for `start`, `stop`, `status` and `model`. Before, `status` could probe every
+node and report `service_absent`, and `start` reported `prerequisite_failed`
+after taking its lock.
 
 Change note, 2026-09-29: `invalid_stack_output` exits 3 instead of 2. Without
 `--json`, refusals (a serving guard, a historical spec, another platform) exit

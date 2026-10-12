@@ -6,22 +6,61 @@ the filename must equal the document's complete `spec_id`. The stack does not
 promote, classify, or infer catalog authority from state, review, evidence,
 archive observations, or launch compatibility.
 
-`state` may be `measured`, `released`, or null. `review` may be a valid review
-object, an empty object, or null. Both are display metadata. A catalog spec is
-selectable regardless of either value, while actual storage and serving actions
-continue to enforce their live prerequisites.
+For schema-2 and schema-3 specs, `state` may be `candidate`, `measured`, `released`,
+or null. Newly frozen specs default to `state: "candidate"` and `review: null`.
+Candidate is the initial maturity state of that specific spec, not its model
+repository. It makes no claim of successful qualification, readiness, or active
+testing; it can be published with no or partial measurements.
+
+Moving to `measured` or `released` is an explicit maintainer decision.
+Measurement success and publication never automatically promote a spec.
+`review` may be a valid review object, an empty object, or null, independently
+of `state`. Neither field gates catalog membership or serving, while actual
+storage and serving actions continue to enforce their live prerequisites.
+
+State and review are outside recipe identity: changing them does not change
+`spec_id`. An execution override that changes the recipe creates an effective
+spec with `state: "candidate"` and `review: null`; an unchanged recipe preserves
+its metadata. Adding evidence and exporting a selected spec preserve its
+metadata. Existing null-state specs remain valid and unchanged; do not rewrite
+stored specs, hashes, approvals, attempts, or contribution packages to adopt the
+new default. Historical schema-1 records retain their original state contract.
+
+Older Stack installations reject `candidate`, even if they advertise support
+for spec schemas 2 and 3. Use a Stack installation with candidate-state support
+to verify, serve, or accept these specs. Check the explicitly configured public
+executable and target catalog checkout; do not silently switch installations or
+rewrite a spec to null for compatibility.
 
 Run the catalog and publication-safety checks on the proposed checkout:
 
 ```sh
 python3 scripts/check-catalog.py
+python3 scripts/check-new-specs.py --base TARGET_BRANCH --merge-base
 python3 scripts/check_publishable_privacy.py
 git diff --check
 ```
 
 `check-catalog.py` checks the release-spec schema, regular-file layout, and the
-filename-to-`spec_id` binding. The privacy scanner remains a separate mandatory
-publication safeguard.
+filename-to-`spec_id` binding. `check-new-specs.py` checks the catalog files the
+change adds, modifies, or deletes. The privacy scanner remains a separate
+mandatory publication safeguard.
+
+Every new or modified catalog spec must declare three engine arguments in
+`recipe.engine_args`: `--enable-auto-tool-choice`, `--tool-call-parser NAME`,
+and `--reasoning-parser NAME`. Publication checks only that the flags are present
+and that each parser has a non-empty name. Parser names are model-specific;
+whether the serving image provides a named parser is established by serving the
+recipe, not by this check. `check-catalog.py` applies the rule to every
+schema-2 and schema-3 catalog member, and `check-new-specs.py` to added and
+modified catalog files. The public package verifier (`pulsar contribution verify`)
+and `scripts/verify-contribution.py` apply the same rule before publication,
+reporting the required arguments the selected spec lacks. Freezing a draft,
+`pulsar spec verify`, and `pulsar evidence verify` do not apply it, so experimental
+recipes without parsers remain valid attempts with independently verifiable
+evidence. Their exported packages must meet the engine-argument requirement
+before contribution verification succeeds. Historical schema-1 records stay
+readable.
 
 Select additional tests for the changed behavior using
 [validation guidance](TESTING.md#select-checks-for-the-change). A catalog-only
@@ -29,11 +68,13 @@ contribution needs its spec, package and applicable evidence checks; publication
 alone does not require the full implementation suite. Reuse matching validation,
 and check the exact staged content and commit metadata before publishing.
 
-## Optional assessments
+## Package verification and optional assessments
 
 New publications support schema-2 and schema-3 specs. Historical files already in
 the catalog remain readable; CI rejects adding or editing schema-1 specs for new operations.
-Use the public package verifier for an exported contribution:
+Use the public package verifier for an exported contribution. It checks the
+exact package's identities, paths, hashes, catalog engine arguments, included
+evidence integrity, and publication privacy:
 
 ```sh
 ./pulsar contribution verify --package PACKAGE_DIRECTORY --json

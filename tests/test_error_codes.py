@@ -58,6 +58,52 @@ class ErrorCodes(unittest.TestCase):
                                 text=True, capture_output=True, timeout=60)
         self.assertEqual((result.returncode, result.stderr.strip()), (2, "error: --interval requires a value"))
 
+    def test_a_missing_or_unknown_subcommand_names_the_valid_ones(self):
+        for args, message in (
+                (["evidence"], "pulsar evidence needs a subcommand: measurement, evaluate, verify or summary; "
+                               "see ./pulsar evidence --help"),
+                (["memory", "--bogus"], "pulsar memory needs a subcommand: verify; see ./pulsar memory --help"),
+                (["privacy", "bogus"], "pulsar privacy has no subcommand bogus; use check or commits; "
+                                       "see ./pulsar privacy --help")):
+            with self.subTest(args=args):
+                status, response = pulsar(*args)
+                self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+                self.assertEqual(response["error"]["details"][0]["message"], message)
+                human = subprocess.run([str(ROOT / "pulsar"), *args], text=True, capture_output=True)
+                self.assertEqual((human.returncode, human.stdout), (2, ""))
+                # The command names itself, so the human line drops the "command:" field label.
+                self.assertEqual(human.stderr, f"error: {message}\n")
+
+    def test_a_shortened_spec_id_under_json_is_a_usage_error_before_any_lock_or_probe(self):
+        ids = sorted(path.stem for path in (ROOT / "releases").glob("*.json") if len(path.stem) == 64)
+        spec = ids[0]
+        absent = next(prefix for prefix in ("0" * 12, "f" * 12, "a" * 12)
+                      if not any(spec_id.startswith(prefix) for spec_id in ids))
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            probe = root / "probe"
+            probe.write_text(f"#!/bin/sh\ntouch {root / 'probed'}\nexit 1\n")
+            probe.chmod(0o755)
+            env = {**os.environ, "PULSAR_SSH": str(probe), "PULSAR_DOCKER": str(probe),
+                   "PULSAR_MODEL_LIBRARY_DIR": str(root / "library"),
+                   "CLUSTER_TOPOLOGY_FILE": str(root / "absent-topology.json")}
+            for args, detail in (((spec[:12],), f"{spec[:12]} matches {spec}"),
+                                 ((absent,), f"{absent} is not a catalog spec ID; see ./pulsar models list --json"),
+                                 (("not-a-spec",), "not-a-spec is not a catalog spec ID")):
+                # status also takes its options before the spec.
+                for command in (["status"], ["status", "--node", "spark-1"], ["start"], ["stop"],
+                                ["model", "info"]):
+                    with self.subTest(command=command, args=args):
+                        result = subprocess.run([str(ROOT / "pulsar"), *command, *args, "--json"],
+                                                env=env, text=True, capture_output=True, timeout=60)
+                        response = json.loads(result.stdout)
+                        self.assertEqual((result.returncode, response["error"]["code"]), (2, "usage_error"))
+                        self.assertIn("--json requires the complete 64-character spec ID; " + detail,
+                                      response["error"]["details"][0]["message"])
+            # Neither the lifecycle lock nor any node or Docker probe was reached.
+            self.assertFalse((root / "library").exists())
+            self.assertFalse((root / "probed").exists())
+
     def test_stop_without_a_selector_says_so(self):
         status, response = pulsar("stop")
         self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))

@@ -1,5 +1,6 @@
 """Operator help shares one style, fits a narrow terminal and covers the README."""
 import io
+import json
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,8 @@ COMMANDS = [
     ("help",), ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
     ("status", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
     ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
+    ("image", "--help"), ("guarded", "--help"),
+    ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
 ]
 
 
@@ -54,7 +57,9 @@ class Help(unittest.TestCase):
                 self.assertEqual([line for line in text.splitlines() if len(line) > 44], [], text)
 
     def test_help_leads_with_usage_then_one_sentence_then_aligned_options(self):
-        for args in (("models", "--help"), ("status", "--help"), ("stop", "--help"), ("start", "--help")):
+        for args in (("models", "--help"), ("status", "--help"), ("stop", "--help"), ("start", "--help"),
+                     ("image", "--help"), ("guarded", "--help"), ("memory", "--help"),
+                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help")):
             with self.subTest(command=args[0]):
                 text = self.run_help(args, 80)
                 lines = text.splitlines()
@@ -79,6 +84,40 @@ class Help(unittest.TestCase):
         for word in ("--node NODE One-node spec: the recorded service's node, by hostname or node ID",
                      "--spec-file FILE", "--json"):
             self.assertIn(word, text)
+
+    def test_command_groups_print_help_and_keep_their_json_usage(self):
+        root = Path(self.tmp.name)
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_"))}
+        env.update(COLUMNS="80", CLUSTER_TOPOLOGY_FILE=str(root / "absent-topology.json"),
+                   PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false", PYTHONDONTWRITEBYTECODE="1")
+        for group, subcommands in (("image", {"check", "stage"}),
+                                   ("guarded", {"template", "validate", "run", "stop", "reconcile"})):
+            with self.subTest(command=group):
+                self.assertFalse(self.run_help((group, "--help"), 80).lstrip().startswith("{"))
+                bare = subprocess.run([str(ROOT / "pulsar"), group], env=env, stdin=subprocess.DEVNULL,
+                                      text=True, capture_output=True, timeout=60)
+                self.assertEqual(bare.returncode, 2)
+                self.assertEqual(bare.stdout, "")
+                self.assertTrue(bare.stderr.startswith(f"usage: pulsar {group} "), bare.stderr)
+                # Integrations keep the usage dictionary under --json.
+                for args in ([group, "--help", "--json"], [group, "--json"]):
+                    result = subprocess.run([str(ROOT / "pulsar"), *args], env=env, stdin=subprocess.DEVNULL,
+                                            text=True, capture_output=True, timeout=60)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    envelope = json.loads(result.stdout)
+                    self.assertTrue(envelope["ok"])
+                    self.assertEqual(set(envelope["result"]), subcommands | {"scope"})
+
+    def test_subcommand_help_lists_every_subcommand_under_its_pulsar_name(self):
+        from scripts.public_cli import SUBCOMMANDS
+        for command, (_, subcommands) in SUBCOMMANDS.items():
+            with self.subTest(command=command):
+                text = self.run_help((command, "--help"), 80)
+                for name in subcommands:
+                    self.assertRegex(text, rf"(?m)^  {name}  ")
+                    # Each listed subcommand's own help names it as a pulsar command.
+                    self.assertTrue(self.run_help((command, name, "--help"), 80)
+                                    .startswith(f"usage: pulsar {command} {name} "))
 
     def test_top_level_help_uses_spec_terms(self):
         text = " ".join(self.run_help(("help",), 100).split())

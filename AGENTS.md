@@ -42,7 +42,15 @@ public contribution. The operator command is `./pulsar`.
 The workbench maintainer decides what is published. A schema-valid spec under
 `releases/`, with a filename equal to its complete `spec_id`, is a catalog
 member. `state` and `review` are nullable metadata and never catalog or serving
-gates. Do not infer, promote, or rewrite either value. Baseline results, archive
+gates. New schema-2/3 specs freeze with `state: "candidate"` and `review: null`.
+Candidate is the specific spec's initial maturity state, with no claim of
+qualification, readiness, or active testing. Existing null-state specs remain
+valid and unchanged. Preserve selected metadata when adding evidence or exporting;
+only a changed recipe resets state to candidate and clears review. Promotion to
+measured or released is an explicit maintainer decision, never an effect of
+measurement success or publication. Do not infer, promote, or rewrite either
+value. See [the canonical state definition](docs/CONTRIBUTIONS.md), including
+compatibility with older Stack installations. Baseline results, archive
 proof, and current launch compatibility are independent optional assessments;
 their outcome does not add or remove catalog membership. Withdrawal metadata
 does not stop services or delete archives automatically. Removal from the

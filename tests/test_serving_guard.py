@@ -490,7 +490,7 @@ class GuardTransport(unittest.TestCase):
         (self.root/'scripts').mkdir()
         for name in ('guarded-serving.sh', 'container_runtime.py', 'node-bundle.py',
                      'model-library-common.sh', 'resource_sample.py', 'service_state.py',
-                     'public_cli.py', 'document_cli.py', 'terminal_format.py',
+                     'public_cli.py', 'document_cli.py', 'terminal_format.py', 'spec_selector.py',
                      'check_publishable_privacy.py'):
             shutil.copyfile(ROOT/'scripts'/name,self.root/'scripts'/name)
         with (self.root/'scripts/resource_sample.py').open('a') as stream:
