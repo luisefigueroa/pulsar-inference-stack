@@ -49,11 +49,14 @@ def missing_required_engine_args(spec: dict[str, Any]) -> list[str]:
         if flag not in tokens:
             missing.append(flag)
             continue
+        index = tokens.index(flag) + 1
+        value = tokens[index] if index < len(tokens) else ''
         if takes_value:
-            index = tokens.index(flag) + 1
-            value = tokens[index] if index < len(tokens) else ''
             if not value.strip() or value.startswith('--'):
                 missing.append(flag + ' value')
+        elif (value and not value.startswith('--')) or any(token.startswith(flag + '=') for token in engine_args):
+            # A switch takes no value; vLLM would reject the stray token.
+            missing.append(flag + ' as a switch without a value')
     return missing
 
 
