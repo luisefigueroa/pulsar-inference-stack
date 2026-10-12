@@ -14,6 +14,7 @@ added or modified and are not checked.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .schema import FLAG_ASSIGNMENT_RE
@@ -24,6 +25,10 @@ REQUIRED_ENGINE_ARGS = {
     '--tool-call-parser': True,
     '--reasoning-parser': True,
 }
+
+
+# A long or short command-line option, as opposed to a value such as "false" or "-1".
+OPTION = re.compile(r'^(--|-[A-Za-z])')
 
 
 class CatalogPolicyError(ValueError):
@@ -54,8 +59,9 @@ def missing_required_engine_args(spec: dict[str, Any]) -> list[str]:
         if takes_value:
             if not value.strip() or value.startswith('--'):
                 missing.append(flag + ' value')
-        elif (value and not value.startswith('--')) or any(token.startswith(flag + '=') for token in engine_args):
-            # A switch takes no value; vLLM would reject the stray token.
+        elif (value and not OPTION.match(value)) or any(token.startswith(flag + '=') for token in engine_args):
+            # A switch takes no value; vLLM would reject the stray token. The
+            # next option, long or short (such as -q), is not a value.
             missing.append(flag + ' as a switch without a value')
     return missing
 

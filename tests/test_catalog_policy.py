@@ -49,6 +49,11 @@ class RequiredEngineArgs(unittest.TestCase):
             with self.subTest(switch=switch):
                 self.assert_missing(switch + parsers, '--enable-auto-tool-choice as a switch without a value')
         check_required_engine_args(spec_with(parsers + ['--enable-auto-tool-choice']), label='example.json')
+        # A short option such as vLLM's -q (--quantization) after the bare switch is not its value.
+        check_required_engine_args(spec_with(['--enable-auto-tool-choice', '-q', 'awq'] + parsers),
+                                   label='example.json')
+        self.assert_missing(['--enable-auto-tool-choice', '-1'] + parsers,
+                            '--enable-auto-tool-choice as a switch without a value')
 
     def test_assignment_form_is_accepted(self):
         check_required_engine_args(spec_with([
