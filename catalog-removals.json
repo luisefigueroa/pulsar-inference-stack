@@ -21,6 +21,11 @@
       "spec_id": "c75d5c897c64c612c3c16e12f48c9436d136587ce3f922d4b97bd5285afdda20",
       "removed_at": "2026-10-10",
       "reason": "Removed at maintainer direction. The guard-free 8k-context vLLM TP3 MTP recipe for nvidia/GLM-5.3-Flash-NVFP4 is superseded by spec 2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3 (vLLM v0.31.0-based image, 500k context, per_row decode top-k), which passed baseline-v2."
+    },
+    {
+      "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3",
+      "removed_at": "2026-10-11",
+      "reason": "Removed at maintainer direction. The 500k-context vLLM TP3 MTP recipe for nvidia/GLM-5.3-Flash-NVFP4 is superseded by spec b13b30c418f35c812dfbb69de48a01ef82b5545b1de290d2d9a03906164d257b, the same image, model files and settings plus --enable-auto-tool-choice, --tool-call-parser glm47 and --reasoning-parser glm47, which the catalog now requires. Its baseline-v2 evidence remains in Git history; the replacement is a spec-only contribution."
     }
   ]
 }

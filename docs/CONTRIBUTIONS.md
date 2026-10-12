@@ -51,15 +51,16 @@ Every new or modified catalog spec must declare three engine arguments in
 and `--reasoning-parser NAME`. Publication checks only that the flags are present
 and that each parser has a non-empty name. Parser names are model-specific;
 whether the serving image provides a named parser is established by serving the
-recipe, not by this check. `check-new-specs.py` applies the rule to added and
+recipe, not by this check. `check-catalog.py` applies the rule to every
+schema-2 and schema-3 catalog member, and `check-new-specs.py` to added and
 modified catalog files. The public package verifier (`pulsar contribution verify`)
 and `scripts/verify-contribution.py` apply the same rule before publication,
 reporting the required arguments the selected spec lacks. Freezing a draft,
 `pulsar spec verify`, and `pulsar evidence verify` do not apply it, so experimental
 recipes without parsers remain valid attempts with independently verifiable
 evidence. Their exported packages must meet the engine-argument requirement
-before contribution verification succeeds. `check-catalog.py` will apply the
-rule to every catalog member once every member complies.
+before contribution verification succeeds. Historical schema-1 records stay
+readable.
 
 Select additional tests for the changed behavior using
 [validation guidance](TESTING.md#select-checks-for-the-change). A catalog-only

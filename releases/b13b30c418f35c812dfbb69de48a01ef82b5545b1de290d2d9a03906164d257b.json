@@ -71,6 +71,11 @@
       "--sparse-indexer-topk-backend",
       "per_row",
       "--no-async-scheduling",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "glm47",
+      "--reasoning-parser",
+      "glm47",
       "--load-format",
       "safetensors",
       "--enforce-eager",
@@ -326,6 +331,6 @@
   "source": {
     "image_repository": "ghcr.io/luisefigueroa/glm53-flash-vllm-tp3"
   },
-  "spec_id": "2e6672ca87978ab5ed829bf42c0961486942ac4bea62d23ef7712b3c8f227cb3",
-  "state": null
+  "spec_id": "b13b30c418f35c812dfbb69de48a01ef82b5545b1de290d2d9a03906164d257b",
+  "state": "candidate"
 }
