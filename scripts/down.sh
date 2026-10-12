@@ -5,11 +5,15 @@ SCRIPT_NAME=down
 down_usage() {
   python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/terminal_format.py" <<'HELP'
 usage: pulsar stop SPEC_ID [--node NODE] [--spec-file FILE]
-       pulsar stop --all
+       pulsar stop --all --yes
 
 Stop the owned service for the exact spec on every participating node.
 Model files, pins, archives and evidence are always retained. NODE is a
 confirmed node's hostname or node ID.
+
+--all stops every Stack-managed service on all confirmed nodes, and --yes
+approves that. Without --yes it warns and still runs; CLI contract 2 requires
+--yes. Stopping one spec asks no confirmation and takes no --yes.
 HELP
 }
 case "${1:-}" in
@@ -21,6 +25,9 @@ case "${1:-}" in
     exit "${PULSAR_USAGE_EXIT:-2}" ;;
 esac
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+YES=0
+case "$1" in --yes|-y) YES=1; shift ;; esac
+[ $# -gt 0 ] || usage_die "stop requires a spec ID or --all"
 TARGET="$1"; shift
 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
@@ -30,11 +37,14 @@ while [ $# -gt 0 ]; do
     --retain-weights)
       warn "pulsar stop --retain-weights is deprecated: stop always retains model files. It is removed in CLI contract 2." ;;
     --pin-weights|--purge-hot) usage_die "stop retains files; use an explicit model pin or purge command" ;;
+    --yes|-y) YES=1 ;;
     *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
 if [ "$TARGET" != --all ]; then
+  # Stopping one spec's owned service asks nothing and keeps every file.
+  [ "$YES" = 0 ] || usage_die "stop SPEC asks no confirmation and always keeps model files; remove --yes"
   [[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || usage_die "stop requires the complete 64-character spec id (./pulsar models list --json)"
 fi
 load_cluster_topology || die "confirmed topology is required for safe stop"
@@ -52,6 +62,7 @@ PY_STOP
 then die "no service was stopped; reconcile the recorded guarded invocation first"; fi
 if [ "$TARGET" = --all ]; then
   [ -z "$NODE_SELECTOR" ] || usage_die "--node cannot be used with --all"
+  [ "$YES" = 1 ] || warn "pulsar stop --all without --yes is deprecated: it stops every Stack-managed service on all $CLUSTER_TOPOLOGY_COUNT confirmed nodes. CLI contract 2 requires --yes."
   # The delegated command acquires the lock once for all confirmed ranks.
   exec "$REPO_DIR/cluster/stop-cluster.sh" --all
 fi

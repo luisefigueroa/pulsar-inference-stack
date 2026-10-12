@@ -404,8 +404,9 @@ retry; see [troubleshooting](#troubleshooting).
 Start does not replace an existing exact-name service and does not pull a
 missing image by implication. After inspecting the current service, pass
 `--replace` only with explicit replacement approval. Pass `--pull-image` only
-when staging the selected digest-pinned image is also approved. Generic `--yes`
-does not grant either permission.
+when staging the selected digest-pinned image is also approved. Start asks no
+confirmation: `start --yes` is deprecated, grants neither permission and is
+removed in CLI contract 2.
 
 ### Recipe identity and deployment settings
 
@@ -589,6 +590,10 @@ Stop a service independently of storage cleanup:
 
 Omit `--node` for a multi-node service. For a guarded trial, follow its
 [owned stop procedure](GUARDED_SERVING.md#observe-and-stop).
+
+Stopping one spec asks no confirmation. To stop every Stack-managed service on
+all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
+and still runs until CLI contract 2 requires it.
 
 ### Pin or reclaim prepared copies
 

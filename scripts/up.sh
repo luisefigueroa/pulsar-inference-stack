@@ -23,7 +23,7 @@ usage: pulsar start SPEC_ID [options]
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service
-  --yes                 Confirm the requested start only; never implies the above
+  --yes                 Deprecated; start asks no confirmation and --yes never implies the above
   --skip-preflight      Use when the cluster preflight was run separately
 
 Model-file verification cannot be skipped. Overrides create a distinct effective
@@ -66,7 +66,9 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --dry-run) DRY=1 ;;
-    --yes|-y) : ;;  # Compatibility acknowledgement; grants no extra action.
+    --yes|-y)
+      # Accepted until CLI contract 2; --replace, --pull-image and --accept-memory-warn grant start's permissions.
+      warn "pulsar start --yes is deprecated: start asks no confirmation; --replace, --pull-image and --accept-memory-warn grant its permissions. It is removed in CLI contract 2." ;;
     --verbose|-v) VERBOSE=1; export PULSAR_VERBOSE=1 ;;
     -h|--help)
       up_usage

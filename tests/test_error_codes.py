@@ -104,6 +104,16 @@ class ErrorCodes(unittest.TestCase):
             self.assertFalse((root / "library").exists())
             self.assertFalse((root / "probed").exists())
 
+    def test_stop_of_one_spec_refuses_yes_and_says_why(self):
+        # stop SPEC asks no confirmation; the refusal comes before any lock or node.
+        spec = "ab" * 32
+        for args in ((spec, "--yes"), ("--yes", spec), (spec, "-y")):
+            with self.subTest(args=args):
+                status, response = pulsar("stop", *args)
+                self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+                self.assertEqual(response["error"]["details"][0]["message"],
+                                 "stop SPEC asks no confirmation and always keeps model files; remove --yes")
+
     def test_stop_without_a_selector_says_so(self):
         status, response = pulsar("stop")
         self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
