@@ -263,6 +263,9 @@ status. `cancelled` confirms cleanup of the local command and tracked node worke
 `cleanup_incomplete` means worker exit could not be established. Neither result
 authorizes stopping a model service. Internal lease/worker receipts do not alter
 successful command results or snapshot, prepared-set and evidence schemas.
+A `start` interrupted after it launched a service removes nothing: its
+`cancelled` envelope leads with that service and holds a `start_interrupted`
+record in `details`, described below.
 
 `model info`, `model check` and `observe` accept `--verification-jobs N` (a
 positive integer, default 3). Prepared-file verification runs at most N jobs
@@ -288,10 +291,11 @@ publishes this table as `error_codes` and `exit_statuses`.
 | `file_error` | 2 | A file or directory named by the caller could not be read or written. |
 | `invalid_spec` | 2 | Spec or document content failed validation. |
 | `unsupported_spec_version` | 2 | The document's schema version is not supported. |
-| `invalid_stack_output` | 3 | A Stack script produced output that is not JSON. This is a Stack defect. |
-| `prerequisite_failed` | 3 | A Stack action exited unsuccessfully; message and details hold its diagnostics. |
-| `service_absent` | 3 | Status observed every node and found no service for the spec. |
+| `prerequisite_failed` | 1 | A Stack action was refused or failed; message and details hold its diagnostics. |
+| `service_absent` | 1 | Status observed every node and found no service for the spec. |
+| `privacy_check_failed` | 1 | A publication privacy check ran and found problems; details name the rules. |
 | `service_state_unknown` | 3 | Status could not observe every node, so whether a service exists is not established; details name the nodes. |
+| `invalid_stack_output` | 3 | A Stack script produced output that is not JSON. This is a Stack defect. |
 | `cancelled` | 128+signal | Interrupted; cleanup of the command and its node workers was confirmed. |
 | `cleanup_incomplete` | 128+signal | Interrupted; worker exit could not be confirmed. |
 
@@ -299,19 +303,54 @@ Each exit status has one meaning, with or without `--json`:
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | Success. |
-| 1 | Without --json: the action was refused or failed. With --json the same outcome exits 3. |
+| 0 | Success. Under --json a check that ran returns its report as the result, whatever it found. |
+| 1 | The answer is no: the action was refused or failed, a check found a problem, or nothing was found. |
 | 2 | The request was rejected before any action: a usage, file or document error. |
-| 3 | With --json: a prerequisite failed, the action was refused, or a Stack defect was found. |
+| 3 | The outcome is not established: a node could not be observed, or Stack found its own defect. |
 | 128+signal | Interrupted by the signal; see cancelled and cleanup_incomplete. |
 
 Without `--json`, `start`, `stop`, `status` and `model` run their operator
-scripts directly, so a refused or failed action exits 1 and a command-line
-mistake exits 2.
+scripts directly; they exit with the same statuses.
 
 Under `--json`, these four commands require the complete 64-character spec ID.
 A shortened or invalid ID is a `usage_error`, reported before any lock is taken
 or node is contacted; its message names the matching catalog spec IDs.
+
+1 is a known "no"; 3 means Stack could not tell. `status` that found no service
+exits 1, so starting one is safe; `status` that could not observe a node exits
+3, and starting one is not. Under `--json`, an envelope with `ok` true always
+exits 0, so `image check --json` and `model check --json` return their report
+as the result whatever they found (`result.state`, `result.observation`).
+Without `--json`, `model check` exits 1 for missing or changed files and 3 when
+it could not observe them; `image check` exits 1 for any state other than `ok`.
+Both exit 3 without `--json` when the check itself could not run, such as for
+an unreadable spec; under `--json` that is `prerequisite_failed`.
+
+`--help` prints help and exits 0, with or without `--json`; `image --help --json`
+and `guarded --help --json` keep their usage dictionary.
+
+`privacy_check_failed` comes from `privacy check`, `privacy commits` and the
+privacy check in `contribution verify`. Each `details` entry has `field`
+`privacy`, the `rule`, and where it matched: `path` and `location` for files,
+`commit` for commit metadata. It does not repeat the matched text, which the
+report on stderr shows.
+
+Change note, 2026-10-12: exit statuses mean the same with or without `--json`.
+`prerequisite_failed` and `service_absent` exit 1 instead of 3. Without
+`--json`, `status` that cannot tell whether a service exists and `model check`
+that cannot observe its files exit 3 (instead of 1 and 255), and a refusal
+from `observe`, `selftest` or another command run through the public CLI exits
+1 instead of 3. New `privacy_check_failed` replaces `invalid_spec` for privacy
+findings. `guarded stop` refusals are `prerequisite_failed`, not `invalid_spec`;
+`privacy check --staged` without a Git checkout and an `--entrypoint-json` that
+is not JSON are `usage_error`; a privacy root that is not a regular directory,
+or that holds a symlink, is `file_error`. `image check --json` and
+`model check --json` return a report that found a problem as their result
+instead of `prerequisite_failed` with the report as text. `image stage` without
+`--yes` or `--plan` refuses with exit 1 after checking the nodes and names
+them; its usage mistakes are `usage_error`. `--help` never fails. A `resources`
+stream whose sampler ended names its rank and exits 1 instead of 3. New start
+blocker `start_interrupted`.
 
 Change note, 2026-10-11: a shortened spec ID under `--json` is a `usage_error`
 for `start`, `stop`, `status` and `model`. Before, `status` could probe every
@@ -375,6 +414,14 @@ Start runs every independent check before it reports, so one refusal can list
 several blockers. Branch on `blocker` and `stage`; `message`, `fix` and `note`
 are for people.
 
+When `start --json` is interrupted after it launched a service, the error is
+`cancelled` (or `cleanup_incomplete`) and `details` holds one
+`start_interrupted` record with `stage` `launch`: its `service_id`, the node
+and, during a multi-node launch, the rank being started. Start removes nothing
+on an interrupt. `fix` is the status command, and `note` names the stop command
+that removes the service. Interrupted before launch, `details` has no record
+and nothing was started.
+
 Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `service_id`; `fix` became a runnable command or null (it was prose for
 `guard_unsupported` and `historical_spec`); new codes `fabric_incomplete`,
@@ -427,7 +474,10 @@ were split out of `invalid_spec`, which previously covered every input failure.
 Exit statuses did not change.
 
 Resource streams have a versioned header, then rank samples or explicit error
-records. Unavailable workload measurements are null, never zero. Stopping a
+records. Samplers run until the stream is stopped; a stream stopped by a signal
+exits 128+signal. When a rank's sampler ends on its own, the stream writes a
+`sampler_ended` error record naming that `rank`, names its node on stderr and
+exits 1. Unavailable workload measurements are null, never zero. Stopping a
 stream terminates only diagnostic processes, not model services. Resource
 sampling does not acquire, prepare, launch, or enroll nodes.
 

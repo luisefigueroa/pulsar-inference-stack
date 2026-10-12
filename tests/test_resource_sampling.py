@@ -167,4 +167,50 @@ PY_SAMPLE
             try:process.communicate(timeout=6)
             except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.communicate()
 
+    def test_a_sampler_that_ends_names_its_rank_and_node_and_fails_the_stream(self):
+        from tests.test_container_runtime import fixture
+        root=pathlib.Path(__file__).resolve().parents[1]
+        spec=fixture(2)[0];path=self.tmpdir/'selected-spec.json';path.write_text(json.dumps(spec))
+        environment=self.tmpdir/'ending-env.sh'
+        # The node-1 sampler (rank 1, hostname rank-1) ends after two samples, as a lost SSH session would.
+        environment.write_text(f'''
+. '{root}/scripts/lib.sh'
+load_cluster_topology() {{
+ CLUSTER_TOPOLOGY_ID={'b'*64}; CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_LOADED=1
+ CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2)
+ CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2); CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
+ CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0)
+}}
+require_cluster_nodes() {{ load_cluster_topology; [ "$1" -le 3 ]; }}
+require_profile_topology() {{ load_cluster_topology; }}
+require_topology_ssh_trust() {{ return 0; }}
+ssh_node() {{
+ python3 -u - "$1" "$@" <<'PY_SAMPLE'
+import json,sys,time
+rank=sys.argv[sys.argv.index('--rank-label')+1]
+for count in range(2 if sys.argv[1]=='1' else 10**6):
+ print(json.dumps({{'schema_version':1,'kind':'pulsar-model-serving-resource-sample','rank':rank,'workload':None,'node':{{'mem_available_bytes':1024}}}}),flush=True)
+ time.sleep(.1)
+PY_SAMPLE
+}}
+''')
+        process=subprocess.run([str(root/'pulsar'),'resources','--spec-file',str(path),
+            '--placement-nodes','node-2,node-1','--jsonl'],cwd=self.tmpdir,
+            env={**os.environ,'BASH_ENV':str(environment),'PULSAR_MODEL_LIBRARY_DIR':str(self.tmpdir/'state')},
+            text=True,capture_output=True,timeout=30)
+        rows=[json.loads(line) for line in process.stdout.splitlines()]
+        self.assertEqual(rows[-1],{'schema_version':1,'kind':'pulsar-resource-error','rank':'1','error':'sampler_ended'})
+        # A failed stream exits 1; an interrupted one exits 128+signal.
+        self.assertEqual(process.returncode,1,process.stderr)
+        self.assertIn('error: the resource sampler for rank 1 on rank-1 ended; the stream stopped',process.stderr)
+
+    def test_an_invalid_interval_is_a_usage_error(self):
+        root=pathlib.Path(__file__).resolve().parents[1]
+        for value in ('0.01','61','nan','fast'):
+            with self.subTest(value=value):
+                result=subprocess.run(['bash',str(root/'scripts/resources.sh'),'--service-id','a'*64,'--interval',value,'--jsonl'],
+                                      text=True,capture_output=True,timeout=30)
+                self.assertEqual((result.returncode,result.stderr.strip()),
+                                 (2,'error: --interval must be a number of seconds from 0.1 to 60'))
+
 if __name__=='__main__':unittest.main()

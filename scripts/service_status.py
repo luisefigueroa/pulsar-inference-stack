@@ -8,6 +8,9 @@ result is that observation, verified. Otherwise the service inventory decides:
 - none exist and every node was observed: the service_absent error;
 - none exist and a node could not be observed: the service_state_unknown error.
 
+Each error exits with its code's status, with or without --json: service_absent
+1, service_state_unknown and invalid_stack_output 3.
+
 A running service's API gets one GET /health with a 3-second timeout. Nothing
 here changes a node. Errors are printed for people and, when
 PULSAR_STATUS_ERROR_FILE is set, written there for the --json envelope.
@@ -29,6 +32,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from model_library.node_names import NodeNames
+from scripts.document_cli import ERROR_CODES
 from scripts.terminal_format import TerminalWriter
 
 HEALTH_TIMEOUT_SECONDS = 3
@@ -285,7 +289,8 @@ def main(argv: list[str] | None = None) -> int:
             Path(target).write_text(json.dumps({"code": exc.code, "message": str(exc), "details": exc.details}),
                                     encoding="utf-8")
         TerminalWriter(stream=sys.stderr).emit(f"error: {exc}")
-        return 1
+        # Absent (1) and could not tell (3) call for different next steps.
+        return ERROR_CODES[exc.code][0]
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:

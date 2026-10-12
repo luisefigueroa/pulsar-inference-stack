@@ -3288,8 +3288,9 @@ container_exists_exact() {
 }
 
 # The check scripts share one exit convention: 0 pass, 1 the condition failed,
-# 2 memory warning (memory check only), 3 the check could not run. A check
-# script calls check_exit_convention once and ends with check_result; any other
+# 2 memory warning (memory check only), 3 the check could not run. The public
+# image check calls check_exit_convention after parsing its arguments, so its
+# usage mistakes exit 2. A check script ends with check_result; any other
 # failing exit, such as a die in a shared helper, is reported as 3, so a caller
 # never reads a broken check as a missing image or a memory warning.
 _check_exit() {

@@ -106,7 +106,7 @@ The command stays active for the lifetime of the session. Without `--json` it
 ends with a summary: the outcome, each phase, which ranks verified cleanup, the
 `result.json` path and, when cleanup is incomplete, the recovery command. With
 `--json`, a run that ends stopped as requested returns its final result as
-`result`; any other outcome is a `prerequisite_failed` error envelope (exit 3),
+`result`; any other outcome is a `prerequisite_failed` error envelope (exit 1),
 and the complete final result is `result.json` in the output directory. `--yes` acknowledges
 the reviewed start, not acquisition, replacement or publication.
 

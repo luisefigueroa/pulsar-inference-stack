@@ -79,8 +79,8 @@ def contract() -> dict:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--json', action='store_true')
+    parser = argparse.ArgumentParser(prog='pulsar contract', description=__doc__)
+    parser.add_argument('--json', action='store_true', help='print the contract document as JSON')
     args = parser.parse_args(argv)
     document = contract()
     if args.json:

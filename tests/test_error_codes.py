@@ -142,6 +142,57 @@ class ErrorCodes(unittest.TestCase):
         self.assertEqual(status, 2)
         self.assertEqual(response["error"]["code"], "invalid_spec", response)
 
+    def test_privacy_findings_are_their_own_code_and_name_only_the_rule(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            # A non-documentation address the scanner reports by value on stderr.
+            address = "10.20." + "30.40"
+            (root / "notes.txt").write_text(f"host = {address}\n")
+            status, response = pulsar("privacy", "check", "--root", str(root))
+            self.assertEqual((status, response["error"]["code"]), (1, "privacy_check_failed"))
+            self.assertEqual(response["error"]["details"],
+                             [{"field": "privacy", "rule": "network-address", "path": "notes.txt", "location": "1",
+                               "message": "network-address at notes.txt:1"}])
+            # The envelope never repeats what the scanner matched.
+            self.assertNotIn(address, json.dumps(response))
+            human = subprocess.run([str(ROOT / "pulsar"), "privacy", "check", "--root", str(root)],
+                                   text=True, capture_output=True)
+            self.assertEqual(human.returncode, 1)
+            self.assertIn("notes.txt:1: [network-address]", human.stderr)
+            self.assertTrue(human.stderr.endswith(
+                "error: publication privacy check found 1 problem(s): network-address\n"), human.stderr)
+
+    def test_privacy_argument_and_file_mistakes_are_not_spec_errors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "file.txt").write_text("plain\n")
+            for args, code in ((["--root", temp, "--staged"], "usage_error"),
+                               (["--root", str(root / "file.txt")], "file_error")):
+                with self.subTest(args=args):
+                    status, response = pulsar("privacy", "check", *args)
+                    self.assertEqual((status, response["error"]["code"]), (2, code))
+            (root / "link").symlink_to(root / "file.txt")
+            status, response = pulsar("privacy", "check", "--root", temp)
+            self.assertEqual((status, response["error"]["code"]), (2, "file_error"))
+            self.assertIn("link is a symlink or special file", response["error"]["message"])
+
+    def test_a_bad_entrypoint_is_a_usage_error_naming_the_flag(self):
+        status, response = pulsar("guarded", "template", "--entrypoint-json", "[oops")
+        self.assertEqual((status, response["error"]["code"]), (2, "usage_error"))
+        self.assertEqual(response["error"]["details"][0]["field"], "--entrypoint-json")
+
+    def test_a_guarded_stop_the_run_refuses_is_a_refusal_not_an_invalid_spec(self):
+        from serving_guard import controller
+        with tempfile.TemporaryDirectory() as temp, patch.object(
+                controller, "stop", side_effect=ValueError("guarded run abababababab already finished; nothing to stop")):
+            status, response = self.main("guarded", "stop", "--output-dir", temp, "--run-id", "ab" * 32)
+        self.assertEqual((status, response["error"]["code"]), (1, "prerequisite_failed"))
+        self.assertIn("already finished; nothing to stop", response["error"]["message"])
+
+    def test_a_script_usage_mistake_is_printed_once(self):
+        result = subprocess.run([str(ROOT / "pulsar"), "observe", "--bogus"], text=True, capture_output=True)
+        self.assertEqual((result.returncode, result.stderr), (2, "error: unknown argument: --bogus\n"))
+
     def main(self, *argv):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):

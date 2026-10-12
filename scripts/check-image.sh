@@ -1,27 +1,29 @@
 #!/usr/bin/env bash
 # Read-only inspection of the pinned spec image on every selected physical node.
-# Exit: 0 pass · 1 the condition failed · 3 the check could not run.
+# Exit: 0 pass · 1 the condition failed · 2 a usage mistake · 3 the check could not run.
 set -euo pipefail
 if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then echo "Usage: pulsar image check SPEC [--spec-file FILE] [--node NODE | --placement-nodes LIST] [--json]"; exit 0; fi
 SCRIPT_NAME=check-image
 PLACEMENT_NODES=""
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
-check_exit_convention
-[ -n "${1:-}" ] || die "spec id required" 3
+case "${1:-}" in ""|-*) usage_die "image check requires a spec ID; see ./pulsar image --help" ;; esac
 NAME="$1"; shift
 JSON=0 NODE_SELECTOR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --placement-nodes) [ -n "${2:-}" ] || usage_die "--placement-nodes requires an ordered node list"; PLACEMENT_NODES="$2"; shift ;;
     --json) JSON=1 ;;
-    --node) [ -n "${2:-}" ] || die "--node requires a node" 3; NODE_SELECTOR="$2"; shift ;;
-    --spec-file) [ -n "${2:-}" ] || die "--spec-file requires a file" 3; export PULSAR_SPEC_FILE="$2"; shift ;;
-    *) die "unknown argument: $1" 3 ;;
+    --node) case "${2:-}" in ""|-*) usage_die "--node requires a node" ;; esac; NODE_SELECTOR="$2"; shift ;;
+    --spec-file) case "${2:-}" in ""|-*) usage_die "--spec-file requires a file" ;; esac; export PULSAR_SPEC_FILE="$2"; shift ;;
+    *) usage_die "unknown argument: $1" ;;
   esac
   shift
 done
+# A usage mistake above exits 2; from here any unexpected exit is a check that could not run.
+check_exit_convention
 load_conf "$NAME"
-[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
+[ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] \
+  || { CHECK_RESULT_EXIT=usage; usage_die "--placement-nodes requires a multi-node spec; use --node"; }
 node_indices=() states=()
 topology_ready=1
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then topology_ready=0; fi

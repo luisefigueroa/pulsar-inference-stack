@@ -96,7 +96,7 @@ class GuardLaunchAdmission(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             status = public_cli.main(['start', spec['spec_id'], '--yes', '--json'])
         error = json.loads(output.getvalue())['error']
-        self.assertEqual(status, 3)
+        self.assertEqual(status, 1)
         self.assertEqual(error['code'], 'prerequisite_failed')
         self.assertEqual(error['details'], [start_blockers.blocker('guard_unsupported')])
         self.assertIn('guard execution is not supported', error['message'])
