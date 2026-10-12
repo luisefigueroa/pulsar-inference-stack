@@ -260,8 +260,8 @@ for field,expected in (("gpu",sys.argv[1]),("docker_ok",True),("docker_nvidia",T
  value=p.get(field); valid=value==expected and type(value) is type(expected)
  print(("ok" if valid else "fail")+"|"+field+"|"+words[field][0 if valid else 1].format(value))
 arch_ok=p.get("arch") in sys.argv[2].split()
-print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+")"))
-' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe"
+print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+"); this node does not match the selected platform"))
+' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe; run ./pulsar topology check"
       while IFS='|' read -r level id message; do
         record "$level" "rank_${rank}_${id}" "$(human_node_name "$rank"): $message"
       done <<<"$probe_rows"

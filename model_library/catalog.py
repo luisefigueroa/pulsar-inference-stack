@@ -67,9 +67,10 @@ def combined_observation(members):
         'blockers':[name+': '+b for name in names for b in members[name].get('blockers',[])]}
 
 
-# A saved blocker repeats its snapshot ("target: required snapshot target: ...")
-# and names a rank without its node; people see each once, with the node.
-SNAPSHOT_BLOCKER = re.compile(r"^(?P<name>[\w.-]+): required snapshot (?P=name): (?P<rest>.*)$", re.S)
+# A saved blocker names its snapshot ("required snapshot target: ..."; schema-3
+# aggregates repeat it as "target: required snapshot target: ...") and a rank
+# without its node; people see the snapshot once and the rank with its node.
+SNAPSHOT_BLOCKER = re.compile(r"^(?:(?P<label>[\w.-]+): )?required snapshot (?P<name>[\w.-]+): (?P<rest>.*)$", re.S)
 RANK_BLOCKER = re.compile(r"^rank (?P<rank>\d+): (?P<message>.*)$", re.S)
 
 
@@ -91,7 +92,7 @@ def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
         return blocker
     prefix, snapshot = "", None
     match = SNAPSHOT_BLOCKER.match(blocker)
-    if match:
+    if match and match["label"] in (None, match["name"]):
         snapshot, blocker = match["name"], match["rest"]
         prefix = f"{snapshot} snapshot · "
     rank = RANK_BLOCKER.match(blocker)

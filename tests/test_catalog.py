@@ -91,6 +91,10 @@ class Catalog(unittest.TestCase):
         # A rank without a saved copy is not given a guessed node.
         self.assertEqual(blocker_text(f"target: required snapshot target: rank 1: {message}", row, names),
                          f"target snapshot · rank 1 (node unknown): {message}")
+        # Schema-2 blockers name the snapshot once, without the aggregate label.
+        schema2 = {"prepared_copies": [{"rank": 0, "node_id": "node-a"}]}
+        self.assertEqual(blocker_text(f"required snapshot target: rank 0: {message}", schema2, names),
+                         f"target snapshot · spark-1 (rank 0): {message}")
         self.assertEqual(blocker_text("node-a: files missing", row, names), "spark-1: files missing")
         self.assertEqual(blocker_text("files missing", row, names), "files missing")
 
