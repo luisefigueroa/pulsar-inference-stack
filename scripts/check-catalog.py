@@ -93,7 +93,8 @@ def main(argv=None) -> int:
     try:
         result = check_catalog(args.repo_root)
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f'error: catalog check: {exc}', file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='catalog check')
         return 2
     if args.json:
         print(json.dumps(result, sort_keys=True))

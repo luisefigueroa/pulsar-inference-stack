@@ -144,7 +144,8 @@ def main(argv=None):
         print(str(exc), file=sys.stderr)
         return 3
     except (ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"error: inventory menu: {exc}", file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='inventory menu')
         return 2
 
 

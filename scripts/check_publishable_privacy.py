@@ -577,7 +577,8 @@ def main(argv: list[str] | None = None) -> int:
         mode = "staged" if args.staged else "working-tree"
         count, findings = scan_repository(repo_root, staged=args.staged)
     except (OSError, PrivacyError, UnicodeError) as exc:
-        print(f"error: publishable privacy: {exc}", file=sys.stderr)
+        from terminal_format import error_line
+        error_line(exc, tag='publishable privacy')
         return 2
 
     if findings:

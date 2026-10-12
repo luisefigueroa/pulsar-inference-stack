@@ -15,6 +15,14 @@ MIN_WIDTH = 32
 MAX_WIDTH = 100
 
 
+def error_line(message: object, *, tag: str, stream: TextIO | None = None) -> None:
+    """One `error: …` line, as scripts/lib.sh prints it: the message leads, and
+    PULSAR_VERBOSE=1 adds the internal tool name for debugging."""
+    import os
+    prefix = f"[{tag}] " if os.environ.get("PULSAR_VERBOSE") == "1" else ""
+    print(f"{prefix}error: {message}", file=stream or sys.stderr)
+
+
 def terminal_width(
     fallback: int = DEFAULT_WIDTH,
     minimum: int = MIN_WIDTH,

@@ -150,7 +150,8 @@ class ChangedCatalog(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT/'scripts/check-new-specs.py'),
                                  '--repo-root', str(self.root), '--staged'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn('error: catalog changes: releases/', result.stderr)
+        # The message leads; the tool name is only for PULSAR_VERBOSE=1.
+        self.assertIn('error: releases/', result.stderr)
         self.assertIn('missing: --enable-auto-tool-choice, --tool-call-parser, --reasoning-parser', result.stderr)
 
     def test_modified_compliant_spec_is_checked_and_accepted(self):

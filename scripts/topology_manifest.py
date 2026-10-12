@@ -20,9 +20,9 @@ from datetime import datetime, timezone
 from typing import Any
 
 try:
-    from scripts.terminal_format import TerminalWriter
+    from scripts.terminal_format import TerminalWriter, error_line
 except ModuleNotFoundError:
-    from terminal_format import TerminalWriter
+    from terminal_format import TerminalWriter, error_line
 
 try:
     from scripts.platform_reference import (
@@ -1345,7 +1345,7 @@ def main() -> int:
             atomic_write(extract_topology(load_json(args.document)), args.destination)
         return 0
     except TopologyError as exc:
-        print(f"error: topology: {exc}", file=sys.stderr)
+        error_line(exc, tag='topology')
         return 1
 
 

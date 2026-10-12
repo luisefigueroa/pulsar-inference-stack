@@ -50,7 +50,8 @@ package manager or point `GUM_BIN` at it. `NO_COLOR` or
 `PULSAR_COLOR=never` draws them without color. Without Gum or an interactive
 terminal, a menu opens nothing: it names the equivalent commands and exits
 with status 2, and a command that would ask for confirmation names its `--yes`
-form. Diagnostic output reports missing prerequisites instead of silently
+form. `pulsar models` without a subcommand shows the catalog list instead, with
+a warning when the terminal lacks Gum. Diagnostic output reports missing prerequisites instead of silently
 choosing other tools or transport.
 
 ### Storage locations
@@ -209,6 +210,11 @@ workflow avoids changing selectors when moving between command families.
 ./pulsar models results <spec-id>
 ```
 
+`pulsar status` without a spec prints the same list, then how to check one
+spec live. `pulsar release show <spec-id>` prints a catalog spec's complete
+JSON and `pulsar release verify <spec-id>` its state and review; both need the
+complete ID.
+
 ### Read recipe details
 
 The selected-spec menu separates **Selected recipe**, **Current observations
@@ -218,7 +224,9 @@ menu does not infer engine defaults or resolve repeated arguments. The image
 digest is abbreviated here; **Show details** retains the complete identity and
 arguments. Maintainer reviews are advisory and keep their dates separate from
 measurement dates. Saved file checks retain their age, and the summary explicitly says
-that it has not observed the live service.
+that it has not observed the live service. Each recorded home and prepared copy
+shows when it was last verified, and a blocker naming a rank's recorded copy
+gives that age, so an old record can be weighed against the check.
 
 ### Read published results and compare recipes
 
@@ -497,6 +505,8 @@ Stop refreshes the inventory and shows the current scope before confirmation.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
+After stop, the menu prints the outcome and how long it took (`✓ Stop
+finished…` or `✗ Stop failed… (exit N)`), as the catalog menu does.
 Model files, pins and archives are retained. The ordinary `inventory` and
 `inventory --json` commands remain read-only reports.
 

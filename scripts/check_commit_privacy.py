@@ -65,7 +65,8 @@ def main(argv=None) -> int:
     try:
         checked, findings = check(Path(args.repo_root).resolve(), args.revision_range)
     except (CommitPrivacyError, OSError, UnicodeError) as exc:
-        print(f'error: commit privacy: {exc}', file=sys.stderr)
+        from terminal_format import error_line
+        error_line(exc, tag='commit privacy')
         return 2
     if findings:
         print(f'commit privacy: FAIL ({len(findings)} finding(s))', file=sys.stderr)

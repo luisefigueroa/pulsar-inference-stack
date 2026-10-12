@@ -557,13 +557,25 @@ if [ "${PLACEMENT_ARGS[0]:-}" = --node ] && [ -n "${SINGLE_NODE_HOSTNAME:-}" ]; 
 fi
 
 if [ "$DRY" = 1 ]; then
+  # What start would do, in words: the nodes it would serve on and what it replaces.
+  if [ "$NODES" -gt 1 ]; then
+    would_where=""
+    for ((slot = 0; slot < NODES; slot++)); do
+      would_where+="${would_where:+, }$(human_node_name "${SERVING_NODE_INDEXES[$slot]:-$slot}") (rank $slot)"
+    done
+    would="start a $NODES-node service on $would_where"
+  else
+    would="start the service on ${SINGLE_NODE_HOSTNAME:-$(single_node_display)}"
+  fi
+  [ "$REPLACE" != 1 ] || would="replace the existing service, then $would"
+  case "$SPEC_MODE" in on) would+=" with speculative decoding" ;; off) would+=" without speculative decoding" ;; esac
   cat <<EOF
 
 DRY-RUN OK
   spec:     $NAME
   served:   $SERVED_NAME
   plan:     $PLAN_FILE
-  would:    $([ "$NODES" -gt 1 ] && echo "cluster/start-cluster.sh $NAME ${spec_flag[*]:-} ${launch_flags[*]:-}" || echo "serve.sh $NAME -d ${PLACEMENT_ARGS[*]:-} ${spec_flag[*]:-} ${launch_flags[*]:-}")
+  would:    $would
   live:     ./pulsar status $SUGGEST_SPEC ${SUGGEST_ARGS[*]:-}
   note:     no containers changed
 EOF

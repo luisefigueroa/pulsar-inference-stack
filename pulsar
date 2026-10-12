@@ -97,6 +97,7 @@ for heading,rows in [
   ('pulsar models show SPEC','Show recipe, known copies, pins and blockers.'),
   ('pulsar models results SPEC','Inspect published run dates, workloads and policy outcomes for this spec.'),
   ('pulsar models check SPEC','Explicitly check the selected managed files and archive.'),
+  ('pulsar release show|verify SPEC','Print a catalog spec as JSON, or its state and review.'),
   ('pulsar model --help','Acquire, restore, move, prepare, pin, purge and archive.')]),
  ('Serve',[
   ('pulsar image check|stage SPEC','Inspect or explicitly stage the exact image on selected serving ranks.'),
@@ -104,13 +105,19 @@ for heading,rows in [
   ('pulsar guarded template|validate|run|stop|reconcile','Own a bounded trial and reconcile its completed locator.'),
   ('pulsar status SPEC','Observe the live service on all participating nodes.'),
   ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
-  ('pulsar inventory','Inspect service ownership and current resource use.')]),
+  ('pulsar inventory','Inspect service ownership and current resource use; read-only.'),
+  ('pulsar inventory menu','Select a running catalog service for live status or a confirmed stop.')]),
  ('Contributors and integrations',[
   ('pulsar contract','Show the versioned stack/workbench integration contract.'),
   ('pulsar spec example|freeze|verify|compare','Author and inspect a complete JSON serving spec.'),
   ('pulsar memory verify --file FILE --spec-file FILE','Validate an explicit estimate of resident weights for the exact spec.'),
   ('pulsar observe --service-id ID [--full] [--verification-jobs N] --json','Verify every rank; reuse file verification unless --full requests hashing.'),
   ('pulsar resources --service-id ID|--spec-file FILE --jsonl','Sample confirmed nodes before launch; wait for the matching owned container.'),
+  ('pulsar policy show baseline-v1|baseline-v2','Print a supported baseline policy and its digest.'),
+  ('pulsar evidence measurement|evaluate|verify|summary','Build and assess compact evidence for a spec; never a catalog gate.'),
+  ('pulsar contribution verify --package DIR','Validate a contribution package, including publication privacy.'),
+  ('pulsar privacy check|commits','Check files or commit metadata for private information before publication.'),
+  ('pulsar selftest [--checks-only]',"Run this checkout's deterministic tests and checks; nothing reaches a node."),
   ('pulsar release list','Deprecated; use pulsar models list. Removed in CLI contract 2.')]),
 ]:
     w.blank()
@@ -119,7 +126,7 @@ for heading,rows in [
         w.emit(command,initial_indent='  ')
         w.emit(description,initial_indent='    ')
 w.blank()
-w.emit('SPEC is a catalog spec ID. People may type a unique prefix of at least 12 characters; the command prints the complete ID it selected. --json, --spec-file, image commands, model purge and model remove require the complete 64-character ID. Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. Most commands accept --help. See docs/OPERATIONS.md.')
+w.emit('SPEC is a catalog spec ID. People may type a unique prefix of at least 12 characters; the command prints the complete ID it selected. --json, --spec-file, image commands, release show|verify, model purge and model remove require the complete 64-character ID. Candidate files are accepted only through explicit --spec-file. Review status, prepared files and a running service are separate. Most commands accept --help. See docs/OPERATIONS.md.')
 PY
     ;;
   *)

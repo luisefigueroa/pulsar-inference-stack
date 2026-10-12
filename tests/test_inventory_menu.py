@@ -167,6 +167,8 @@ else: sys.exit(99)
         self.assertIn("fixture-local", questions)
         self.assertNotIn("fixture-remote", questions)
         self.assertNotIn("error:", result.stderr)
+        # The same outcome line as the catalog menu's operations.
+        self.assertRegex(result.stdout, rf"(?m)^✓ Stop finished for spec {self.spec['spec_id'][:12]} in \d+s$")
 
     def test_declined_stop_never_calls_stop(self):
         result, calls, _, questions = self.run_menu(["#0", "Stop service", "Back", "Back"], confirms=["no"])
@@ -213,6 +215,8 @@ else: sys.exit(99)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(call[0] == "stop" for call in calls), 1)
         self.assertIn("Existing command stop refused", result.stdout)
+        self.assertRegex(result.stdout, rf"(?m)^✗ Stop failed for spec {self.spec['spec_id'][:12]} \(exit 1\) after "
+                                        r"\d+s; details above$")
 
     def test_other_workloads_remain_in_the_existing_full_inventory(self):
         result, calls, choices, _ = self.run_menu(["Show full inventory", "Back"], snapshots=[snapshot("f" * 64)])

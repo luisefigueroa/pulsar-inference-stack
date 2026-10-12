@@ -89,6 +89,14 @@ gum_available() {
   [ "$have_gum" = 1 ]
 }
 
+# elapsed_text SECONDS — a duration for an outcome line, such as "2m 5s".
+elapsed_text() {
+  local seconds="$1"
+  if [ "$seconds" -ge 3600 ]; then printf '%dh %dm' $((seconds / 3600)) $((seconds % 3600 / 60))
+  elif [ "$seconds" -ge 60 ]; then printf '%dm %ds' $((seconds / 60)) $((seconds % 60))
+  else printf '%ds' "$seconds"; fi
+}
+
 # require_gum WHAT COMMANDS
 # A menu or guided flow opens only with Gum. Otherwise print one line naming
 # the equivalent commands and exit 2 instead of opening a degraded copy.

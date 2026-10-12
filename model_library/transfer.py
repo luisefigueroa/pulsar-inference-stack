@@ -115,7 +115,8 @@ def main():
             print(len(groups))
         return 0
     except (ValueError,OSError,KeyError,TypeError) as exc:
-        print(f'error: transfer: {exc}',file=sys.stderr);return 2
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='transfer');return 2
 
 
 

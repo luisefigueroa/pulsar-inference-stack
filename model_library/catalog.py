@@ -74,19 +74,33 @@ SNAPSHOT_BLOCKER = re.compile(r"^(?:(?P<label>[\w.-]+): )?required snapshot (?P<
 RANK_BLOCKER = re.compile(r"^rank (?P<rank>\d+): (?P<message>.*)$", re.S)
 
 
+def rank_copies(row: dict, rank: int, snapshot: str | None) -> list[dict]:
+    """The saved prepared-copy records for one rank (and snapshot, when named)."""
+    manifest = ((row.get("snapshots") or {}).get(snapshot) or {}).get("snapshot_manifest_id") if snapshot else None
+    return [copy for copy in row.get("prepared_copies") or []
+            if copy.get("rank") == rank and copy.get("node_id")
+            and (manifest is None or copy.get("snapshot_manifest_id") == manifest)]
+
+
 def rank_node(row: dict, rank: int, snapshot: str | None) -> str | None:
     """The node_id saved prepared-copy records give for one rank, when unambiguous."""
-    manifest = ((row.get("snapshots") or {}).get(snapshot) or {}).get("snapshot_manifest_id") if snapshot else None
-    nodes = {copy.get("node_id") for copy in row.get("prepared_copies") or []
-             if copy.get("rank") == rank and copy.get("node_id")
-             and (manifest is None or copy.get("snapshot_manifest_id") == manifest)}
+    nodes = {copy["node_id"] for copy in rank_copies(row, rank, snapshot)}
     return nodes.pop() if len(nodes) == 1 else None
 
 
-def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
+def record_age(record: dict | None, now=None) -> int | None:
+    """Seconds since a home or copy record was last verified, or None when unknown."""
+    try:
+        return age_seconds((record or {}).get("verified_at"), now)
+    except StorageError:
+        return None
+
+
+def blocker_text(blocker: object, row: dict, names: NodeNames, now=None) -> object:
     """A saved blocker for people: its snapshot named once and each rank with its recorded copy.
 
-    Display only; the saved observation keeps its original text.
+    Display only; the saved observation keeps its original text. A copy record's
+    verification age lets people weigh it against the age of the check.
     """
     if not isinstance(blocker, str):
         return blocker
@@ -100,7 +114,10 @@ def blocker_text(blocker: object, row: dict, names: NodeNames) -> object:
         # The observation does not keep the placement it checked, so a copy record
         # says where that rank's copy was recorded, which may differ after a move.
         node = rank_node(row, int(rank["rank"]), snapshot)
-        where = (f"rank {rank['rank']} (copy recorded on {names(node)})" if node
+        ages = [age for age in (record_age(copy, now) for copy in rank_copies(row, int(rank["rank"]), snapshot))
+                if age is not None]
+        verified = f", {_verified(min(ages))}" if node and ages else ""
+        where = (f"rank {rank['rank']} (copy recorded on {names(node)}{verified})" if node
                  else f"rank {rank['rank']} (no recorded copy)")
         return f"{prefix}{where}: {rank['message']}"
     return prefix + names.prefixed(blocker)
@@ -384,7 +401,7 @@ def _heading(out, row):
         out.emit(f"spec {row['spec_id'][:12]}", initial_indent="  ")
 
 
-def _details(out, row, names, label_width):
+def _details(out, row, names, label_width, now=None):
     def field(label, value):
         out.field(label, value, indent=2, label_width=label_width)
 
@@ -403,7 +420,8 @@ def _details(out, row, names, label_width):
         field("Home", "none recorded")
     else:
         for index, (name, home) in enumerate(homes):
-            where = name + (names(home["node_id"]) if home else "none recorded")
+            where = name + (f"{names(home['node_id'])} · {_verified(record_age(home, now))}" if home
+                            else "none recorded")
             if index == 0:
                 field("Home", where)
             else:
@@ -421,6 +439,7 @@ def _details(out, row, names, label_width):
         if view.get("snapshot_manifest_id") in snapshot_names:
             parts.append(snapshot_names[view["snapshot_manifest_id"]])
         parts.append("pinned" if view.get("pinned") else "not pinned")
+        parts.append(_verified(record_age(view, now)))
         rank = f"rank {view['rank']}  "
         hanging = " " * (4 + len(rank))
         out.emit(" · ".join(parts), initial_indent="    " + rank, subsequent_indent=hanging)
@@ -481,12 +500,12 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
                          initial_indent="    ", subsequent_indent="      ", break_on_hyphens=True)
         if details:
             for blocker in row["blockers"]:
-                field("Blocker", blocker_text(blocker, row, names))
+                field("Blocker", blocker_text(blocker, row, names, now))
         command = suggested_command(row, location, names, now=now)
         if command:
             _command_field(out, "Suggested", command, label_width=label_width)
         if details:
-            _details(out, row, names, label_width)
+            _details(out, row, names, label_width, now)
             if published is not None:
                 from .published_results import compact_lines
                 for line in compact_lines(published.get(row["spec_id"]), now=now):
@@ -570,7 +589,8 @@ def main(argv=None):
             render(rows, details=args.command == "show", names=NodeNames.saved(args.repo_root), published=published)
         return 0
     except (StorageError, ValueError, OSError, KeyError, TypeError) as exc:
-        print(f"error: catalog: {exc}", file=sys.stderr)
+        from scripts.terminal_format import error_line
+        error_line(exc, tag='catalog')
         return 2
 
 
