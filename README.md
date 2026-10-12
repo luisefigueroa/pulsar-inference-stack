@@ -1,8 +1,14 @@
 # Pulsar Inference Stack
 
-Serve model recipes on NVIDIA DGX Spark GB10 systems with vLLM. Pulsar manages
-the model files, prepares them on the selected machines, checks the exact
-serving configuration, and starts or stops the service. Verified archives
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+*Exact-spec vLLM serving for NVIDIA DGX Spark GB10 systems. One spec fixes the
+model files, image, execution settings, and hardware geometry, and every launch
+rechecks all of them.*
+
+Pulsar serves catalog model recipes on NVIDIA DGX Spark GB10 systems with vLLM.
+It manages the model files, prepares them on the selected machines, checks the
+exact serving configuration, and starts or stops the service. Verified archives
 provide a separate recovery path.
 
 You select a **spec** from the catalog: a serving specification that fixes the
@@ -10,6 +16,49 @@ model files, container image, execution settings, and required hardware together
 Its **recipe** is the execution configuration. You can browse, restore, prepare,
 and serve published specs using this public repository alone. The separate
 private `pulsar-inference-workbench` owns model onboarding and experiments.
+
+## How it fits together
+
+```mermaid
+flowchart LR
+  operator["Operator"] --> cli["./pulsar<br/>menu and commands"]
+  cli --> catalog["Catalog<br/>releases/ specs, results/ evidence"]
+  cli --> library["Model library<br/>homes, prepared copies, pins"]
+  cli --> serving["Serving<br/>image, start, status, stop"]
+  topology["Confirmed topology<br/>membership and SSH trust"] --> library
+  topology --> serving
+  catalog --> library --> serving
+  library -- "archive, restore" --> archive["Archive location<br/>optional verified copies"]
+  serving --> api["vLLM container<br/>OpenAI-compatible API"]
+```
+
+The spec is the expected identity for every step. The catalog says what to
+serve, the model library puts verified bytes where the recipe needs them, and
+serving launches the exact configuration on confirmed nodes. `release_spec/`
+owns spec documents, identity, and evidence verification; `model_library/`
+owns homes, prepared copies, pins, and archives; `cluster/` and
+`serving_guard/` own multi-node launch and bounded trials. See
+[Architecture](docs/ARCHITECTURE.md) for ownership and the contribution cycle.
+
+## Design rules
+
+- **Exact spec identity.** The model snapshot, image digest, engine arguments,
+  container settings, and hardware geometry form the recipe identity. An
+  execution override creates a distinct modified recipe with its own identity.
+  Git commits are provenance, never runtime identity.
+- **Confirmed topology only.** Commands use the confirmed membership and the
+  recipe's node count. Pulsar never infers serving geometry from spare
+  discovered nodes and never silently changes a transport.
+- **Verified files on every rank.** A home is the one verified source copy of a
+  snapshot. Every serving rank needs a complete prepared copy before launch.
+  Manifests and actual byte verification establish identity; records only
+  locate bytes.
+- **Explicit, non-replacing operations.** Start does not pull a missing image
+  or replace a running service without its own flag. Stop preserves model
+  files, pins, and archives. There is no archive-deletion command.
+- **Evidence is separate from membership.** A schema-valid spec under
+  `releases/` is a catalog member. State, review, measurements, and archive
+  observations are metadata and never gate the catalog or serving.
 
 ## Before you start
 
@@ -134,6 +183,22 @@ Ordinary start prints `READY` only after a test completion succeeds. Use the
 reported API URL and served model name for your requests. `status` checks the
 live service separately from saved catalog observations.
 
+Send a first request from a machine that can reach the endpoint. Replace the
+URL with the one start reported and `SERVED_MODEL` with the served name:
+
+```sh
+PULSAR_API_URL='http://127.0.0.1:8000/v1'
+curl --fail-with-body --silent --show-error \
+  "$PULSAR_API_URL/completions" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"SERVED_MODEL","prompt":"Write one sentence about the Moon.","max_tokens":32}'
+```
+
+An authenticated service also needs the `Authorization: Bearer` header shown in
+[your first API request](docs/OPERATIONS.md#send-your-first-api-request). The
+generated text is in `choices[0].text`. This completion demonstrates API use;
+it is not an accuracy benchmark or qualification result.
+
 When finished:
 
 ```sh
@@ -142,6 +207,17 @@ When finished:
 
 Stop retains model files, pins, and archives. Storage cleanup is a
 [separate operation](docs/OPERATIONS.md#stop-and-reclaim-storage).
+
+## Commands at a glance
+
+`./pulsar help` lists every command, and each command accepts `--help`.
+
+| Group | Commands | Purpose |
+| --- | --- | --- |
+| Set up this checkout | `topology`, `ssh-trust`, `configure archive-root`, `doctor` | Confirm membership and SSH trust, select the archive location, and run diagnostics |
+| Catalog and model files | `models`, `model` | Browse specs, published results, and saved observations; acquire, restore, prepare, move, pin, purge, and archive model files |
+| Serve | `image`, `start`, `status`, `stop`, `inventory`, `guarded` | Stage the exact image, launch, observe, and stop the owned service, or run a bounded guarded trial |
+| Contributors and integrations | `contract`, `spec`, `memory verify`, `observe`, `resources` | Inspect the integration contract, author and verify spec documents, and verify ranks and resources |
 
 ## Documentation
 
@@ -175,6 +251,24 @@ code updates do not automatically restart existing services. Integrators can
 inspect `./pulsar contract --json` for supported capabilities instead of matching
 Git commits. See [the public contract](docs/CONTRACT.md).
 
+## Repository layout
+
+| Path | What |
+| --- | --- |
+| `pulsar` | The operator command and menu. `wizard.sh` opens the catalog menu. `start` runs `scripts/up.sh`, which launches `serve.sh` for one node or `cluster/start-cluster.sh` for a multi-node recipe. |
+| `releases/` | Catalog specs, one `<spec_id>.json` per published recipe. `catalog-removals.json` records removed specs with their reasons. |
+| `results/` | Compact published measurement evidence per spec and run. |
+| `policy/`, `platforms/` | Baseline measurement policies and the GB10 platform reference. |
+| `release_spec/` | Spec schemas, identity, the public JSON contract, and evidence verification. |
+| `model_library/` | Homes, prepared copies, pins, archives, migration, and local records. |
+| `cluster/`, `serving_guard/` | Multi-node launch, preflight, and teardown; bounded guarded serving. |
+| `scripts/` | The Bash commands and Python helpers behind `./pulsar`, including `selftest.sh` and the privacy scanner. |
+| `tests/` | Deterministic regression suite with synthetic fixtures. |
+| `docs/` | Operations, architecture, contract, contributions, testing, and decision references. |
+| `skills/` | Agent skill for reviewing a catalog contribution. |
+| `Dockerfile` | Optional metadata overlay on a digest-pinned base image. A built image needs its own digest and fresh qualification. |
+| `third_party/` | The vendored Gum executable with its license and provenance. |
+
 ## Development and attribution
 
 Use [Testing](docs/TESTING.md) to select validation for the changed behavior.
@@ -183,6 +277,19 @@ Use [Testing](docs/TESTING.md) to select validation for the changed behavior.
 warranted. Neither starts models, and neither establishes physical serving
 results.
 
-Carried-forward code retains its licenses and attribution. See [LICENSE](LICENSE)
-and [third-party notices](THIRD_PARTY_NOTICES.md). This repository began with fresh
+Carried-forward code retains its licenses and attribution; see
+[third-party notices](THIRD_PARTY_NOTICES.md). This repository began with fresh
 history, without importing predecessor experiment results or serving recipes.
+
+## License
+
+Copyright 2026 Luis Figueroa. Licensed under the [Apache License 2.0](LICENSE).
+Contributions are accepted under the same license, as its Section 5 provides;
+no separate contributor agreement is required.
+
+Catalog specs may pin container images published under the maintainer's GitHub
+Container Registry namespace. Those images contain components under their own
+licenses, including NVIDIA's container and CUDA terms and the licenses of
+vLLM and other packages, and are not licensed solely under Apache 2.0. Pulling or using an
+image grants no rights beyond those component licenses. The vendored Gum
+executable is MIT licensed; see [third-party notices](THIRD_PARTY_NOTICES.md).
