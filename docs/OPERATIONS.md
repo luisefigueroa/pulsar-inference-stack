@@ -404,8 +404,9 @@ retry; see [troubleshooting](#troubleshooting).
 Start does not replace an existing exact-name service and does not pull a
 missing image by implication. After inspecting the current service, pass
 `--replace` only with explicit replacement approval. Pass `--pull-image` only
-when staging the selected digest-pinned image is also approved. Generic `--yes`
-does not grant either permission.
+when staging the selected digest-pinned image is also approved. Start asks no
+confirmation: `start --yes` is deprecated, grants neither permission and is
+removed in CLI contract 2.
 
 ### Recipe identity and deployment settings
 

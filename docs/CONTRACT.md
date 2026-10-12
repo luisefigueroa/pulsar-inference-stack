@@ -210,7 +210,7 @@ recipes as `Modified recipe`. A no-op override keeps the original identity.
 Selected-catalog measurements are reference only for a modified recipe. The
 selected spec and its metadata remain unchanged; derived metadata starts null.
 `--replace` and `--pull-image` retain independent meanings. Neither an override
-nor `--yes` grants them.
+nor the deprecated `start --yes` grants them.
 
 The private launch record contains selected/effective specs and resolved site
 settings. Containers name that immutable record. Later observation uses the
@@ -317,6 +317,11 @@ Change note, 2026-10-11: a shortened spec ID under `--json` is a `usage_error`
 for `start`, `stop`, `status` and `model`. Before, `status` could probe every
 node and report `service_absent`, and `start` reported `prerequisite_failed`
 after taking its lock.
+
+Change note, 2026-10-12: `start --yes` is deprecated and listed in
+`deprecated_flags`. Start asks no confirmation, and the flag has granted
+nothing since `--pull-image` and `--replace` took over its permissions; it
+warns on stderr and is removed in CLI contract 2.
 
 Change note, 2026-09-29: `invalid_stack_output` exits 3 instead of 2. Without
 `--json`, refusals (a serving guard, a historical spec, another platform) exit

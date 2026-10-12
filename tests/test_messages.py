@@ -124,6 +124,7 @@ class Deprecations(unittest.TestCase):
     def test_each_retired_flag_warns_once_and_matches_the_contract(self):
         # Each invocation stops at an argument check, before any lock or node.
         runs = {"stop --retain-weights": ["bash", str(ROOT / "scripts/down.sh"), "abc", "--retain-weights"],
+                "start --yes": ["bash", str(ROOT / "scripts/up.sh"), "abc", "--yes", "--bogus"],
                 "observe --spec-file": [str(ROOT / "pulsar"), "observe", "--spec-file", "/tmp/candidate.json",
                                         "--verification-jobs", "0", "--json"]}
         declared = integration_contract.contract()["deprecated_flags"]

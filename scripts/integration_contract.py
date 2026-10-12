@@ -70,6 +70,9 @@ def contract() -> dict:
         'deprecated_flags': {
             'observe --spec-file': {'note': 'it is ignored because the recorded spec is authoritative',
                                     'removed_in_cli_contract': 2},
+            'start --yes': {'note': 'start asks no confirmation; --replace, --pull-image and '
+                                    '--accept-memory-warn grant its permissions',
+                            'removed_in_cli_contract': 2},
             'stop --retain-weights': {'note': 'stop always retains model files', 'removed_in_cli_contract': 2},
         },
     }
