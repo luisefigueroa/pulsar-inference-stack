@@ -276,9 +276,13 @@ def menu_label(row: dict, width: int) -> str:
         critical.append("start unsupported")
     if critical:
         warning = " · ".join(critical)
-        identity = f" [{row['spec_id'][:8]}]"
+        identity = f" [{row['spec_id'][:12]}]"
         if len(warning + identity) > budget:
             warning = warning.replace("start unsupported", "start blocked")
+        if len(warning + identity) > budget:
+            # At the narrowest widths the warning outranks the copyable prefix;
+            # the selected view shows the complete spec ID.
+            identity = f" [{row['spec_id'][:8]}]"
         if len(warning + identity) > budget:
             # At the minimum width the withdrawal warning has priority; the
             # selected view still explains every launch restriction in full.
@@ -292,7 +296,7 @@ def menu_label(row: dict, width: int) -> str:
         if len(context) > room:
             context = context[:room - 3] + "..."
         return heading + " " + context
-    suffix = f" [{row['spec_id'][:8]}] {short_state(row)}"
+    suffix = f" [{row['spec_id'][:12]}] {short_state(row)}"
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
     text = model + suffix
@@ -318,7 +322,7 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
            published=None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
-    out.emit(f"{row['model_id']} [{row['spec_id'][:8]}]")
+    out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
     for line in withdrawal_notice(row):
         out.emit(line)
     out.emit("Selected recipe: " + recipe_text(row["geometry"]))
