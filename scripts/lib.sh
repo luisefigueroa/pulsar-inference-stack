@@ -2502,6 +2502,41 @@ remove_safe_managed_id_on_node() {
   return 0
 }
 
+# guarded_controller_holds_lock LOCK_PATH — whether a running guarded controller
+# (guarded-serving.sh) has the lifecycle lock open. Other holders, such as a
+# batch supervisor still shutting down after its controller exited, are waited
+# for through the ordinary lock instead.
+guarded_controller_holds_lock() {
+  python3 -c '
+import os, sys
+lock = os.path.realpath(sys.argv[1])
+for pid in filter(str.isdigit, os.listdir("/proc")):
+    try:
+        descriptors = os.listdir(f"/proc/{pid}/fd")
+    except OSError:
+        continue
+    for fd in descriptors:
+        try:
+            if os.readlink(f"/proc/{pid}/fd/{fd}") != lock:
+                continue
+            command = open(f"/proc/{pid}/cmdline", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        if any(part.endswith(b"guarded-serving.sh") for part in command):
+            raise SystemExit(0)
+raise SystemExit(1)
+' "$1"
+}
+
+# guarded_trial_node_still INDEX NODE_ID TOPOLOGY_ID — whether confirmed
+# membership is unchanged and position INDEX still holds the recorded node.
+# Reloaded before every probe and removal so a changed topology never sends an
+# operation to a different machine.
+guarded_trial_node_still() {
+  reload_cluster_topology >/dev/null 2>&1 || return 1
+  [ "$CLUSTER_TOPOLOGY_ID" = "$3" ] && [ "${CLUSTER_NODE_IDS[$1]:-}" = "$2" ]
+}
+
 # guarded_trial_docker INDEX ARGS... — run one docker command on a confirmed
 # node: locally for index 0, over the node's SSH transport otherwise.
 guarded_trial_docker() {
@@ -2533,8 +2568,9 @@ guarded_trial_container() {
 # unobservable node removes nothing. Then the trial's service record retires.
 stop_recorded_guarded_service() {
   local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rows prefix
-  local rank label node_id host name run plan spec_label index i ids removed=0 where trial_run=""
-  local -a indexes=() hosts=() filters_of=() found=()
+  local rank label node_id host name run plan spec_label topology index i ids removed=0 where trial_run=""
+  local trial_topology="" changed
+  local -a indexes=() hosts=() filters_of=() found=() node_ids=()
   prefix="${PULSAR_MANAGED_LABEL%managed}"
   rows=$(python3 -c '
 import sys
@@ -2545,19 +2581,25 @@ single = len(plan["ranks"]) == 1
 for row in plan["ranks"]:
     print("\t".join([str(row["rank"]), "single" if single else str(row["rank"]), row["node_id"],
                      row.get("hostname") or row["node_id"], plan["container_name"], plan["guard_run_id"],
-                     plan["plan_id"], plan["spec_id"]]))
+                     plan["plan_id"], plan["spec_id"], plan["topology_id"]]))
 ' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id") \
     || { error_line "cannot read the saved launch plan of spec ${spec:0:12}; nothing was removed"; return 1; }
-  while IFS=$'\t' read -r rank label node_id host name run plan spec_label; do
+  while IFS=$'\t' read -r rank label node_id host name run plan spec_label topology; do
     index=""
     for i in "${!CLUSTER_NODE_IDS[@]}"; do [ "${CLUSTER_NODE_IDS[$i]}" != "$node_id" ] || index="$i"; done
     if [ -z "$index" ]; then
       error_line "guarded trial ${run:0:12} recorded rank $rank on $host, which is not in the confirmed membership; nothing was removed. Next: ./pulsar topology show"
       return 1
     fi
-    indexes+=("$index"); hosts+=("$host (rank $rank)"); trial_run="$run"
+    indexes+=("$index"); hosts+=("$host (rank $rank)"); node_ids+=("$node_id"); trial_run="$run"
+    trial_topology="$topology"
     filters_of+=("name=^/$name\$|label=${prefix}guard-run=$run|label=${prefix}launch-plan=$plan|label=${prefix}spec-id=$spec_label|label=${prefix}rank=$label")
   done <<<"$rows"
+  changed="confirmed membership changed while stop was running; the service record is kept. Next: ./pulsar topology show, then rerun ./pulsar stop $(spec_reference "$spec")"
+  if [ "$CLUSTER_TOPOLOGY_ID" != "$trial_topology" ]; then
+    error_line "guarded trial ${trial_run:0:12} was recorded under a different confirmed membership; nothing was removed. Next: ./pulsar topology show"
+    return 1
+  fi
   for i in "${!indexes[@]}"; do
     if [ "${indexes[$i]}" != 0 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
       error_line "reaching ${hosts[$i]} needs confirmed SSH trust; nothing was removed. Next: ./pulsar ssh-trust check"
@@ -2566,6 +2608,8 @@ for row in plan["ranks"]:
   done
   # Probe every recorded node before removing anything.
   for i in "${!indexes[@]}"; do
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "nothing was removed: $changed"; return 1; }
     ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") \
       || { stop_unobservable_error "${indexes[$i]}" "$spec"; return 1; }
     if [ "$(printf '%s\n' "$ids" | grep -c .)" -gt 1 ]; then
@@ -2576,6 +2620,8 @@ for row in plan["ranks"]:
   done
   for i in "${!indexes[@]}"; do
     [ -n "${found[$i]}" ] || continue
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "removed $removed container(s) before $changed"; return 1; }
     guarded_trial_docker "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
       error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
       return 1
@@ -2584,6 +2630,8 @@ for row in plan["ranks"]:
   done
   # Confirm absence on every recorded node before retiring the service record.
   for i in "${!indexes[@]}"; do
+    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+      || { error_line "removed $removed container(s) before $changed"; return 1; }
     if ! ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") || [ -n "$ids" ]; then
       error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
       return 1

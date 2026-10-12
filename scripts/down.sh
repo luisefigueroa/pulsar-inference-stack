@@ -80,10 +80,11 @@ if [ -n "$recorded_trials" ]; then
       exit 1
     fi
     # A running guarded controller holds the lifecycle lock for its whole life, on
-    # any placement; refuse now rather than wait for the lock.
+    # any placement; refuse now rather than wait for the lock. Any other holder is
+    # waited for by the ordinary lock below.
     lock_path="${PULSAR_MODEL_LIBRARY_LOCK_FILE:-$PULSAR_MODEL_LIBRARY_DIR/lifecycle.lock}"
-    if [ -e "$lock_path" ] && ! flock -n -x "$lock_path" true 2>/dev/null; then
-      error_line "spec ${trial_spec:0:12} runs as guarded trial ${trial_run:0:12} on $trial_hosts, and a Pulsar command holds the model library, so its controller may still be running. Ordinary stop does not stop a running guarded trial. Next: ./pulsar guarded stop --output-dir <its output directory> --run-id $trial_run; once it has exited, ./pulsar stop $trial_ref stops what remains"
+    if [ -e "$lock_path" ] && guarded_controller_holds_lock "$lock_path"; then
+      error_line "spec ${trial_spec:0:12} has guarded trial ${trial_run:0:12} on $trial_hosts, and a guarded run's controller is running, so the trial may still be running. Ordinary stop does not stop a running guarded trial. Next: ./pulsar guarded stop --output-dir <its output directory> --run-id $trial_run; once it has exited, ./pulsar stop $trial_ref stops what remains"
       exit 1
     fi
     # On the default placement ordinary stop already proves ownership by its labels.

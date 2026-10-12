@@ -54,8 +54,10 @@ class GuardedStopRecovery(unittest.TestCase):
         overrides = self.root / 'overrides.sh'
         overrides.write_text(f". '{self.installation}/scripts/lib.sh'\n" + '''
 load_cluster_topology() {
- CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+ CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID=${TEST_TOPOLOGY_ID:-cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
  CLUSTER_NODE_IDS=(node-0 node-1 node-2); CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2)
+ # Membership reordered after the first Docker probe, as a concurrent reconfiguration would.
+ if [ "${SWAP_AFTER_PROBE:-0}" = 1 ] && [ -f "$PULSAR_TEST_ROOT/probes" ]; then CLUSTER_NODE_IDS=(node-0 node-2 node-1); fi
  CLUSTER_NODE_SSH_HOSTS=(local rank-1 rank-2); CLUSTER_NODE_CONTROL_IPS=(192.0.2.1 192.0.2.2 192.0.2.3)
  CLUSTER_NODE_CONTROL_IFS=(eth0 eth0 eth0)
 }
@@ -81,11 +83,14 @@ list_managed_container_ids_on_node() { [ "$1" != "${UNOBSERVABLE_INDEX:-}" ]; }
                      'labels': {**owned('2', 0)['labels'], PREFIX + 'guard-run': 'd' * 64}}
         (self.root / 'containers.json').write_text(json.dumps([owned('2', 0), owned('1', 1), unrelated]))
 
-    def hold_lock(self):
-        # A running guarded run holds the lifecycle lock shared for its whole life.
+    def hold_lock(self, seconds=30, controller=True):
+        # A running guarded run (guarded-serving.sh) holds the lifecycle lock shared
+        # for its whole life; another holder, such as an exiting batch supervisor, does too.
         lock = Path(self.env['PULSAR_MODEL_LIBRARY_DIR']) / 'lifecycle.lock'
         lock.parent.mkdir(parents=True, exist_ok=True)
-        holder = subprocess.Popen(['flock', '-s', str(lock), 'sleep', '30'])
+        holder_script = self.root / ('guarded-serving.sh' if controller else 'batch-supervisor.sh')
+        holder_script.write_text(f'exec {{fd}}>"{lock}"\nflock -s "$fd"\nsleep {seconds}\n')
+        holder = subprocess.Popen(['bash', str(holder_script)])
         self.addCleanup(lambda: (holder.kill(), holder.wait()))
         deadline = time.monotonic() + 5
         while subprocess.run(['flock', '-n', '-x', str(lock), 'true']).returncode == 0 and time.monotonic() < deadline:
@@ -132,7 +137,8 @@ list_managed_container_ids_on_node() { [ "$1" != "${UNOBSERVABLE_INDEX:-}" ]; }
         self.hold_lock()
         result = self.stop(self.plan['selected_spec_id'])
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn(f"runs as guarded trial {self.plan['guard_run_id'][:12]} on rank-2, rank-1", result.stderr)
+        self.assertIn(f"has guarded trial {self.plan['guard_run_id'][:12]} on rank-2, rank-1, and a guarded run's "
+                      "controller is running", result.stderr)
         self.assertIn(f"Next: ./pulsar guarded stop --output-dir <its output directory> --run-id "
                       f"{self.plan['guard_run_id']}", result.stderr)
         # The spec is a candidate, not a catalog file, so the command names its complete ID.
@@ -164,6 +170,26 @@ list_managed_container_ids_on_node() { [ "$1" != "${UNOBSERVABLE_INDEX:-}" ]; }
         self.assertLess(time.monotonic() - started, 20)
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('Ordinary stop does not stop a running guarded trial', result.stderr)
+
+    def test_a_lock_held_by_something_other_than_a_controller_is_waited_for(self):
+        # An exited controller's batch supervisor may hold the lock briefly while it
+        # shuts down; stop waits for it instead of refusing.
+        self.hold_lock(seconds=1, controller=False)
+        result = self.stop(self.plan['selected_spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertEqual(self.remaining(), ['ee'])
+
+    def test_a_membership_change_during_recovery_removes_nothing(self):
+        result = self.stop(self.plan['selected_spec_id'], SWAP_AFTER_PROBE='1')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('nothing was removed: confirmed membership changed while stop was running', result.stderr)
+        self.assert_untouched()
+
+    def test_a_trial_recorded_under_other_membership_is_not_touched(self):
+        result = self.stop(self.plan['selected_spec_id'], TEST_TOPOLOGY_ID='d' * 64)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('was recorded under a different confirmed membership; nothing was removed', result.stderr)
+        self.assert_untouched()
 
     def test_node_selection_cannot_split_a_trial(self):
         result = self.stop(self.plan['selected_spec_id'], '--node', 'rank-1')

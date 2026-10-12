@@ -254,18 +254,23 @@ def finish(output, state_root=None):
     return result
 
 
-def unverified_ranks(output, count):
-    """Ranks whose cleanup was not verified; every rank when the batch is unreadable."""
+def unverified_ranks(output, plan):
+    """Ranks whose cleanup check() would not accept; every rank when the batch is unreadable."""
+    count = len(plan["ranks"])
     try:
         results = {row["index"]: row for row in json.loads(read_regular(output / "cleanup" / "batch.json"))["results"]}
     except (ValueError, OSError, KeyError, TypeError):
         return list(range(count))
+    expected = {"run_id": plan["guard_run_id"], "spec_id": plan["spec_id"]}
     missing = []
     for rank in range(count):
         try:
-            verified = (results[rank]["returncode"] == 0 and json.loads(
-                read_regular(output / "cleanup" / "jobs" / f"{rank}.out")).get("cleanup_verified") is True)
-        except (ValueError, OSError, KeyError, TypeError):
+            value = json.loads(read_regular(output / "cleanup" / "jobs" / f"{rank}.out"))
+            # The same identity and result check() requires of a verified rank.
+            verified = (results[rank]["returncode"] == 0 and value.get("rank") == rank
+                        and all(value.get(k) == v for k, v in expected.items())
+                        and value.get("cleanup_verified") is True)
+        except (ValueError, OSError, KeyError, TypeError, AttributeError):
             verified = False
         if not verified:
             missing.append(rank)
@@ -293,17 +298,26 @@ def summary(output, result, plan):
 
     lines = [head, f"  preflight  {state('preflight')}", f"  execute    {state('execute')}"]
     cleanup, next_step = phases["cleanup"], None
+    recover = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
+               "recorded nodes and retires its service record")
     if cleanup["complete"]:
-        record = "service record retired" if result.get("service_locator_retired") else "no active service record"
+        # False also covers a newer plan's locator that this run correctly preserved.
+        record = ("service record retired" if result.get("service_locator_retired")
+                  else "no service record of this run's launch plan was active")
         lines.append(f"  cleanup    verified on {cleanup['ranks']} of {count} ranks; {record}")
-    elif cleanup.get("not_started"):
+    elif cleanup.get("not_started") and phases["preflight"].get("not_started"):
         lines.append("  cleanup    not needed; no rank started")
+    elif cleanup.get("not_started"):
+        # Ranks may have started; cleanup never dispatched, so nothing was verified.
+        lines.append("  cleanup    did not run; the trial's containers may still be running")
+        next_step = recover
     else:
+        missing = unverified_ranks(output, plan)
         where = ", ".join(f"{plan['ranks'][rank].get('hostname') or plan['ranks'][rank]['node_id']} (rank {rank})"
-                          for rank in unverified_ranks(output, count))
-        lines.append(f"  cleanup    not verified on {where}; their containers may still be running")
-        next_step = (f"Next: ./pulsar stop {plan['selected_spec_id']} stops the trial's containers on its "
-                     "recorded nodes and retires its service record")
+                          for rank in missing)
+        lines.append(f"  cleanup    not verified on {where}; their containers may still be running" if missing
+                     else "  cleanup    incomplete (the cleanup batch did not complete); containers may still be running")
+        next_step = recover
     lines.append(f"  result     {output / 'result.json'}")
     if next_step:
         lines.append(next_step)

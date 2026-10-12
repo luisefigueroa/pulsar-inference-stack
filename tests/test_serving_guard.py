@@ -295,6 +295,41 @@ class GuardContracts(unittest.TestCase):
             kill.assert_not_called()
 
 
+    def test_run_summary_claims_only_what_records_show(self):
+        _, _, _, plan, *_ = guarded_fixture()
+        names = [rank.get('hostname') or rank['node_id'] for rank in plan['ranks']]
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            done = {'complete': True, 'ranks': 3}
+            result = {'run_id': plan['guard_run_id'], 'requested_stop': True, 'status': 'failed',
+                      'phases': {'preflight': done, 'execute': done,
+                                 'cleanup': {'complete': False, 'error': 'incomplete'}}}
+            (output/'cleanup'/'jobs').mkdir(parents=True)
+            (output/'cleanup'/'batch.json').write_text(json.dumps(
+                {'results': [{'index': r, 'returncode': 0} for r in range(3)]}))
+            for rank in range(3):
+                (output/'cleanup'/'jobs'/f'{rank}.out').write_text(json.dumps(
+                    {'rank': rank, 'run_id': plan['guard_run_id'], 'spec_id': plan['spec_id'], 'cleanup_verified': True}))
+            # Rank 1 reports verified cleanup for a different run: not verified.
+            (output/'cleanup'/'jobs'/'1.out').write_text(json.dumps(
+                {'rank': 1, 'run_id': 'e'*64, 'spec_id': plan['spec_id'], 'cleanup_verified': True}))
+            text = controller.summary(output, result, plan)
+            self.assertIn(f'not verified on {names[1]} (rank 1); their containers may still be running', text)
+            self.assertIn(f"Next: ./pulsar stop {plan['selected_spec_id']}", text)
+            # Ranks started but cleanup never dispatched: not "not needed".
+            result['phases']['cleanup'] = {'complete': False, 'not_started': True}
+            text = controller.summary(output, result, plan)
+            self.assertIn("cleanup    did not run; the trial's containers may still be running", text)
+            self.assertIn('Next: ./pulsar stop', text)
+            # Nothing started: cleanup really was not needed.
+            result['phases'] = {name: {'complete': False, 'not_started': True} for name in ('preflight', 'execute', 'cleanup')}
+            self.assertIn('cleanup    not needed; no rank started', controller.summary(output, result, plan))
+            # A false retirement may be a preserved newer plan's locator, never "no active record".
+            result.update(status='stopped', service_locator_retired=False,
+                          phases={'preflight': done, 'execute': done, 'cleanup': done})
+            self.assertIn("no service record of this run's launch plan was active", controller.summary(output, result, plan))
+
+
 class GuardRuntime(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
@@ -661,7 +696,7 @@ def execute(context,root):
         lines = out.splitlines()
         self.assertRegex(lines[0], r'^Guarded run [0-9a-f]{12} failed in preflight \(without a stop request\)\.$')
         self.assertIn('  execute    not started', lines)
-        self.assertIn('  cleanup    verified on 3 of 3 ranks; no active service record', lines)
+        self.assertIn("  cleanup    verified on 3 of 3 ranks; no service record of this run's launch plan was active", lines)
         self.assertIn(f"  result     {self.output/'result.json'}", lines)
         # A phase that never ran is recorded as not started, not as a missing-file error.
         result = json.loads((self.output/'result.json').read_text())
