@@ -142,10 +142,16 @@ class ServingGuardSchema(unittest.TestCase):
         self.assertEqual(serving.verify_spec(changed)['recipe']['container']['guard']['entrypoint'], entrypoint)
 
     def test_catalog_admits_guarded_spec_without_execution_support(self):
+        member = copy.deepcopy(self.original)
+        # Catalog members declare tool-choice and parser engine arguments.
+        member['recipe']['engine_args'] += ['--enable-auto-tool-choice', '--tool-call-parser', 'example_tools',
+                                            '--reasoning-parser', 'example_reasoning']
+        member['spec_id'] = serving.spec_id(member['recipe'])
+        spec = guarded(member)
         with tempfile.TemporaryDirectory() as temp:
             releases = Path(temp) / 'releases'; releases.mkdir()
-            path = releases / (self.spec['spec_id'] + '.json')
-            path.write_text(json.dumps(self.spec))
+            path = releases / (spec['spec_id'] + '.json')
+            path.write_text(json.dumps(spec))
             result = subprocess.run([sys.executable, str(ROOT / 'scripts/check-catalog.py'),
                                      '--repo-root', temp, '--json'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)

@@ -39,7 +39,7 @@ Usage: pulsar model OPERATION [SPEC_ID] [options]
 
 Options:
   --spec-file FILE       Explicit lab candidate spec
-  --snapshot NAME       Select one declared snapshot for home/archive operations
+  --snapshot NAME       Select target (the serving model) or a required snapshot's declared name
   --node NODE            Home node or one-node placement: hostname or node ID
   --placement-nodes LIST Ordered confirmed nodes for prepare/info/check
   --manifest FILE       Retained source manifest for lab storage
