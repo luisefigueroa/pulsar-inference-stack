@@ -876,7 +876,9 @@ now does), the suggestion is the next required snapshot without a home, then
 the suggestion is **Start**, which rechecks its prerequisites. Prepare saves no
 observation, so the frame reads `Files: prepared in this session (…); saved
 check: …` until the next Check now. Other storage changes still suggest
-**Check now**. Each operation keeps its own preview and confirmation.
+**Check now**, and so does any storage change that fails, since it may have
+partial effects; one rejected before it ran (exit 2) changes nothing. Each
+operation keeps its own preview and confirmation.
 
 ### Launch options
 
