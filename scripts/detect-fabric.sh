@@ -310,14 +310,23 @@ python3 "$REPO_DIR/scripts/topology_storage_impact.py" "${impact_args[@]}" \
 echo
 "$MANIFEST_TOOL" render-save "$verified" "$CLUSTER_TOPOLOGY_FILE"
 
+node_count=$(python3 -c 'import json,sys
+document=json.load(open(sys.argv[1],encoding="utf-8"))
+topology=document["topology"] if isinstance(document.get("topology"),dict) else document
+print(len(topology.get("nodes") or []))
+' "$verified")
 if [ "$YES" != 1 ]; then
   # ui.sh was loaded, and Gum found, before discovery started.
-  if confirm "Save this cluster membership?"; then
+  machine_word=machines
+  [ "$node_count" != 1 ] || machine_word=machine
+  if confirm "Save cluster membership with $node_count $machine_word?"; then
     :
   else
     confirmation_rc=$?
     log "aborted — topology not modified"
     [ "$confirmation_rc" -ne 130 ] || exit 130
+    # Private guided-setup result; ordinary configure cancellation stays exit 0.
+    [ "${_PULSAR_SETUP_CONFIGURE:-0}" != 1 ] || exit 125
     exit 0
   fi
 fi
@@ -335,11 +344,6 @@ else
 fi
 "$MANIFEST_TOOL" write "$verified" "$CLUSTER_TOPOLOGY_FILE"
 log "wrote $CLUSTER_TOPOLOGY_FILE"
-node_count=$(python3 -c 'import json,sys
-document=json.load(open(sys.argv[1],encoding="utf-8"))
-topology=document["topology"] if isinstance(document.get("topology"),dict) else document
-print(len(topology.get("nodes") or []))
-' "$verified")
 if [ "$node_count" -gt 1 ]; then
   print_hanging "  Next      " "./pulsar ssh-trust enroll"
 else

@@ -23,6 +23,65 @@ writer.emit("New SSH trust requires separate authorization. Existing low-level t
 PYHELP
 }
 
+# Shared by fresh setup and the menu's explicit membership reconfiguration.
+# Candidate addresses live only in this interaction; discovery keeps its normal
+# strict SSH policy. A successful preview is not permission to save membership.
+review_candidates() {
+  REVIEW_CANDIDATES=("$@")
+  local detected choice rc candidate
+  local -a labels actions
+  while true; do
+    if "$0" detect "${REVIEW_CANDIDATES[@]}"; then
+      detected=1
+    else
+      rc=$?; [ "$rc" -ne 130 ] || return 130
+      detected=0
+    fi
+    while true; do
+      echo
+      python3 "$REPO_DIR/scripts/terminal_format.py" <<'REVIEW'
+Check that every machine you intend to use is listed. Added addresses are kept for retries until you leave this review.
+REVIEW
+      labels=("Add a machine by hostname or IP" "Retry discovery" "Machine still missing? SSH help" "Back")
+      actions=(add retry help back)
+      if [ "$detected" = 1 ]; then
+        labels=("Continue to membership review" "${labels[@]}")
+        actions=(continue "${actions[@]}")
+      fi
+      choice=$(choose_index "Review discovered machines" "${labels[@]}") \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
+      case "${actions[$choice]}" in
+        continue) return 0 ;;
+        add)
+          if candidate=$(prompt_input "Management hostname or IP" "Hostname or IP"); then
+            case "$candidate" in
+              -*|*[!A-Za-z0-9._:@%+-]*)
+                echo 'Enter one hostname or IP, without spaces or SSH options.'
+                continue ;;
+            esac
+            REVIEW_CANDIDATES+=(--candidate "$candidate")
+            break
+          else
+            rc=$?; [ "$rc" -ne 130 ] || return 130
+          fi ;;
+        retry) break ;;
+        help)
+          python3 "$REPO_DIR/scripts/terminal_format.py" <<'SSHHELP'
+A missing machine can mean an address, network, SSH login or host-key problem. Discovery cannot reliably tell these apart.
+
+Check its management hostname or IP and normal key-based SSH access with: ssh -o StrictHostKeyChecking=ask HOST
+
+If OpenSSH presents a new host key, compare its fingerprint with an independently trusted source, such as the machine's console or its administrator, before accepting it. A changed key needs the same independent verification; do not bypass the warning.
+
+Then return here and choose Retry discovery. Pulsar's later Enroll SSH trust confirmation separately records and verifies the confirmed machines' identities; it does not establish initial OpenSSH trust.
+SSHHELP
+          ;;
+        back) return 1 ;;
+      esac
+    done
+  done
+}
+
 action="${1:---help}"; [ $# = 0 ] || shift
 case "$action" in
   --help|-h|help) usage; exit 0 ;;
@@ -34,7 +93,6 @@ case "$action" in
         --candidate)
           [ -n "${2:-}" ] || { usage >&2; exit 2; }
           setup_detect_flags+=("$1" "$2")
-          setup_configure_flags+=("$1" "$2")
           shift
           ;;
         --accept-new-host-keys) setup_configure_flags+=("$1") ;;
@@ -49,8 +107,28 @@ case "$action" in
     . "$REPO_DIR/scripts/lib.sh"
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo 'No saved membership. Detecting candidates without saving first.'
-      "$0" detect "${setup_detect_flags[@]}" || exit $?
-      "$0" configure "${setup_configure_flags[@]}" || exit $?
+      while true; do
+        # Leaving the review ends setup without membership, which is not success.
+        review_candidates "${setup_detect_flags[@]}" || {
+          rc=$?; [ "$rc" -ne 130 ] || exit 130
+          echo 'Setup stopped before saving cluster membership.'
+          exit 1
+        }
+        setup_detect_flags=("${REVIEW_CANDIDATES[@]}")
+        # Standalone configure keeps exit 0 for a declined save. Only this
+        # coordinator requests a distinct cancellation result; file existence
+        # cannot tell a save from a concurrent writer after a declined prompt.
+        if _PULSAR_SETUP_CONFIGURE=1 "$0" configure \
+            "${setup_detect_flags[@]}" "${setup_configure_flags[@]}"; then
+          break
+        else
+          rc=$?
+          [ "$rc" -ne 130 ] || exit 130
+          if [ "$rc" != 125 ]; then
+            echo 'Configuration did not complete. Review the error above before retrying.'
+          fi
+        fi
+      done
     elif "$0" show >/dev/null 2>&1; then
       :
     else
@@ -89,7 +167,7 @@ case "$action" in
     while true; do
       choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \
         "Check saved nodes and fabric" "Detect cluster candidates" \
-        "Configure cluster membership" "Check SSH trust" "Enroll SSH trust" "Back") \
+        "Configure membership or add a machine" "Check SSH trust" "Enroll SSH trust" "Back") \
         || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
       set +e
       case "$choice" in
@@ -97,7 +175,15 @@ case "$action" in
         1) "$0" show ;;
         2) "$0" check ;;
         3) "$0" detect ;;
-        4) "$0" configure ;;
+        4)
+          if review_candidates; then
+            # Always use configure here: setup reuses valid saved membership.
+            # Return to the menu even on exit 0; configure may have been
+            # cancelled, and enrollment remains a separate explicit action.
+            "$0" configure "${REVIEW_CANDIDATES[@]}"
+          else
+            rc=$?; [ "$rc" -ne 130 ] || exit 130
+          fi ;;
         5) "$REPO_DIR/scripts/topology-ssh-trust.sh" check ;;
         6) "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll ;;
         *) exit 0 ;;

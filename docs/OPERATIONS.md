@@ -117,6 +117,26 @@ prompt, and finishes with a topology readiness check. Healthy existing setup is
 reused. Cancellation or failed enrollment cannot report success. This applies
 to single-node clusters too. The first-run menu's setup step and the topology
 menu's **First-use setup** run this same command.
+
+After discovery, review the machines found. **Add a machine by hostname or IP**
+accepts one management address at a time; add more as needed. **Retry discovery**
+keeps those candidates for this interaction. **Back** leaves setup without
+saving and exits with status 1; Escape from address entry returns to the review,
+and Ctrl-C exits setup.
+A failed discovery still offers Add, Retry, SSH help and Back, but cannot continue
+to saving. **Continue to membership review** runs configuration's fresh checks,
+then asks whether to save the actual number of machines shown, with No selected
+by default. Only you know which machines you intend to include: if fewer appear,
+add the missing addresses or explicitly confirm the smaller membership. Declining
+a fresh setup's save returns to discovery review with your candidates retained.
+
+**Machine still missing? SSH help** explains how to check the address, network
+and normal SSH access (`ssh -o StrictHostKeyChecking=ask HOST`). Discovery does not reliably distinguish these
+failures. Before accepting a new or changed OpenSSH host key, verify its fingerprint
+independently using the machine's console or its administrator, then retry.
+This initial OpenSSH trust is separate from Pulsar's later fingerprint review and
+**Enroll SSH trust** confirmation; the menu never accepts new host keys for you.
+
 Initial key-based SSH login must already work; this flow verifies and records
 host identities, rather than installing remote login keys. No step starts or
 stops a model. For noninteractive agents, use configuration and SSH enrollment
@@ -143,7 +163,13 @@ Noninteractive use requires explicit `--yes`. Active services or an unobservable
 required node block replacement; the check repeats after confirmation. It never
 stops services for you. Saving a discovery establishes membership, not enrolled
 SSH trust; use the menu's separate SSH-trust enrollment action or
-`./pulsar ssh-trust enroll` afterward. Explicit `--accept-new-host-keys` is
+`./pulsar ssh-trust enroll` afterward. For an existing cluster, choose
+**Cluster topology → Configure membership or add a machine** to use the same
+candidate review. It runs `topology configure --candidate HOST` with your added
+addresses, then returns to the menu for separate enrollment after saving.
+`topology setup` alone reuses valid saved membership; candidates passed to it do
+not add machines to that membership. Cancelling configuration does not add a
+machine or start enrollment. Explicit `--accept-new-host-keys` is
 available only on configuration through this CLI, not on read-only detection.
 Before the prompt, configuration reports homes, prepared views, and pins affected
 by the proposed topology. The report is advisory and read-only; saving membership

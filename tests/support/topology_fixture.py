@@ -80,6 +80,8 @@ def double_main():
     with (root/'calls.jsonl').open('a') as stream:
         stream.write(json.dumps([tool, args])+'\n')
     if tool == 'avahi-browse':
+        with (root/'discovery-context.jsonl').open('a') as stream:
+            stream.write(json.dumps({'setup_configure': os.environ.get('_PULSAR_SETUP_CONFIGURE')})+'\n')
         return 0
     if tool == 'gum':
         calls = [json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
@@ -87,15 +89,32 @@ def double_main():
             lines = sys.stdin.read().splitlines()
             header = args[args.index('--header')+1]
             # A comma-separated choice list answers successive visits to one menu.
-            choices = os.environ.get('TOPOLOGY_GUM_HOME' if header == 'Pulsar Inference Stack' else 'TOPOLOGY_GUM_CHOICE', '0').split(',')
+            choice_env = {'Pulsar Inference Stack': 'TOPOLOGY_GUM_HOME',
+                          'Review discovered machines': 'TOPOLOGY_GUM_REVIEW'}.get(header, 'TOPOLOGY_GUM_CHOICE')
+            choices = os.environ.get(choice_env, '0').split(',')
+            with (root/'menus.jsonl').open('a') as stream:
+                stream.write(json.dumps([header, lines])+'\n')
             visits = sum(1 for name, logged in calls if name == 'gum' and header in logged) - 1
-            print(lines[int(choices[min(visits, len(choices)-1)])])
+            answer = choices[min(visits, len(choices)-1)]
+            if answer in ('esc', 'ctrl-c'):
+                return 130 if answer == 'ctrl-c' else 1
+            print(lines[int(answer)])
+            return 0
+        if args[:1] == ['input']:
+            answers = os.environ.get('TOPOLOGY_GUM_INPUT', '').split(',')
+            visits = sum(1 for name, logged in calls if name == 'gum' and logged[:1] == ['input']) - 1
+            answer = answers[min(visits, len(answers)-1)]
+            if answer in ('esc', 'ctrl-c'):
+                return 130 if answer == 'ctrl-c' else 1
+            print(answer)
             return 0
         if args[:1] == ['style']:
             sys.stdout.write(sys.stdin.read())
             return 0
         # Confirm reads keys from the terminal, never stdin. A comma-separated
         # exit-status list answers successive confirmations.
+        if os.environ.get('TOPOLOGY_CONCURRENT_SAVE') == '1' and args[-1].startswith('Save cluster membership with '):
+            (root/'topology.json').write_bytes((root/'concurrent-topology.json').read_bytes())
         answers = os.environ.get('TOPOLOGY_CONFIRM_RC', '1').split(',')
         visits = sum(1 for name, logged in calls if name == 'gum' and logged[:1] == ['confirm']) - 1
         return int(answers[min(visits, len(answers)-1)])

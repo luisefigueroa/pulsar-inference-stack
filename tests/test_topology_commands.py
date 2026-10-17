@@ -12,7 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
-from support.topology_fixture import Fixture
+from support.topology_fixture import Fixture, node_probe
 import topology_actions
 
 
@@ -207,7 +207,7 @@ class TopologyCommands(unittest.TestCase):
         before = f.path.read_bytes()
         result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertEqual(result, 0, output); self.assertEqual(f.path.read_bytes(), before)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?'])
 
     def test_menus_without_gum_name_commands_and_do_not_probe(self):
         f = self.fixture  # TERM=dumb: Gum cannot draw
@@ -238,7 +238,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertNotEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?'])
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_first_use_requires_enrollment_even_for_one_node(self):
@@ -286,7 +286,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?', 'Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?', 'Enroll these SSH identities?'])
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         self.assertTrue(f.config.is_file())
@@ -294,10 +294,11 @@ class TopologyCommands(unittest.TestCase):
     def test_fresh_setup_cancel_never_reaches_enrollment(self):
         f = self.fixture
         f.path.unlink(); f.config.unlink()
-        self.use_gum(TOPOLOGY_CONFIRM_RC='1')
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='0,4')
         result, output = self.interactive(['topology', 'setup'], '', '')
-        self.assertNotEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertEqual(result, 1, output)
+        self.assertIn('Setup stopped before saving cluster membership.', output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 1 machine?'])
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
 
     def test_ctrl_c_at_membership_confirmation_preserves_interrupt_and_saved_files(self):
@@ -307,7 +308,7 @@ class TopologyCommands(unittest.TestCase):
         result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertEqual(result, 130, output)
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?'])
 
     def test_ctrl_c_at_enrollment_confirmation_preserves_interrupt_and_saved_files(self):
         f = self.fixture
@@ -324,7 +325,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='130')
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertEqual(result, 130, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save this cluster membership?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 1 machine?'])
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
 
     def test_setup_detects_invalid_or_unready_saved_state_without_replacing_it(self):
@@ -345,6 +346,164 @@ class TopologyCommands(unittest.TestCase):
         self.assertNotEqual(result, 0, output)
         self.assertEqual(f.path.read_bytes(), before)
         self.assertIn('without saving', output)
+
+
+    def fresh_fixture(self, nodes=2, enrolled=True):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.fixture = Fixture(Path(temporary.name), nodes=nodes, enrolled=enrolled)
+        self.fixture.path.unlink()
+        self.fixture.config.unlink(missing_ok=True)
+        return self.fixture
+
+    def test_setup_adds_repeated_candidates_and_retry_retains_them(self):
+        f = self.fresh_fixture(nodes=3)
+        mapping = json.loads((f.root/'map.json').read_text())
+        mapping['192.0.2.12'] = 2
+        (f.root/'map.json').write_text(json.dumps(mapping))
+        self.use_gum(TOPOLOGY_GUM_REVIEW='1,1,2,0',
+                     TOPOLOGY_GUM_INPUT='alias-1,192.0.2.12', TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 0, output)
+        saved = json.loads(f.path.read_text())
+        self.assertEqual(len(saved['nodes']), 3)
+        self.assertEqual(saved['schema_version'], 2)
+        self.assertEqual(self.gum_prompts('confirm'), [
+            'Save cluster membership with 3 machines?', 'Enroll these SSH identities?'])
+        calls = f.calls()
+        self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in calls), 5)
+        addresses = [args[args.index('--')+1] for tool, args in calls if tool == 'ssh']
+        self.assertGreaterEqual(addresses.count('192.0.2.12'), 3)
+        confirms = [args for tool, args in calls if tool == 'gum' and args[:1] == ['confirm']]
+        self.assertTrue(all('--default=false' in args for args in confirms))
+        self.assertFalse(any('StrictHostKeyChecking=accept-new' in args for _, args in calls))
+
+    def test_setup_can_explicitly_save_the_smaller_discovered_membership(self):
+        f = self.fresh_fixture()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 1)
+        self.assertEqual(self.gum_prompts('confirm'), [
+            'Save cluster membership with 1 machine?', 'Enroll these SSH identities?'])
+
+    def test_review_and_address_cancellation_do_not_save_or_enroll(self):
+        cases = [('4', '', 1), ('esc', '', 1), ('ctrl-c', '', 130),
+                 ('1,4', 'esc', 1), ('1,4', '', 1), ('1', 'ctrl-c', 130)]
+        for review, address, expected in cases:
+            with self.subTest(review=review, address=address):
+                f = self.fresh_fixture()
+                self.use_gum(TOPOLOGY_GUM_REVIEW=review, TOPOLOGY_GUM_INPUT=address)
+                result, output = self.interactive(['topology', 'setup'], '', '')
+                self.assertEqual(result, expected, output)
+                self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+                self.assertEqual(self.gum_prompts('confirm'), [])
+                self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in f.calls()), 1)
+
+    def test_declined_save_keeps_candidates_for_review_and_retry(self):
+        f = self.fresh_fixture()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='1,0,2,4',
+                     TOPOLOGY_GUM_INPUT='alias-1')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 1, output)
+        self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+        self.assertEqual(self.gum_prompts('confirm'),
+                         ['Save cluster membership with 2 machines?'])
+        self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in f.calls()), 5)
+        peers = [args for tool, args in f.calls()
+                 if tool == 'ssh' and args[args.index('--')+1] == 'alias-1']
+        self.assertGreaterEqual(len(peers), 4)
+        self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
+
+    def test_declined_save_does_not_enroll_concurrently_created_membership(self):
+        f = self.fresh_fixture(enrolled=False)
+        concurrent = json.dumps(f.topology)
+        (f.root/'concurrent-topology.json').write_text(concurrent)
+        self.use_gum(TOPOLOGY_CONCURRENT_SAVE='1', TOPOLOGY_CONFIRM_RC='1',
+                     TOPOLOGY_GUM_REVIEW='0,4')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 1, output)
+        self.assertEqual(f.path.read_text(), concurrent)
+        self.assertFalse(f.config.exists())
+        self.assertEqual(self.gum_prompts('confirm'),
+                         ['Save cluster membership with 2 machines?'])
+        contexts = [json.loads(line)['setup_configure']
+                    for line in (f.root/'discovery-context.jsonl').read_text().splitlines()]
+        self.assertEqual(contexts, [None, '1', None])
+        self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
+
+    def test_failed_discovery_offers_retry_but_no_continue_to_save(self):
+        f = self.fresh_fixture()
+        probe = dict(f.probes[0], qualified=False, reject_reasons=['synthetic unavailable platform'])
+        Path(f.files[0]).write_text(json.dumps(probe))
+        self.use_gum(TOPOLOGY_GUM_REVIEW='1,3')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 1, output)
+        self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+        self.assertEqual(self.gum_prompts('confirm'), [])
+        menus = [json.loads(line) for line in (f.root/'menus.jsonl').read_text().splitlines()]
+        self.assertEqual(len(menus), 2)
+        self.assertTrue(all(not any('Continue' in option for option in options) for _, options in menus))
+        self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in f.calls()), 2)
+
+    def test_failed_configuration_returns_to_review_with_candidates(self):
+        f = self.fresh_fixture()
+        self.use_gum(TOPOLOGY_ACTIVE='1', TOPOLOGY_GUM_REVIEW='0,4')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 1, output)
+        self.assertIn('Configuration did not complete', output)
+        self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+        self.assertEqual(self.gum_prompts('confirm'), [])
+        contexts = [json.loads(line)['setup_configure']
+                    for line in (f.root/'discovery-context.jsonl').read_text().splitlines()]
+        self.assertEqual(contexts, [None, '1', None])
+        peers = [args for tool, args in f.calls()
+                 if tool == 'ssh' and args[args.index('--')+1] == 'alias-1']
+        self.assertGreaterEqual(len(peers), 3)
+
+    def test_missing_peer_help_preserves_strict_ssh_and_does_not_guess_cause(self):
+        f = self.fresh_fixture()
+        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_GUM_REVIEW='3,2,4')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 1, output)
+        flattened = ' '.join(output.split())
+        self.assertIn('cannot reliably tell these apart', flattened)
+        self.assertIn('ssh -o StrictHostKeyChecking=ask HOST', flattened)
+        self.assertIn('independently trusted source', flattened)
+        self.assertIn('does not establish initial OpenSSH trust', flattened)
+        self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+        ssh = [args for tool, args in f.calls() if tool == 'ssh']
+        self.assertTrue(ssh)
+        self.assertTrue(all('StrictHostKeyChecking=yes' in args for args in ssh))
+        self.assertFalse(any('StrictHostKeyChecking=accept-new' in args for _, args in f.calls()))
+        self.assertEqual(self.gum_prompts('confirm'), [])
+
+    def test_existing_membership_add_uses_configure_and_never_auto_enrolls(self):
+        for answer in ('0', '1'):
+            with self.subTest(save=answer):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.fixture = f = Fixture(Path(temporary.name))
+                before = f.path.read_bytes(), f.config.read_bytes()
+                probe = node_probe(2)
+                (f.root/'probe-2.json').write_text(json.dumps(probe))
+                mapping = json.loads((f.root/'map.json').read_text())
+                mapping['alias-2'] = 2
+                (f.root/'map.json').write_text(json.dumps(mapping))
+                self.use_gum(TOPOLOGY_GUM_CHOICE='4,7', TOPOLOGY_GUM_REVIEW='1,0',
+                             TOPOLOGY_GUM_INPUT='alias-2', TOPOLOGY_CONFIRM_RC=answer)
+                result, output = self.interactive(['topology', 'menu'], '', '')
+                self.assertEqual(result, 0, output)
+                self.assertEqual(self.gum_prompts('confirm'),
+                                 ['Save cluster membership with 3 machines?'])
+                if answer == '0':
+                    saved = json.loads(f.path.read_text())
+                    self.assertEqual(len(saved['nodes']), 3)
+                    self.assertEqual(saved['schema_version'], 1)
+                else:
+                    self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+                self.assertNotIn('topology-bound SSH identity enrolled', output)
+                self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
 
     def test_narrow_human_observation(self):
         f = self.fixture
