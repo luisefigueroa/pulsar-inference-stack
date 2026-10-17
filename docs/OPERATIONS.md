@@ -120,8 +120,9 @@ menu's **First-use setup** run this same command.
 
 After discovery, review the machines found. **Add a machine by hostname or IP**
 accepts one management address at a time; add more as needed. **Retry discovery**
-keeps those candidates for this interaction. **Back** leaves without saving;
-Escape from address entry returns to the review, and Ctrl-C exits setup.
+keeps those candidates for this interaction. **Back** leaves setup without
+saving and exits with status 1; Escape from address entry returns to the review,
+and Ctrl-C exits setup.
 A failed discovery still offers Add, Retry, SSH help and Back, but cannot continue
 to saving. **Continue to membership review** runs configuration's fresh checks,
 then asks whether to save the actual number of machines shown, with No selected

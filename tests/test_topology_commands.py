@@ -296,7 +296,8 @@ class TopologyCommands(unittest.TestCase):
         f.path.unlink(); f.config.unlink()
         self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='0,4')
         result, output = self.interactive(['topology', 'setup'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
+        self.assertIn('Setup stopped before saving cluster membership.', output)
         self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 1 machine?'])
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
 
@@ -387,8 +388,8 @@ class TopologyCommands(unittest.TestCase):
             'Save cluster membership with 1 machine?', 'Enroll these SSH identities?'])
 
     def test_review_and_address_cancellation_do_not_save_or_enroll(self):
-        cases = [('4', '', 0), ('esc', '', 0), ('ctrl-c', '', 130),
-                 ('1,4', 'esc', 0), ('1,4', '', 0), ('1', 'ctrl-c', 130)]
+        cases = [('4', '', 1), ('esc', '', 1), ('ctrl-c', '', 130),
+                 ('1,4', 'esc', 1), ('1,4', '', 1), ('1', 'ctrl-c', 130)]
         for review, address, expected in cases:
             with self.subTest(review=review, address=address):
                 f = self.fresh_fixture()
@@ -404,7 +405,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='1,0,2,4',
                      TOPOLOGY_GUM_INPUT='alias-1')
         result, output = self.interactive(['topology', 'setup'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
         self.assertEqual(self.gum_prompts('confirm'),
                          ['Save cluster membership with 2 machines?'])
@@ -421,7 +422,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONCURRENT_SAVE='1', TOPOLOGY_CONFIRM_RC='1',
                      TOPOLOGY_GUM_REVIEW='0,4')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
         self.assertEqual(f.path.read_text(), concurrent)
         self.assertFalse(f.config.exists())
         self.assertEqual(self.gum_prompts('confirm'),
@@ -437,7 +438,7 @@ class TopologyCommands(unittest.TestCase):
         Path(f.files[0]).write_text(json.dumps(probe))
         self.use_gum(TOPOLOGY_GUM_REVIEW='1,3')
         result, output = self.interactive(['topology', 'setup'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
         self.assertEqual(self.gum_prompts('confirm'), [])
         menus = [json.loads(line) for line in (f.root/'menus.jsonl').read_text().splitlines()]
@@ -449,7 +450,7 @@ class TopologyCommands(unittest.TestCase):
         f = self.fresh_fixture()
         self.use_gum(TOPOLOGY_ACTIVE='1', TOPOLOGY_GUM_REVIEW='0,4')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
         self.assertIn('Configuration did not complete', output)
         self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
         self.assertEqual(self.gum_prompts('confirm'), [])
@@ -464,7 +465,7 @@ class TopologyCommands(unittest.TestCase):
         f = self.fresh_fixture()
         self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_GUM_REVIEW='3,2,4')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
-        self.assertEqual(result, 0, output)
+        self.assertEqual(result, 1, output)
         flattened = ' '.join(output.split())
         self.assertIn('cannot reliably tell these apart', flattened)
         self.assertIn('ssh -o StrictHostKeyChecking=ask HOST', flattened)

@@ -108,8 +108,12 @@ case "$action" in
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo 'No saved membership. Detecting candidates without saving first.'
       while true; do
-        review_candidates "${setup_detect_flags[@]}" \
-          || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+        # Leaving the review ends setup without membership, which is not success.
+        review_candidates "${setup_detect_flags[@]}" || {
+          rc=$?; [ "$rc" -ne 130 ] || exit 130
+          echo 'Setup stopped before saving cluster membership.'
+          exit 1
+        }
         setup_detect_flags=("${REVIEW_CANDIDATES[@]}")
         # Standalone configure keeps exit 0 for a declined save. Only this
         # coordinator requests a distinct cancellation result; file existence
