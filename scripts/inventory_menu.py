@@ -96,7 +96,8 @@ def view(inventory, catalog, spec_id=None, *, width=None):
             if unavailable:
                 writer.emit("Unobserved nodes may still be running services.")
         writer.emit("Other workloads remain read-only context in Show full inventory.")
-        budget = writer.width - 6
+        # Gum draws only its two-column cursor before each label.
+        budget = writer.width - 2
         for key, service in services.items():
             prefix = f"{service['state'].upper()} [{key[:12]}] "
             remaining = budget - len(prefix)

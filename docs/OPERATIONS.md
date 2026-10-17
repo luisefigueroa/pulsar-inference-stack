@@ -47,8 +47,10 @@ preview before copying files.
 Menus and confirmation prompts draw with Gum: the repository bundles it for the
 arm64 Linux nodes (`third_party/gum/`); elsewhere install `gum` from the
 package manager or point `GUM_BIN` at it. `NO_COLOR` or
-`PULSAR_COLOR=never` draws them without color. Without Gum or an interactive
-terminal, a menu opens nothing: it names the equivalent commands and exits
+`PULSAR_COLOR=never` draws them without color. A menu lists every option on one
+page when the terminal has room for it, and its labels use the whole row after
+the cursor; a repeated label gets a numbered suffix such as `(2)`. Without Gum
+or an interactive terminal, a menu opens nothing: it names the equivalent commands and exits
 with status 2, and a command that would ask for confirmation names its `--yes`
 form. `pulsar models` without a subcommand shows the catalog list instead, with
 a warning when the terminal lacks Gum. Diagnostic output reports missing prerequisites instead of silently

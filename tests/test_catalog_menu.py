@@ -370,7 +370,7 @@ class Labels(unittest.TestCase):
                                     review={"status": "withdrawn"} if withdrawn else None,
                                     **(GUARDED if unsupported else {}))
                     label = menu.menu_label(state, width)
-                    self.assertLessEqual(len(label), width - 6)
+                    self.assertLessEqual(len(label), width - 2)  # Gum draws a two-column cursor before the label.
                     # 12 characters where they fit; a narrow label with two warnings keeps 8.
                     self.assertIn("[abababababab]" if width == 80 else "[abababab", label)
                     if withdrawn:
@@ -391,7 +391,7 @@ class Labels(unittest.TestCase):
             for expected, state in states.items():
                 with self.subTest(width=width, state=expected):
                     text = menu.menu_label(state, width)
-                    self.assertLessEqual(len(text), width - 6)
+                    self.assertLessEqual(len(text), width - 2)
                     self.assertIn("[abababababab]", text)
                     self.assertNotIn("not specified", text)
                     if width == 80:

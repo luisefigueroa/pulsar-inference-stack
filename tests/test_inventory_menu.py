@@ -90,7 +90,7 @@ class Projection(unittest.TestCase):
                     if fields[0] == "header":
                         self.assertLessEqual(len(fields[1]), width)
                     if fields[0] == "service":
-                        self.assertLessEqual(len(fields[2]), width - 6)
+                        self.assertLessEqual(len(fields[2]), width - 2)
                         self.assertIn(SPEC[:12], fields[2])
 
 

@@ -24,9 +24,10 @@ class UiFrame(unittest.TestCase):
             f"printf '%s NO_COLOR=%s\\n' \"$*\" \"${{NO_COLOR:-}}\" >> '{self.gum_log}'\n"
             "if [ \"$1\" = style ]; then cat; exit 0; fi\n"
             "if [ \"$1\" = input ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
-            # choose prints the line GUM_CHOICE names (default: the first) or exits GUM_RC.
+            # choose prints the line GUM_CHOICE names (default: the first) or exits GUM_RC;
+            # GUM_CHOOSE_INPUT keeps the lines it was given.
             "if [ \"$1\" = choose ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; "
-            "sed -n \"$(( ${GUM_CHOICE:-0} + 1 ))p\"; exit 0; fi\n"
+            "tee \"${GUM_CHOOSE_INPUT:-/dev/null}\" | sed -n \"$(( ${GUM_CHOICE:-0} + 1 ))p\"; exit 0; fi\n"
             "if [ \"$1\" = confirm ]; then exit \"${GUM_RC:-0}\"; fi\n"
             # Like Gum versions without --show-output: run the command, drop its output.
             "if [ \"$1\" = spin ]; then while [ \"$1\" != -- ]; do shift; done; shift; \"$@\" >/dev/null 2>&1; exit $?; fi\n"
@@ -127,6 +128,26 @@ class UiFrame(unittest.TestCase):
                     self.assertTrue(call.endswith("NO_COLOR=1"), call)
                 self.assertIn("--border rounded", calls[2])
                 self.assertIn("--padding 1 0", calls[0])
+
+    def test_choose_hides_the_index_and_fits_the_list_to_the_terminal(self):
+        options = " ".join(f"o{number}" for number in range(13))
+        # Gum needs 5 rows around the list; a terminal too short for 3 options is not capped.
+        for lines, height in (("", 13), ("40", 13), ("12", 7), ("7", 13)):
+            with self.subTest(lines=lines):
+                self.gum_log.unlink(missing_ok=True)
+                result = self.run_ui(f'choose_index "Pick" {options}', GUM_CHOICE="12", LINES=lines)
+                self.assertEqual(result.stdout, "12\n", result.stderr)
+                choose = self.gum_calls()[0]
+                self.assertIn("--label-delimiter=\t", choose)
+                self.assertIn(f"--height={height} ", choose)
+
+    def test_repeated_labels_get_a_suffix_and_a_default_keeps_its_comma(self):
+        given = self.root / "choose.in"
+        result = self.run_ui("PULSAR_CHOOSE_DEFAULT=1 choose_index Pick 'a, b' 'a, b' $'c\\td'",
+                             GUM_CHOICE="1", GUM_CHOOSE_INPUT=str(given))
+        self.assertEqual(result.stdout, "1\n", result.stderr)
+        self.assertEqual(given.read_text().splitlines(), ["a, b\t1", "a, b (2)\t2", "c d\t3"])
+        self.assertIn("--selected=a\\, b (2) ", self.gum_calls()[0])
 
     def test_escape_and_ctrl_c_keep_their_meaning(self):
         for rc, expected in (("1", 1), ("130", 130)):
