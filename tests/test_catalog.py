@@ -553,6 +553,12 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     elif sys.argv[1] == "inventory":
         print(os.environ.get("INVENTORY_FIXTURE", ""))
         rc = int(os.environ.get("INVENTORY_RC", "0"))
+elif os.environ.get("ACTION_RC_SEQUENCE") and "--yes" in sys.argv:
+    # Successive confirmed storage operations exit with these statuses in turn.
+    counter = os.environ["ACTION_LOG"] + ".n"
+    index = int(open(counter).read()) if os.path.exists(counter) else 0
+    open(counter, "w").write(str(index + 1))
+    rc = int(os.environ["ACTION_RC_SEQUENCE"].split(",")[index])
 elif sys.argv[1] in ("acquire", "restore") and "--yes" in sys.argv and os.environ.get("RECORD_HOME") and rc == 0:
     # As the real operations do after verifying the files: record the home.
     from model_library.state import Store
@@ -998,6 +1004,23 @@ raise SystemExit(rc)
         self.assertNotIn("Check now (suggested)", last_options)
         text = " ".join(result.stdout.split())
         self.assertIn("Suggested: Prepare — restore finished; every required snapshot has a verified home", text)
+
+    def test_a_failed_storage_change_replaces_an_earlier_prepare(self):
+        plan = {"kind": "pulsar-preparation-plan", "eligible": True,
+                "actions": [{"rank": 0, "node_id": "fixture-node", "action": "home-view"}]}
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Prepare (suggested)", "fixture-host", "Prepare", "fixture-host", "Back", "Back"],
+            with_home=True, plan=plan, confirms=["yes", "yes"],
+            observation={"local_state": "missing", "archive_state": "unknown", "blockers": []},
+            env_extra=lambda spec_id: {"ACTION_RC_SEQUENCE": "0,1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sum("--yes" in action for action in actions), 2)
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Check now (suggested)", last_options)
+        self.assertNotIn("Start (suggested)", last_options)
+        last_frame = " ".join(result.stdout.split()).rpartition("Current observations (saved)")[2]
+        self.assertNotIn("prepared in this session", last_frame)
+        self.assertIn("Suggested: Check now — the last storage change did not succeed", last_frame)
 
     def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
         spec, result, actions, _, _ = self.run_menu(

@@ -140,6 +140,12 @@ run_operation() {
         status|verify|check|readiness|image-check|image-stage|budget) ;;
         *) LAST_RESULT[$spec]="$action" LAST_AT[$spec]=$(date +%s) ;;
       esac
+    elif [ "$rc" -ne 2 ]; then
+      # A failed storage change may have partial effects, so an earlier
+      # success no longer describes the files. Exit 2 changed nothing.
+      case "$action" in
+        acquire|restore|prepare|move|archive|pin|unpin|purge|remove) LAST_RESULT[$spec]=storage-failed ;;
+      esac
     fi
     report_outcome "$action" "$label" "$model" "$rc" "$took"
   fi

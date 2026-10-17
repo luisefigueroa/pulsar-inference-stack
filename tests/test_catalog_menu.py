@@ -235,6 +235,14 @@ class NextLifecycleStep(unittest.TestCase):
             with self.subTest(after=after):
                 self.assertEqual(self.suggest(ready, after)[0], "check")
 
+    def test_a_failed_storage_change_needs_check_now(self):
+        ready = checked(home=HOME, local_state="ready")
+        self.assertEqual(self.suggest(ready, "storage-failed"),
+                         ("check", "the last storage change did not succeed; inspect current files before retrying"))
+        lines = menu.view_lines(ready, "configured", after="storage-failed", after_age=60, width=200, names=NAMES,
+                                now=self.NOW)
+        self.assertFalse(any("prepared in this session" in line for line in lines))
+
     def test_a_guarded_spec_is_never_led_toward_prepare_or_start(self):
         guarded = row(home=HOME, **GUARDED)
         self.assertEqual(self.suggest(guarded, "restore")[0], "check")

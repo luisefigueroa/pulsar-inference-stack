@@ -287,6 +287,8 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", "check interruption requested; rerun before relying on saved observations"
     if after == "storage-interrupted":
         return "check", "storage outcome unconfirmed; inspect current files before retrying"
+    if after == "storage-failed":
+        return "check", "the last storage change did not succeed; inspect current files before retrying"
     if after == "service-interrupted" and not superseded:
         return "status", "service outcome unconfirmed; current service state is unknown"
     if after == "image-interrupted" and "image-check" in offered:
@@ -756,7 +758,8 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--read-only", action="store_true")
     view.add_argument("--live", help=live_help)
     view.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
-    view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS | {"start", "stop", "check", "check-failed"}))
+    view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS
+                                                | {"start", "stop", "check", "check-failed", "storage-failed"}))
     view.add_argument("--after-at", type=int, help="when --after happened, as a Unix time")
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
