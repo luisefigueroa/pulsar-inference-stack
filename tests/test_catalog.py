@@ -1,6 +1,6 @@
 """Saved catalog views remain distinct from live verification and serving."""
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import io
 import json
 import os
@@ -550,6 +550,9 @@ if os.path.basename(sys.argv[0]) == "pulsar":
         rc = fixture.get("plan_rc", 0)
     elif sys.argv[1:3] == ["image", "stage"]:
         rc = fixture.get("stage_rc", 0)
+    elif sys.argv[1] == "inventory":
+        print(os.environ.get("INVENTORY_FIXTURE", ""))
+        rc = int(os.environ.get("INVENTORY_RC", "0"))
 elif "--plan" in sys.argv:
     print(open(os.environ["PLAN_FILE"]).read())
     rc = int(os.environ.get("PLAN_RC", str(rc)))
@@ -572,7 +575,8 @@ raise SystemExit(rc)
 
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
-                 menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False):
+                 menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False,
+                 inventory=None, inventory_rc=0, env_extra=None):
         spec = self.add_spec(guarded=guarded)
         if review is not None:
             spec["review"] = review
@@ -604,7 +608,11 @@ raise SystemExit(rc)
                    ACTION_SIGNAL_PARENT="1" if interrupt_parent else "0",
                    CHECK_OBSERVATION=json.dumps(check_observation),
                    CHECK_RC=str(action_rc if check_rc is None else check_rc),
-                   LAUNCH_FIXTURE=json.dumps({"image": spec["recipe"]["image_digest"], **(launch or {})}))
+                   LAUNCH_FIXTURE=json.dumps({"image": spec["recipe"]["image_digest"], **(launch or {})}),
+                   INVENTORY_RC=str(inventory_rc),
+                   INVENTORY_FIXTURE=inventory(spec["spec_id"]) if callable(inventory) else (inventory or ""))
+        if callable(env_extra):
+            env.update(env_extra(spec["spec_id"]))
         env.pop("PULSAR_COLD_ROOT", None)
         if archive_root is not None:
             env["PULSAR_COLD_ROOT"] = archive_root
@@ -742,6 +750,126 @@ raise SystemExit(rc)
         outcome = " ".join(result.stdout.split())
         self.assertRegex(outcome, r"\? Whether \S+ is running is unknown: a node could not be observed\.")
         self.assertIn("don't start it until Live status observes every node", outcome)
+
+    @staticmethod
+    def live_inventory(state="running", *, age_minutes=0, unobserved=False):
+        """A service inventory double for one spec, observed age_minutes ago."""
+        from tests.test_inventory_menu import snapshot
+        def build(spec_id):
+            document = snapshot(spec_id, state=state)
+            document["generated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=age_minutes)).isoformat()
+            if unobserved:
+                document["services"] = []
+                document["nodes"]["worker"]["probe_status"] = "unreachable"
+            return json.dumps(document)
+        return build
+
+    def test_running_services_are_checked_only_when_asked(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Back", "Check running services (service inventory)", "#0", "Back", "Back"],
+            inventory=self.live_inventory())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        self.assertEqual(questions, "")
+        text = " ".join(result.stdout.split())
+        first, _, second = text.partition("Running services: service inventory less than a minute ago.")
+        self.assertTrue(second, text)
+        self.assertIn("Live service: not observed in this menu session; Live status checks it.", first)
+        self.assertIn("Suggested: Check now", first)
+        self.assertIn("Live service: running on fixture-remote (service inventory, less than a minute ago).", second)
+        self.assertIn("Suggested: Live status — running on fixture-remote", second)
+        menus = choices.split("\n\n")
+        # The list, a recipe, the list again, then the list and recipe after the check.
+        self.assertNotIn("running on", menus[0] + menus[2])
+        self.assertIn("running on 1 node", menus[3])
+        self.assertIn("Live status (suggested)", menus[4])
+
+    def test_an_old_inventory_reads_as_last_seen(self):
+        _, result, _, choices, _ = self.run_menu(
+            ["Check running services (service inventory)", "#0", "Back", "Back"],
+            inventory=self.live_inventory(age_minutes=30))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Live service: last seen running on fixture-remote (service inventory, 30 minutes ago).", text)
+        self.assertIn("last seen running 30 minutes ago", choices)
+        self.assertIn("Live status (suggested)", choices)
+
+    def test_an_unobserved_node_is_unknown_not_absent(self):
+        _, result, _, choices, _ = self.run_menu(
+            ["Check running services (service inventory)", "#0", "Back", "Back"],
+            inventory=self.live_inventory(unobserved=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("not observed: fixture-remote", text)
+        self.assertIn("Live service: unknown; fixture-remote was not observed", text)
+        self.assertNotIn("not running", text)
+
+    def test_a_failed_or_unreadable_inventory_leaves_the_menu_usable(self):
+        for rc, fixture, expected in ((3, "", "✗ Running services could not be checked (exit 3); the reason is above."),
+                                      (0, "not json", "✗ The service inventory could not be read")):
+            with self.subTest(rc=rc):
+                self.setUp()
+                _, result, actions, choices, _ = self.run_menu(
+                    ["Check running services (service inventory)", "#0", "Back", "Back"],
+                    inventory=fixture, inventory_rc=rc)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, " ".join(result.stdout.split()))
+                self.assertIn("Live service: not observed in this menu session", " ".join(result.stdout.split()))
+
+    def test_ctrl_c_while_checking_running_services_exits_the_menu(self):
+        _, result, _, choices, _ = self.run_menu(
+            ["Check running services (service inventory)", "Back"], inventory="", inventory_rc=130)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(choices.count("Select a catalog spec\n"), 1)
+
+    def test_read_only_catalog_never_offers_a_service_probe(self):
+        _, result, _, choices, _ = self.run_menu(["Back"], menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Check running services", choices)
+
+    def test_live_status_and_stop_outcomes_date_the_frame(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=1)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Live service: not running on any node (Live status, less than a minute ago).", text)
+        self.setUp()
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=0)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Live service: a service exists (Live status, less than a minute ago).", text)
+        self.assertIn("Live status (suggested)", text + self.root.joinpath("choices.log").read_text())
+
+    def test_live_status_after_start_replaces_the_started_suggestion(self):
+        _, result, actions, _, _ = self.run_menu(
+            ["#0", "Start", "fixture-host", "Live status (suggested)", "fixture-host", "Back", "Back"],
+            confirms=["yes"], action_rc=1, launch={"start_rc": 0})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["status.sh", actions[1][1]]])
+        text = " ".join(result.stdout.split())
+        last = text.rpartition("Live service:")[2]
+        self.assertTrue(last.startswith(" not running on any node (Live status"), last)
+        self.assertNotIn("started from this menu", last)
+
+    def test_a_one_node_stop_does_not_claim_absence_everywhere(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Live service: stopped on fixture-node; other nodes not observed since (Stop,", text)
+        self.assertNotIn("not running on any node", text)
+
+    def test_open_in_catalog_opens_one_recipe_with_the_captured_inventory(self):
+        captured = self.root / "captured-inventory.json"
+        def opened(spec_id):
+            captured.write_text(self.live_inventory()(spec_id))
+            return {"PULSAR_CATALOG_OPEN_SPEC": spec_id, "PULSAR_CATALOG_INVENTORY": str(captured)}
+        _, result, actions, choices, _ = self.run_menu(["Back"], env_extra=opened)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        self.assertTrue(choices.startswith("Choose one operation\n"), choices)
+        self.assertNotIn("Select a catalog spec", choices)
+        self.assertIn("Live service: running on fixture-remote", " ".join(result.stdout.split()))
+        self.assertTrue(captured.exists())
+        self.setUp()
+        _, result, _, _, _ = self.run_menu(["<ctrl-c>"], env_extra=opened)
+        self.assertEqual(result.returncode, 130, result.stderr)
 
     def test_refused_preview_says_the_operation_is_not_possible(self):
         _, result, actions, _, questions = self.run_menu(

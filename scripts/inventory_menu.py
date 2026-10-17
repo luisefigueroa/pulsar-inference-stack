@@ -70,7 +70,7 @@ def project(inventory, catalog):
             "spec_id": spec_id, "model_id": spec["model_id"], "nodes": spec["nodes"],
             "state": clean(service.get("state") or "unknown"),
             "ownership": clean(service.get("ownership") or "unknown"),
-            "where": ", ".join(where) or "unknown", "node_id": node_id,
+            "where": ", ".join(where) or "unknown", "hosts": where, "node_id": node_id,
             "stop_reason": reason, "modified": service.get("matches_selected_spec") is False,
         }
     return result
