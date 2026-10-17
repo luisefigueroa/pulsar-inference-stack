@@ -821,8 +821,10 @@ over. The list then says when it was observed and which nodes were not, and
 labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Live service** line gives the state, nodes, source
 and age; **Live status**, **Start** and **Stop** in the same catalog menu
 update it, and the newest observation wins. Live status exit 0 means a service exists, not
-that it is running. A node that was not observed makes the state unknown,
-never "not running". After 10 minutes an observation reads "last seen", never
+that it is running. A node that was not observed, or a failed node probe,
+makes the state unknown, never "not running". Stop for a one-node recipe acts
+on the selected node only, so other nodes read as not observed since. A
+request rejected before it ran (exit 2) keeps the earlier observation. After 10 minutes an observation reads "last seen", never
 as current. A spec with a service seen in the session suggests **Live
 status**; while its service state is unknown, or not observed since a Start
 or Stop, Live status is suggested before Start. Before setup, the read-only

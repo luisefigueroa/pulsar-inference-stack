@@ -438,7 +438,7 @@ class SessionServices(unittest.TestCase):
     def fact(self, document=None, *outcomes, state=None):
         state = state or checked(home=HOME, local_state="ready")
         live = menu.live_inventory(document, [state], now=LIVE_NOW) if document else None
-        found = menu.service_outcomes([f"{self.SPEC}:{value}" for value in outcomes], now=LIVE_NOW)
+        found = menu.service_outcomes([f"{self.SPEC}:{value}" for value in outcomes], now=LIVE_NOW, names=NAMES)
         return menu.live_fact(state, live, found.get(self.SPEC))
 
     def suggest(self, fact, state=None, after=None):
@@ -474,6 +474,49 @@ class SessionServices(unittest.TestCase):
                          "Live service: not running on any node (service inventory, 2 minutes ago).")
         self.assertIsNone(menu.live_label(absent))
         self.assertEqual(self.suggest(absent)[0], "start")
+
+    def test_a_failed_node_probe_summary_is_unknown_too(self):
+        document = inventory()
+        document["worker"] = {"status": "unreachable", "reason": "ssh timed out"}
+        live = menu.live_inventory(document, [checked()], now=LIVE_NOW)
+        self.assertEqual(menu.inventory_line(live),
+                         "Running services: service inventory 2 minutes ago; a node could not be observed.")
+        fact = self.fact(document)
+        self.assertEqual(fact["kind"], "unknown")
+        self.assertIn("a node could not be observed", menu.live_line(fact))
+        self.assertEqual(self.suggest(fact)[0], "status")
+
+    def test_a_rejected_start_or_stop_keeps_the_earlier_observation(self):
+        running = inventory((self.SPEC, "running", ["head"]))
+        for action in ("start", "stop", "status"):
+            with self.subTest(action=action):
+                self.assertEqual(self.fact(running, f"{action}:2:{epoch(1)}")["kind"], "service")
+
+    def test_a_one_node_stop_leaves_other_nodes_unobserved(self):
+        running = inventory((self.SPEC, "running", ["head"]))
+        fact = self.fact(running, f"stop:0:{epoch(1)}:n0")
+        self.assertEqual(menu.live_line(fact),
+                         "Live service: stopped on spark-1; other nodes not observed since (Stop, 1 minute ago).")
+        self.assertIsNone(menu.live_label(fact))
+        self.assertEqual(self.suggest(fact)[0], "status")
+        # A node_id may contain colons; it is the remainder of the value.
+        found = menu.service_outcomes([f"{self.SPEC}:stop:0:{epoch(1)}:rack:7"], now=LIVE_NOW)
+        self.assertEqual(found[self.SPEC][3], "rack:7")
+
+    def test_newer_observations_replace_a_remembered_start_or_interruption(self):
+        ready = checked(home=HOME, local_state="ready")
+        started = self.fact(None, f"start:0:{epoch(2)}")
+        self.assertEqual(self.suggest(started, after="start"),
+                         ("status", "started from this menu; live status observes the service"))
+        gone = self.fact(None, f"start:0:{epoch(2)}", f"status:1:{epoch(1)}")
+        self.assertEqual(self.suggest(gone, state=ready, after="start")[0], "start")
+        interrupted = self.fact(None, f"stop:interrupted:{epoch(2)}")
+        self.assertEqual(self.suggest(interrupted, after="service-interrupted")[1],
+                         "service outcome unconfirmed; current service state is unknown")
+        resolved = self.fact(inventory(generated_at="2026-09-05T00:09:30Z"), f"stop:interrupted:{epoch(2)}")
+        self.assertEqual(resolved["kind"], "absent")
+        self.assertEqual(self.suggest(resolved, state=ready, after="service-interrupted")[0], "start")
+        self.assertEqual(self.suggest(None, after="start")[0], "status")
 
     def test_live_status_exit_0_means_a_service_exists_not_that_it_runs(self):
         fact = self.fact(None, f"status:0:{epoch(1)}")

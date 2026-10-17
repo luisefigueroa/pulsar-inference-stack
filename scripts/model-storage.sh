@@ -36,7 +36,7 @@ OPERATION_RC=0 OPERATION_INTERRUPTED=0
 
 # What this session observed about services: a service inventory captured only
 # on request, and each spec's latest Live status, Start or Stop outcome as
-# ACTION:STATUS:EPOCH. The labels and frame show their age.
+# ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age.
 LIVE_FILE="" CATALOG_WORK=""
 declare -A SERVICE_OUTCOME=()
 LIVE_ARGS=()
@@ -80,7 +80,7 @@ check_running_services() {
 # Runs one explicit operation and reports its outcome. The command owns
 # interruption and cleanup; the menu cannot independently confirm its effects.
 run_operation() {
-  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" recovery
+  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" recovery outcome
   shift 4
   [ "$action" != check ] || result=$(mktemp)
   printf '\n→ %s %s. Ctrl-C requests interruption; this menu returns when the command exits.\n' "$label" "$model" \
@@ -142,8 +142,10 @@ run_operation() {
   if [ -n "$spec" ]; then
     case "$action" in
       start|stop|status)
-        if [ "$interrupted" = 1 ]; then SERVICE_OUTCOME[$spec]="$action:interrupted:$(date +%s)"
-        else SERVICE_OUTCOME[$spec]="$action:$rc:$(date +%s)"; fi ;;
+        # MENU_NODE scopes a one-node recipe's command; a Stop there leaves
+        # other nodes unobserved.
+        if [ "$interrupted" = 1 ]; then outcome=interrupted; else outcome="$rc"; fi
+        SERVICE_OUTCOME[$spec]="$action:$outcome:$(date +%s)${MENU_NODE:+:$MENU_NODE}" ;;
     esac
   fi
   OPERATION_RC="$rc" OPERATION_INTERRUPTED="$interrupted"

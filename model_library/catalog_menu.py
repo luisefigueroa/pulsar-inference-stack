@@ -71,39 +71,54 @@ def live_inventory(inventory: dict, rows: list[dict], *, now=None) -> dict:
     catalog = [{"spec_id": row["spec_id"], "model_id": row["model_id"], "nodes": row["geometry"]["nodes"]}
                for row in rows]
     services = project(inventory, catalog)
+    unobserved = [clean(node["node"]) for node in unobserved_nodes(inventory["nodes"])]
+    worker = inventory.get("worker") or {}
+    # As status reads it: a failed node probe summary leaves the state unknown
+    # even when no node record names the node.
+    blind = not unobserved and worker.get("status") not in ("ok", "unset")
     return {"age": age_seconds(inventory.get("generated_at"), now), "services": services,
-            "unobserved": [clean(node["node"]) for node in unobserved_nodes(inventory["nodes"])]}
+            "unobserved": unobserved, "incomplete": bool(unobserved) or blind}
 
 
-def service_outcomes(values: list[str], *, now=None) -> dict[str, tuple[str, str, int]]:
-    """SPEC:ACTION:STATUS:EPOCH values from this menu session, by spec.
+def service_outcomes(values: list[str], *, now=None, names: NodeNames | None = None) -> dict[str, tuple]:
+    """SPEC:ACTION:STATUS:EPOCH[:NODE] values from this menu session, by spec.
 
-    STATUS is the exit status or ``interrupted``; the age is in seconds.
+    STATUS is the exit status or ``interrupted``; the age is in seconds. NODE
+    is the node_id the command was scoped to, shown by its saved hostname.
     """
+    names = names or NodeNames()
     current = int((now or datetime.now(timezone.utc)).timestamp())
     outcomes = {}
     for value in values:
-        spec, action, status, at = (value.split(":") + ["", "", ""])[:4]
+        # A node_id may itself contain colons, so it is the remainder.
+        spec, action, status, at, node = (value.split(":", 4) + ["", "", "", ""])[:5]
         if action not in ("start", "stop", "status") or not at.isdigit() or not status:
-            raise ValueError("service outcomes must use SPEC:ACTION:STATUS:EPOCH")
-        outcomes[spec] = (action, status, max(0, current - int(at)))
+            raise ValueError("service outcomes must use SPEC:ACTION:STATUS:EPOCH[:NODE]")
+        host = ((names.hostnames or {}).get(node) or node) if node else None
+        outcomes[spec] = (action, status, max(0, current - int(at)), host)
     return outcomes
 
 
-def _outcome_fact(action: str, status: str, age: int) -> dict | None:
+def _outcome_fact(action: str, status: str, age: int, node: str | None = None) -> dict | None:
     """What one Live status, Start or Stop outcome established about the service."""
+    if status == "2":
+        return None  # Rejected before any action: earlier observations still hold.
     if status == "interrupted":
         return {"kind": "changed", "action": action, "age": age} if action != "status" else None
     if action == "status":
         # Exit 0 means a service exists in some state, not that it is running.
+        # Absence is global: status falls back to the whole inventory.
         kind = {"0": "exists", "1": "absent", "3": "unknown"}.get(status)
         return {"kind": kind, "age": age, "source": "status", "unobserved": []} if kind else None
     if action == "stop" and status == "0":
+        if node:
+            # A one-node Stop removes only that node's containers.
+            return {"kind": "changed", "action": action, "age": age, "stopped_on": node}
         return {"kind": "absent", "age": age, "source": "stop"}
     return {"kind": "changed", "action": action, "age": age}
 
 
-def live_fact(row: dict, live: dict | None, outcome: tuple[str, str, int] | None) -> dict | None:
+def live_fact(row: dict, live: dict | None, outcome: tuple | None) -> dict | None:
     """The newest session observation of this spec's service, or None."""
     fact = None
     if live is not None:
@@ -111,7 +126,7 @@ def live_fact(row: dict, live: dict | None, outcome: tuple[str, str, int] | None
         if service:
             fact = {"kind": "service", "state": service["state"], "hosts": service["hosts"],
                     "modified": service["modified"], "age": live["age"], "source": "inventory"}
-        elif live["unobserved"]:
+        elif live["incomplete"]:
             fact = {"kind": "unknown", "unobserved": live["unobserved"], "age": live["age"], "source": "inventory"}
         else:
             fact = {"kind": "absent", "age": live["age"], "source": "inventory"}
@@ -152,6 +167,8 @@ def live_line(fact: dict | None, *, read_only: bool = False) -> str:
             return "Live service: not observed here."
         return "Live service: not observed in this menu session; Live status checks it."
     age, current = age_text(fact["age"]), live_current(fact)
+    if fact["kind"] == "changed" and fact.get("stopped_on"):
+        return f"Live service: stopped on {fact['stopped_on']}; other nodes not observed since (Stop, {age})."
     if fact["kind"] == "changed":
         return f"Live service: not observed since {LABELS[fact['action']]} ({age})."
     when = f"({SOURCES[fact['source']]}, {age})"
@@ -254,23 +271,27 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     the saved check out of date, and a started service is live. ``live`` is
     this session's newest observation of the service (see live_fact): a
     service seen in it, even long ago, is inspected before anything else, and
-    Start waits for Live status while the service state is unknown. For a
+    Start waits for Live status while the service state is unknown. A newer
+    observation also replaces a remembered Start or service interruption. For a
     spec this Stack cannot start, nothing after the Check, Download and
     Restore rules is suggested: Prepare and Start would only lead to a start.
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
+    # A Start or service interruption stands until a newer observation of the
+    # service replaces it (live_fact keeps the newest).
+    superseded = live is not None and live["kind"] != "changed"
     if after == "check-interrupted":
         return "check", "check interruption requested; rerun before relying on saved observations"
     if after == "storage-interrupted":
         return "check", "storage outcome unconfirmed; inspect current files before retrying"
-    if after == "service-interrupted":
+    if after == "service-interrupted" and not superseded:
         return "status", "service outcome unconfirmed; current service state is unknown"
     if after == "image-interrupted" and "image-check" in offered:
         return "image-check", "staging outcome unconfirmed; inspect the pinned image before retrying"
     if after == "check-failed":
         return "check", "the last check did not record an observation"
-    if after == "start":
+    if after == "start" and not superseded:
         return "status", "started from this menu; live status observes the service"
     if live and live["kind"] in ("service", "exists") and "status" in offered:
         seen = live_line(live).removeprefix("Live service: ").rstrip(".")
@@ -665,6 +686,8 @@ def inventory_line(live: dict) -> str:
     line = f"Running services: service inventory {age_text(live['age'])}"
     if live["unobserved"]:
         line += "; not observed: " + ", ".join(live["unobserved"])
+    elif live["incomplete"]:
+        line += "; a node could not be observed"
     return line + "."
 
 
@@ -716,7 +739,8 @@ def main(argv: list[str] | None = None) -> int:
             entries = json.load(sys.stdin).get("entries") or []
             if args.compare_with and any(entry["spec_id"] == args.compare_with and entry.get("historical") for entry in entries):
                 raise ValueError("spec comparison supports schemas 2 and 3; use Show details for this historical spec")
-            live, outcomes = load_live(args.live, entries), service_outcomes(args.service_outcome)
+            live = load_live(args.live, entries)
+            outcomes = service_outcomes(args.service_outcome, names=NodeNames.saved())
             if live:
                 print(f"observed\t{clean(inventory_line(live))}")
             for entry in entries:
@@ -742,7 +766,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "view":
             published = published_results(args.repo_root, row["spec_id"])
             fact = live_fact(row, load_live(args.live, [row]),
-                             service_outcomes(args.service_outcome).get(row["spec_id"]))
+                             service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
             print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
                                       published=published, read_only=args.read_only, live=fact)))
             return 0

@@ -837,6 +837,24 @@ raise SystemExit(rc)
         self.assertIn("Live service: a service exists (Live status, less than a minute ago).", text)
         self.assertIn("Live status (suggested)", text + self.root.joinpath("choices.log").read_text())
 
+    def test_live_status_after_start_replaces_the_started_suggestion(self):
+        _, result, actions, _, _ = self.run_menu(
+            ["#0", "Start", "fixture-host", "Live status (suggested)", "fixture-host", "Back", "Back"],
+            confirms=["yes"], action_rc=1, launch={"start_rc": 0})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["status.sh", actions[1][1]]])
+        text = " ".join(result.stdout.split())
+        last = text.rpartition("Live service:")[2]
+        self.assertTrue(last.startswith(" not running on any node (Live status"), last)
+        self.assertNotIn("started from this menu", last)
+
+    def test_a_one_node_stop_does_not_claim_absence_everywhere(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Live service: stopped on fixture-node; other nodes not observed since (Stop,", text)
+        self.assertNotIn("not running on any node", text)
+
     def test_open_in_catalog_opens_one_recipe_with_the_captured_inventory(self):
         captured = self.root / "captured-inventory.json"
         def opened(spec_id):
