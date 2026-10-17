@@ -97,6 +97,15 @@ elapsed_text() {
   else printf '%ds' "$seconds"; fi
 }
 
+# report_outcome ACTION LABEL SUBJECT STATUS ELAPSED [--preview|--recorded]
+# Prints an operation's outcome worded by what its exit status means, so a
+# "no" (1) and "couldn't tell" (3) read differently. Callers report
+# interruptions themselves.
+report_outcome() {
+  PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m scripts.menu_outcome \
+    --action "$1" --label "$2" --subject "$3" --status "$4" --elapsed "$5" "${@:6}"
+}
+
 # require_gum WHAT COMMANDS
 # A menu or guided flow opens only with Gum. Otherwise print one line naming
 # the equivalent commands and exit 2 instead of opening a degraded copy.

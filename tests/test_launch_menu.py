@@ -77,7 +77,9 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
-        self.assertIn("nothing was staged", result.stdout)
+        # Exit 3: the preview could not tell, which is not the same as a refusal.
+        self.assertIn("? The Stage pinned image preview could not finish", result.stdout)
+        self.assertIn("nothing changed", " ".join(result.stdout.split()))
 
     def test_interrupted_preview_does_not_request_staging_or_claim_completion(self):
         _, result, actions, _, questions = self.shortcut(

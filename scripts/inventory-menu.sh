@@ -53,9 +53,12 @@ service_actions() {
     choice="${options[$index]}"
     case "$choice" in
       "Detailed status")
-        rc=0
+        rc=0 started=$SECONDS
         "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
+        # Not running (1) and not observable (3) need different next steps.
+        [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "spec ${spec:0:12}" "$rc" \
+          "$(elapsed_text $((SECONDS - started)))"
         ;;
       "Stop service")
         # Show fresh scope and ownership before asking for stop approval.
@@ -68,12 +71,7 @@ service_actions() {
         "$REPO_DIR/pulsar" stop "${STOP_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
         # The same outcome line as the catalog menu's operations.
-        if [ "$rc" -eq 0 ]; then
-          printf '✓ Stop finished for spec %s in %s\n' "${spec:0:12}" "$(elapsed_text $((SECONDS - started)))"
-        else
-          printf '✗ Stop failed for spec %s (exit %d) after %s; details above\n' "${spec:0:12}" "$rc" \
-            "$(elapsed_text $((SECONDS - started)))"
-        fi
+        report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))"
         ;;
       "Refresh inventory") ;;
       *) return 0 ;;

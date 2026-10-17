@@ -525,7 +525,8 @@ confirm() {
   printf '%s\n' "$1" >>"$CONFIRM_LOG"
   case "$(_pop "$MENU_CONFIRMS")" in yes) return 0 ;; "<ctrl-c>") return 130 ;; *) return 1 ;; esac
 }
-''' + re.search(r"^elapsed_text\(\) \{\n.*?^\}\n", (ROOT / "scripts/ui.sh").read_text(), re.S | re.M).group(0)
+''' + "".join(re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", (ROOT / "scripts/ui.sh").read_text(), re.S | re.M).group(0)
+             for name in ("elapsed_text", "report_outcome"))
     ACTION = """#!/usr/bin/env python3
 import json,os,sys
 open(os.environ["ACTION_LOG"],"a").write(json.dumps([os.path.basename(sys.argv[0])]+sys.argv[1:])+"\\n")
@@ -716,8 +717,40 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertIn("✗ Check now failed for", result.stdout)
-        self.assertIn("(exit 1)", result.stdout)
+        self.assertIn("exit 1 after", result.stdout)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
+
+    def test_check_without_a_readable_observation_leaves_the_result_unknown(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("did not return a readable saved observation", result.stderr)
+        outcome = " ".join(result.stdout.split())
+        self.assertRegex(outcome, r"\? Check now could not finish for \S+, so its result is unknown\. exit 3 after")
+        self.assertNotIn("rejected", outcome)
+
+    def test_live_status_not_running_reads_as_safe_to_start(self):
+        _, result, actions, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[0][0], "status.sh")
+        outcome = " ".join(result.stdout.split())
+        self.assertRegex(outcome, r"▲ \S+ is not running\. exit 1 after \d+s · no node runs it, so starting it won't conflict")
+        self.assertNotIn("✗", outcome)
+
+    def test_live_status_that_could_not_observe_a_node_says_not_to_start(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        outcome = " ".join(result.stdout.split())
+        self.assertRegex(outcome, r"\? Whether \S+ is running is unknown: a node could not be observed\.")
+        self.assertIn("don't start it until Live status observes every node", outcome)
+
+    def test_refused_preview_says_the_operation_is_not_possible(self):
+        _, result, actions, _, questions = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"], plan_rc=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(questions, "")
+        self.assertEqual([action for action in actions if "--yes" in action], [])
+        outcome = " ".join(result.stdout.split())
+        self.assertRegex(outcome, r"✗ Restore is not possible for \S+ now; nothing changed\. exit 1 · the reason is above")
 
     def test_interrupted_storage_keeps_partial_effects_unknown_and_suggests_recheck(self):
         _, result, actions, choices, _ = self.run_menu(

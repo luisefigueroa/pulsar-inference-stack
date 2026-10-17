@@ -533,8 +533,9 @@ Stop refreshes the inventory and shows the current scope before confirmation.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
-After stop, the menu prints the outcome and how long it took (`✓ Stop
-finished…` or `✗ Stop failed… (exit N)`), as the catalog menu does.
+After stop, the menu prints the outcome and how long it took, as the catalog
+menu does (see [operation outcomes](#operation-outcomes)). **Detailed status**
+adds an outcome only when status answers no (exit 1) or cannot tell (exit 3).
 Model files, pins and archives are retained. The ordinary `inventory` and
 `inventory --json` commands remain read-only reports.
 
@@ -810,6 +811,21 @@ menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
 Ctrl-C at a choose, input or confirmation prompt exits the menu with status
 `130`, including membership and SSH enrollment confirmations.
+
+### Operation outcomes
+
+Each operation ends with an outcome worded by its
+[exit status](CONTRACT.md#error-codes-and-exit-statuses), then an indented line
+with the status, the time taken and where to look. `✓` is success. A "no"
+(exit 1) reads by action: after **Live status**, `▲ … is not running` means no
+node runs it, so starting it won't conflict; a refused Start, a failed check or
+a blocked launch check is marked `✗` and its reasons are in the output above.
+`?` marks an outcome Stack could not establish (exit 3). After Live status it
+means a node could not be observed, so do not start the model yet; after an
+action it names the inspection to run before retrying. A request rejected before
+it ran (exit 2) changed nothing. A refused `--plan` preview says the operation
+is not possible now. In the catalog menu, a command ended by a signal
+(128+signal) is reported as an interruption, as described next.
 
 ### Interruptions and recorded checks
 
