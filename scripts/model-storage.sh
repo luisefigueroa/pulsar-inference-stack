@@ -34,6 +34,48 @@ select_node() {
 declare -A LAST_RESULT=()
 OPERATION_RC=0 OPERATION_INTERRUPTED=0
 
+# What this session observed about services: a service inventory captured only
+# on request, and each spec's latest Live status, Start or Stop outcome as
+# ACTION:STATUS:EPOCH. The labels and frame show their age.
+LIVE_FILE="" CATALOG_WORK=""
+declare -A SERVICE_OUTCOME=()
+LIVE_ARGS=()
+live_args() {
+  local spec
+  LIVE_ARGS=()
+  [ -z "$LIVE_FILE" ] || LIVE_ARGS+=(--live "$LIVE_FILE")
+  for spec in "${!SERVICE_OUTCOME[@]}"; do LIVE_ARGS+=(--service-outcome "$spec:${SERVICE_OUTCOME[$spec]}"); done
+}
+
+catalog_work() {
+  [ -z "$CATALOG_WORK" ] || return 0
+  CATALOG_WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-catalog-menu.XXXXXX") || return 1
+  trap 'rm -rf -- "$CATALOG_WORK"' EXIT
+}
+
+# check_running_services CATALOG_JSON — one service inventory, kept for this
+# session. A failed or unreadable capture keeps the earlier one.
+check_running_services() {
+  local catalog_json="$1" captured rc=0
+  catalog_work || return 0
+  captured="$CATALOG_WORK/inventory.next.json"
+  spin "Checking running services on every node…" "$REPO_DIR/pulsar" inventory --json >"$captured" || rc=$?
+  [ "$rc" -ne 130 ] || { rm -f -- "$captured"; return 130; }
+  if [ "$rc" -eq 0 ] && printf '%s' "$catalog_json" | catalog_menu labels --live "$captured" >/dev/null; then
+    mv -f -- "$captured" "$CATALOG_WORK/inventory.json"
+    LIVE_FILE="$CATALOG_WORK/inventory.json"
+    return 0
+  fi
+  rm -f -- "$captured"
+  if [ "$rc" -eq 0 ]; then
+    printf '✗ The service inventory could not be read; running services are not shown.\n'
+  else
+    printf '✗ Running services could not be checked (exit %s); the reason is above.\n' "$rc"
+  fi
+  [ -z "$LIVE_FILE" ] || printf '  The earlier service inventory is still shown, with its age.\n'
+  return 0
+}
+
 # run_operation ACTION LABEL SPEC MODEL COMMAND...
 # Runs one explicit operation and reports its outcome. The command owns
 # interruption and cleanup; the menu cannot independently confirm its effects.
@@ -96,6 +138,13 @@ run_operation() {
       case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
     fi
     report_outcome "$action" "$label" "$model" "$rc" "$took"
+  fi
+  if [ -n "$spec" ]; then
+    case "$action" in
+      start|stop|status)
+        if [ "$interrupted" = 1 ]; then SERVICE_OUTCOME[$spec]="$action:interrupted:$(date +%s)"
+        else SERVICE_OUTCOME[$spec]="$action:$rc:$(date +%s)"; fi ;;
+    esac
   fi
   OPERATION_RC="$rc" OPERATION_INTERRUPTED="$interrupted"
   return 0
@@ -275,8 +324,9 @@ recipe_menu() {
   local -a header=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=() labels=()
   while true; do
     ROW_JSON=$(catalog show "$spec" --json) || return 0
+    live_args
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
-      --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" \
+      --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" "${LIVE_ARGS[@]}" \
       ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"}) || return 0
     header=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
@@ -339,29 +389,55 @@ browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
   require_gum "the catalog menu" "pulsar models list | show SPEC | check SPEC"
-  local read_only="${1:-0}" result index rc entry title="Select a catalog spec"
+  local read_only="${1:-0}" result index rc entry observed title="Select a catalog spec"
   [ "$read_only" = 0 ] || title+=" (read-only)"
   local -a entries=() ids=() labels=()
   while true; do
     result=$(catalog list --json) || return $?
-    # Each entry is "SPEC_ID<tab>label"; labels show the same saved state as models list.
-    mapfile -t entries < <(printf '%s' "$result" | catalog_menu labels)
-    if [ "${#entries[@]}" -eq 0 ]; then
+    # Each entry is "SPEC_ID<tab>label"; labels show the same saved state as
+    # models list, plus services this session observed. An "observed" entry
+    # dates that observation.
+    live_args
+    mapfile -t entries < <(printf '%s' "$result" | catalog_menu labels "${LIVE_ARGS[@]}")
+    ids=(); labels=(); observed=""
+    for entry in "${entries[@]}"; do
+      if [ "${entry%%$'\t'*}" = observed ]; then observed="${entry#*$'\t'}"; continue; fi
+      ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}")
+    done
+    if [ "${#ids[@]}" -eq 0 ]; then
       catalog list
       [ "$read_only" = 0 ] || return 0
     fi
-    ids=(); labels=()
-    for entry in "${entries[@]}"; do ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}"); done
-    [ "$read_only" = 1 ] || labels+=("Storage budget (all nodes)")
+    # Before setup the catalog stays saved records only: nothing probes nodes.
+    [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Storage budget (all nodes)")
+    [ -z "$observed" ] || printf '\n%s\n' "$observed" | python3 -m scripts.terminal_format
     index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
-    if [ "$read_only" = 0 ] && [ "$index" -eq "${#ids[@]}" ]; then
-      run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget
+    if [ "$index" -lt "${#ids[@]}" ]; then
+      recipe_menu "${ids[$index]}" "$read_only" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
       continue
     fi
-    [ "$index" -lt "${#ids[@]}" ] || return 0
-    recipe_menu "${ids[$index]}" "$read_only" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    case "${labels[$index]:-Back}" in
+      "Check running services (service inventory)") check_running_services "$result" || return $? ;;
+      "Storage budget (all nodes)")
+        run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget ;;
+      *) return 0 ;;
+    esac
   done
+}
+
+# The inventory menu's "Open in catalog" opens one recipe with the service
+# inventory it captured; Back returns to the inventory menu.
+open_recipe() {
+  local spec="$PULSAR_CATALOG_OPEN_SPEC" inventory="${PULSAR_CATALOG_INVENTORY:-}"
+  unset PULSAR_CATALOG_OPEN_SPEC PULSAR_CATALOG_INVENTORY
+  # shellcheck source=ui.sh
+  . "$REPO_DIR/scripts/ui.sh"
+  require_gum "the catalog menu" "pulsar models show SPEC"
+  if [ -n "$inventory" ] && [ -s "$inventory" ] && catalog_work; then
+    cp -- "$inventory" "$CATALOG_WORK/inventory.json" && LIVE_FILE="$CATALOG_WORK/inventory.json"
+  fi
+  recipe_menu "$spec"
 }
 
 command="${1:-}"
@@ -384,7 +460,7 @@ case "$command" in
     read_only=0
     if [ "${1:-}" = --read-only ]; then read_only=1; shift; fi
     [ $# -eq 0 ] || { echo "error: use ./pulsar models menu [--read-only], or ./pulsar models list --json" >&2; exit 2; }
-    browse "$read_only" ;;
+    if [ -n "${PULSAR_CATALOG_OPEN_SPEC:-}" ] && [ "$read_only" = 0 ]; then open_recipe; else browse "$read_only"; fi ;;
   list|show|results) catalog "$command" "$@" ;;
   check) exec "$REPO_DIR/scripts/model-library.sh" check "$@" ;;
   --json) catalog list --json "$@" ;;

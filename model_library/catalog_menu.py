@@ -4,7 +4,9 @@ Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
 it), the recipe list labels, and the wording of confirmation questions. Input
 is the catalog projection (``pulsar models show --json``) and the
-archive-location status; nothing here probes nodes. Leaving an operation out
+archive-location status, plus what this menu session observed about services:
+a service inventory the menu captured on request and its own Live status, Start
+and Stop outcomes. Nothing here probes nodes. Leaving an operation out
 is a menu convenience: every operation still enforces its own preconditions
 and remains available from the CLI.
 
@@ -14,12 +16,13 @@ itself.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import io
 import json
 import sys
 from typing import Any
 
-from .catalog import ROOT, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
+from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
 from scripts.terminal_format import TerminalWriter, terminal_width
@@ -47,6 +50,121 @@ ARCHIVE_LOCATION = {"configured", "disabled", "not-configured"}
 # by its start_unsupported_reason (a start blocker code).
 START_UNSUPPORTED = {"guard_unsupported": "ordinary start cannot enforce the spec's serving guard",
                      "historical_spec": "historical schema-1 specs cannot be started"}
+
+
+# A session observation of a service older than this is shown as "last seen",
+# never as current.
+LIVE_FRESH_SECONDS = 10 * 60
+SERVICE_STATES = {"running": "running", "partial": "partly running", "degraded": "degraded",
+                  "stale": "exited containers", "stopped": "stopped containers"}
+SOURCES = {"inventory": "service inventory", "status": "Live status", "stop": "Stop"}
+
+
+def live_inventory(inventory: dict, rows: list[dict], *, now=None) -> dict:
+    """A captured service inventory, joined to catalog specs by exact spec ID.
+
+    Only a complete probe can say a spec is not running, so confirmed nodes
+    the inventory could not observe are kept with it.
+    """
+    from scripts.inventory_menu import project
+    from scripts.service_status import unobserved_nodes
+    catalog = [{"spec_id": row["spec_id"], "model_id": row["model_id"], "nodes": row["geometry"]["nodes"]}
+               for row in rows]
+    services = project(inventory, catalog)
+    return {"age": age_seconds(inventory.get("generated_at"), now), "services": services,
+            "unobserved": [clean(node["node"]) for node in unobserved_nodes(inventory["nodes"])]}
+
+
+def service_outcomes(values: list[str], *, now=None) -> dict[str, tuple[str, str, int]]:
+    """SPEC:ACTION:STATUS:EPOCH values from this menu session, by spec.
+
+    STATUS is the exit status or ``interrupted``; the age is in seconds.
+    """
+    current = int((now or datetime.now(timezone.utc)).timestamp())
+    outcomes = {}
+    for value in values:
+        spec, action, status, at = (value.split(":") + ["", "", ""])[:4]
+        if action not in ("start", "stop", "status") or not at.isdigit() or not status:
+            raise ValueError("service outcomes must use SPEC:ACTION:STATUS:EPOCH")
+        outcomes[spec] = (action, status, max(0, current - int(at)))
+    return outcomes
+
+
+def _outcome_fact(action: str, status: str, age: int) -> dict | None:
+    """What one Live status, Start or Stop outcome established about the service."""
+    if status == "interrupted":
+        return {"kind": "changed", "action": action, "age": age} if action != "status" else None
+    if action == "status":
+        # Exit 0 means a service exists in some state, not that it is running.
+        kind = {"0": "exists", "1": "absent", "3": "unknown"}.get(status)
+        return {"kind": kind, "age": age, "source": "status", "unobserved": []} if kind else None
+    if action == "stop" and status == "0":
+        return {"kind": "absent", "age": age, "source": "stop"}
+    return {"kind": "changed", "action": action, "age": age}
+
+
+def live_fact(row: dict, live: dict | None, outcome: tuple[str, str, int] | None) -> dict | None:
+    """The newest session observation of this spec's service, or None."""
+    fact = None
+    if live is not None:
+        service = live["services"].get(row["spec_id"])
+        if service:
+            fact = {"kind": "service", "state": service["state"], "hosts": service["hosts"],
+                    "modified": service["modified"], "age": live["age"], "source": "inventory"}
+        elif live["unobserved"]:
+            fact = {"kind": "unknown", "unobserved": live["unobserved"], "age": live["age"], "source": "inventory"}
+        else:
+            fact = {"kind": "absent", "age": live["age"], "source": "inventory"}
+    if outcome is not None and (fact is None or fact["age"] is None or outcome[2] <= fact["age"]):
+        fact = _outcome_fact(*outcome) or fact
+    return fact
+
+
+def live_current(fact: dict) -> bool:
+    return fact["age"] is not None and fact["age"] <= LIVE_FRESH_SECONDS
+
+
+def _service_words(fact: dict, *, hosts: bool) -> str:
+    state = SERVICE_STATES.get(fact["state"], fact["state"])
+    if hosts:
+        where = ", ".join(fact["hosts"]) or "nodes not identified"
+    else:
+        count = len(fact["hosts"])
+        where = f"{count} node{'' if count == 1 else 's'}" if count else "nodes not identified"
+    return f"{state} on {where}" + (" (modified recipe)" if fact["modified"] else "")
+
+
+def live_label(fact: dict | None) -> str | None:
+    """A few words for a recipe label when a service was seen; None otherwise."""
+    if fact is None or fact["kind"] not in ("service", "exists"):
+        return None
+    if fact["kind"] == "exists":
+        return "service exists" if live_current(fact) else "service seen " + age_text(fact["age"])
+    if live_current(fact):
+        return _service_words(fact, hosts=False)
+    return f"last seen {SERVICE_STATES.get(fact['state'], fact['state'])} {age_text(fact['age'])}"
+
+
+def live_line(fact: dict | None, *, read_only: bool = False) -> str:
+    """The recipe frame's Live service line: what was seen, by what, and when."""
+    if fact is None:
+        if read_only:
+            return "Live service: not observed here."
+        return "Live service: not observed in this menu session; Live status checks it."
+    age, current = age_text(fact["age"]), live_current(fact)
+    if fact["kind"] == "changed":
+        return f"Live service: not observed since {LABELS[fact['action']]} ({age})."
+    when = f"({SOURCES[fact['source']]}, {age})"
+    if fact["kind"] == "service":
+        words = _service_words(fact, hosts=True)
+        return f"Live service: {words} {when}." if current else f"Live service: last seen {words} {when}."
+    if fact["kind"] == "exists":
+        return f"Live service: {'a service exists' if current else 'a service was found'} {when}."
+    if fact["kind"] == "absent":
+        return f"Live service: {'not running' if current else 'was not running'} on any node {when}."
+    unobserved = ", ".join(fact["unobserved"])
+    return (f"Live service: unknown; {unobserved} {'was' if len(fact['unobserved']) == 1 else 'were'} "
+            f"not observed {when}." if unobserved else f"Live service: unknown; a node could not be observed {when}.")
 
 
 def start_unsupported(row: dict) -> str | None:
@@ -127,13 +245,16 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
 
 
 def suggestion(row: dict, offered: list[str], archive_location: str, after: str | None = None,
-               names: NodeNames | None = None, *, now=None) -> tuple[str, str] | None:
+               names: NodeNames | None = None, *, now=None, live: dict | None = None) -> tuple[str, str] | None:
     """One suggested next step from saved state; the first matching rule wins.
 
     ``after`` is the last relevant outcome in this menu session. A recorded
     check clears an earlier mutation even when it found blockers; a check
     without a recorded result must not reuse old readiness. A mutation makes
-    the saved check out of date, and a started service is live. For a
+    the saved check out of date, and a started service is live. ``live`` is
+    this session's newest observation of the service (see live_fact): a
+    service seen in it, even long ago, is inspected before anything else, and
+    Start waits for Live status while the service state is unknown. For a
     spec this Stack cannot start, nothing after the Check, Download and
     Restore rules is suggested: Prepare and Start would only lead to a start.
     """
@@ -151,6 +272,10 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", "the last check did not record an observation"
     if after == "start":
         return "status", "started from this menu; live status observes the service"
+    if live and live["kind"] in ("service", "exists") and "status" in offered:
+        seen = live_line(live).removeprefix("Live service: ").rstrip(".")
+        return "status", seen + ("; Live status shows its state" if live.get("source") == "status"
+                                 else "; Live status checks it now")
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
     if row.get("checked_at") is None:
@@ -186,6 +311,8 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if blocker:
         return "check", blocker
     if local == "ready":
+        if live and live["kind"] in ("unknown", "changed") and "status" in offered:
+            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
 
@@ -239,15 +366,19 @@ LABEL_FILES = {"ready": "files prepared", "missing": "not prepared", "changed": 
                "unknown": "files unknown"}
 
 
-def short_state(row: dict) -> str:
-    """Saved state for a recipe label; review status only when the spec sets one."""
+def state_parts(row: dict) -> list[str]:
+    """Saved state for a recipe label, files first; review status only when the spec sets one."""
     parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"]
     if start_unsupported(row):
         parts.append("start unsupported")
     status = (row.get("review") or {}).get("status")
     if status:
         parts.append(str(status))
-    return " · ".join(parts)
+    return parts
+
+
+def short_state(row: dict) -> str:
+    return " · ".join(state_parts(row))
 
 
 def withdrawal_notice(row: dict) -> list[str]:
@@ -262,13 +393,16 @@ def withdrawal_notice(row: dict) -> list[str]:
     return lines
 
 
-def menu_label(row: dict, width: int) -> str:
+def menu_label(row: dict, width: int, live: dict | None = None) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
     Critical warnings take space before optional model/file context. Ordinary
-    entries retain their model-first layout. Gum's two-column cursor is the
-    only text drawn before the label.
+    entries retain their model-first layout. A service seen in this session
+    leads the state; the saved files state yields to it when space runs out,
+    since the recipe frame repeats it. Gum's two-column cursor is the only
+    text drawn before the label.
     """
+    seen = live_label(live)
     budget = max(32, min(100, width)) - 2
     model = clean(row["model_id"])
     review = (row.get("review") or {}).get("status")
@@ -292,12 +426,17 @@ def menu_label(row: dict, width: int) -> str:
         room = budget - len(heading) - 1
         if room < 4:
             return heading
-        files = LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"
+        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked")
         context = f"{model} · {files}" + (f" · {review}" if review and review != "withdrawn" else "")
         if len(context) > room:
             context = context[:room - 3] + "..."
         return heading + " " + context
-    suffix = f" [{row['spec_id'][:12]}] {short_state(row)}"
+    parts = state_parts(row)
+    if seen:
+        parts.insert(0, seen)
+        if len(model) + len(f" [{row['spec_id'][:12]}] " + " · ".join(parts)) > budget:
+            parts.pop(1)
+    suffix = f" [{row['spec_id'][:12]}] " + " · ".join(parts)
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
     text = model + suffix
@@ -320,7 +459,7 @@ def explicit_settings(arguments: list[str]) -> str:
 
 
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
-           published=None) -> list[str]:
+           published=None, live: dict | None = None, read_only: bool = False) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
@@ -337,7 +476,7 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
                  f"{review.get('reviewed_at') or 'date not recorded'}")
     out.emit("Current observations (saved)")
     out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
-    out.emit("Live service: not observed here.")
+    out.emit(live_line(live, read_only=read_only))
     for line in published_lines(published, now=now):
         out.emit(line)
     if suggested:
@@ -359,12 +498,13 @@ def clean(text: object) -> str:
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
                width: int | None = None, names: NodeNames | None = None, now=None,
-               published=None, read_only=False) -> list[str]:
+               published=None, read_only=False, live: dict | None = None) -> list[str]:
     offered, hidden, eligible = ([], {}, {}) if read_only else operations(row, archive_location)
-    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now)
+    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now, published=published)]
+    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now,
+                                                          published=published, live=live, read_only=read_only)]
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
@@ -513,6 +653,21 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     raise ValueError(f"no confirmation for {action}")
 
 
+def load_live(path: str | None, rows: list[dict]) -> dict | None:
+    if not path:
+        return None
+    with open(path, encoding="utf-8") as handle:
+        return live_inventory(json.load(handle), rows)
+
+
+def inventory_line(live: dict) -> str:
+    """The catalog list's note on the captured inventory: its age and blind spots."""
+    line = f"Running services: service inventory {age_text(live['age'])}"
+    if live["unobserved"]:
+        line += "; not observed: " + ", ".join(live["unobserved"])
+    return line + "."
+
+
 def read_row(stream, spec_id: str) -> dict:
     document = json.load(stream)
     rows = [row for row in document.get("entries") or [] if row.get("spec_id") == spec_id]
@@ -526,6 +681,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
     labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
+    live_help = "service inventory JSON this menu session captured"
+    outcome_help = "SPEC:ACTION:STATUS:EPOCH for a Live status, Start or Stop in this session"
+    labels.add_argument("--live", help=live_help)
+    labels.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
@@ -538,6 +697,8 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     view.add_argument("--repo-root", default=ROOT)
     view.add_argument("--read-only", action="store_true")
+    view.add_argument("--live", help=live_help)
+    view.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS | {"start", "stop", "check", "check-failed"}))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
@@ -555,10 +716,14 @@ def main(argv: list[str] | None = None) -> int:
             entries = json.load(sys.stdin).get("entries") or []
             if args.compare_with and any(entry["spec_id"] == args.compare_with and entry.get("historical") for entry in entries):
                 raise ValueError("spec comparison supports schemas 2 and 3; use Show details for this historical spec")
+            live, outcomes = load_live(args.live, entries), service_outcomes(args.service_outcome)
+            if live:
+                print(f"observed\t{clean(inventory_line(live))}")
             for entry in entries:
                 if args.compare_with and (entry["spec_id"] == args.compare_with or entry.get("historical")):
                     continue
-                print(f"{entry['spec_id']}\t{menu_label(entry, width)}")
+                fact = live_fact(entry, live, outcomes.get(entry["spec_id"]))
+                print(f"{entry['spec_id']}\t{menu_label(entry, width, fact)}")
             return 0
         row = read_row(sys.stdin, args.spec_id)
         names = NodeNames.saved()
@@ -576,8 +741,10 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if render_image_plan(row, response, node_names, mode=args.mode) else 1
         if args.command == "view":
             published = published_results(args.repo_root, row["spec_id"])
+            fact = live_fact(row, load_live(args.live, [row]),
+                             service_outcomes(args.service_outcome).get(row["spec_id"]))
             print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
-                                      published=published, read_only=args.read_only)))
+                                      published=published, read_only=args.read_only, live=fact)))
             return 0
         plan = None
         if args.plan_file:

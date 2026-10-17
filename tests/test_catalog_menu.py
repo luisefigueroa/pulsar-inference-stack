@@ -410,6 +410,163 @@ class Labels(unittest.TestCase):
                           "cd" * 32 + "\torg/model [cdcdcdcdcdcd] files prepared"])
 
 
+LIVE_NOW = datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)
+HOSTS = {"head": ("n0", "spark-1"), "w1": ("n1", "spark-2"), "w2": ("n2", "spark-3")}
+
+
+def inventory(*services, generated_at="2026-09-05T00:08:00Z", unobserved=()):
+    """A service inventory document; each service is (spec_id, state, node keys[, matches])."""
+    nodes = {key: {"node_id": node_id, "hostname": host, "confirmed": True,
+                   "probe_status": "unreachable" if key in unobserved else "ok"}
+             for key, (node_id, host) in HOSTS.items()}
+    rows = [{"service_id": spec, "conf": spec, "state": state, "ownership": "managed", "safe_to_stop": True,
+             "matches_selected_spec": rest[0] if rest else True,
+             "ranks": [{"rank": str(i), "node": key} for i, key in enumerate(keys)]}
+            for spec, state, keys, *rest in services]
+    return {"schema_version": 1, "generated_at": generated_at, "nodes": nodes, "worker": {"status": "ok"},
+            "unmanaged_gpu_processes": [], "services": rows}
+
+
+def epoch(minutes_before):
+    return int(LIVE_NOW.timestamp()) - minutes_before * 60
+
+
+class SessionServices(unittest.TestCase):
+    """What this menu session saw of a service; nothing here probes."""
+    SPEC = "ab" * 32
+
+    def fact(self, document=None, *outcomes, state=None):
+        state = state or checked(home=HOME, local_state="ready")
+        live = menu.live_inventory(document, [state], now=LIVE_NOW) if document else None
+        found = menu.service_outcomes([f"{self.SPEC}:{value}" for value in outcomes], now=LIVE_NOW)
+        return menu.live_fact(state, live, found.get(self.SPEC))
+
+    def suggest(self, fact, state=None, after=None):
+        state = state or checked(home=HOME, local_state="ready")
+        offered, _, _ = menu.operations(state, "configured")
+        return menu.suggestion(state, offered, "configured", after, NAMES, live=fact)
+
+    def test_a_running_service_is_named_with_its_nodes_source_and_age(self):
+        fact = self.fact(inventory((self.SPEC, "running", ["head", "w1", "w2"])))
+        self.assertEqual(menu.live_line(fact),
+                         "Live service: running on spark-1, spark-2, spark-3 (service inventory, 2 minutes ago).")
+        self.assertEqual(menu.live_label(fact), "running on 3 nodes")
+        self.assertEqual(self.suggest(fact), ("status", "running on spark-1, spark-2, spark-3 "
+                                                        "(service inventory, 2 minutes ago); Live status checks it now"))
+
+    def test_an_old_observation_is_last_seen_and_still_suggests_live_status(self):
+        fact = self.fact(inventory((self.SPEC, "running", ["head"]), generated_at="2026-09-04T23:30:00Z"))
+        self.assertEqual(menu.live_line(fact),
+                         "Live service: last seen running on spark-1 (service inventory, 40 minutes ago).")
+        self.assertEqual(menu.live_label(fact), "last seen running 40 minutes ago")
+        self.assertEqual(self.suggest(fact)[0], "status")
+        self.assertIn("last seen", self.suggest(fact)[1])
+
+    def test_unknown_is_not_absent(self):
+        unknown = self.fact(inventory(unobserved=("w1",)))
+        self.assertEqual(menu.live_line(unknown),
+                         "Live service: unknown; spark-2 was not observed (service inventory, 2 minutes ago).")
+        self.assertIsNone(menu.live_label(unknown))
+        self.assertEqual(self.suggest(unknown)[0], "status")
+        self.assertIn("check before starting", self.suggest(unknown)[1])
+        absent = self.fact(inventory())
+        self.assertEqual(menu.live_line(absent),
+                         "Live service: not running on any node (service inventory, 2 minutes ago).")
+        self.assertIsNone(menu.live_label(absent))
+        self.assertEqual(self.suggest(absent)[0], "start")
+
+    def test_live_status_exit_0_means_a_service_exists_not_that_it_runs(self):
+        fact = self.fact(None, f"status:0:{epoch(1)}")
+        self.assertEqual(menu.live_line(fact), "Live service: a service exists (Live status, 1 minute ago).")
+        self.assertNotIn("running", menu.live_label(fact))
+        self.assertEqual(self.suggest(fact), ("status", "a service exists (Live status, 1 minute ago); "
+                                                        "Live status shows its state"))
+        self.assertIn("not running", menu.live_line(self.fact(None, f"status:1:{epoch(1)}")))
+        self.assertIn("a node could not be observed", menu.live_line(self.fact(None, f"status:3:{epoch(1)}")))
+        self.assertIsNone(self.fact(None, f"status:2:{epoch(1)}"))
+        self.assertIsNone(self.fact(None, f"status:interrupted:{epoch(1)}"))
+
+    def test_the_newest_observation_wins(self):
+        running = inventory((self.SPEC, "running", ["head"]))  # two minutes ago
+        stopped = self.fact(running, f"stop:0:{epoch(1)}")
+        self.assertEqual(menu.live_line(stopped), "Live service: not running on any node (Stop, 1 minute ago).")
+        self.assertEqual(self.suggest(stopped)[0], "start")
+        older = self.fact(running, f"stop:0:{epoch(5)}")
+        self.assertEqual(older["kind"], "service")
+        # A refused or rejected Live status keeps the inventory's answer.
+        self.assertEqual(self.fact(running, f"status:2:{epoch(1)}")["kind"], "service")
+
+    def test_start_and_stop_make_earlier_observations_out_of_date(self):
+        for outcome, words in ((f"start:1:{epoch(1)}", "Start"), (f"stop:1:{epoch(1)}", "Stop"),
+                               (f"start:interrupted:{epoch(1)}", "Start")):
+            with self.subTest(outcome=outcome):
+                fact = self.fact(inventory(), outcome)
+                self.assertEqual(menu.live_line(fact), f"Live service: not observed since {words} (1 minute ago).")
+                self.assertEqual(self.suggest(fact)[0], "status")
+
+    def test_a_modified_recipe_and_partial_service_are_not_flattened(self):
+        fact = self.fact(inventory((self.SPEC, "partial", ["head", "w1"], False)))
+        self.assertEqual(menu.live_label(fact), "partly running on 2 nodes (modified recipe)")
+        self.assertIn("partly running on spark-1, spark-2 (modified recipe)", menu.live_line(fact))
+
+    def test_other_specs_and_no_observation(self):
+        other = self.fact(inventory(("cd" * 32, "running", ["head"])))
+        self.assertEqual(other["kind"], "absent")
+        self.assertIsNone(self.fact())
+        self.assertEqual(menu.live_line(None), "Live service: not observed in this menu session; Live status checks it.")
+        self.assertEqual(menu.live_line(None, read_only=True), "Live service: not observed here.")
+
+    def test_interruptions_and_saved_rules_keep_their_precedence(self):
+        fact = self.fact(inventory((self.SPEC, "running", ["head"])))
+        self.assertEqual(self.suggest(fact, after="check-interrupted")[0], "check")
+        self.assertEqual(self.suggest(fact, after="prepare")[0], "status")
+        guarded = checked(home=HOME, local_state="ready", **GUARDED)
+        self.assertEqual(self.suggest(fact, state=guarded)[0], "status")
+
+    def test_labels_keep_the_spec_prefix_and_yield_files_state_first(self):
+        fact = self.fact(inventory((self.SPEC, "running", ["head", "w1", "w2"])))
+        state = checked(home=HOME, local_state="ready", model_id="nvidia/GLM-5.3-Flash-NVFP4")
+        wide, narrow = menu.menu_label(state, 100, fact), menu.menu_label(state, 70, fact)
+        self.assertEqual(wide, "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] running on 3 nodes · files prepared")
+        self.assertEqual(narrow, "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] running on 3 nodes")
+        for width in (32, 44, 60, 80):
+            with self.subTest(width=width):
+                label = menu.menu_label(state, width, fact)
+                self.assertLessEqual(len(label), width - 2)
+                self.assertIn("[abababababab]", label)
+        withdrawn = checked(home=HOME, local_state="ready", review={"status": "withdrawn"})
+        self.assertIn("running on 3 nodes", menu.menu_label(withdrawn, 80, fact))
+
+    def test_malformed_outcomes_are_rejected(self):
+        for value in ("x", f"{self.SPEC}:restart:0:1", f"{self.SPEC}:status:0:soon", f"{self.SPEC}:status::1"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                menu.service_outcomes([value])
+
+    def test_cli_labels_date_the_inventory_and_view_uses_it(self):
+        import tempfile
+        state = checked(home=HOME, local_state="ready")
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as handle:
+            json.dump(inventory((self.SPEC, "running", ["head"]), unobserved=("w2",),
+                                generated_at=datetime.now(timezone.utc).isoformat()), handle)
+            handle.flush()
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", output), \
+                    patch.dict("os.environ", {"COLUMNS": "100"}):
+                self.assertEqual(menu.main(["labels", "--live", handle.name]), 0)
+            self.assertEqual(output.getvalue().splitlines(), [
+                "observed\tRunning services: service inventory less than a minute ago; not observed: spark-3.",
+                self.SPEC + "\torg/model [abababababab] running on 1 node · files prepared"])
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", output), \
+                    patch.object(menu.NodeNames, "saved", return_value=NAMES):
+                self.assertEqual(menu.main(["view", "--spec-id", self.SPEC, "--archive-location", "configured",
+                                            "--live", handle.name]), 0)
+            frame = " ".join(line.split("\t", 1)[1] for line in output.getvalue().splitlines()
+                             if line.startswith("header\t"))
+            self.assertIn("Live service: running on spark-1 (service inventory, less than a minute ago).", frame)
+            self.assertIn("suggest\tstatus", output.getvalue())
+
+
 class Question(unittest.TestCase):
     def test_questions_name_model_placement_and_consequence(self):
         state = checked(home=HOME)
