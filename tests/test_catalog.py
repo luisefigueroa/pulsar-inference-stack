@@ -553,6 +553,14 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     elif sys.argv[1] == "inventory":
         print(os.environ.get("INVENTORY_FIXTURE", ""))
         rc = int(os.environ.get("INVENTORY_RC", "0"))
+elif sys.argv[1] in ("acquire", "restore") and "--yes" in sys.argv and os.environ.get("RECORD_HOME") and rc == 0:
+    # As the real operations do after verifying the files: record the home.
+    from model_library.state import Store
+    manifest = os.environ["RECORD_HOME"]
+    Store(os.environ["PULSAR_MODEL_LIBRARY_DIR"]).put("homes", manifest, {
+        "schema_version": 1, "kind": "pulsar-home", "snapshot_manifest_id": manifest, "node_id": "fixture-node",
+        "hub_path": "/nonexistent/home", "path": "/nonexistent/home/snapshot",
+        "verification": {"snapshot_manifest_id": manifest}, "verified_at": "2026-09-05T00:00:00Z"})
 elif "--plan" in sys.argv:
     print(open(os.environ["PLAN_FILE"]).read())
     rc = int(os.environ.get("PLAN_RC", str(rc)))
@@ -950,7 +958,7 @@ raise SystemExit(rc)
         plan = {"kind": "pulsar-preparation-plan", "eligible": True,
                 "actions": [{"rank": 0, "node_id": "fixture-node", "action": "home-view"}]}
         spec, result, actions, choices, _ = self.run_menu(
-            ["#0", "Prepare", "fixture-host", "Check now (suggested)", "fixture-host", "Back", "Back"],
+            ["#0", "Prepare", "fixture-host", "Check now", "fixture-host", "Back", "Back"],
             with_home=True, plan=plan, confirms=["yes"], check_rc=1,
             check_observation={"local_state": "missing", "archive_state": "unknown",
                                "blockers": ["required prepared copy is missing"]})
@@ -961,6 +969,35 @@ raise SystemExit(rc)
         self.assertNotIn("Check now (suggested)", last_options)
         self.assertIn("saved an observation with findings", result.stdout)
         self.assertNotIn("Check now failed", result.stdout)
+
+    def test_a_successful_prepare_suggests_start_and_keeps_the_saved_check_visible(self):
+        plan = {"kind": "pulsar-preparation-plan", "eligible": True,
+                "actions": [{"rank": 0, "node_id": "fixture-node", "action": "home-view"}]}
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Prepare (suggested)", "fixture-host", "Back", "Back"], with_home=True, plan=plan,
+            confirms=["yes"], observation={"local_state": "missing", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[-1], ["model-library.sh", "prepare", spec, "--node", "fixture-node", "--yes"])
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Start (suggested)", last_options)
+        text = " ".join(result.stdout.split())
+        last_frame = text.rpartition("Current observations (saved)")[2]
+        self.assertIn("Files: prepared in this session (less than a minute ago); saved check:", last_frame)
+        self.assertIn("Suggested: Start — prepared on every serving rank just now", last_frame)
+
+    def test_a_successful_restore_moves_on_to_prepare(self):
+        def record(spec_id):
+            spec = json.loads((self.repo / "releases" / f"{spec_id}.json").read_text())
+            return {"RECORD_HOME": spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]}
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"], env_extra=record)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[-1], ["model-library.sh", "restore", spec, "--node", "fixture-node", "--yes"])
+        last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("Prepare (suggested)", last_options)
+        self.assertNotIn("Check now (suggested)", last_options)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Suggested: Prepare — restore finished; every required snapshot has a verified home", text)
 
     def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
         spec, result, actions, _, _ = self.run_menu(

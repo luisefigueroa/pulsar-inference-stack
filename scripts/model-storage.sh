@@ -31,7 +31,8 @@ select_node() {
 
 # The last relevant outcome for each recipe in this menu session. A recorded
 # check supersedes a prior mutation even when it found missing/changed files.
-declare -A LAST_RESULT=()
+# LAST_AT holds when a successful operation set it, as a Unix time.
+declare -A LAST_RESULT=() LAST_AT=()
 OPERATION_RC=0 OPERATION_INTERRUPTED=0
 
 # What this session observed about services: a service inventory captured only
@@ -135,7 +136,10 @@ run_operation() {
     report_outcome check "$label" "$model" "$rc" "$took" --recorded
   else
     if [ "$rc" -eq 0 ]; then
-      case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
+      case "$action" in
+        status|verify|check|readiness|image-check|image-stage|budget) ;;
+        *) LAST_RESULT[$spec]="$action" LAST_AT[$spec]=$(date +%s) ;;
+      esac
     fi
     report_outcome "$action" "$label" "$model" "$rc" "$took"
   fi
@@ -329,7 +333,7 @@ recipe_menu() {
     live_args
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
       --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" "${LIVE_ARGS[@]}" \
-      ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"}) || return 0
+      ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"} ${LAST_AT[$spec]:+--after-at "${LAST_AT[$spec]}"}) || return 0
     header=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
       case "$kind" in

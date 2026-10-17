@@ -41,7 +41,9 @@ LABELS = {
     "purge": "Purge prepared copies", "remove": "Remove home",
 }
 # Operations that change model files or records; a success makes the saved
-# check out of date until the next Check now.
+# check out of date until the next Check now. Download, Restore and Prepare
+# verify what they record, so after them the next lifecycle step is suggested
+# instead (see suggestion).
 MUTATIONS = frozenset({"acquire", "restore", "prepare", "move", "archive", "pin", "unpin", "purge", "remove"})
 INTERRUPTIONS = frozenset({"storage-interrupted", "service-interrupted", "image-interrupted", "check-interrupted"})
 STALE_SECONDS = 24 * 3600
@@ -297,6 +299,21 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         seen = live_line(live).removeprefix("Live service: ").rstrip(".")
         return "status", seen + ("; Live status shows its state" if live.get("source") == "status"
                                  else "; Live status checks it now")
+    if after in ("acquire", "restore"):
+        # Both verify the files before recording the home (a reused home is
+        # checked as Check now would), so the next step is the next snapshot
+        # without a home, then Prepare.
+        found = _next_home(row, offered, archive_location, now)
+        if found and found[1]:
+            name, action, detail = found
+            return action, (f"{name} has no home yet" if name is not None else "no home recorded yet") + f"; {detail}"
+        if found is None and "prepare" in offered and not start_unsupported(row):
+            return "prepare", f"{LABELS[after].lower()} finished; every required snapshot has a verified home"
+    if after == "prepare" and "start" in offered:
+        # Prepare ends by verifying the prepared copy on every serving rank.
+        if live and live["kind"] in ("unknown", "changed") and "status" in offered:
+            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
+        return "start", "prepared on every serving rank just now; start rechecks prerequisites"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
     if row.get("checked_at") is None:
@@ -307,23 +324,12 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
-    snapshots = members(row)
-    missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
-    if missing:
-        # Home operations act on one snapshot. Use that snapshot's reconciled
-        # archive fact, not the aggregate state or the existence of a record.
-        name = missing[0]
-        reason = "no home recorded" + (f" for snapshot {name}" if name is not None else "")
-        if archive_location == "configured":
-            kind, _, wording = archive_facts(row, now)[name]
-            reason += f"; archive: {wording}"
-            if kind in ("present", "verified") and "restore" in offered:
-                return "restore", reason + "; Restore rechecks contents"
-        else:
-            reason += "; " + _location_reason(archive_location)
-        if "acquire" in offered:
-            return "acquire", reason
-        return None
+    found = _next_home(row, offered, archive_location, now)
+    if found:
+        name, action, detail = found
+        if action is None:
+            return None
+        return action, "no home recorded" + (f" for snapshot {name}" if name is not None else "") + f"; {detail}"
     if start_unsupported(row):
         return None
     if local in ("missing", "changed") and "prepare" in offered:
@@ -336,6 +342,27 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
             return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
+
+
+def _next_home(row: dict, offered: list[str], archive_location: str, now=None) -> tuple | None:
+    """The first required snapshot without a home, the operation that records one, and why.
+
+    Home operations act on one snapshot. Use that snapshot's reconciled
+    archive fact, not the aggregate state or the existence of a record.
+    """
+    snapshots = members(row)
+    missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
+    if not missing:
+        return None
+    name = missing[0]
+    if archive_location == "configured":
+        kind, _, wording = archive_facts(row, now)[name]
+        detail = f"archive: {wording}"
+        if kind in ("present", "verified") and "restore" in offered:
+            return name, "restore", detail + "; Restore rechecks contents"
+    else:
+        detail = _location_reason(archive_location)
+    return name, ("acquire" if "acquire" in offered else None), detail
 
 
 def recorded_node(row: dict) -> str | None:
@@ -480,7 +507,8 @@ def explicit_settings(arguments: list[str]) -> str:
 
 
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
-           published=None, live: dict | None = None, read_only: bool = False) -> list[str]:
+           published=None, live: dict | None = None, read_only: bool = False,
+           after: str | None = None, after_age: int | None = None) -> list[str]:
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
     out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
@@ -496,7 +524,11 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
         out.emit(f"Maintainer review (advisory): {review['status']} · "
                  f"{review.get('reviewed_at') or 'date not recorded'}")
     out.emit("Current observations (saved)")
-    out.emit(f"Files: {files_text(row)} · Archive: {archive_text(row, now)}")
+    files = files_text(row)
+    if after == "prepare" and after_age is not None:
+        # Prepare saves no observation; keep the old check visible as such.
+        files = f"prepared in this session ({age_text(after_age)}); saved check: {files}"
+    out.emit(f"Files: {files} · Archive: {archive_text(row, now)}")
     out.emit(live_line(live, read_only=read_only))
     for line in published_lines(published, now=now):
         out.emit(line)
@@ -519,13 +551,15 @@ def clean(text: object) -> str:
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
                width: int | None = None, names: NodeNames | None = None, now=None,
-               published=None, read_only=False, live: dict | None = None) -> list[str]:
+               published=None, read_only=False, live: dict | None = None,
+               after_age: int | None = None) -> list[str]:
     offered, hidden, eligible = ([], {}, {}) if read_only else operations(row, archive_location)
     suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
     lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now,
-                                                          published=published, live=live, read_only=read_only)]
+                                                          published=published, live=live, read_only=read_only,
+                                                          after=after, after_age=after_age)]
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
@@ -723,6 +757,7 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--live", help=live_help)
     view.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS | {"start", "stop", "check", "check-failed"}))
+    view.add_argument("--after-at", type=int, help="when --after happened, as a Unix time")
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
@@ -767,8 +802,11 @@ def main(argv: list[str] | None = None) -> int:
             published = published_results(args.repo_root, row["spec_id"])
             fact = live_fact(row, load_live(args.live, [row]),
                              service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
+            after_age = (max(0, int(datetime.now(timezone.utc).timestamp()) - args.after_at)
+                         if args.after_at is not None else None)
             print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
-                                      published=published, read_only=args.read_only, live=fact)))
+                                      published=published, read_only=args.read_only, live=fact,
+                                      after_age=after_age)))
             return 0
         plan = None
         if args.plan_file:

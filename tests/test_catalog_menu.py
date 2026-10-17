@@ -160,7 +160,7 @@ class Suggestion(unittest.TestCase):
 
     def test_session_history_outranks_saved_state(self):
         ready = checked(home=HOME, local_state="ready")
-        self.assertEqual(self.suggest(ready, after="prepare"), ("check", "prepare ran after the last check"))
+        self.assertEqual(self.suggest(ready, after="move"), ("check", "move home ran after the last check"))
         self.assertEqual(self.suggest(ready, after="start")[0], "status")
         self.assertEqual(self.suggest(ready, after="stop")[0], "start")
         self.assertEqual(self.suggest(ready, after="check")[0], "start")
@@ -190,6 +190,75 @@ class Suggestion(unittest.TestCase):
                 self.assertNotIn(result and result[0], {"stop", *menu.STORAGE})
 
 
+class NextLifecycleStep(unittest.TestCase):
+    """Download, Restore and Prepare verify what they record, so the menu moves on."""
+    NOW = datetime(2026, 9, 5, 2, tzinfo=timezone.utc)
+
+    def suggest(self, state, after, location="configured", live=None):
+        offered, _, _ = menu.operations(state, location)
+        return menu.suggestion(state, offered, location, after, NAMES, now=self.NOW, live=live)
+
+    def snapshots(self, draft_home=None, *, draft_archive="verified"):
+        rows = ArchiveSuggestions.snapshot_row(("present", draft_archive), target_home=HOME,
+                                               dates={"draft": "2026-09-05T01:00:00Z"})
+        rows["snapshots"]["draft"]["home"] = draft_home
+        return rows
+
+    def test_prepare_suggests_start(self):
+        for state in (row(home=HOME), checked(home=HOME, local_state="missing"),
+                      checked(home=HOME, local_state="ready", observation_age_seconds=9 * 86400)):
+            with self.subTest(state=state["local_state"]):
+                self.assertEqual(self.suggest(state, "prepare"),
+                                 ("start", "prepared on every serving rank just now; start rechecks prerequisites"))
+
+    def test_after_download_or_restore_the_next_snapshot_without_a_home_is_suggested(self):
+        for after in ("acquire", "restore"):
+            with self.subTest(after=after):
+                action, reason = self.suggest(self.snapshots(), after)
+                self.assertEqual(action, "restore")
+                self.assertTrue(reason.startswith("draft has no home yet; archive: verified"), reason)
+                action, reason = self.suggest(self.snapshots(), after, location="disabled")
+                self.assertEqual(action, "acquire")
+                self.assertTrue(reason.startswith("draft has no home yet; "), reason)
+
+    def test_when_every_snapshot_has_a_home_prepare_is_next(self):
+        for state in (self.snapshots(draft_home=HOME), row(home=HOME)):
+            for after in ("acquire", "restore"):
+                with self.subTest(after=after, schema3="snapshots" in state):
+                    self.assertEqual(self.suggest(state, after),
+                                     ("prepare", f"{menu.LABELS[after].lower()} finished; "
+                                                 "every required snapshot has a verified home"))
+
+    def test_other_mutations_still_suggest_check_now(self):
+        ready = checked(home=HOME, local_state="ready")
+        for after in sorted(menu.MUTATIONS - {"acquire", "restore", "prepare"}):
+            with self.subTest(after=after):
+                self.assertEqual(self.suggest(ready, after)[0], "check")
+
+    def test_a_guarded_spec_is_never_led_toward_prepare_or_start(self):
+        guarded = row(home=HOME, **GUARDED)
+        self.assertEqual(self.suggest(guarded, "restore")[0], "check")
+        self.assertEqual(self.suggest(guarded, "prepare")[0], "check")
+
+    def test_an_unknown_service_still_comes_before_start(self):
+        unknown = {"kind": "unknown", "unobserved": ["spark-2"], "age": 60, "source": "inventory"}
+        action, reason = self.suggest(row(home=HOME), "prepare", live=unknown)
+        self.assertEqual(action, "status")
+        self.assertIn("check before starting", reason)
+
+    def test_the_frame_keeps_the_saved_check_visible_after_prepare(self):
+        state = checked(home=HOME, local_state="missing", observation_age_seconds=12 * 86400)
+        lines = menu.view_lines(state, "configured", after="prepare", after_age=120, width=200, names=NAMES,
+                                now=self.NOW)
+        frame = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
+        self.assertIn("Files: prepared in this session (2 minutes ago); saved check: ", frame)
+        self.assertIn("12 days ago", frame)
+        self.assertIn("Suggested: Start — prepared on every serving rank just now", frame)
+        unmarked = menu.view_lines(state, "configured", after="move", after_age=120, width=200, names=NAMES,
+                                   now=self.NOW)
+        self.assertFalse(any("prepared in this session" in line for line in unmarked))
+
+
 class ArchiveSuggestions(unittest.TestCase):
     NOW = datetime(2026, 9, 5, 2, tzinfo=timezone.utc)
 
@@ -197,7 +266,8 @@ class ArchiveSuggestions(unittest.TestCase):
         offered, _, _ = menu.operations(state, "configured")
         return menu.suggestion(state, offered, "configured", names=NAMES, now=self.NOW)
 
-    def snapshot_row(self, states, *, dates=None, target_home=None):
+    @staticmethod
+    def snapshot_row(states, *, dates=None, target_home=None):
         snapshots = two_snapshots(target_home, None)
         for name, state in zip(("target", "draft"), states):
             snapshots[name]["observation"] = {
