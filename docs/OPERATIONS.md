@@ -867,6 +867,17 @@ file observations still suggest **Check now**. A check that records a result
 clears the previous operation's pending check; one that could not record a
 result does not turn earlier readiness into a new Start suggestion.
 
+Operations that verify what they record move straight to the next step. After
+a successful **Download** or **Restore**, which verify the files before
+recording the home (a Download that reuses a recorded home checks it as Check
+now does), the suggestion is the next required snapshot without a home, then
+**Prepare** once every snapshot has one. After a successful
+**Prepare**, which ends by verifying the prepared copy on every serving rank,
+the suggestion is **Start**, which rechecks its prerequisites. Prepare saves no
+observation, so the frame reads `Files: prepared in this session (…); saved
+check: …` until the next Check now. Other storage changes still suggest
+**Check now**. Each operation keeps its own preview and confirmation.
+
 ### Launch options
 
 **Launch options** provides shortcuts for the selected published catalog spec:
@@ -1013,7 +1024,8 @@ For private specs, add `--spec-file <file>` to the same commands. `move` and
 `remove` also require `--snapshot` for schema 3. The model-storage menu provides
 the same snapshot choice. No command silently selects only the target for these
 operations. Archive creation, acquisition, and restoration remain individual
-operations; sequence them as required. Verification without `--snapshot` covers
+operations; sequence them as required. The menu suggests the next snapshot
+without a home after each successful download or restore. Verification without `--snapshot` covers
 all declared archives, is read-only, and fails if any member does not verify.
 
 `prepare`, `info`, `check`, `pin`, `unpin`, and `purge` cover the complete recipe.
