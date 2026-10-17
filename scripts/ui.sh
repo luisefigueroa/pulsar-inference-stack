@@ -97,6 +97,15 @@ elapsed_text() {
   else printf '%ds' "$seconds"; fi
 }
 
+# report_outcome ACTION LABEL SUBJECT STATUS ELAPSED [--preview|--recorded]
+# Prints an operation's outcome worded by what its exit status means, so a
+# "no" (1) and "couldn't tell" (3) read differently. Callers report
+# interruptions themselves.
+report_outcome() {
+  PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 -m scripts.menu_outcome \
+    --action "$1" --label "$2" --subject "$3" --status "$4" --elapsed "$5" "${@:6}"
+}
+
 # require_gum WHAT COMMANDS
 # A menu or guided flow opens only with Gum. Otherwise print one line naming
 # the equivalent commands and exit 2 instead of opening a degraded copy.
@@ -214,9 +223,24 @@ prompt_input() {
 # ---------------------------------------------------------------------------
 # Menus
 # ---------------------------------------------------------------------------
+# _ui_terminal_rows
+# Prints the terminal's height. Gum draws on stderr while callers capture
+# stdout, so the size is read from stderr; $LINES is the fallback.
+_ui_terminal_rows() {
+  local size rows
+  size=$(stty size <&2 2>/dev/null) || size=""
+  rows=${size%% *}
+  [[ "$rows" =~ ^[1-9][0-9]*$ ]] || rows=${LINES:-}
+  [[ "$rows" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$rows"
+}
+
 # choose_index HEADER OPTION...
-# Prints the selected zero-based option index. Display text is not used as
-# identity, so duplicate or truncated labels remain selectable.
+# Prints the selected zero-based option index. Gum shows each label and
+# returns its hidden index, so a label's whole row is available to its text.
+# Gum maps each label to one value, so a repeated label gets a " (2)" suffix
+# and stays selectable. The list is as tall as its options and the terminal
+# allow, so no option waits on a second page.
 # PULSAR_CHOOSE_DEFAULT=N starts the cursor on option N. Returns 1 on Esc or
 # cancel and 130 on Ctrl-C, so a nested menu can step back on Esc and leave
 # entirely on Ctrl-C.
@@ -227,31 +251,47 @@ choose_index() {
     return 1
   fi
   _ui_require_gum || return
-  local indexed=() option out rc selected index=1 default="${PULSAR_CHOOSE_DEFAULT:-}"
+  local entries=() labels=() option label candidate suffix out rc selected rows
+  local index=1 height=$# default="${PULSAR_CHOOSE_DEFAULT:-}"
   local -a initial=()
+  local -A seen=()
   for option in "$@"; do
-    indexed+=("${index}"$'\t'"${option}")
+    label=${option//$'\t'/ }
+    candidate=$label suffix=2
+    while [ -n "${seen["x$candidate"]+x}" ]; do
+      candidate="$label ($suffix)"
+      suffix=$((suffix + 1))
+    done
+    seen["x$candidate"]=1
+    labels+=("$candidate")
+    entries+=("$candidate"$'\t'"$index")
     index=$((index + 1))
   done
   if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
-    initial=(--selected="${indexed[$default]}")
+    # Gum splits --selected at commas; a backslash keeps one in the label.
+    initial=(--selected="${labels[$default]//,/\\,}")
+  fi
+  # Gum adds 5 rows around the list: padding, the header and its help line.
+  if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
+    height=$((rows - 5))
   fi
   _ui_gum_choose_style_args
   set +e
   # Capture the selection on stdout only. Do NOT redirect Gum stderr: the
   # interactive TUI is drawn on stderr; silencing it makes the menu invisible.
-  out=$(printf '%s\n' "${indexed[@]}" | _ui_gum choose \
+  out=$(printf '%s\n' "${entries[@]}" | _ui_gum choose \
     "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" \
-    --header "$header")
+    --label-delimiter=$'\t' --height="$height" --header "$header")
   rc=$?
   set -e
   if [ "$rc" -eq 130 ]; then
     return 130
   fi
-  if [ "$rc" -ne 0 ] || [[ "${out:-}" != *$'\t'* ]]; then
+  if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
-  selected=${out%%$'\t'*}
+  # Gum prints the index alone; a test double may echo the whole entry.
+  selected=${out##*$'\t'}
   if ! [[ "$selected" =~ ^[0-9]+$ ]] \
       || [ "$selected" -lt 1 ] || [ "$selected" -gt "$#" ]; then
     return 1

@@ -266,9 +266,10 @@ def menu_label(row: dict, width: int) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
     Critical warnings take space before optional model/file context. Ordinary
-    entries retain their model-first layout.
+    entries retain their model-first layout. Gum's two-column cursor is the
+    only text drawn before the label.
     """
-    budget = max(32, min(100, width)) - 6
+    budget = max(32, min(100, width)) - 2
     model = clean(row["model_id"])
     review = (row.get("review") or {}).get("status")
     critical = (["withdrawn"] if review == "withdrawn" else [])

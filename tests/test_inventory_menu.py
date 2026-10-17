@@ -90,7 +90,7 @@ class Projection(unittest.TestCase):
                     if fields[0] == "header":
                         self.assertLessEqual(len(fields[1]), width)
                     if fields[0] == "service":
-                        self.assertLessEqual(len(fields[2]), width - 6)
+                        self.assertLessEqual(len(fields[2]), width - 2)
                         self.assertIn(SPEC[:12], fields[2])
 
 
@@ -155,6 +155,22 @@ else: sys.exit(99)
         self.assertNotIn("Select a confirmed physical node", choices)
         self.assertEqual(questions, "")
 
+    def test_status_outcome_separates_not_running_from_unknown(self):
+        for rc, expected in ((0, None), (1, "▲ spec {id} is not running."),
+                             (3, "? Whether spec {id} is running is unknown")):
+            with self.subTest(rc=rc):
+                for used in ("counter", "answers.n", "confirms.n"):  # Each run starts afresh.
+                    (self.root / used).unlink(missing_ok=True)
+                result, _, _, _ = self.run_menu(["#0", "Detailed status", "Back", "Back"], status_rc=rc)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                outcome = " ".join(result.stdout.split())
+                if expected is None:  # Status output is the result; no outcome line follows.
+                    self.assertNotIn("is not running", outcome)
+                    self.assertNotIn("exit 0", outcome)
+                else:
+                    self.assertIn(expected.format(id=self.spec["spec_id"][:12]), outcome)
+                    self.assertIn(f"exit {rc} after", outcome)
+
     def test_stop_refreshes_scope_then_confirms_the_existing_command(self):
         first = snapshot(self.spec["spec_id"])
         moved = snapshot(self.spec["spec_id"], node="head")
@@ -215,8 +231,9 @@ else: sys.exit(99)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sum(call[0] == "stop" for call in calls), 1)
         self.assertIn("Existing command stop refused", result.stdout)
-        self.assertRegex(result.stdout, rf"(?m)^✗ Stop failed for spec {self.spec['spec_id'][:12]} \(exit 1\) after "
-                                        r"\d+s; details above$")
+        outcome = " ".join(result.stdout.split())
+        self.assertIn(f"✗ Stop was refused or failed for spec {self.spec['spec_id'][:12]}.", outcome)
+        self.assertRegex(outcome, r"exit 1 after \d+s · the reasons are above")
 
     def test_other_workloads_remain_in_the_existing_full_inventory(self):
         result, calls, choices, _ = self.run_menu(["Show full inventory", "Back"], snapshots=[snapshot("f" * 64)])

@@ -60,14 +60,16 @@ run_operation() {
     if [ -s "$result" ] && python3 -m model_library.render --operation check <"$result"; then
       LAST_RESULT[$spec]=check
     elif [ "$rc" -eq 0 ]; then
+      # Unreadable Stack output leaves the result unknown: the contract's exit 3.
       printf 'error: check did not return a readable saved observation\n' >&2
-      rc=2
+      rc=3
     fi
     rm -f "$result"
   fi
   local took
   took=$(elapsed_text $((SECONDS - started)))
-  if [ "$interrupted" = 1 ] || [ "$rc" -eq 130 ]; then
+  # The contract reports a command interrupted by a signal as 128+signal.
+  if [ "$interrupted" = 1 ] || { [ "$rc" -gt 128 ] && [ "$rc" -lt 160 ]; }; then
     interrupted=1
     recovery='Rerun this inspection when ready; its partial output may be incomplete.'
     case "$action" in
@@ -87,13 +89,13 @@ run_operation() {
       printf 'This menu has not confirmed cleanup or partial effects. Review the command output above.\n'
       printf '%s\n' "$recovery"
     } | python3 -m scripts.terminal_format
-  elif [ "$rc" -eq 0 ]; then
-    printf '✓ %s finished for %s in %s\n' "$label" "$model" "$took"
-    case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
-  elif [ "$action" = check ] && [ "${LAST_RESULT[$spec]:-}" = check ]; then
-    printf '→ %s saved an observation with findings for %s in %s (command exit %s).\n' "$label" "$model" "$took" "$rc"
+  elif [ "$rc" -ne 0 ] && [ "$action" = check ] && [ "${LAST_RESULT[$spec]:-}" = check ]; then
+    report_outcome check "$label" "$model" "$rc" "$took" --recorded
   else
-    printf '✗ %s failed for %s (exit %d) after %s; details above\n' "$label" "$model" "$rc" "$took"
+    if [ "$rc" -eq 0 ]; then
+      case "$action" in status|verify|check|readiness|image-check|image-stage|budget) ;; *) LAST_RESULT[$spec]="$action" ;; esac
+    fi
+    report_outcome "$action" "$label" "$model" "$rc" "$took"
   fi
   OPERATION_RC="$rc" OPERATION_INTERRUPTED="$interrupted"
   return 0
@@ -145,7 +147,7 @@ stage_catalog_image() {
     if [ "$rc" -eq 130 ]; then
       printf 'Image preview interrupted; staging was not requested. Review command output for cleanup status.\n'
     else
-      printf '✗ Image staging preview failed; nothing was staged.\n'
+      report_outcome image-stage "$label" "$RECIPE_MODEL" "$rc" "" --preview
     fi
     return 0
   fi
@@ -177,7 +179,7 @@ plan_and_confirm() {
     if [ "$rc" -eq 130 ]; then
       printf 'Preview interrupted; %s was not requested. Review command output for cleanup status.\n' "${label,,}"
     else
-      printf '✗ Planning %s failed; nothing changed.\n' "${label,,}"
+      report_outcome "$action" "$label" "$RECIPE_MODEL" "$rc" "" --preview
     fi
     return 1
   fi
