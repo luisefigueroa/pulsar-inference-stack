@@ -526,7 +526,9 @@ observed service whose spec is published in the catalog, then choose
 stop commands. One-node services use the node ID recorded in the inventory;
 multi-node services retain the commands' participating-node resolution.
 The inventory timestamp remains visible, and **Refresh inventory** obtains a
-new observation. **Show full inventory** retains the existing read-only view
+new observation. **Open in catalog** opens the service's recipe in the catalog
+menu with that inventory, so its frame and suggestion already know the
+service; **Back** returns to the service with a refreshed inventory. **Show full inventory** retains the existing read-only view
 of all detected workloads, including those outside the catalog.
 
 Stop refreshes the inventory and shows the current scope before confirmation.
@@ -811,6 +813,22 @@ menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
 Ctrl-C at a choose, input or confirmation prompt exits the menu with status
 `130`, including membership and SSH enrollment confirmations.
+
+Opening the catalog probes no node. **Check running services (service
+inventory)** in the spec list runs `inventory --json` once and keeps the
+result while the catalog menu is open; leaving it for the root menu starts
+over. The list then says when it was observed and which nodes were not, and
+labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Live service** line gives the state, nodes, source
+and age; **Live status**, **Start** and **Stop** in the same catalog menu
+update it, and the newest observation wins. Live status exit 0 means a service exists, not
+that it is running. A node that was not observed, or a failed node probe,
+makes the state unknown, never "not running". Stop for a one-node recipe acts
+on the selected node only, so other nodes read as not observed since. A
+request rejected before it ran (exit 2) keeps the earlier observation. After 10 minutes an observation reads "last seen", never
+as current. A spec with a service seen in the session suggests **Live
+status**; while its service state is unknown, or not observed since a Start
+or Stop, Live status is suggested before Start. Before setup, the read-only
+catalog does not offer the check.
 
 ### Operation outcomes
 

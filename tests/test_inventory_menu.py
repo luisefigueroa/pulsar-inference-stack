@@ -121,6 +121,13 @@ if sys.argv[1:] == ["inventory", "--json"]:
         print("fixture inventory unavailable", file=sys.stderr); sys.exit(data["failure"])
     print(json.dumps(data))
 elif sys.argv[1] == "inventory": print("Full inventory fixture")
+elif sys.argv[1:] == ["models", "menu"]:
+    # Record what the catalog menu would open, and the inventory it was given.
+    captured = os.environ.get("PULSAR_CATALOG_INVENTORY")
+    (root / "opened.json").write_text(json.dumps({
+        "spec": os.environ.get("PULSAR_CATALOG_OPEN_SPEC"),
+        "inventory": json.loads(pathlib.Path(captured).read_text()) if captured else None}))
+    sys.exit(config.get("catalog_rc", 0))
 elif sys.argv[1] in ("status", "stop"):
     rc = config.get(sys.argv[1] + "_rc", 0)
     print("Existing command " + sys.argv[1] + (" refused" if rc else " completed"))
@@ -246,6 +253,24 @@ else: sys.exit(99)
         result, calls, _, _ = self.run_menu(["#0", "Stop service"], confirms=["<ctrl-c>"])
         self.assertEqual(result.returncode, 130, result.stderr)
         self.assertFalse(any(call[0] == "stop" for call in calls))
+
+    def test_open_in_catalog_passes_the_service_and_its_inventory_then_refreshes(self):
+        first = snapshot(self.spec["spec_id"])
+        result, calls, choices, _ = self.run_menu(["#0", "Open in catalog", "Back", "Back"],
+                                                  snapshots=[first, snapshot(self.spec["spec_id"], node="head")])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call for call in calls if call[0] != "inventory"], [["models", "menu"]])
+        opened = json.loads((self.root / "opened.json").read_text())
+        self.assertEqual(opened, {"spec": self.spec["spec_id"], "inventory": first})
+        # Back from the catalog returns to the same service with a fresh
+        # inventory; the service list refreshes again after that.
+        self.assertEqual(calls.count(["inventory", "--json"]), 3)
+        self.assertEqual(choices.count("Selected catalog service\n"), 2)
+
+    def test_ctrl_c_in_the_opened_catalog_exits_the_inventory_menu(self):
+        result, calls, _, _ = self.run_menu(["#0", "Open in catalog"], catalog_rc=130)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(calls.count(["inventory", "--json"]), 1)
 
     def test_interrupted_inventory_exits_without_service_actions(self):
         result, calls, _, questions = self.run_menu([], snapshots=[{"failure": 130}])

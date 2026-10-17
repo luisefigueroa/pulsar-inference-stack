@@ -47,7 +47,7 @@ service_actions() {
   while load_service "$spec"; do
     options=("Detailed status")
     [ "${#STOP_ARGS[@]}" -eq 0 ] || options+=("Stop service")
-    options+=("Refresh inventory" "Back")
+    options+=("Open in catalog" "Refresh inventory" "Back")
     index=$(choose_index "Selected catalog service" "${options[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     choice="${options[$index]}"
@@ -72,6 +72,14 @@ service_actions() {
         [ "$rc" -ne 130 ] || return 130
         # The same outcome line as the catalog menu's operations.
         report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))"
+        ;;
+      "Open in catalog")
+        # The recipe opens with this inventory, so its labels and suggestion
+        # know the service; Back returns here with a fresh inventory.
+        rc=0
+        PULSAR_CATALOG_OPEN_SPEC="$spec" PULSAR_CATALOG_INVENTORY="$work/inventory.json" \
+          "$REPO_DIR/pulsar" models menu || rc=$?
+        [ "$rc" -ne 130 ] || return 130
         ;;
       "Refresh inventory") ;;
       *) return 0 ;;
