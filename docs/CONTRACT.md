@@ -262,8 +262,8 @@ Preparation, purge and home-removal plans keep `blockers` as messages and add
 `blocker_details` beside them, one record per cause: `code`, the `message` it
 explains, `node_id` when one node is involved, and `fix`, a sentence for
 people. A `container-reference` record also has `container` (`id`, `name`,
-`state` of `running`, `stopped` or `unknown`, and `spec_id` when Pulsar started
-it for a spec), the `mount` that covers the files and the files' `path`. Other
+`state` of `running`, `stopped` or `unknown`, and `spec_id`, the selected catalog
+spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
 `dependent-copies`, `incomplete-preparations`, `archive-required`,
 `discard-required` and `catalog-snapshot`. A preparation set plan repeats its

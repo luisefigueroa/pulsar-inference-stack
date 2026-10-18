@@ -47,6 +47,9 @@ def require_observations(node_ids: list[str], observations: list[dict]) -> dict[
 # Labels on containers that Pulsar started for a spec.
 MANAGED_LABEL = 'io.pulsar.gb10.managed'
 SPEC_LABEL = 'io.pulsar.gb10.spec-id'
+# The catalog spec a service was started for; Stop finds services by it.
+SELECTED_SPEC_LABEL = 'io.pulsar.gb10.selected-spec-id'
+CONF_LABEL = 'io.pulsar.gb10.conf'
 
 
 def _covering_mount(record: dict, mounts: list) -> str | None:
@@ -82,7 +85,9 @@ def container_details(record: dict, observations: dict[str, dict], message: str)
     details = []
     for container in container_references(record, observations):
         labels = container.get('labels') if isinstance(container.get('labels'), dict) else {}
-        spec_id = labels.get(SPEC_LABEL) if labels.get(MANAGED_LABEL) == 'true' else None
+        # Overrides give the container a distinct effective spec-id; Stop needs the selected one.
+        spec_id = (labels.get(SELECTED_SPEC_LABEL) or labels.get(CONF_LABEL) or labels.get(SPEC_LABEL)
+                   if labels.get(MANAGED_LABEL) == 'true' else None)
         running = container.get('running')
         state = 'running' if running is True else 'stopped' if running is False else 'unknown'
         fix = (f'stop the Pulsar service for spec {str(spec_id)[:12]}' if spec_id
