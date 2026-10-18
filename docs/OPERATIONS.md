@@ -1063,6 +1063,15 @@ Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet
 and stdout, including `--json` results, is unchanged.
 
+While a started service loads, Start says how many health checks it allows
+and how far apart they are. On a terminal, one stderr line then updates after
+each check, for example `loading: 2:14 elapsed · health check 14 of 90 ·
+container running`. For a multi-node service it shows each rank's container
+state, or `all 3 ranks running` when they agree. Each check also waits for its
+probes, so the limit is a number of checks, not a time. The line is cleared
+before any later message. Captured or piped output gets the same text as a
+plain line about once a minute, and `start --json` results are unchanged.
+
 ## Historical specs and current observations
 
 Old catalog specs remain readable. New preparation/start operations require

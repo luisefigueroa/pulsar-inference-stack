@@ -59,6 +59,7 @@ cluster_interrupted() {
   local detail=""
   local -a where=() noted=()
   trap - INT TERM HUP
+  load_progress_end
   case "$CLUSTER_PHASE" in
     preparing)
       if [ "${LAUNCH_AFTER_REPLACE:-0}" = 1 ]; then
@@ -333,12 +334,15 @@ CLUSTER_PHASE=loading
 # Every rank's container exists; its references protect its files from here.
 release_model_library_locks
 
-log "waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min)"
+WAIT_LIMIT="${WAIT_ATTEMPTS:-120}" WAIT_STARTED=$SECONDS
+log "waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min;" \
+  "up to $WAIT_LIMIT health checks, ${WAIT_SECONDS:-10} s apart)"
 API_AUTH_ARGS=()
 api_auth_curl_args API_AUTH_ARGS
-for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
+for _attempt in $(seq 1 "$WAIT_LIMIT"); do
   if curl -fsS --max-time 3 "${API_AUTH_ARGS[@]}" \
       "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+    load_progress_end
     STARTUP_HEALTHY_NS=$(date +%s%N)
     STARTUP_HEALTHY_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
     STARTUP_ELAPSED=$(
@@ -372,10 +376,13 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
     exit 0
   fi
 
+  RANK_STATES=()
   for ((rank = 0; rank < NODES; rank++)); do
     rank_host=""
     [ "$rank" = 0 ] || rank_host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-    case "$(container_state_exact "$CONTAINER" "$rank_host")" in
+    RANK_STATES[rank]=$(container_state_exact "$CONTAINER" "$rank_host")
+    case "${RANK_STATES[rank]}" in exited|absent) load_progress_end ;; esac
+    case "${RANK_STATES[rank]}" in
       exited)
         error_line "the rank $rank container on $(human_node_name "$rank") exited before the service became healthy; last logs:"
         if [ "$rank" = 0 ]; then
@@ -396,9 +403,11 @@ for _attempt in $(seq 1 "${WAIT_ATTEMPTS:-120}"); do
         ;;
     esac
   done
+  load_progress "$WAIT_STARTED" "$_attempt" "$WAIT_LIMIT" "$(rank_states_text "${RANK_STATES[@]}")"
   sleep "${WAIT_SECONDS:-10}"
 done
 
+load_progress_end
 error_line "timed out waiting for health. Rank 0 logs:"
 "$PULSAR_DOCKER" logs --tail 120 "$CONTAINER" >&2 || true
 for ((rank = 1; rank < NODES; rank++)); do
