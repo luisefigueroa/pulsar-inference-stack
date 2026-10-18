@@ -816,15 +816,23 @@ session; it is a starting point, not a readiness check. `models list` and
 the node the saved records already use; without one it leaves `--node` out and
 goes to the default destination (the deployment overlay's placement, or this
 node), while the menu asks for a node. The recipe
-list labels show the same short saved state. Storage mutations show
-the operation's own `--plan` preview before a confirmation that names the
-model, nodes and consequence; a blocked plan ends without a question. **Back**
+list labels show the same short saved state. Storage mutations run the
+operation's own `--plan` preview and show a one-to-three-line summary of it:
+what changes, where, how much, and the headroom left, or that nothing would be
+copied, deleted or changed. A question then names the model, nodes and
+consequence, and says so when nothing would change. Choose **Yes**, **Show full
+preview** or **No, change nothing**; No is selected first, and Esc also changes
+nothing. **Show full preview** opens the complete rendered plan, with exact
+byte counts, in the pager, then returns to the question. A blocked plan names
+its first blockers and ends without a question; it offers **Show full preview**
+and **Back**. **Back**
 or Esc leaves the current menu or cancels an action prompt to its containing
 menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
 Long read-only output opens in a pager when it runs past a few lines: **Show
-details**, **Published results**, a comparison, **Help**, **Host diagnostics**,
-**Detailed status**, the full inventory, and saved membership or its check.
+details**, **Published results**, a comparison, a full storage preview,
+**Help**, **Host diagnostics**, **Detailed status**, the full inventory, and
+saved membership or its check.
 ↑/↓ scroll, `/` searches, and q or Esc returns to the menu; shorter output
 prints in place. Ctrl-C at a choose, input, confirmation, **Continue** or pager
 prompt exits the menu with status `130`, including membership and SSH
@@ -852,8 +860,8 @@ Each operation ends with an outcome worded by its
 [exit status](CONTRACT.md#error-codes-and-exit-statuses), then an indented line
 with the status, the time taken and where to look. The outcome stays on screen
 until **Continue** (Esc also continues), so the command's output can be read
-before the menu redraws. A preview that ends without a question, such as a
-blocked plan, waits the same way; a declined confirmation returns at once.
+before the menu redraws. A preview that fails waits the same way; a blocked
+plan waits at its own choices, and a declined confirmation returns at once.
 `✓` is success. A "no"
 (exit 1) reads by action: after **Live status**, `▲ … is not running` means no
 node runs it, so starting it won't conflict; a refused Start, a failed check or
@@ -944,7 +952,7 @@ it to create a shared binding.
 `prepare --plan` reports which ranks will reuse a binding, bind existing files,
 or copy files. A recipe change still requires preparation of its own bindings.
 
-Preparation previews also show the unique snapshot payload and, for each node,
+The full preparation preview also shows the unique snapshot payload and, for each node,
 the new copy size, existing files used, prepared-copy root, observed disk free
 space, reserve and copy allowance. Named snapshots with the same manifest are
 counted once per physical node. The projected headroom subtracts all new copies

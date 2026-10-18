@@ -231,13 +231,22 @@ stage_catalog_image() {
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }
 
+# show_full_preview PLAN RENDER_ARGS... — the whole rendered plan, in the pager when long.
+show_full_preview() {
+  local plan="$1"
+  shift
+  page_output "" bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _ "$plan" "$@"
+}
+
 # plan_and_confirm ACTION LABEL SPEC OPERATION_ARGS...
-# Shows the operation's own --plan preview, then asks a question that names
-# the model, placement and consequence. Returns 0 only after an explicit yes.
+# Runs the operation's own --plan preview and shows its summary, then asks a
+# question that names the model, placement and consequence. Show full preview
+# opens the whole rendered plan. Returns 0 only after an explicit yes; No is
+# selected first, and Esc also changes nothing.
 plan_and_confirm() {
-  local action="$1" label="$2" spec="$3" plan question rc
+  local action="$1" label="$2" spec="$3" plan question rc choice
   shift 3
-  local -a render_args=(--operation "$1")
+  local -a render_args=(--operation "$1") plan_args=()
   [ "$1" != archive ] || render_args+=(--archive-action create)
   plan=$(mktemp)
   if spin "Planning ${label,,}…" "$REPO_DIR/scripts/model-library.sh" "$@" --plan --json >"$plan"; then
@@ -253,23 +262,44 @@ plan_and_confirm() {
     HOLD_SCREEN=1
     return 1
   fi
-  echo
-  python3 -m model_library.render "${render_args[@]}" <"$plan" || true
+  plan_args=(--spec-id "$spec" --action "$action" --plan-file "$plan")
   echo
   set +e
-  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" \
-    --plan-file "$plan" ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} ${MENU_NODE:+--node "$MENU_NODE"})
+  printf '%s' "$ROW_JSON" | catalog_menu preview "${plan_args[@]}"
+  rc=$?
+  # A plan without a summary is shown whole.
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || python3 -m model_library.render "${render_args[@]}" <"$plan"
+  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm "${plan_args[@]}" \
+    ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} ${MENU_NODE:+--node "$MENU_NODE"})
   rc=$?
   set -e
-  rm -f "$plan"
   if [ "$rc" -eq 3 ]; then
     printf '✗ The plan is blocked; nothing changed.\n'
-    HOLD_SCREEN=1
+    while true; do
+      choice=$(choose_index "Blocked plan" "Show full preview" "Back") || { rc=$?; break; }
+      [ "$choice" -eq 0 ] || { rc=1; break; }
+      show_full_preview "$plan" "${render_args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || break; }
+    done
+    rm -f "$plan"
+    [ "$rc" -ne 130 ] || return 130
     return 1
   fi
-  [ "$rc" -eq 0 ] || { HOLD_SCREEN=1; return 1; }
-  # Gum Ctrl-C (130) at the question leaves the menu, as at any other prompt.
-  confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -eq 130 ] && return 130; return 1; }
+  [ "$rc" -eq 0 ] || { rm -f "$plan"; HOLD_SCREEN=1; return 1; }
+  printf '\n%s\n' "$question" | python3 -m scripts.terminal_format
+  while true; do
+    # Gum Ctrl-C (130) leaves the menu, as at any other prompt.
+    choice=$(PULSAR_CHOOSE_DEFAULT=2 choose_index "$label" "Yes, ${label,,}" "Show full preview" \
+      "No, change nothing") || { rc=$?; choice=2; }
+    case "$choice" in
+      0) rm -f "$plan"; return 0 ;;
+      1) show_full_preview "$plan" "${render_args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || choice=2; } ;;
+    esac
+    [ "$choice" -ne 2 ] || break
+  done
+  rm -f "$plan"
+  echo 'Nothing changed.'
+  [ "$rc" -ne 130 ] || return 130
+  return 1
 }
 
 # perform ACTION LABEL SPEC — runs one menu action, then holds what it printed

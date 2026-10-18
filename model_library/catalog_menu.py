@@ -2,7 +2,8 @@
 
 Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
-it), the recipe list labels, and the wording of confirmation questions. Input
+it), the recipe list labels, the summary that leads each storage preview, the
+wording of confirmation questions, and the home screen's Next line. Input
 is the catalog projection (``pulsar models show --json``) and the
 archive-location status, plus what this menu session observed about services:
 a service inventory the menu captured on request and its own Live status, Start
@@ -19,12 +20,14 @@ import argparse
 from datetime import datetime, timezone
 import io
 import json
+import re
 import sys
 from typing import Any
 
 from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
+from .render import preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
@@ -644,9 +647,176 @@ def _plan_actions(plan: dict) -> list[dict]:
     return list(plan.get("actions") or [])
 
 
+def _plan_document(plan: dict) -> dict:
+    return plan["plan"] if isinstance(plan.get("plan"), dict) else plan
+
+
 def plan_blocked(plan: dict) -> bool:
-    document = plan["plan"] if isinstance(plan.get("plan"), dict) else plan
-    return document.get("eligible") is False
+    return _plan_document(plan).get("eligible") is False
+
+
+SPEC_ID = re.compile(r"\b[0-9a-f]{64}\b")
+
+
+def _count(number: int, one: str, many: str | None = None) -> str:
+    return f"{number} {one if number == 1 else (many or one + 's')}"
+
+
+def plan_effect(action: str, plan: dict) -> dict:
+    """What a storage plan would change; the preview summary and the question share it.
+
+    ``nothing`` is true when the plan copies, deletes and changes no files:
+    Prepare where every rank already has its files, a purge with nothing
+    recorded, a pin with every copy already in that state, or a move to the
+    node that already holds the home.
+    """
+    document = _plan_document(plan)
+    steps = _plan_actions(plan)
+    if action == "prepare":
+        copied = sum(1 for step in steps if step.get("action") == "copy")
+        return {"copied": copied, "reused": len(steps) - copied, "nothing": bool(steps) and not copied}
+    if action == "purge":
+        removed = sum(1 for step in steps if step.get("action") == "remove-copy")
+        pending = len(plan.get("incomplete_preparations") or [])
+        return {"removed": removed, "released": len(steps) - removed, "pending": pending,
+                "nothing": not steps and not pending}
+    if action in ("pin", "unpin"):
+        views = document.get("views") or []
+        changing = [view for view in views if view.get("pinned") is not (action == "pin")]
+        return {"views": len(views), "changing": len(changing), "nothing": not changing,
+                "nodes": [str(view["node_id"]) for view in changing if view.get("node_id")]}
+    if action == "move":
+        return {"nothing": document.get("transfer_route") == "already-home"}
+    if action == "acquire":
+        return {"nothing": document.get("action") == "reuse"}
+    return {"nothing": False}
+
+
+def _blocker_line(text: str, names: NodeNames) -> str:
+    """Name the node in "node_id: reason" or "snapshot: node_id: reason" by hostname.
+
+    A full 64-character spec ID is shortened to the 12-character prefix.
+    """
+    head, separator, rest = text.partition(": ")
+    if separator and names.hostnames and head not in names.hostnames:
+        text = f"{head}: {names.prefixed(rest)}"
+    else:
+        text = names.prefixed(text)
+    return SPEC_ID.sub(lambda match: match.group(0)[:12], text)
+
+
+def _source_size(source: dict) -> tuple[int | None, int | None]:
+    files = source.get("files")
+    if isinstance(files, list):
+        sizes = [item.get("size") for item in files if isinstance(item, dict)]
+        total = sum(sizes) if len(sizes) == len(files) and all(type(size) is int and size >= 0 for size in sizes) else None
+        return len(files), total
+    count = source.get("file_count")
+    return (count if type(count) is int else None), source.get("total_bytes")
+
+
+def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
+    """One to three lines that lead a storage preview, built from its plan.
+
+    What changes, where, how much, and the projected headroom; or why the plan
+    is blocked. Sizes use binary units; exact byte counts stay in the full
+    preview (model_library.render).
+    """
+    names = names or NodeNames()
+    document = _plan_document(plan)
+    effect = plan_effect(action, plan)
+    blockers = [str(item) for item in document.get("blockers") or [] if isinstance(item, str)]
+    if plan_blocked(plan):
+        lines = [f"Blocked: {_blocker_line(text, names)}" for text in blockers[:2]] or ["Blocked; the full preview has details."]
+        if len(blockers) > 2:
+            lines.append(f"{_count(len(blockers) - 2, 'more blocker')} in the full preview.")
+        return lines
+    if action == "prepare":
+        plans = ([member for member in document.get("snapshots") or []]
+                 if document.get("kind") == "pulsar-preparation-set-plan" else [document])
+        _, nodes = preparation_estimate(plans)
+        copying = [node for node, estimate in nodes.items() if estimate["copies"]]
+        if effect["nothing"]:
+            what = "the snapshot is" if len(plans) == 1 else ("both snapshots are" if len(plans) == 2
+                                                           else f"all {len(plans)} snapshots are")
+            return [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
+                    "Prepare verifies the files and records them."]
+        sizes = [nodes[node]["new_copy"] for node in copying]
+        size = sum(sizes) if all(value is not None for value in sizes) else None
+        lines = [f"Copy {size_text(size)} to {_node_list(copying, names)} "
+                 f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused)."]
+        after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
+        if after and all(value is not None for value, _ in after):
+            low, node = min(after, key=lambda item: item[0])
+            lines.append(f"Short by {size_text(-low)} on {names(node)}." if low < 0
+                         else f"Headroom after copying: {size_text(low)} on {names(node)}.")
+        else:
+            lines.append("Headroom after copying: not observed.")
+        return lines
+    if action == "purge":
+        if effect["nothing"]:
+            return ["Nothing to purge: no prepared copies or incomplete preparations are recorded for this spec."]
+        parts = []
+        if effect["removed"]:
+            parts.append("delete " + _count(effect["removed"], "working copy", "working copies"))
+        if effect["released"]:
+            parts.append("release " + _count(effect["released"], "binding") + " whose files are kept")
+        if effect["pending"]:
+            parts.append("clear " + _count(effect["pending"], "incomplete preparation"))
+        where = _node_list([str(step["node_id"]) for step in _plan_actions(plan) if step.get("node_id")], names)
+        text = ", ".join(parts)
+        return [text[0].upper() + text[1:] + (f" on {where}." if where else ".")]
+    if action in ("pin", "unpin"):
+        state = "pinned" if action == "pin" else "unpinned"
+        if not effect["views"]:
+            return [f"No prepared copies are recorded for this spec; nothing to {action}."]
+        if effect["nothing"]:
+            every = "The prepared copy is" if effect["views"] == 1 else f"All {effect['views']} prepared copies are"
+            return [f"{every} already {state}; nothing changes."]
+        unchanged = effect["views"] - effect["changing"]
+        return [f"{action.capitalize()} {_count(effect['changing'], 'prepared copy', 'prepared copies')} on "
+                f"{_node_list(effect['nodes'], names)}" + (f"; {unchanged} already {state}." if unchanged else ".")]
+    if action == "move":
+        target = names(document["destination_node"]) if document.get("destination_node") else "the selected node"
+        if effect["nothing"]:
+            return [f"Nothing to move: the home is already on {target}."]
+        source = names(document["source_node"]) if document.get("source_node") else "its current node"
+        routes = {"direct-ssh-roce": "a direct copy over the confirmed RoCE rail",
+                  "controller-stream-relay": "streamed through this node over RoCE; this node keeps no copy"}
+        route = routes.get(document.get("transfer_route"), document.get("transfer_route") or "route not stated")
+        return [f"Move the home from {source} to {target}: {route}."]
+    if action == "archive":
+        home = document.get("home") or {}
+        where = names(home["node_id"]) if home.get("node_id") else "its node"
+        root = document.get("archive_root")
+        return [f"Copy the home on {where} into the archive{' at ' + root if root else ''}."]
+    if action == "restore":
+        target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
+        size, count = document.get("total_bytes"), document.get("file_count")
+        files = f" ({count:,} files)" if type(count) is int else ""
+        available = (document.get("destination_space") or {}).get("available")
+        lines = [f"Copy {size_text(size)}{files} from the archive to {target}."]
+        if type(available) is int and type(size) is int and available >= 0 and size >= 0:
+            after = available - size
+            lines.append(f"Short by {size_text(-after)} on {target}." if after < 0
+                         else f"Disk free after the copy: {size_text(after)} on {target}.")
+        else:
+            lines.append(f"Disk free on {target}: not observed.")
+        return lines
+    if action == "acquire":
+        target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
+        if effect["nothing"]:
+            return [f"Nothing to download: verified files are already recorded on {target}; Download registers them."]
+        count, size = _source_size(document.get("source") or {})
+        files = f" ({count:,} files)" if type(count) is int else ""
+        commit = document.get("snapshot_revision")
+        model = document.get("model_id") or row["model_id"]
+        return [f"Download {size_text(size)}{files} of {model}{' @ ' + _short(commit) if commit else ''} to {target}."]
+    if action == "remove":
+        home = document.get("home") or {}
+        where = names(home["node_id"]) if home.get("node_id") else "its node"
+        return [f"Delete the home on {where}; its files come back only through Restore or Download."]
+    raise ValueError(f"no preview summary for {action}")
 
 
 def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str | None = None,
@@ -662,7 +832,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     if action == "acquire":
         target = names(plan.get("selected_node") or node) if (plan.get("selected_node") or node) else "the selected node"
         if plan.get("action") == "reuse":
-            return f"Register the existing verified files of {identity} on {target}?"
+            return f"Register the existing verified files of {identity} on {target}? Nothing is downloaded."
         return f"Download {identity} to {target}?"
     if action == "restore":
         target = names(plan.get("selected_node") or node) if (plan.get("selected_node") or node) else "the selected node"
@@ -670,25 +840,35 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     if action == "move":
         source = names(plan["source_node"]) if plan.get("source_node") else "its current node"
         target = names(plan.get("destination_node") or node) if (plan.get("destination_node") or node) else "the selected node"
+        if plan.get("transfer_route") == "already-home":
+            return f"Move the home of {identity} to {target}? It is already there; nothing is copied."
         return f"Move the home of {identity} from {source} to {target}?"
     if action == "prepare":
         steps = _plan_actions(plan)
-        copied = sum(1 for step in steps if step.get("action") == "copy")
-        reused = len(steps) - copied
+        effect = plan_effect(action, plan)
         where = _node_list([str(step["node_id"]) for step in steps if step.get("node_id")], names) or place or "its nodes"
-        return f"Prepare {model} on {where}? {copied} new copies, {reused} reused."
+        if effect["nothing"]:
+            return f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files already there."
+        return (f"Prepare {model} on {where}? {_count(effect['copied'], 'new copy', 'new copies')}, "
+                f"{effect['reused']} reused.")
     if action in ("pin", "unpin"):
-        count = len(plan.get("views") or [])
-        effect = "Purge refuses pinned copies." if action == "pin" else "Unpinned copies can be purged."
-        return f"{LABELS[action].split()[0]} {count} prepared copies of {model}? {effect}"
+        effect = plan_effect(action, plan)
+        verb = LABELS[action].split()[0]
+        if not effect["views"]:
+            return f"{verb} prepared copies of {model}? None are recorded; nothing changes."
+        if effect["nothing"]:
+            state = "pinned" if action == "pin" else "unpinned"
+            every = "It is" if effect["views"] == 1 else f"All {effect['views']} are"
+            return f"{verb} prepared copies of {model}? {every} already {state}; nothing changes."
+        consequence = "Purge refuses pinned copies." if action == "pin" else "Unpinned copies can be purged."
+        return f"{verb} {_count(effect['changing'], 'prepared copy', 'prepared copies')} of {model}? {consequence}"
     if action == "purge":
-        steps = _plan_actions(plan)
-        removed = sum(1 for step in steps if step.get("action") == "remove-copy")
-        released = len(steps) - removed
-        pending = len(plan.get("incomplete_preparations") or [])
-        staging = f" and {pending} incomplete preparations" if pending else ""
-        return (f"Purge {model}: delete {removed} working copies{staging}, release {released} bindings? "
-                "The home and the archive are kept.")
+        effect = plan_effect(action, plan)
+        if effect["nothing"]:
+            return f"Purge {model}? No prepared copies or incomplete preparations are recorded; nothing is deleted."
+        staging = (" and " + _count(effect["pending"], "incomplete preparation")) if effect["pending"] else ""
+        return (f"Purge {model}: delete {_count(effect['removed'], 'working copy', 'working copies')}{staging}, "
+                f"release {_count(effect['released'], 'binding')}? The home and the archive are kept.")
     if action == "remove":
         home = (plan.get("plan") or plan).get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
@@ -801,6 +981,10 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS
                                                 | {"start", "stop", "check", "check-failed", "storage-failed"}))
     view.add_argument("--after-at", type=int, help="when --after happened, as a Unix time")
+    preview = sub.add_parser("preview", help="a storage preview's summary lines; catalog JSON on stdin")
+    preview.add_argument("--spec-id", required=True)
+    preview.add_argument("--action", required=True, choices=sorted(MUTATIONS))
+    preview.add_argument("--plan-file", required=True)
     home = sub.add_parser("next", help="the home screen's Next line; catalog JSON on stdin")
     home.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
@@ -858,6 +1042,15 @@ def main(argv: list[str] | None = None) -> int:
                                       published=published, read_only=args.read_only, live=fact,
                                       after_age=after_age)))
             return 0
+        if args.command == "preview":
+            with open(args.plan_file, encoding="utf-8") as handle:
+                plan = json.load(handle)
+            if not isinstance(plan, dict):
+                raise ValueError("plan must be a JSON object")
+            out = TerminalWriter()
+            for line in plan_summary(args.action, row, plan, names=names):
+                out.emit(clean(line))
+            return 3 if plan_blocked(plan) else 0
         plan = None
         if args.plan_file:
             with open(args.plan_file, encoding="utf-8") as handle:
