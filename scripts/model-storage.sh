@@ -476,6 +476,13 @@ compare_catalog_spec() {
 }
 
 # recipe_menu SPEC [READ_ONLY] — loops over one selected spec until Back.
+# operation_label CHOICE — the operation's name in a recipe choice, without
+# the effect after " — " or the "(suggested)" mark.
+operation_label() {
+  local label="${1%% — *}"
+  printf '%s\n' "${label% (suggested)}"
+}
+
 recipe_menu() {
   local spec="$1" read_only="${2:-0}" kind a b c index rc default group title="Choose one operation"
   local -a view_args=()
@@ -520,7 +527,8 @@ recipe_menu() {
     index=$(PULSAR_CHOOSE_DEFAULT="$default" choose_index "$title" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     if [ "$index" -lt "${#main[@]}" ]; then
-      perform "${main[$index]}" "${main_labels[$index]% (suggested)}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      perform "${main[$index]}" "$(operation_label "${main_labels[$index]}")" "$spec" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
       continue
     fi
     group="${labels[$index]}"
@@ -530,7 +538,7 @@ recipe_menu() {
           index=$(choose_index "Launch options for the selected catalog spec" "${launch_labels[@]}" "Back") \
             || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
           [ "$index" -lt "${#launch[@]}" ] || break
-          if perform "${launch[$index]}" "${launch_labels[$index]}" "$spec"; then break
+          if perform "${launch[$index]}" "$(operation_label "${launch_labels[$index]}")" "$spec"; then break
           else
             rc=$?; [ "$rc" -ne 130 ] || return 130
             [ "$rc" -eq 1 ] || break
@@ -541,7 +549,7 @@ recipe_menu() {
           index=$(choose_index "Storage and archive" "${storage_labels[@]}" "Back") \
             || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
           [ "$index" -lt "${#storage[@]}" ] || break
-          if perform "${storage[$index]}" "${storage_labels[$index]}" "$spec"; then break
+          if perform "${storage[$index]}" "$(operation_label "${storage_labels[$index]}")" "$spec"; then break
           else
             rc=$?; [ "$rc" -ne 130 ] || return 130
             [ "$rc" -eq 1 ] || break

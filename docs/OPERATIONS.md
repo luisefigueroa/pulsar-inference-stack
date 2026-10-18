@@ -252,8 +252,11 @@ complete ID.
 
 The selected-spec menu shows a frame of aligned fields: **Recipe**,
 **Settings** and **Image** describe the spec; **Files**, **Archive** and
-**Running?** give saved and session observations with their age; **Results**
-summarizes published results on one line; **Next** is always the last line.
+**Running?** give saved and session observations with their age;
+**Lifecycle** marks where the spec stands in Download → Prepare → Start from
+those records (only a current running observation marks Start done);
+**Results** summarizes published results on one line; **Next** is always the
+last line.
 On a terminal too short for the frame and every choice, the frame keeps only
 its first line and Next. Recipe geometry and explicitly recorded
 context, sequence and quantization settings describe intended execution; the
@@ -812,7 +815,9 @@ still apply to all operational actions after setup.
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
-maintenance under **Storage and archive**. An operation is left out only when
+maintenance under **Storage and archive**. Where the terminal is wide enough,
+each choice adds what it does, such as **Prepare — copy files to every serving
+node** or **Pin prepared copies — protect from purge**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
 **Download** remains available when a home is recorded, and **Restore** remains
 available when an archive location is configured. A home record can outlive its

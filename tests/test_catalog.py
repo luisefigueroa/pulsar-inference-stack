@@ -524,7 +524,11 @@ choose_index() {
   { printf '%s\n' "$header" "$@"; printf '\n'; } >>"$CHOICES_LOG"
   answer=$(_pop "$MENU_ANSWERS")
   case "$answer" in "") return 99 ;; "<esc>") return 1 ;; "<ctrl-c>") return 130 ;; "#"*) echo "${answer#\#}"; return 0 ;; esac
-  for option in "$@"; do [ "$option" != "$answer" ] || { echo "$i"; return 0; }; i=$((i + 1)); done
+  # An answer names a choice with or without the effect after " — ".
+  for option in "$@"; do
+    [ "$option" != "$answer" ] && [ "${option%% — *}" != "$answer" ] || { echo "$i"; return 0; }
+    i=$((i + 1))
+  done
   echo "MISSING OPTION: $answer" >>"$CHOICES_LOG"; return 99
 }
 confirm() {
@@ -707,7 +711,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["pulsar", "model", "budget"]])
         self.assertEqual(questions, "")
-        self.assertEqual(choices.count("Check now (suggested)\n"), 2)
+        self.assertEqual(choices.count("Check now (suggested) — "), 2)
         self.assertNotIn('Select a confirmed physical node', choices)
         self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
         self.assertEqual(choices.count("[continue]"), 1)
@@ -1030,6 +1034,13 @@ raise SystemExit(rc)
         self.assertIn("Files prepared in this session (less than a minute ago); saved check:", last_frame)
         self.assertIn("Next Start — prepared on every serving rank just now", last_frame)
 
+    def test_operations_run_under_their_name_without_the_effect(self):
+        _, result, _, choices, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Live status — check whether it runs now", choices)
+        self.assertIn("→ Live status example/model", " ".join(result.stdout.split()))
+        self.assertNotIn("check whether it runs now", result.stdout)
+
     def test_a_successful_restore_moves_on_to_prepare(self):
         def record(spec_id):
             spec = json.loads((self.repo / "releases" / f"{spec_id}.json").read_text())
@@ -1228,9 +1239,10 @@ raise SystemExit(rc)
         _, result, _, choices, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None)
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
-        self.assertEqual(block, ["Check now (suggested)", "Download", "Start", "Stop", "Live status",
-                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
-                                 "Compare catalog specs", "Back"])
+        self.assertEqual([label.split(" — ")[0] for label in block],
+                         ["Check now (suggested)", "Download", "Start", "Live status", "Stop",
+                          "Launch options…", "Storage and archive…", "Show details", "Published results",
+                          "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Next Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
@@ -1254,9 +1266,10 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
-        self.assertEqual(block, ["Check now (suggested)", "Download", "Stop", "Live status",
-                                 "Launch options…", "Storage and archive…", "Show details", "Published results",
-                                 "Compare catalog specs", "Back"])
+        self.assertEqual([label.split(" — ")[0] for label in block],
+                         ["Check now (suggested)", "Download", "Live status", "Stop",
+                          "Launch options…", "Storage and archive…", "Show details", "Published results",
+                          "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
 

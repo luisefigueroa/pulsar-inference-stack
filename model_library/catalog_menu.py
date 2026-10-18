@@ -30,7 +30,7 @@ from .node_names import NodeNames
 from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
-MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
+MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
 STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
@@ -42,6 +42,19 @@ LABELS = {
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
+}
+# What each operation does, shown after its label where the terminal is wide enough.
+EFFECTS = {
+    "check": "refresh saved file records", "acquire": "fetch model files to one node",
+    "restore": "copy files back from the archive", "prepare": "copy files to every serving node",
+    "start": "launch the service; asks first", "status": "check whether it runs now",
+    "stop": "remove the service; files are kept",
+    "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
+    "image-stage": "pull or copy the exact digest",
+    "budget": "disk headroom on every node", "move": "move the home to another node",
+    "archive": "save a verified recovery copy", "verify": "recheck the archive's contents",
+    "pin": "protect from purge", "unpin": "allow purge again",
+    "purge": "delete prepared copies; the home is kept", "remove": "delete the home; the archive is kept",
 }
 # Operations that change model files or records; a success makes the saved
 # check out of date until the next Check now. Download, Restore and Prepare
@@ -555,6 +568,7 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     field("Files", files)
     field("Archive", archive_text(row, now))
     field("Running?", live_value(live, read_only=read_only))
+    field("Lifecycle", lifecycle(row, live, mark=not read_only))
     field("Results", published_line(published, now=now))
     by_reason: dict[str, list[str]] = {}
     for action in MAIN + LAUNCH + STORAGE:
@@ -577,6 +591,46 @@ def clean(text: object) -> str:
     return " ".join(str(text).split())
 
 
+def option_label(action: str, suggested: tuple[str, str] | None, width: int) -> str:
+    """LABEL[ (suggested)][ — effect]: the effect only when the whole label fits.
+
+    The menu passes the label before " — " to the operation, without "(suggested)".
+    """
+    label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
+    with_effect = f"{label} — {EFFECTS[action]}"
+    return with_effect if len(with_effect) <= width else label
+
+
+def lifecycle(row: dict, live: dict | None, *, mark: bool = True) -> str:
+    """Where the spec stands in Download → Prepare → Start, from saved records
+    and this session's live facts only. Prepared files never mark Start done:
+    only a current running observation does. The current step is bracketed
+    when MARK is set."""
+    snapshots = members(row)
+    homes = bool(snapshots) and all(member.get("home") for member in snapshots.values())
+    local = row.get("local_state", "unknown")
+    running = bool(live) and live.get("kind") == "service" and live_current(live) \
+        and live.get("state") == "running"
+    done, current, note = 0, "Download", ""
+    if running:
+        done, current, note = 3, None, " (running)"
+    elif homes and local == "ready":
+        done, current = 2, "Start"
+    elif homes and local in ("missing", "changed"):
+        done, current = 1, "Prepare"
+    elif homes:
+        done, current, note = 1, None, " (files not checked)"
+    steps = []
+    for index, step in enumerate(("Download", "Prepare", "Start")):
+        if index < done:
+            steps.append(f"{step} ✓")
+        elif mark and step == current:
+            steps.append(f"[{step}]")
+        else:
+            steps.append(step)
+    return " → ".join(steps) + note + " · Stop → Purge"
+
+
 def frame_line(text: object) -> str:
     """One frame line for the shell: no tabs or newlines, leading spaces kept for alignment."""
     return str(text).replace("\t", " ").replace("\n", " ").replace("\r", " ").rstrip()
@@ -594,10 +648,10 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
                               read_only=read_only, after=after, after_age=after_age)
     lines += ["header\t" + frame_line(line) for line in body]
     lines += ["next\t" + frame_line(line) for line in next_lines]
+    list_width = (width or terminal_width()) - 2
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
-        label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
-        lines.append(f"option\t{group}\t{action}\t{label}")
+        lines.append(f"option\t{group}\t{action}\t{option_label(action, suggested, list_width)}")
     if suggested:
         lines.append(f"suggest\t{suggested[0]}")
     for action, snapshots in eligible.items():

@@ -401,6 +401,54 @@ class View(unittest.TestCase):
         self.assertNotIn("choose Live status", frame_text(read_only))
         self.assertFalse(any(line.startswith("next\t") for line in read_only))
 
+    # TUI-20: what each operation does, where it stands, in lifecycle order.
+    def test_labels_add_their_effect_only_where_it_fits(self):
+        state = checked(home=HOME, local_state="ready")
+        for width, effects in ((80, True), (60, None)):
+            with self.subTest(width=width):
+                options = [line.split("\t") for line in menu.view_lines(state, "configured", width=width, names=NAMES)
+                           if line.startswith("option\t")]
+                self.assertTrue(all(len(label) <= width - 2 for *_, label in options))
+                with_effect = [label for *_, label in options if " — " in label]
+                if effects:
+                    self.assertEqual(len(with_effect), len(options))
+                else:
+                    self.assertTrue(with_effect and len(with_effect) < len(options), with_effect)
+                for _, _, action, label in options:
+                    self.assertTrue(label.startswith(menu.LABELS[action]), label)
+        self.assertEqual(menu.option_label("start", ("start", "why"), 80),
+                         "Start (suggested) — launch the service; asks first")
+        self.assertEqual(menu.option_label("start", ("start", "why"), 30), "Start (suggested)")
+        self.assertEqual(menu.option_label("pin", None, 80), "Pin prepared copies — protect from purge")
+        self.assertEqual(set(menu.EFFECTS), set(menu.LABELS))
+
+    def test_live_status_comes_before_stop(self):
+        self.assertLess(menu.MAIN.index("status"), menu.MAIN.index("stop"))
+        offered, _, _ = menu.operations(checked(home=HOME), "configured")
+        self.assertLess(offered.index("status"), offered.index("stop"))
+
+    def test_lifecycle_marks_the_step_saved_records_point_to(self):
+        running = {"kind": "service", "state": "running", "hosts": ["spark-1"], "modified": False,
+                   "age": 30, "source": "inventory"}
+        cases = (
+            (row(), None, "[Download] → Prepare → Start · Stop → Purge"),
+            (checked(home=HOME, local_state="missing"), None, "Download ✓ → [Prepare] → Start · Stop → Purge"),
+            (checked(home=HOME, local_state="ready"), None, "Download ✓ → Prepare ✓ → [Start] · Stop → Purge"),
+            (checked(home=HOME), None, "Download ✓ → Prepare → Start (files not checked) · Stop → Purge"),
+            (checked(home=HOME, local_state="ready"), running,
+             "Download ✓ → Prepare ✓ → Start ✓ (running) · Stop → Purge"),
+            # An old sighting is not current, so prepared files never read as started.
+            (checked(home=HOME, local_state="ready"), {**running, "age": 3600},
+             "Download ✓ → Prepare ✓ → [Start] · Stop → Purge"),
+            (row(snapshots=two_snapshots(HOME, None)), None, "[Download] → Prepare → Start · Stop → Purge"),
+        )
+        for state, live, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(menu.lifecycle(state, live), expected)
+        self.assertEqual(menu.lifecycle(row(), None, mark=False), "Download → Prepare → Start · Stop → Purge")
+        lines = menu.view_lines(checked(home=HOME, local_state="missing"), "configured", width=84, names=NAMES)
+        self.assertIn("Lifecycle Download ✓ → [Prepare] → Start · Stop → Purge", frame_text(lines))
+
     def test_frame_lines_keep_alignment_but_never_a_tab(self):
         self.assertEqual(menu.frame_line("          wrapped\tvalue \n"), "          wrapped value")
 
@@ -412,10 +460,10 @@ class View(unittest.TestCase):
         self.assertIn("checked 2 hours ago", text)
         self.assertIn("Next Start", " ".join(text.split()))
         self.assertIn("no archive location is configured", " ".join(text.split()))
-        self.assertIn("option\tmain\tacquire\tDownload", lines)
+        self.assertIn("option\tmain\tacquire\tDownload — fetch model files to one node", lines)
         self.assertFalse(any(line.startswith("option\tmain\trestore\t") for line in lines))
         self.assertIn("Check now refreshes them", text)
-        self.assertIn("option\tmain\tstart\tStart (suggested)", lines)
+        self.assertIn("option\tmain\tstart\tStart (suggested) — launch the service; asks first", lines)
         self.assertIn("suggest\tstart", lines)
         self.assertTrue(all(len(line.split("\t", 1)[1]) <= 56 for line in lines if line.startswith("header\t")))
 
@@ -424,10 +472,9 @@ class View(unittest.TestCase):
                                 width=60, names=NAMES)
         text = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
         self.assertIn(f"Not shown: Start ({GUARD_REASON})", text)
-        self.assertNotIn("Suggested:", text)
-        self.assertFalse([line for line in lines if line.startswith(("suggest\t", "option\tmain\tstart\t"))])
-        self.assertIn("option\tmain\tstop\tStop", lines)
-        self.assertIn("option\tmain\tstatus\tLive status", lines)
+        self.assertFalse([line for line in lines if line.startswith(("next\t", "suggest\t", "option\tmain\tstart\t"))])
+        self.assertIn("option\tmain\tstop\tStop — remove the service; files are kept", lines)
+        self.assertIn("option\tmain\tstatus\tLive status — check whether it runs now", lines)
 
     def test_view_performs_no_probes(self):
         with patch("subprocess.run", side_effect=AssertionError("menu must not probe")):
