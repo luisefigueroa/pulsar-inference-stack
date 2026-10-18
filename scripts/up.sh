@@ -90,6 +90,7 @@ START_PHASE=checks
 start_interrupted() {
   local detail=""
   trap - INT TERM HUP
+  load_progress_end
   case "$START_PHASE" in
     checks) printf 'Interrupted before launch; nothing was started.\n' >&2 || true ;;
     creating) detail="while its container was being created; the container may exist" ;;
@@ -618,14 +619,17 @@ else
       "$PULSAR_DOCKER" logs --tail "$1" "$CONTAINER" >&2 || true
     fi
   }
-  log "waiting for ${SERVICE_API_BASE}/health on $(single_node_display) (cold load can take minutes)"
+  wait_attempts="${WAIT_ATTEMPTS:-90}" wait_started=$SECONDS
+  log "waiting for ${SERVICE_API_BASE}/health on $(single_node_display) (cold load can take minutes;" \
+    "up to $wait_attempts health checks, ${WAIT_SECONDS:-5} s apart)"
   ok=0 container_state=""
-  for i in $(seq 1 "${WAIT_ATTEMPTS:-90}"); do
+  for i in $(seq 1 "$wait_attempts"); do
     if curl -fsS --max-time 3 "${api_auth_args[@]}" "${SERVICE_API_BASE}/health" >/dev/null 2>&1; then
       ok=1
       break
     fi
     container_state=$(container_state_exact "$CONTAINER" "$state_host")
+    case "$container_state" in exited|absent) load_progress_end ;; esac
     case "$container_state" in
       exited)
         error_line "the container $CONTAINER exited before it became healthy; last logs:"
@@ -639,8 +643,10 @@ else
         exit 1
         ;;
     esac
+    load_progress "$wait_started" "$i" "$wait_attempts" "container $(container_state_word "$container_state")"
     sleep "${WAIT_SECONDS:-5}"
   done
+  load_progress_end
   if [ "$ok" != 1 ]; then
     if [ "$container_state" = unknown ]; then
       # Docker or SSH stopped answering: the service is not known to run.

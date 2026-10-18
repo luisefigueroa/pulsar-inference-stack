@@ -30,6 +30,12 @@ def row(**fields):
     return base
 
 
+def frame_text(lines):
+    """The recipe frame's text from view lines, whitespace collapsed."""
+    return " ".join(" ".join(line.split("\t", 1)[1] for line in lines
+                             if line.startswith(("header\t", "next\t"))).split())
+
+
 def checked(**fields):
     return row(**{"checked_at": "2026-09-05T00:00:00Z", "observation_age_seconds": 7200, **fields})
 
@@ -258,10 +264,10 @@ class NextLifecycleStep(unittest.TestCase):
         state = checked(home=HOME, local_state="missing", observation_age_seconds=12 * 86400)
         lines = menu.view_lines(state, "configured", after="prepare", after_age=120, width=200, names=NAMES,
                                 now=self.NOW)
-        frame = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
-        self.assertIn("Files: prepared in this session (2 minutes ago); saved check: ", frame)
+        frame = frame_text(lines)
+        self.assertIn("Files prepared in this session (2 minutes ago); saved check: ", frame)
         self.assertIn("12 days ago", frame)
-        self.assertIn("Suggested: Start — prepared on every serving rank just now", frame)
+        self.assertIn("Next Start — prepared on every serving rank just now", frame)
         unmarked = menu.view_lines(state, "configured", after="move", after_age=120, width=200, names=NAMES,
                                    now=self.NOW)
         self.assertFalse(any("prepared in this session" in line for line in unmarked))
@@ -354,10 +360,10 @@ class ArchiveSuggestions(unittest.TestCase):
         for width in (44, 80):
             with self.subTest(width=width):
                 lines = menu.view_lines(state, "configured", width=width, names=NAMES, now=self.NOW)
-                headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+                headers = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
                 text = " ".join(" ".join(headers).split())
                 self.assertIn("target verified 1 hour ago", text)
-                self.assertIn("Suggested: Restore", text)
+                self.assertIn("Next Restore", text)
                 self.assertIn("archive: verified 1 hour ago; Restore rechecks contents", text)
                 self.assertTrue(all(len(line) <= width - 4 for line in headers))
                 output = io.StringIO()
@@ -368,18 +374,99 @@ class ArchiveSuggestions(unittest.TestCase):
 
 
 class View(unittest.TestCase):
+    # TUI-22: aligned fields, Files and Archive apart, Next last.
+    def test_the_frame_is_aligned_fields_with_next_last(self):
+        state = checked(home=HOME, local_state="missing", blockers=["A long saved blocker that wraps at narrow widths."])
+        for width in (64, 84):
+            with self.subTest(width=width):
+                lines = menu.view_lines(state, "configured", width=width, names=NAMES)
+                kinds = [line.split("\t", 1)[0] for line in lines if line.startswith(("header\t", "next\t"))]
+                self.assertEqual(kinds, sorted(kinds, key=lambda kind: kind == "next"))
+                body = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+                fields = [line.split()[0] for line in body[1:] if not line.startswith(" ")]
+                for field in ("Recipe", "Settings", "Image", "Files", "Archive", "Running?", "Results"):
+                    self.assertIn(field, fields)
+                # Values start in one column; wrapped values hang under them.
+                for line in body[1:]:
+                    if line.startswith(("Not shown", "These are")):
+                        continue
+                    self.assertTrue(line[10:11].strip() and not line[9:10].strip(), line)
+                self.assertTrue(all(len(line) <= width - 4 for line in body))
+                nexts = [line.split("\t", 1)[1] for line in lines if line.startswith("next\t")]
+                self.assertTrue(nexts[0].startswith("Next      Prepare — "), nexts)
+                self.assertTrue(all(line.startswith(" " * 10) for line in nexts[1:]), nexts)
+        self.assertIn("Running? not checked here; choose Live status", frame_text(lines))
+        read_only = menu.view_lines(state, "configured", width=84, names=NAMES, read_only=True)
+        self.assertIn("Running? not checked here", frame_text(read_only))
+        self.assertNotIn("choose Live status", frame_text(read_only))
+        self.assertFalse(any(line.startswith("next\t") for line in read_only))
+
+    # TUI-20: what each operation does, where it stands, in lifecycle order.
+    def test_labels_add_their_effect_only_where_it_fits(self):
+        state = checked(home=HOME, local_state="ready")
+        for width, effects in ((80, True), (60, None)):
+            with self.subTest(width=width):
+                options = [line.split("\t") for line in menu.view_lines(state, "configured", width=width, names=NAMES)
+                           if line.startswith("option\t")]
+                self.assertTrue(all(len(label) <= width - 2 for *_, label in options))
+                with_effect = [label for *_, label in options if " — " in label]
+                if effects:
+                    self.assertEqual(len(with_effect), len(options))
+                else:
+                    self.assertTrue(with_effect and len(with_effect) < len(options), with_effect)
+                for _, _, action, label in options:
+                    self.assertTrue(label.startswith(menu.LABELS[action]), label)
+        self.assertEqual(menu.option_label("start", ("start", "why"), 80),
+                         "Start (suggested) — launch the service; asks first")
+        self.assertEqual(menu.option_label("start", ("start", "why"), 30), "Start (suggested)")
+        self.assertEqual(menu.option_label("pin", None, 80), "Pin prepared copies — protect from purge")
+        self.assertEqual(set(menu.EFFECTS), set(menu.LABELS))
+
+    def test_live_status_comes_before_stop(self):
+        self.assertLess(menu.MAIN.index("status"), menu.MAIN.index("stop"))
+        offered, _, _ = menu.operations(checked(home=HOME), "configured")
+        self.assertLess(offered.index("status"), offered.index("stop"))
+
+    def test_lifecycle_marks_the_step_saved_records_point_to(self):
+        running = {"kind": "service", "state": "running", "hosts": ["spark-1"], "modified": False,
+                   "age": 30, "source": "inventory"}
+        cases = (
+            (row(), None, "[Download] → Prepare → Start · Stop → Purge"),
+            (checked(home=HOME, local_state="missing"), None, "Download ✓ → [Prepare] → Start · Stop → Purge"),
+            (checked(home=HOME, local_state="ready"), None, "Download ✓ → Prepare ✓ → [Start] · Stop → Purge"),
+            (checked(home=HOME), None, "Download ✓ → Prepare → Start (files not checked) · Stop → Purge"),
+            (checked(home=HOME, local_state="ready"), running,
+             "Download ✓ → Prepare ✓ → Start ✓ (running) · Stop → Purge"),
+            # An old sighting is not current, so prepared files never read as started.
+            (checked(home=HOME, local_state="ready"), {**running, "age": 3600},
+             "Download ✓ → Prepare ✓ → [Start] · Stop → Purge"),
+            (row(snapshots=two_snapshots(HOME, None)), None, "[Download] → Prepare → Start · Stop → Purge"),
+            # A guarded spec's Start is left out of the menu, so it is never the marked step.
+            (checked(home=HOME, local_state="ready", **GUARDED), None,
+             "Download ✓ → Prepare ✓ → Start (not offered here) · Stop → Purge"),
+        )
+        for state, live, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(menu.lifecycle(state, live), expected)
+        self.assertEqual(menu.lifecycle(row(), None, mark=False), "Download → Prepare → Start · Stop → Purge")
+        lines = menu.view_lines(checked(home=HOME, local_state="missing"), "configured", width=84, names=NAMES)
+        self.assertIn("Lifecycle Download ✓ → [Prepare] → Start · Stop → Purge", frame_text(lines))
+
+    def test_frame_lines_keep_alignment_but_never_a_tab(self):
+        self.assertEqual(menu.frame_line("          wrapped\tvalue \n"), "          wrapped value")
+
     def test_lines_mark_suggestion_and_explain_hidden_operations(self):
         lines = menu.view_lines(checked(home=HOME, local_state="ready"), "not-configured", width=60, names=NAMES)
         self.assertEqual(lines[0], "recipe\t3\torg/model")
-        text = "\n".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
+        text = "\n".join(line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t")))
         self.assertIn("org/model [abababababab]", text)
         self.assertIn("checked 2 hours ago", text)
-        self.assertIn("Suggested: Start", text)
+        self.assertIn("Next Start", " ".join(text.split()))
         self.assertIn("no archive location is configured", " ".join(text.split()))
-        self.assertIn("option\tmain\tacquire\tDownload", lines)
+        self.assertIn("option\tmain\tacquire\tDownload — fetch model files to one node", lines)
         self.assertFalse(any(line.startswith("option\tmain\trestore\t") for line in lines))
         self.assertIn("Check now refreshes them", text)
-        self.assertIn("option\tmain\tstart\tStart (suggested)", lines)
+        self.assertIn("option\tmain\tstart\tStart (suggested) — launch the service; asks first", lines)
         self.assertIn("suggest\tstart", lines)
         self.assertTrue(all(len(line.split("\t", 1)[1]) <= 56 for line in lines if line.startswith("header\t")))
 
@@ -388,10 +475,9 @@ class View(unittest.TestCase):
                                 width=60, names=NAMES)
         text = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
         self.assertIn(f"Not shown: Start ({GUARD_REASON})", text)
-        self.assertNotIn("Suggested:", text)
-        self.assertFalse([line for line in lines if line.startswith(("suggest\t", "option\tmain\tstart\t"))])
-        self.assertIn("option\tmain\tstop\tStop", lines)
-        self.assertIn("option\tmain\tstatus\tLive status", lines)
+        self.assertFalse([line for line in lines if line.startswith(("next\t", "suggest\t", "option\tmain\tstart\t"))])
+        self.assertIn("option\tmain\tstop\tStop — remove the service; files are kept", lines)
+        self.assertIn("option\tmain\tstatus\tLive status — check whether it runs now", lines)
 
     def test_view_performs_no_probes(self):
         with patch("subprocess.run", side_effect=AssertionError("menu must not probe")):
@@ -682,9 +768,8 @@ class SessionServices(unittest.TestCase):
                     patch.object(menu.NodeNames, "saved", return_value=NAMES):
                 self.assertEqual(menu.main(["view", "--spec-id", self.SPEC, "--archive-location", "configured",
                                             "--live", handle.name]), 0)
-            frame = " ".join(line.split("\t", 1)[1] for line in output.getvalue().splitlines()
-                             if line.startswith("header\t"))
-            self.assertIn("Live service: running on spark-1 (service inventory, less than a minute ago).", frame)
+            frame = frame_text(output.getvalue().splitlines())
+            self.assertIn("Running? running on spark-1 (service inventory, less than a minute ago)", frame)
             self.assertIn("suggest\tstatus", output.getvalue())
 
 
@@ -705,6 +790,22 @@ class Question(unittest.TestCase):
         self.assertIn("Files come back only through Restore or Download",
                       menu.question("remove", state, plan={"eligible": True, "home": HOME}, names=NAMES))
         self.assertIn("never replaces a running service", menu.question("start", state, names=NAMES))
+        self.assertIn("Loading can take several minutes", menu.question("start", state, names=NAMES))
+
+    def test_start_questions_name_each_rank_from_the_saved_topology_order(self):
+        state = checked(home=HOME)
+        ordered = NodeNames({"n0": "spark-1", "n1": "spark-2", "n2": "spark-3"}, ["n0", "n1", "n2"])
+        where = "spark-1 (rank 0), spark-2 (rank 1), spark-3 (rank 2)"
+        self.assertIn(f"Start org/model on {where}?", menu.question("start", state, names=ordered))
+        self.assertIn(f"retry Start for org/model on {where}?", menu.question("start-memory", state, names=ordered))
+        # Fewer saved nodes than ranks, or no saved order: start refuses, so only the count is named.
+        short = NodeNames({"n0": "spark-1"}, ["n0"])
+        for names in (short, NAMES, NodeNames()):
+            with self.subTest(names=names.order):
+                self.assertIn("Start org/model on 3 nodes?", menu.question("start", state, names=names))
+        # A one-node recipe names the selected node only.
+        one = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        self.assertIn("Start org/model on spark-2?", menu.question("start", one, node="n1", names=ordered))
         self.assertEqual(menu.question("stop", state, node="n1", names=NAMES),
                          "Stop org/model on spark-2? Model files and pins are kept.")
         self.assertIn("Download org/model @ 01234567 to spark-2",
@@ -720,12 +821,12 @@ class Question(unittest.TestCase):
         self.assertEqual(menu.suggestion(state, offered, "configured", names=NAMES)[0], "start")
         for width in (44, 80):
             lines = menu.view_lines(state, "configured", width=width, names=NAMES)
-            headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+            headers = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
             text = " ".join(" ".join(headers).split())
             for expected in ("Maintainer warning: withdrawn", state["review"]["reason"],
                              state["review"]["reviewed_at"], "Advisory metadata"):
                 self.assertIn(expected, text)
-            self.assertLess(text.index("Maintainer warning"), text.index("Suggested: Start"))
+            self.assertLess(text.index("Maintainer warning"), text.index("Next Start"))
             self.assertTrue(all(len(line) <= width - 4 for line in headers))
         self.assertEqual(state, before)
 

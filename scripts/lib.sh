@@ -103,7 +103,7 @@ start_blocker() {
   # --option=VALUE keeps a value such as "--dry-run" from reading as an option.
   while [ $# -gt 0 ]; do
     case "$1" in
-      --no-command|--after-replace) options+=("$1") ;;
+      --no-command|--after-replace|--removed) options+=("$1") ;;
       --*) options+=("$1=${2-}"); shift ;;
       *) options+=("$1") ;;
     esac
@@ -119,6 +119,58 @@ start_blocker() {
 }
 warn() { printf '%swarning: %s\n' "$(_message_tag)" "$*" >&2; }
 error_line() { printf '%serror: %s\n' "$(_message_tag)" "$*" >&2; }
+
+# load_progress STARTED CHECK LIMIT [STATE] — health-wait progress on stderr.
+# On a terminal one line is rewritten on every check: elapsed time, which
+# health check of the limit, and the observed container state. Otherwise a
+# plain line follows about every LOAD_PROGRESS_LOG_SECONDS (default 60), so
+# captured output stays line-based. STARTED is a $SECONDS value. The limit is
+# a number of checks: each also waits for its probes, so time can't bound it.
+LOAD_PROGRESS_SHOWN=0 LOAD_PROGRESS_LOGGED=0
+load_progress() {
+  local started="$1" check="$2" limit="$3" state="${4:-}" elapsed text size width
+  elapsed=$((SECONDS - started))
+  printf -v text '%sloading: %d:%02d elapsed · health check %s of %s%s' "$(_message_tag)" \
+    $((elapsed / 60)) $((elapsed % 60)) "$check" "$limit" "${state:+ · $state}"
+  if [ -t 2 ] && [ "${TERM:-dumb}" != dumb ]; then
+    size=$(stty size <&2 2>/dev/null) || size=""
+    width=${size##* }
+    [[ "$width" =~ ^[1-9][0-9]*$ ]] || width=${COLUMNS:-80}
+    [[ "$width" =~ ^[1-9][0-9]*$ ]] || width=80
+    # A wrapped line would leave the carriage return one row short.
+    [ "${#text}" -lt "$width" ] || text=${text:0:$((width - 1))}
+    printf '\r\033[K%s' "$text" >&2
+    LOAD_PROGRESS_SHOWN=1
+  elif [ $((elapsed - LOAD_PROGRESS_LOGGED)) -ge "${LOAD_PROGRESS_LOG_SECONDS:-60}" ]; then
+    LOAD_PROGRESS_LOGGED=$elapsed
+    printf '%s\n' "$text" >&2
+  fi
+}
+# load_progress_end — clears the terminal progress line before other output.
+load_progress_end() {
+  [ "$LOAD_PROGRESS_SHOWN" = 1 ] || return 0
+  LOAD_PROGRESS_SHOWN=0
+  printf '\r\033[K' >&2
+}
+# rank_states_text STATE... — "all 3 ranks running", or each rank's state
+# when they differ, for load_progress.
+rank_states_text() {
+  local state same=1 rank=0 text=""
+  for state in "$@"; do [ "$state" = "$1" ] || same=0; done
+  if [ "$same" = 1 ]; then
+    printf 'all %d ranks %s\n' "$#" "$(container_state_word "${1:-}")"
+    return 0
+  fi
+  for state in "$@"; do
+    text+="${text:+, }rank $rank $(container_state_word "$state")"
+    rank=$((rank + 1))
+  done
+  printf '%s\n' "$text"
+}
+# container_state_word STATE — container_state_exact's value for people.
+container_state_word() {
+  case "${1:-}" in running|exited|absent) printf '%s\n' "$1" ;; *) printf 'not observed\n' ;; esac
+}
 die()  { error_line "$1"; exit "${2:-1}"; }
 # usage_die MESSAGE — a command-line mistake: exit 2, or PULSAR_USAGE_EXIT
 # when the public CLI asks for a distinct status so --json can report

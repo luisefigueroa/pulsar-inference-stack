@@ -4,7 +4,9 @@ import io
 import json
 import os
 from pathlib import Path
+import pty
 import re
+import select
 import shlex
 import shutil
 import signal
@@ -75,6 +77,10 @@ container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
 _source_lib = (ROOT/'scripts/lib.sh').read_text()
 LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
                    _source_lib.index('resolve_single_node_placement() {')]
+# The real health-wait progress helpers, so up.sh's loading phase keeps its wiring.
+LOAD_PROGRESS = _source_lib[_source_lib.index('_message_tag() {'):_source_lib.index('\nlog()')] + "\n" + \
+    _source_lib[_source_lib.index('# load_progress STARTED'):_source_lib.index('die()  {')]
+LIB += LOAD_PROGRESS
 IMAGE = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/image-checked"
 # "hang": a check still running when start is interrupted.
@@ -254,6 +260,10 @@ class Catalog(unittest.TestCase):
         self.assertEqual(record["fix"], "./pulsar stop abababababab")
         self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1); "
                                          "stop removes what remains.")
+        self.assertEqual(record["cleanup"], "unconfirmed")
+        # Only a launch's own observation sets cleanup; other records leave it null.
+        self.assertIsNone(start_blockers.blocker("health_timeout", spec=SPEC)["cleanup"])
+        self.assertEqual(start_blockers.blocker("container_exited", spec=SPEC, removed=True)["cleanup"], "removed")
 
     def test_launcher_suggestions_keep_the_operator_estimate(self):
         # The launchers reset their own estimate arguments; start exports the operator's.
@@ -319,7 +329,7 @@ class StartScenarios(unittest.TestCase):
             path.write_text(body); path.chmod(0o700)
         self.blockers = self.root / "blockers.jsonl"
 
-    def start(self, *flags, image="missing-on-head", weights=0, memory=0, extra_env=None, **fixture):
+    def start(self, *flags, image="missing-on-head", weights=0, memory=0, extra_env=None, stderr=None, **fixture):
         env = {**os.environ, "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT),
                "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_START_BLOCKERS_FILE": str(self.blockers),
                "PULSAR_MODEL_LIBRARY_DIR": str(self.root / "library"), "PULSAR_DOCKER": str(self.root / "bin/docker"),
@@ -330,8 +340,9 @@ class StartScenarios(unittest.TestCase):
             env.pop(key, None)
         env.update({f"FIXTURE_{key.upper()}": str(value) for key, value in fixture.items()})
         env.update(extra_env or {})
+        streams = {"capture_output": True} if stderr is None else {"stdout": subprocess.PIPE, "stderr": stderr}
         result = subprocess.run(["bash", str(self.root / "scripts/up.sh"), SPEC, *flags],
-                                env=env, text=True, capture_output=True, timeout=60)
+                                env=env, text=True, timeout=60, **streams)
         self.records = start_blockers.read(self.blockers)
         return result, [row["blocker"] for row in self.records]
 
@@ -583,6 +594,51 @@ class StartScenarios(unittest.TestCase):
                 self.assertEqual((self.records[0]["fix"], self.records[0]["service_id"]), (fix, SERVICE_ID))
                 self.assertIn(f"FAILED {code}: spark-1: ", result.stdout)
 
+    # TUI-31: the wait reports elapsed time, the check count and the container state.
+    def test_captured_wait_progress_is_plain_lines_on_stderr(self):
+        result, codes = self.start(image="ok", health="fail", extra_env={"LOAD_PROGRESS_LOG_SECONDS": "0"})
+        self.assertEqual(codes, ["health_timeout"])
+        self.assertIn("up to 2 health checks, 0 s apart", result.stdout)
+        for check in (1, 2):
+            self.assertIn(f"loading: 0:00 elapsed · health check {check} of 2 · container running\n", result.stderr)
+        self.assertNotIn("\r", result.stderr + result.stdout)
+        self.assertNotIn("health check 1 of", result.stdout)
+        # By default a captured wait prints a line only about once a minute.
+        self.reset()
+        result, _ = self.start(image="ok", health="fail")
+        self.assertNotIn("health check 1 of 2", result.stderr)
+
+    def test_terminal_wait_progress_rewrites_one_line_and_clears_it(self):
+        primary, secondary = pty.openpty()
+        self.addCleanup(os.close, primary)
+        try:
+            result, codes = self.start(image="ok", health="fail", container="unknown", stderr=secondary,
+                                       extra_env={"TERM": "xterm"})
+        finally:
+            os.close(secondary)
+        chunks = []
+        while select.select([primary], [], [], 0.2)[0]:
+            try:
+                chunk = os.read(primary, 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        terminal = b"".join(chunks).decode()
+        self.assertEqual(codes, ["health_timeout"])
+        self.assertIn("\r\x1b[Kloading: 0:00 elapsed · health check 1 of 2 · container not observed", terminal)
+        self.assertIn("health check 2 of 2", terminal)
+        # The line is cleared before the timeout's error, which starts its own line.
+        self.assertIn("\r\x1b[Kerror: timed out waiting for health", terminal)
+        self.assertNotIn("health check 1 of", result.stdout)
+
+    def test_rank_states_collapse_when_every_rank_agrees(self):
+        script = LOAD_PROGRESS + 'rank_states_text running running running; rank_states_text running unknown exited\n'
+        result = subprocess.run(["bash", "-c", script], text=True, capture_output=True)
+        self.assertEqual(result.stdout.splitlines(),
+                         ["all 3 ranks running", "rank 0 running, rank 1 not observed, rank 2 exited"])
+
 
 class Interrupts(unittest.TestCase):
     """Ctrl-C or a stop signal during start says what start left and removes nothing."""
@@ -808,6 +864,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual((record["fix"], record["note"]), (None, note))
         self.assertEqual((record["node"], record["node_id"], record["rank"], record["service_id"]),
                          ("spark-1", "node-0", 0, SERVICE_ID))
+        self.assertEqual(record["cleanup"], "removed")
 
     def test_an_unconfirmed_node_is_named_and_stop_is_suggested(self):
         record = self.failure("absent unknown running", "container_exited", "1", "--no-command", "--note",
@@ -816,6 +873,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1), "
                                          "spark-3 (rank 2); stop removes what remains.")
         self.assertEqual(record["service_id"], SERVICE_ID)
+        self.assertEqual(record["cleanup"], "unconfirmed")
 
     def test_a_start_failure_after_a_replacement_says_nothing_runs_only_when_confirmed(self):
         note = "Docker's error is shown above. The cluster's containers were removed."
@@ -824,6 +882,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual(record["note"], note + " " + start_blockers.AFTER_REPLACE_NOTE)
         record = self.failure("running absent absent", "container_start_failed", "2", "--note", note, replaced=True)
         self.assertEqual(record["fix"], "./pulsar stop abababababab")
+        self.assertEqual(record["cleanup"], "unconfirmed")
         self.assertNotIn(start_blockers.AFTER_REPLACE_NOTE, record["note"])
 
 

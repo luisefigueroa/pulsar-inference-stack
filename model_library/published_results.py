@@ -158,6 +158,30 @@ def compact_lines(report: dict | None, *, now=None) -> list[str]:
     return lines
 
 
+def frame_line(report: dict | None, *, now=None) -> str:
+    """compact_lines as one value for the recipe frame's Results field."""
+    from .catalog import age_seconds, age_text
+    if report is None:
+        return "not inspected"
+    if report.get("historical"):
+        return "historical schema-1; see Published results"
+    runs, issues = report["runs"], report["issues"]
+    if not runs and not issues:
+        return "none supplied"
+    verified = [run for run in runs if run["status"] == "verified"]
+    dated = [run for run in verified if run.get("ended_at")]
+    parts = []
+    if dated:
+        run = dated[0]
+        parts.append(f"{run['suite']} {run['outcome']} · {run['ended_at'][:10]} "
+                     f"({age_text(age_seconds(run['ended_at'], now))})")
+    parts.append(f"{len(runs)} run(s)" + ("" if dated or not verified else ", none with a run time"))
+    unavailable = len(runs) - len(verified)
+    if unavailable or issues:
+        parts.append(f"{unavailable} unverified, {len(issues)} issue(s)")
+    return " · ".join(parts) + " (historical)"
+
+
 def render(report: dict, spec_id: str, *, writer: TerminalWriter | None = None) -> None:
     out = writer or TerminalWriter()
     def metric(value, unit):

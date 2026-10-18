@@ -228,6 +228,18 @@ class PublishedResults(unittest.TestCase):
         self.assertIn("bound evidence references", " ".join(output.getvalue().split()))
         self.assertNotIn("None supplied", output.getvalue())
 
+    def test_the_frame_results_field_is_one_line(self):
+        self.assertEqual(results.frame_line(None), "not inspected")
+        self.assertEqual(results.frame_line({"historical": True}), "historical schema-1; see Published results")
+        self.assertEqual(results.frame_line({"runs": [], "issues": []}), "none supplied")
+        dated = {"status": "verified", "suite": "baseline-v2", "outcome": "pass", "ended_at": "2026-09-12T00:00:00Z"}
+        line = results.frame_line({"runs": [dated, {"status": "unverified"}], "issues": ["x"]})
+        self.assertTrue(line.startswith("baseline-v2 pass · 2026-09-12 ("), line)
+        self.assertTrue(line.endswith(" · 2 run(s) · 1 unverified, 1 issue(s) (historical)"), line)
+        undated = {**dated, "ended_at": None}
+        self.assertEqual(results.frame_line({"runs": [undated], "issues": []}),
+                         "1 run(s), none with a run time (historical)")
+
     def test_published_outcome_never_changes_menu_eligibility_or_spec_metadata(self):
         spec, _ = publish(self.repo, fail=True)
         row, = catalog.entries(self.repo, Store(self.root / "absent-state"))
@@ -236,9 +248,9 @@ class PublishedResults(unittest.TestCase):
         report = results.collect(self.repo, spec["spec_id"])
         for width in (44, 80):
             lines = catalog_menu.view_lines(row, "configured", published=report, width=width)
-            headings = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
-            text = " ".join(headings)
-            for group in ("Selected recipe", "Current observations", "Published results", "Live service: not observed"):
+            headings = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
+            text = " ".join(" ".join(headings).split())
+            for group in ("Recipe", "Files", "Results baseline-v2 fail", "Running? not checked here"):
                 self.assertIn(group, text)
             self.assertTrue(all(len(line) <= width - 4 for line in headings))
             self.assertEqual(catalog_menu.operations(row, "configured"), expected)

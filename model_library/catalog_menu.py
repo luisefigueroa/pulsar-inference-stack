@@ -25,23 +25,36 @@ import sys
 from typing import Any
 
 from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
-from .published_results import collect as published_results, compact_lines as published_lines
+from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
 from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
-MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
+MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
 STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
-    "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
-    "image-stage": "Stage pinned image",
+    "readiness": "Check launch prerequisites", "image-check": "Check serving image",
+    "image-stage": "Stage serving image",
     "budget": "Storage budget (all nodes)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
+}
+# What each operation does, shown after its label where the terminal is wide enough.
+EFFECTS = {
+    "check": "refresh saved file records", "acquire": "fetch model files to one node",
+    "restore": "copy files back from the archive", "prepare": "copy files to every serving node",
+    "start": "launch the service; asks first", "status": "check whether it runs now",
+    "stop": "remove the service; files are kept",
+    "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
+    "image-stage": "pull or copy the exact digest",
+    "budget": "disk headroom on every node", "move": "move the home to another node",
+    "archive": "save a verified recovery copy", "verify": "recheck the archive's contents",
+    "pin": "protect from purge", "unpin": "allow purge again",
+    "purge": "delete prepared copies; the home is kept", "remove": "delete the home; the archive is kept",
 }
 # Operations that change model files or records; a success makes the saved
 # check out of date until the next Check now. Download, Restore and Prepare
@@ -189,6 +202,13 @@ def live_line(fact: dict | None, *, read_only: bool = False) -> str:
             f"not observed {when}." if unobserved else f"Live service: unknown; a node could not be observed {when}.")
 
 
+def live_value(fact: dict | None, *, read_only: bool = False) -> str:
+    """The recipe frame's Running? field: live_line's words without its label."""
+    if fact is None:
+        return "not checked here" if read_only else "not checked here; choose Live status"
+    return live_line(fact).removeprefix("Live service: ").rstrip(".")
+
+
 def start_unsupported(row: dict) -> str | None:
     """The reason Start is left out, or None when this Stack can start the spec."""
     if row.get("start_supported") is not False:
@@ -295,13 +315,13 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if after == "service-interrupted" and not superseded:
         return "status", "service outcome unconfirmed; current service state is unknown"
     if after == "image-interrupted" and "image-check" in offered:
-        return "image-check", "staging outcome unconfirmed; inspect the pinned image before retrying"
+        return "image-check", "staging outcome unconfirmed; inspect the serving image before retrying"
     if after == "check-failed":
         return "check", "the last check did not record an observation"
     if after == "start" and not superseded:
         return "status", "started from this menu; live status observes the service"
     if live and live["kind"] in ("service", "exists") and "status" in offered:
-        seen = live_line(live).removeprefix("Live service: ").rstrip(".")
+        seen = live_value(live)
         return "status", seen + ("; Live status shows its state" if live.get("source") == "status"
                                  else "; Live status checks it now")
     if after in ("acquire", "restore"):
@@ -317,7 +337,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if after == "prepare" and "start" in offered:
         # Prepare ends by verifying the prepared copy on every serving rank.
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
-            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
+            return "status", live_value(live) + "; check before starting"
         return "start", "prepared on every serving rank just now; start rechecks prerequisites"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
@@ -344,7 +364,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", blocker
     if local == "ready":
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
-            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
+            return "status", live_value(live) + "; check before starting"
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
 
@@ -511,34 +531,45 @@ def explicit_settings(arguments: list[str]) -> str:
     return "; ".join(parts) if parts else "see Show details"
 
 
+# Frame fields share one label column; continuation lines hang under the value.
+FRAME_LABEL_WIDTH = 10
+
+
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
            published=None, live: dict | None = None, read_only: bool = False,
-           after: str | None = None, after_age: int | None = None) -> list[str]:
+           after: str | None = None, after_age: int | None = None) -> tuple[list[str], list[str]]:
+    """The recipe frame as (body lines, Next lines).
+
+    The body starts with the model and spec; saved facts follow as aligned
+    fields. Next is kept apart so it stays the frame's last line, and so a
+    short terminal can show only the first line and Next.
+    """
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
+
+    def field(label: str, value: object) -> None:
+        out.field(label, value, label_width=FRAME_LABEL_WIDTH)
+
     out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
     for line in withdrawal_notice(row):
         out.emit(line)
-    out.emit("Selected recipe: " + recipe_text(row["geometry"]))
+    field("Recipe", recipe_text(row["geometry"]))
+    field("Settings", explicit_settings(row.get("engine_args") or []))
     digest = str((row.get("image") or {}).get("digest") or "not recorded")
     image = digest if len(digest) <= 24 else digest[:24] + "…"
-    out.emit(f"Image: {image}")
-    out.emit("Settings: " + explicit_settings(row.get("engine_args") or []))
+    field("Image", f"{image} (exact digest)" if digest != "not recorded" else digest)
     review = row.get("review") or {}
     if review.get("status") and review["status"] != "withdrawn":
-        out.emit(f"Maintainer review (advisory): {review['status']} · "
-                 f"{review.get('reviewed_at') or 'date not recorded'}")
-    out.emit("Current observations (saved)")
+        field("Review", f"{review['status']} · {review.get('reviewed_at') or 'date not recorded'} (advisory)")
     files = files_text(row)
     if after == "prepare" and after_age is not None:
         # Prepare saves no observation; keep the old check visible as such.
         files = f"prepared in this session ({age_text(after_age)}); saved check: {files}"
-    out.emit(f"Files: {files} · Archive: {archive_text(row, now)}")
-    out.emit(live_line(live, read_only=read_only))
-    for line in published_lines(published, now=now):
-        out.emit(line)
-    if suggested:
-        out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
+    field("Files", files)
+    field("Archive", archive_text(row, now))
+    field("Running?", live_value(live, read_only=read_only))
+    field("Lifecycle", lifecycle(row, live, mark=not read_only))
+    field("Results", published_line(published, now=now))
     by_reason: dict[str, list[str]] = {}
     for action in MAIN + LAUNCH + STORAGE:
         if action in hidden:
@@ -547,11 +578,65 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
         out.emit(f"Not shown: {', '.join(labels)} ({reason})")
     if by_reason:
         out.emit("These are saved records; Check now refreshes them.")
-    return buffer.getvalue().splitlines()
+    body = buffer.getvalue().splitlines()
+    if not suggested:
+        return body, []
+    buffer.seek(0)
+    buffer.truncate()
+    field("Next", f"{LABELS[suggested[0]]} — {suggested[1]}")
+    return body, buffer.getvalue().splitlines()
 
 
 def clean(text: object) -> str:
     return " ".join(str(text).split())
+
+
+def option_label(action: str, suggested: tuple[str, str] | None, width: int) -> str:
+    """LABEL[ (suggested)][ — effect]: the effect only when the whole label fits.
+
+    The menu passes the label before " — " to the operation, without "(suggested)".
+    """
+    label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
+    with_effect = f"{label} — {EFFECTS[action]}"
+    return with_effect if len(with_effect) <= width else label
+
+
+def lifecycle(row: dict, live: dict | None, *, mark: bool = True) -> str:
+    """Where the spec stands in Download → Prepare → Start, from saved records
+    and this session's live facts only. Prepared files never mark Start done:
+    only a current running observation does. The current step is bracketed
+    when MARK is set."""
+    snapshots = members(row)
+    homes = bool(snapshots) and all(member.get("home") for member in snapshots.values())
+    local = row.get("local_state", "unknown")
+    running = bool(live) and live.get("kind") == "service" and live_current(live) \
+        and live.get("state") == "running"
+    done, current, note = 0, "Download", ""
+    if running:
+        done, current, note = 3, None, " (running)"
+    elif homes and local == "ready":
+        done, current = 2, "Start"
+    elif homes and local in ("missing", "changed"):
+        done, current = 1, "Prepare"
+    elif homes:
+        done, current, note = 1, None, " (files not checked)"
+    if current == "Start" and start_unsupported(row):
+        # The menu leaves Start out for this spec; don't point at it.
+        current, note = None, " (not offered here)"
+    steps = []
+    for index, step in enumerate(("Download", "Prepare", "Start")):
+        if index < done:
+            steps.append(f"{step} ✓")
+        elif mark and step == current:
+            steps.append(f"[{step}]")
+        else:
+            steps.append(step)
+    return " → ".join(steps) + note + " · Stop → Purge"
+
+
+def frame_line(text: object) -> str:
+    """One frame line for the shell: no tabs or newlines, leading spaces kept for alignment."""
+    return str(text).replace("\t", " ").replace("\n", " ").replace("\r", " ").rstrip()
 
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
@@ -562,13 +647,14 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
     suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now,
-                                                          published=published, live=live, read_only=read_only,
-                                                          after=after, after_age=after_age)]
+    body, next_lines = header(row, hidden, suggested, frame_width, now=now, published=published, live=live,
+                              read_only=read_only, after=after, after_age=after_age)
+    lines += ["header\t" + frame_line(line) for line in body]
+    lines += ["next\t" + frame_line(line) for line in next_lines]
+    list_width = (width or terminal_width()) - 2
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
-        label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")
-        lines.append(f"option\t{group}\t{action}\t{label}")
+        lines.append(f"option\t{group}\t{action}\t{option_label(action, suggested, list_width)}")
     if suggested:
         lines.append(f"suggest\t{suggested[0]}")
     for action, snapshots in eligible.items():
@@ -584,6 +670,81 @@ def memory_warning_only(records: list[dict]) -> bool:
                                 and record.get("blocker") == "memory_warning" for record in records)
 
 
+# Menu choices after a refused or failed Start, by blocker code, in the order
+# offered. "files" resolves to Download, Restore or Prepare from saved records.
+# Each choice runs an existing menu operation with its own selection, preview
+# and confirmation; none adds --replace or --pull-image.
+START_CHOICES = {
+    "topology_incomplete": ("topology-menu",), "fabric_incomplete": ("topology-check",),
+    "node_unreachable": ("topology-check",),
+    "docker_unavailable": ("doctor",), "container_start_failed": ("doctor",),
+    "image_missing": ("image-stage",),
+    "model_files_not_ready": ("files",),
+    "memory_insufficient": ("inventory",), "port_in_use": ("inventory",),
+    "service_exists": ("status", "stop"),
+    "smoke_test_failed": ("status", "stop"), "health_timeout": ("status", "stop"),
+    "container_exited": ("status", "stop"),
+    "image_check_failed": ("verbose",), "model_files_check_failed": ("verbose",),
+    "memory_check_failed": ("verbose",), "preflight_failed": ("verbose",),
+}
+# Codes that get no choice here: the memory-warning retry is offered on its
+# own, an interrupted Start's outcome names the next inspection, and the rest
+# have no menu operation that resolves them.
+START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
+                             "service_stopped"})
+START_CHOICE_LABELS = {
+    "topology-menu": "Open Cluster topology (membership)",
+    "topology-check": "Check saved nodes and fabric (checks nodes now)",
+    "doctor": "Host diagnostics",
+    "inventory": "Open Live service inventory",
+    "verbose": "Rerun the checks with full diagnostics",
+}
+
+
+def start_choices(records: list[dict], row: dict, archive_location: str) -> list[tuple[str, str]]:
+    """(action, label) choices for recorded start blockers, without duplicates.
+
+    Actions name existing menu operations, or one of START_CHOICE_LABELS. A
+    code without a choice, or an unknown one, adds nothing; its own next step
+    is already printed with the blocker.
+    """
+    offered, _, _ = operations(row, archive_location)
+    choices: list[tuple[str, str]] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        kinds = START_CHOICES.get(record.get("blocker"), ())
+        # A failed launch's record says whether its containers remain: none
+        # to stop once every rank's was seen removed, and Stop clears what an
+        # unconfirmed removal may have left.
+        if record.get("stage") == "launch" and record.get("cleanup") == "removed":
+            kinds = tuple(kind for kind in kinds if kind not in ("status", "stop"))
+        elif record.get("stage") == "launch" and record.get("cleanup") == "unconfirmed":
+            kinds = (*kinds, "status", "stop")
+        for kind in kinds:
+            if kind == "files":
+                missing = _next_home(row, offered, archive_location)
+                kind = missing[1] if missing else "prepare"
+            if not kind or kind in (action for action, _ in choices):
+                continue
+            if kind in START_CHOICE_LABELS:
+                choices.append((kind, START_CHOICE_LABELS[kind]))
+            elif kind in offered:
+                choices.append((kind, LABELS[kind]))
+    return choices
+
+
+def start_choices_title(records: list[dict], *, dry_run: bool = False) -> str:
+    """The question above the choices: what happened, and how many blockers."""
+    codes = [record.get("blocker") for record in records if isinstance(record, dict)]
+    count = _count(len(codes), "blocker")
+    if dry_run:
+        return f"Not ready to start: {count}. Choose a next step"
+    if any(isinstance(record, dict) and record.get("stage") == "launch" for record in records):
+        return f"Start failed after launch: {count}. Choose a next step"
+    return f"Start was refused: {count}. Choose a next step"
+
+
 def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, mode: str, width=None) -> bool:
     """Display the public image stage preview; never inspect or stage an image."""
     plan = response.get("result")
@@ -591,9 +752,9 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
             or not isinstance(plan, dict) or plan.get("kind") != "pulsar-image-check"
             or plan.get("operation") != "stage-image" or plan.get("model") != row["spec_id"]
             or plan.get("image") != row["image"]["digest"]):
-        raise ValueError("image preview does not name the selected catalog spec and pinned image")
+        raise ValueError("image preview does not name the selected catalog spec and serving image")
     modes = {"pull-exact-digest": "Pull the exact digest from its registry",
-             "stream-from-controller": "Copy the pinned image from this node; no registry fallback"}
+             "stream-from-controller": "Copy the serving image from this node; no registry fallback"}
     ranks = plan.get("ranks")
     if (mode not in modes or plan.get("mode") != mode or not isinstance(ranks, list)
             or type(plan.get("nodes")) is not int or plan["nodes"] != row["geometry"]["nodes"]
@@ -606,7 +767,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
     if len({rank["topology_index"] for rank in ranks}) != len(ranks):
         raise ValueError("image preview repeats a selected node")
     out = TerminalWriter(width=width)
-    out.emit("Pinned image staging preview")
+    out.emit("Serving image staging preview")
     out.field("Model", row["model_id"])
     out.field("Spec", row["spec_id"])
     out.field("Image", plan["image"])
@@ -616,7 +777,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
         action = "will stage" if rank["state"] == "missing" else "already present"
         out.field(f"Rank {rank['rank']}", f"{node}: {action}")
     missing = any(rank["state"] == "missing" for rank in ranks)
-    out.emit("No service is started or replaced." if missing else "The pinned image is already present; nothing to stage.")
+    out.emit("No service is started or replaced." if missing else "The serving image is already present; nothing to stage.")
     return missing
 
 
@@ -858,6 +1019,18 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     raise ValueError(f"no preview summary for {action}")
 
 
+def _start_place(nodes: int, place: str | None, names: NodeNames) -> str:
+    """Where Start runs: the selected node, or each rank's node from the saved
+    topology, which ordinary start uses in order. Without enough saved nodes,
+    only the count, since start then refuses before anything runs."""
+    if place:
+        return place
+    hosts = names.serving_hostnames(nodes) if nodes > 1 else None
+    if not hosts:
+        return _count(nodes, "node")
+    return ", ".join(f"{host} (rank {rank})" for rank, host in enumerate(hosts))
+
+
 def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str | None = None,
              node: str | None = None, names: NodeNames | None = None) -> str:
     """Confirmation question naming the action, model, placement and consequence."""
@@ -918,12 +1091,12 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         return (f"Create an archive of {identity}{' in ' + root if root else ''}? "
                 "An existing archive is never replaced.")
     if action == "start":
-        where = place or f"{nodes} nodes"
-        return f"{warning}Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+        return (f"{warning}Start {model} on {_start_place(nodes, place, names)}? Start rechecks prerequisites "
+                "and never replaces a running service. Loading can take several minutes.")
     if action == "start-memory":
-        where = place or f"{nodes} nodes"
-        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
-                "Insufficient memory and all other blockers still prevent start.")
+        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on "
+                f"{_start_place(nodes, place, names)}? Insufficient memory and all other blockers still prevent "
+                "start. Loading can take several minutes.")
     if action == "stop":
         where = f" on {place}" if place else ""
         return f"Stop {model}{where}? Model files and pins are kept."
@@ -1006,6 +1179,12 @@ def main(argv: list[str] | None = None) -> int:
     labels.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
+    choices = sub.add_parser("start-choices", help="a title, then one menu choice per line for recorded start "
+                             "blockers; catalog JSON on stdin")
+    choices.add_argument("--spec-id", required=True)
+    choices.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
+    choices.add_argument("--blockers-file", required=True)
+    choices.add_argument("--dry-run", action="store_true", help="the blockers come from Check launch prerequisites")
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1069,6 +1248,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(clean(line))
             return 0
         row = read_row(sys.stdin, args.spec_id)
+        if args.command == "start-choices":
+            # Each line is TITLE or ACTION, a tab, then a nonempty label. Nothing
+            # is printed, and the status is 1, when no choice applies.
+            from scripts.start_blockers import read
+            records = read(args.blockers_file)
+            found = start_choices(records, row, args.archive_location)
+            if not found:
+                return 1
+            print(f"title\t{clean(start_choices_title(records, dry_run=args.dry_run))}")
+            for action, label in found:
+                print(f"{action}\t{clean(label)}")
+            return 0
         names = NodeNames.saved()
         if args.command == "image-plan":
             with open(args.plan_file, encoding="utf-8") as handle:

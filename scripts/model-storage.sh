@@ -169,7 +169,8 @@ run_operation() {
 
 
 # A failed Start already reports its checks. Offer one narrowly scoped retry
-# only when the existing structured blocker records contain memory warnings.
+# only when the existing structured blocker records contain memory warnings;
+# otherwise offer the menu operations that address the recorded blockers.
 start_catalog_spec() {
   local label="$1" spec="$2" blockers question allow=0 rc
   shift 2
@@ -179,6 +180,11 @@ start_catalog_spec() {
   if [ "$OPERATION_RC" -eq 1 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ] \
       && catalog_menu memory-warning --blockers-file "$blockers"; then
     allow=1
+  elif [ "$OPERATION_RC" -ne 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ]; then
+    rc=0
+    start_choices "$spec" "$blockers" "" "$@" || rc=$?
+    rm -f "$blockers"
+    return "$rc"
   fi
   rm -f "$blockers"
   [ "$allow" -eq 1 ] || return 0
@@ -191,13 +197,72 @@ start_catalog_spec() {
     "$REPO_DIR/pulsar" start "$spec" "$@" --accept-memory-warn
 }
 
+# check_launch_prerequisites LABEL SPEC START_ARGS... — the existing dry run;
+# when it records blockers, the same choices as a refused Start follow.
+check_launch_prerequisites() {
+  local label="$1" spec="$2" blockers rc=0
+  shift 2
+  blockers=$(mktemp) || return 1
+  run_operation readiness "$label" "$spec" "$RECIPE_MODEL" env PULSAR_START_BLOCKERS_FILE="$blockers" \
+    "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run
+  if [ "$OPERATION_RC" -ne 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ]; then
+    start_choices "$spec" "$blockers" --dry-run "$@" || rc=$?
+  fi
+  rm -f "$blockers"
+  return "$rc"
+}
+
+# start_choices SPEC BLOCKERS_FILE [--dry-run] START_ARGS...
+# After a refused or failed Start (or dry run), offers the menu operations that
+# address its recorded blockers, from the codes rather than the printed text.
+# Each runs with its own selection, preview and confirmation, and none passes
+# --replace or --pull-image. The choice stands in for the Continue hold. Read-only
+# choices return here; a declined one returns here too. Returns 130 on Ctrl-C.
+start_choices() {
+  local spec="$1" blockers="$2" dry_run="$3" title="" line kind label choice rc
+  shift 3
+  local -a kinds=() labels=()
+  while true; do
+    title=""; kinds=(); labels=()
+    # Each line is KIND, a tab and a nonempty label.
+    while IFS= read -r line; do
+      kind=${line%%$'\t'*}; label=${line#*$'\t'}
+      [ -n "$kind" ] && [ "$kind" != "$line" ] || continue
+      if [ "$kind" = title ]; then title=$label; else kinds+=("$kind"); labels+=("$label"); fi
+    done < <(printf '%s' "$ROW_JSON" | catalog_menu start-choices --spec-id "$spec" \
+      --archive-location "$(archive_location)" --blockers-file "$blockers" ${dry_run:+--dry-run} || true)
+    [ "${#kinds[@]}" -gt 0 ] || return 0
+    HOLD_SCREEN=0
+    choice=$(choose_index "$title" "${labels[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    [ "$choice" -lt "${#kinds[@]}" ] || return 0
+    rc=0
+    case "${kinds[$choice]}" in
+      inventory) "$REPO_DIR/pulsar" inventory menu || rc=$? ;;
+      topology-menu) "$REPO_DIR/pulsar" topology menu || rc=$? ;;
+      topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
+      doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
+      verbose)
+        # A fresh dry run replaces the recorded blockers, and the choices follow it.
+        : >"$blockers"
+        run_operation readiness 'Check launch prerequisites with full diagnostics' "$spec" "$RECIPE_MODEL" \
+          env PULSAR_START_BLOCKERS_FILE="$blockers" "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run --verbose
+        [ "$OPERATION_INTERRUPTED" -eq 0 ] || return 0
+        [ "$OPERATION_RC" -ne 0 ] || return 0
+        dry_run=--dry-run ;;
+      *)
+        perform_action "${kinds[$choice]}" "${labels[$choice]}" "$spec" || rc=$?
+        [ "$rc" -eq 0 ] && [ "$HOLD_SCREEN" = 1 ] && return 0 ;;
+    esac
+    [ "$rc" -ne 130 ] || return 130
+  done
+}
 
 stage_catalog_image() {
   local label="$1" spec="$2" choice plan rc index verb mode_name
   shift 2
   local -a mode=() names=()
-  choice=$(choose_index "Stage the catalog's pinned image" "Pull pinned image from registry" \
-    "Copy pinned image from this node" "Back") || { rc=$?; return "$rc"; }
+  choice=$(choose_index "Stage the serving image (exact digest)" "Pull exact digest from registry" \
+    "Copy serving image from this node" "Back") || { rc=$?; return "$rc"; }
   case "$choice" in
     0) mode=(--pull); verb=Pull; mode_name=pull-exact-digest ;;
     1) verb=Copy; mode_name=stream-from-controller ;;
@@ -206,7 +271,7 @@ stage_catalog_image() {
   require_cluster_nodes "$RECIPE_NODES" >/dev/null || return 0
   for index in "${!CLUSTER_NODE_IDS[@]}"; do names+=(--node-name "$index=$(human_node_name "$index")"); done
   plan=$(mktemp) || return 1
-  if spin "Planning pinned image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
+  if spin "Planning serving image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
       "${mode[@]}" --plan --json >"$plan"; then
     :
   else
@@ -227,7 +292,7 @@ stage_catalog_image() {
     return 0
   fi
   rm -f "$plan"
-  confirm "$verb the pinned image for $RECIPE_MODEL on the nodes shown? No service starts or is replaced." no \
+  confirm "$verb the serving image for $RECIPE_MODEL on the nodes shown? No service starts or is replaced." no \
     || { rc=$?; echo 'Nothing was staged.'; return "$rc"; }
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }
@@ -369,7 +434,7 @@ perform_action() {
     check) run_operation check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" check "$spec" "${args[@]}" ;;
     status) run_operation status "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/status.sh" "$spec" "${args[@]}" ;;
     verify) run_operation verify "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive verify "$spec" ;;
-    readiness) run_operation readiness "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" start "$spec" "${args[@]}" --dry-run ;;
+    readiness) check_launch_prerequisites "$label" "$spec" "${args[@]}" ;;
     image-check) run_operation image-check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image check "$spec" "${args[@]}" ;;
     image-stage) stage_catalog_image "$label" "$spec" "${args[@]}" ;;
     start|stop)
@@ -412,22 +477,32 @@ compare_catalog_spec() {
 }
 
 # recipe_menu SPEC [READ_ONLY] — loops over one selected spec until Back.
+# operation_label CHOICE — the operation's name in a recipe choice, without
+# the effect after " — " or the "(suggested)" mark.
+operation_label() {
+  local label="${1%% — *}"
+  printf '%s\n' "${label% (suggested)}"
+}
+
 recipe_menu() {
   local spec="$1" read_only="${2:-0}" kind a b c index rc default group title="Choose one operation"
   local -a view_args=()
   if [ "$read_only" = 1 ]; then view_args+=(--read-only); title="Catalog spec (read-only)"; fi
-  local -a header=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=() labels=()
+  local -a header=() next=() frame=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=()
+  local -a labels=()
+  local rows
   while true; do
     ROW_JSON=$(catalog show "$spec" --json) || return 0
     live_args
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
       --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" "${LIVE_ARGS[@]}" \
       ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"} ${LAST_AT[$spec]:+--after-at "${LAST_AT[$spec]}"}) || return 0
-    header=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
+    header=(); next=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
       case "$kind" in
         recipe) RECIPE_NODES="$a"; RECIPE_MODEL="$b" ;;
         header) header+=("$a") ;;
+        next) next+=("$a") ;;
         option)
           if [ "$a" = main ]; then main+=("$b"); main_labels+=("$c")
           elif [ "$a" = launch ]; then launch+=("$b"); launch_labels+=("$c")
@@ -436,16 +511,25 @@ recipe_menu() {
           for index in "${!main[@]}"; do [ "${main[$index]}" != "$a" ] || default="$index"; done ;;
       esac
     done <<<"$VIEW"
-    echo
-    printf '%s\n' "${header[@]}" | emit_frame
     labels=("${main_labels[@]}")
     [ "${#launch[@]}" -eq 0 ] || labels+=("Launch options…")
     [ "${#storage[@]}" -eq 0 ] || labels+=("Storage and archive…")
     labels+=("Show details" "Published results" "Compare catalog specs" "Back")
+    # Next is the frame's last line. When the frame (with its border and the
+    # blank line above) and every choice (with Gum's 5 rows) don't fit the
+    # terminal, the frame keeps only its first line and Next.
+    frame=("${header[@]}" "${next[@]}")
+    if rows=$(_ui_terminal_rows) \
+        && [ $(( ${#frame[@]} + 3 + ${#labels[@]} + 5 )) -gt "$rows" ]; then
+      frame=("${header[0]}" "${next[@]}")
+    fi
+    echo
+    printf '%s\n' "${frame[@]}" | emit_frame
     index=$(PULSAR_CHOOSE_DEFAULT="$default" choose_index "$title" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     if [ "$index" -lt "${#main[@]}" ]; then
-      perform "${main[$index]}" "${main_labels[$index]% (suggested)}" "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      perform "${main[$index]}" "$(operation_label "${main_labels[$index]}")" "$spec" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
       continue
     fi
     group="${labels[$index]}"
@@ -455,7 +539,7 @@ recipe_menu() {
           index=$(choose_index "Launch options for the selected catalog spec" "${launch_labels[@]}" "Back") \
             || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
           [ "$index" -lt "${#launch[@]}" ] || break
-          if perform "${launch[$index]}" "${launch_labels[$index]}" "$spec"; then break
+          if perform "${launch[$index]}" "$(operation_label "${launch_labels[$index]}")" "$spec"; then break
           else
             rc=$?; [ "$rc" -ne 130 ] || return 130
             [ "$rc" -eq 1 ] || break
@@ -466,7 +550,7 @@ recipe_menu() {
           index=$(choose_index "Storage and archive" "${storage_labels[@]}" "Back") \
             || { rc=$?; [ "$rc" -ne 130 ] || return 130; break; }
           [ "$index" -lt "${#storage[@]}" ] || break
-          if perform "${storage[$index]}" "${storage_labels[$index]}" "$spec"; then break
+          if perform "${storage[$index]}" "$(operation_label "${storage_labels[$index]}")" "$spec"; then break
           else
             rc=$?; [ "$rc" -ne 130 ] || return 130
             [ "$rc" -eq 1 ] || break

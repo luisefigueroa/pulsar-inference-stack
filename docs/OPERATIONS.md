@@ -85,6 +85,8 @@ JSON fields, and container labels retain their existing names.
 | snapshot | An exact set of model files from one model commit. Its manifest lists the files, sizes, and hashes used to verify that set. |
 | home | The one verified source copy of a snapshot, on a confirmed member. |
 | prepared copies | The per-rank copies or bindings that serving reads. |
+| pin | Protection of prepared copies from purge, until they are unpinned. |
+| serving image | The recipe's container image, identified by its exact digest. Image command output calls it the pinned image. |
 | archive, archive location | The verified recovery copy, and the directory that holds archives. |
 | node | A confirmed machine, named by its hostname. |
 | rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
@@ -248,8 +250,15 @@ complete ID.
 
 ### Read recipe details
 
-The selected-spec menu separates **Selected recipe**, **Current observations
-(saved)** and **Published results**. Recipe geometry and explicitly recorded
+The selected-spec menu shows a frame of aligned fields: **Recipe**,
+**Settings** and **Image** describe the spec; **Files**, **Archive** and
+**Running?** give saved and session observations with their age;
+**Lifecycle** marks where the spec stands in Download → Prepare → Start from
+those records (only a current running observation marks Start done);
+**Results** summarizes published results on one line; **Next** is always the
+last line.
+On a terminal too short for the frame and every choice, the frame keeps only
+its first line and Next. Recipe geometry and explicitly recorded
 context, sequence and quantization settings describe intended execution; the
 menu does not infer engine defaults or resolve repeated arguments. The image
 digest is abbreviated here; **Show details** retains the complete identity and
@@ -806,7 +815,9 @@ still apply to all operational actions after setup.
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
-maintenance under **Storage and archive**. An operation is left out only when
+maintenance under **Storage and archive**. Where the terminal is wide enough,
+each choice adds what it does, such as **Prepare — copy files to every serving
+node** or **Pin prepared copies — protect from purge**. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
 **Download** remains available when a home is recorded, and **Restore** remains
 available when an archive location is configured. A home record can outlive its
@@ -849,7 +860,7 @@ Opening the catalog probes no node. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
 result while the catalog menu is open; leaving it for the root menu starts
 over. The list then says when it was observed and which nodes were not, and
-labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Live service** line gives the state, nodes, source
+labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Running?** field gives the state, nodes, source
 and age; **Live status**, **Start** and **Stop** in the same catalog menu
 update it, and the newest observation wins. Live status exit 0 means a service exists, not
 that it is running. A node that was not observed, or a failed node probe,
@@ -898,7 +909,7 @@ command; the menu resumes when that command exits. The menu does not infer
 confirmed cleanup, absence of a service, or unchanged files from the exit code.
 It labels the interruption even when a concurrent command completion returned
 zero, retains the command's output, and gives an explicit next inspection:
-**Check now** for storage, **Live status** for Start/Stop, or **Check pinned image**
+**Check now** for storage, **Live status** for Start/Stop, or **Check serving image**
 for image staging. These are suggestions, not automatic actions. Existing
 backend cleanup and retry behavior continues to own retained staging and service
 resources. Other command menus retain their command's interrupt exit status.
@@ -920,8 +931,8 @@ now does), the suggestion is the next required snapshot without a home, then
 **Prepare** once every snapshot has one. After a successful
 **Prepare**, which ends by verifying the prepared copy on every serving rank,
 the suggestion is **Start**, which rechecks its prerequisites. Prepare saves no
-observation, so the frame reads `Files: prepared in this session (…); saved
-check: …` until the next Check now. Other storage changes still suggest
+observation, so the frame's Files field reads `prepared in this session (…);
+saved check: …` until the next Check now. Other storage changes still suggest
 **Check now**, and so does any storage change that fails, since it may have
 partial effects; one rejected before it ran (exit 2) changes nothing. Each
 operation keeps its own preview and confirmation.
@@ -933,10 +944,10 @@ operation keeps its own preview and confirmation.
 - **Check launch prerequisites** runs the existing `start --dry-run` checks.
   It does not launch or stage images. Its output identifies checks, such as the
   multi-node preflight, that will run only during an actual Start.
-- **Check pinned image** runs `image check` on the selected serving nodes.
-- **Stage pinned image** previews `image stage` before confirmation. Choose
+- **Check serving image** runs `image check` on the selected serving nodes.
+- **Stage serving image** previews `image stage` before confirmation. Choose
   between pulling the exact catalog digest from its registry and copying the
-  pinned image from this node. Copying never silently falls back to a pull.
+  serving image from this node. Copying never silently falls back to a pull.
   Staging does not start or replace a service or select a different image.
 
 **Start** continues to run its existing checks. If it refuses the start only
@@ -944,6 +955,35 @@ because of a memory warning, the menu offers one separately confirmed retry
 with `--accept-memory-warn`, for the same spec and node selection. Insufficient
 memory and other blockers still prevent start. This acknowledgement is not
 remembered for later starts and does not authorize image pulls or replacement.
+
+For any other refusal or failure, and when **Check launch prerequisites**
+finds a blocker, the menu offers a choice for each menu operation that
+addresses a recorded blocker code. The choices are built from the recorded
+codes, not the printed text. A choice is offered once, however many blockers
+lead to it:
+
+| Blocker | Choice |
+| --- | --- |
+| `topology_incomplete` | Open Cluster topology, where membership can be set up or changed |
+| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
+| `docker_unavailable`, `container_start_failed` | Host diagnostics |
+| `image_missing` | Stage serving image |
+| `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
+| `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
+| `service_exists`, `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Stop |
+| A failed launch whose containers may remain (`cleanup` is `unconfirmed`) | Live status; Stop, added to the choices above |
+| `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
+
+Each choice runs the existing operation with its own selections, preview and
+confirmation, and none adds `--replace` or `--pull-image`. A failed
+multi-node launch whose containers were all seen removed offers no Live
+status or Stop. The inventory, Cluster topology, topology check, host
+diagnostics and a declined confirmation return to the same choices. The diagnostics rerun replaces them with its own. Any other
+choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
+inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
+`historical_spec` and `service_stopped` have no menu choice; their printed
+note gives the supported path.
+
 These menu choices operate on catalog specs; they do not author or override
 recipes. Historical schema-1 specs do not offer the new launch shortcuts.
 
@@ -1036,6 +1076,15 @@ warning and error lines for debugging; check rows keep their layout. Deprecated 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet
 and stdout, including `--json` results, is unchanged.
+
+While a started service loads, Start says how many health checks it allows
+and how far apart they are. On a terminal, one stderr line then updates after
+each check, for example `loading: 2:14 elapsed · health check 14 of 90 ·
+container running`. For a multi-node service it shows each rank's container
+state, or `all 3 ranks running` when they agree. Each check also waits for its
+probes, so the limit is a number of checks, not a time. The line is cleared
+before any later message. Captured or piped output gets the same text as a
+plain line about once a minute, and `start --json` results are unchanged.
 
 ## Historical specs and current observations
 

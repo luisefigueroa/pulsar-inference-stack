@@ -20,7 +20,7 @@ from scripts.terminal_format import TerminalWriter
 INSPECTIONS = {"status", "check", "readiness", "image-check", "verify", "budget"}
 # The inspection that establishes an action's effect when its outcome is unknown.
 RECHECK = {"start": "Live status", "stop": "Live status",
-           "image-stage": "Launch options → Check pinned image"}
+           "image-stage": "Launch options → Check serving image"}
 STORAGE_RECHECK = "Check now"
 REJECTED = "the reason is above; if it names an invalid argument, please report a menu bug"
 
@@ -29,8 +29,8 @@ NO = {
     "status": ("▲", "{subject} is not running.",
                "no node runs it, so starting it won't conflict"),
     "readiness": ("✗", "{subject} is not ready to start.", "the blockers and their fixes are above"),
-    "image-check": ("✗", "The pinned image for {subject} is not ready on every node.",
-                    "each node's state is above; Launch options → Stage pinned image can add it"),
+    "image-check": ("✗", "The serving image for {subject} is not ready on every node.",
+                    "each node's state is above; Launch options → Stage serving image can add it"),
     "check": ("✗", "{label} failed for {subject} without saving an observation.",
               "the reason is above"),
     "verify": ("✗", "{label} found a problem for {subject}.", "the findings are above"),
@@ -46,7 +46,7 @@ INTERRUPTED_NEXT = {
     **dict.fromkeys(STORAGE, "Use Check now to inspect current files before retrying. "
                              "Retained staging may be recoverable by the same operation."),
     **dict.fromkeys(("start", "stop"), "Use Live status to inspect the service before retrying Start or Stop."),
-    "image-stage": "Use Launch options → Check pinned image before retrying staging.",
+    "image-stage": "Use Launch options → Check serving image before retrying staging.",
 }
 INTERRUPTED_INSPECTION = "Rerun this inspection when ready; its partial output may be incomplete."
 

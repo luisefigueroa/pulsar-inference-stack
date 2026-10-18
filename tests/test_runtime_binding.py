@@ -168,13 +168,15 @@ container_state_exact() { echo running; }
             'ssh':f'#!/usr/bin/env bash\ntouch {root}/ssh-running\n'
                   + ('sleep 30\n' if phase=='launching' else '')+'echo '+'a'*64+'\n',
             'docker-run':f'#!/usr/bin/env bash\nif [ "$1" = run ]; then echo {"b"*64}; else exec python3 {root}/docker.py "$@"; fi\n',
-            'curl':f'#!/usr/bin/env bash\ntouch {root}/health-polled\nexit 7\n'}
+            # The marker follows the second poll, so the first poll's progress line has printed.
+            'curl':f'#!/usr/bin/env bash\n[ ! -e {root}/polled-once ] || touch {root}/health-polled\n'
+                   f'touch {root}/polled-once\nexit 7\n'}
         for name,body in doubles.items():
             (binaries/name).write_text(body);(binaries/name).chmod(0o755)
         blockers=root/'blockers.jsonl'
         env={**env,'PATH':f"{binaries}:{env['PATH']}",'PULSAR_SSH':str(binaries/'ssh'),
              'PULSAR_DOCKER':str(binaries/'docker-run'),'PULSAR_START_BLOCKERS_FILE':str(blockers),
-             'WAIT_ATTEMPTS':'100','WAIT_SECONDS':'1'}
+             'WAIT_ATTEMPTS':'100','WAIT_SECONDS':'1','LOAD_PROGRESS_LOG_SECONDS':'0'}
         process=subprocess.Popen(['bash',str(ROOT/'cluster/start-cluster.sh'),spec['spec_id'],'--skip-preflight'],
                                  cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                                  start_new_session=True)
@@ -205,6 +207,10 @@ container_state_exact() { echo running; }
                 self.assertIn('INTERRUPTED start_interrupted: ',stdout)
                 # Nothing is removed on an interrupt; that is stop's job.
                 self.assertNotIn('removing launch-tracked IDs',stderr)
+                if phase=='loading':
+                    # TUI-31: the wait reports each rank's container state.
+                    self.assertIn('health check 1 of 100 · all 2 ranks running\n',stderr)
+                    self.assertIn('up to 100 health checks, 1 s apart',stdout)
 
     def test_required_snapshots_through_public_observation_and_launcher(self):
         for nodes in (1,2):
