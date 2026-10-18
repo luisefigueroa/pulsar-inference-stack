@@ -861,6 +861,17 @@ status**; while its service state is unknown, or not observed since a Start
 or Stop, Live status is suggested before Start. Before setup, the read-only
 catalog does not offer the check.
 
+After a successful **Start** or **Live status** in the catalog menu, and
+after inventory's **Detailed status**, a **Connect** card follows the
+command's output when the service is running. It shows the API URL with
+`/v1`, the served model name, and whether the service was started with an API
+key, read from its recorded launch plan ("not recorded" when Live status saw
+the service only in the inventory). It ends with a copyable request like the
+ones in [Send your first API request](#send-your-first-api-request), with the
+URL and model filled in. The key is never printed: the request reads it from
+the client's `VLLM_API_KEY`. A loopback URL works only on the API node, and
+the card says so.
+
 ### Operation outcomes
 
 Each operation ends with an outcome worded by its

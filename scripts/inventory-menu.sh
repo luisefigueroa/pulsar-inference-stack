@@ -54,7 +54,7 @@ service_actions() {
     case "$choice" in
       "Detailed status")
         rc=0 started=$SECONDS
-        page_output "Checking service status…" "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
+        page_output "Checking service status…" "$REPO_DIR/scripts/with-connect-card.sh" "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
         # Not running (1) and not observable (3) need different next steps.
         [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "spec ${spec:0:12}" "$rc" \

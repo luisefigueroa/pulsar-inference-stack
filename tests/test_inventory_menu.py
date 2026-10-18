@@ -99,8 +99,8 @@ class Navigation(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         scripts = self.root / "scripts"; scripts.mkdir()
-        for name in ("inventory-menu.sh", "inventory_menu.py"):
-            shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+        for name in ("inventory-menu.sh", "inventory_menu.py", "with-connect-card.sh", "connect_card.py"):
+            shutil.copy(ROOT / "scripts" / name, scripts / name)
         (scripts / "ui.sh").write_text(catalog_tests.Catalog.UI)
         (self.root / "releases").mkdir()
         self.spec = fixture()[0]

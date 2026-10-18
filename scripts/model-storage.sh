@@ -99,6 +99,7 @@ run_operation() {
   local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" outcome
   shift 4
   [ "$action" != check ] || result=$(mktemp)
+  case "$action" in start|status) set -- "$REPO_DIR/scripts/with-connect-card.sh" "$@" ;; esac
   printf '\n→ %s %s. Ctrl-C requests interruption; this menu returns when the command exits.\n' "$label" "$model" \
     | python3 -m scripts.terminal_format
   trap 'interrupted=1' INT
