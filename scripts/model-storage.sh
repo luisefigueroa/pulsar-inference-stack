@@ -231,12 +231,8 @@ stage_catalog_image() {
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }
 
-# show_full_preview PLAN RENDER_ARGS... — the whole rendered plan, in the pager when long.
-show_full_preview() {
-  local plan="$1"
-  shift
-  page_output "" bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _ "$plan" "$@"
-}
+# FULL_PREVIEW PLAN RENDER_ARGS... runs the whole rendered plan, for page_output.
+FULL_PREVIEW=(bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _)
 
 # blocked_plan PLAN RENDER_ARGS... — choices after a blocked plan: the full
 # preview, Stop for a Pulsar service whose container mounts the files (asked
@@ -253,7 +249,7 @@ blocked_plan() {
     choice=$(choose_index "Blocked plan" "Show full preview" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
     if [ "$choice" -eq 0 ]; then
-      show_full_preview "$plan" "$@" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      page_output "" "${FULL_PREVIEW[@]}" "$plan" "$@" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
       continue
     fi
     choice=$((choice - 1))
@@ -277,7 +273,7 @@ blocked_plan() {
 # opens the whole rendered plan. Returns 0 only after an explicit yes; No is
 # selected first, and Esc also changes nothing.
 plan_and_confirm() {
-  local action="$1" label="$2" spec="$3" plan question rc choice
+  local action="$1" label="$2" spec="$3" plan question rc
   shift 3
   local -a render_args=(--operation "$1") plan_args=()
   [ "$1" != archive ] || render_args+=(--archive-action create)
@@ -315,18 +311,12 @@ plan_and_confirm() {
     return 1
   fi
   [ "$rc" -eq 0 ] || { rm -f "$plan"; HOLD_SCREEN=1; return 1; }
-  printf '\n%s\n' "$question" | python3 -m scripts.terminal_format
-  while true; do
-    # Gum Ctrl-C (130) leaves the menu, as at any other prompt.
-    choice=$(PULSAR_CHOOSE_DEFAULT=2 choose_index "$label" "Yes, ${label,,}" "Show full preview" \
-      "No, change nothing") || { rc=$?; choice=2; }
-    case "$choice" in
-      0) rm -f "$plan"; return 0 ;;
-      1) show_full_preview "$plan" "${render_args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || choice=2; } ;;
-    esac
-    [ "$choice" -ne 2 ] || break
-  done
+  # Gum Ctrl-C (130) at the question or in the pager leaves the menu, as at
+  # any other prompt.
+  rc=0
+  confirm_or_review "$question" "$label" "${FULL_PREVIEW[@]}" "$plan" "${render_args[@]}" || rc=$?
   rm -f "$plan"
+  [ "$rc" -ne 0 ] || return 0
   echo 'Nothing changed.'
   [ "$rc" -ne 130 ] || return 130
   return 1

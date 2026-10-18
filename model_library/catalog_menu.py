@@ -726,6 +726,14 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     return choices
 
 
+def _amount(size: object, count: object, unknown: str) -> str:
+    """"1.20 TiB (40 files)", or UNKNOWN with "size not observed" when the plan has no size."""
+    files = f"{count:,} files" if type(count) is int else ""
+    if type(size) is not int or size < 0:
+        return f"{unknown} ({files + ', ' if files else ''}size not observed)"
+    return size_text(size) + (f" ({files})" if files else "")
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
@@ -812,9 +820,8 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     if action == "restore":
         target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
         size, count = document.get("total_bytes"), document.get("file_count")
-        files = f" ({count:,} files)" if type(count) is int else ""
         available = (document.get("destination_space") or {}).get("available")
-        lines = [f"Copy {size_text(size)}{files} from the archive to {target}."]
+        lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}."]
         if type(available) is int and type(size) is int and available >= 0 and size >= 0:
             after = available - size
             lines.append(f"Short by {size_text(-after)} on {target}." if after < 0
@@ -827,10 +834,10 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         if effect["nothing"]:
             return [f"Nothing to download: verified files are already recorded on {target}; Download registers them."]
         count, size = _source_size(document.get("source") or {})
-        files = f" ({count:,} files)" if type(count) is int else ""
         commit = document.get("snapshot_revision")
         model = document.get("model_id") or row["model_id"]
-        return [f"Download {size_text(size)}{files} of {model}{' @ ' + _short(commit) if commit else ''} to {target}."]
+        return [f"Download {_amount(size, count, 'the files')} of {model}{' @ ' + _short(commit) if commit else ''} "
+                f"to {target}."]
     if action == "remove":
         home = document.get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"

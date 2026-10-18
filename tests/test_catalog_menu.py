@@ -699,7 +699,7 @@ class Question(unittest.TestCase):
         purge = {"plan": {"eligible": True, "actions": [{"action": "remove-copy"}, {"action": "release-binding"}]},
                  "incomplete_preparations": []}
         self.assertEqual(menu.question("purge", state, plan=purge, names=NAMES),
-                         "Purge org/model: delete 1 working copies, release 1 bindings? The home and the archive are kept.")
+                         "Purge org/model: delete 1 working copy, release 1 binding? The home and the archive are kept.")
         self.assertIn("from spark-1 to spark-3",
                        menu.question("move", state, plan={"source_node": "n0", "destination_node": "n2"}, names=NAMES))
         self.assertIn("Files come back only through Restore or Download",

@@ -426,3 +426,25 @@ wait_continue() {
   [ "$rc" -ne 130 ] || return 130
   return 0
 }
+
+# confirm_or_review QUESTION ACTION_LABEL PREVIEW_COMMAND...
+# Prints QUESTION, then offers "Yes, <action label>", "Show full preview" and
+# "No, change nothing", with No selected first. Gum cuts a long header, so the
+# question prints above the choice. Show full preview runs PREVIEW_COMMAND
+# through page_output and asks again. Returns 0 only for yes, 1 for no or Esc,
+# and 130 after Ctrl-C at the choice or in the pager.
+confirm_or_review() {
+  local question="$1" action="$2" choice rc
+  shift 2
+  _ui_require_gum || return
+  printf '\n%s\n' "$question" | python3 "$REPO_DIR/scripts/terminal_format.py"
+  while true; do
+    choice=$(PULSAR_CHOOSE_DEFAULT=2 choose_index "$action" "Yes, ${action,,}" "Show full preview" \
+      "No, change nothing") || return
+    case "$choice" in
+      0) return 0 ;;
+      1) page_output "" "$@" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      *) return 1 ;;
+    esac
+  done
+}
