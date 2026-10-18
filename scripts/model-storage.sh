@@ -238,6 +238,39 @@ show_full_preview() {
   page_output "" bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _ "$plan" "$@"
 }
 
+# blocked_plan PLAN RENDER_ARGS... — choices after a blocked plan: the full
+# preview, Stop for a Pulsar service whose container mounts the files (asked
+# first), Live service inventory, and Back. Returns 130 on Ctrl-C, else 1.
+blocked_plan() {
+  local plan="$1" choice rc kind spec model label question
+  shift
+  local -a kinds=() specs=() models=() labels=()
+  while IFS=$'\t' read -r kind spec model label; do
+    [ -n "$kind" ] || continue
+    kinds+=("$kind"); specs+=("$spec"); models+=("$model"); labels+=("$label")
+  done < <(catalog list --json | catalog_menu blocked-choices --plan-file "$plan" || true)
+  while true; do
+    choice=$(choose_index "Blocked plan" "Show full preview" "${labels[@]}" "Back") \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
+    if [ "$choice" -eq 0 ]; then
+      show_full_preview "$plan" "$@" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      continue
+    fi
+    choice=$((choice - 1))
+    [ "$choice" -lt "${#kinds[@]}" ] || return 1
+    case "${kinds[$choice]}" in
+      stop)
+        question=$(catalog show "${specs[$choice]}" --json \
+          | catalog_menu confirm --spec-id "${specs[$choice]}" --action stop) || continue
+        confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; continue; }
+        run_operation stop Stop "${specs[$choice]}" "${models[$choice]}" "$REPO_DIR/scripts/down.sh" "${specs[$choice]}"
+        return 1 ;;
+      inventory)
+        "$REPO_DIR/pulsar" inventory menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+    esac
+  done
+}
+
 # plan_and_confirm ACTION LABEL SPEC OPERATION_ARGS...
 # Runs the operation's own --plan preview and shows its summary, then asks a
 # question that names the model, placement and consequence. Show full preview
@@ -275,11 +308,8 @@ plan_and_confirm() {
   set -e
   if [ "$rc" -eq 3 ]; then
     printf '✗ The plan is blocked; nothing changed.\n'
-    while true; do
-      choice=$(choose_index "Blocked plan" "Show full preview" "Back") || { rc=$?; break; }
-      [ "$choice" -eq 0 ] || { rc=1; break; }
-      show_full_preview "$plan" "${render_args[@]}" || { rc=$?; [ "$rc" -ne 130 ] || break; }
-    done
+    rc=0
+    blocked_plan "$plan" "${render_args[@]}" || rc=$?
     rm -f "$plan"
     [ "$rc" -ne 130 ] || return 130
     return 1

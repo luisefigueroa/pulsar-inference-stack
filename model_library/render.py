@@ -200,7 +200,69 @@ def _copy(out: TerminalWriter, row: dict, names: NodeNames) -> None:
         out.field('Path', row.get('path') or row['hub_path'], indent=2)
 
 
+def blocker_message(text: str, names: NodeNames) -> str:
+    """Name the node in "node_id: reason" or "snapshot: node_id: reason" by hostname."""
+    head, separator, rest = text.partition(": ")
+    if separator and names.hostnames and head not in names.hostnames:
+        return f"{head}: {names.prefixed(rest)}"
+    return names.prefixed(text)
+
+
+# Each structured blocker as a cause, without its fix; {node} is the hostname.
+BLOCKER_TEXT = {
+    'pinned': 'the prepared copy on {node} is pinned',
+    'changed-copy': 'the prepared copy on {node} changed since it was prepared',
+    'insufficient-space': 'not enough copy budget or disk space on {node}',
+    'reuse-unverified': 'a shared prepared copy on {node} failed verification',
+    'dependent-copies': 'prepared copies still depend on this home',
+    'incomplete-preparations': 'incomplete preparations still depend on this snapshot',
+    'archive-required': 'removing a catalog home requires a fully verified archive',
+    'discard-required': 'this snapshot has no verified archive',
+    'catalog-snapshot': 'a catalog snapshot cannot be discarded as an experiment',
+}
+
+
+def blocker_detail_text(detail: dict, names: NodeNames) -> str:
+    """One structured plan blocker as a cause; its fix is separate (see planning)."""
+    container = detail.get('container')
+    node = names(detail['node_id']) if detail.get('node_id') else None
+    if detail.get('code') == 'container-reference' and isinstance(container, dict):
+        state = container.get('state') if container.get('state') in ('running', 'stopped') else 'state-unknown'
+        owner = 'Pulsar container' if container.get('spec_id') else 'container'
+        spec = f" (spec {str(container['spec_id'])[:12]})" if container.get('spec_id') else ''
+        where = f' on {node}' if node else ''
+        mount, path = detail.get('mount'), detail.get('path')
+        if not mount or mount == path:
+            covers = 'mounts these files'
+        elif path and path.startswith(mount.rstrip('/') + '/'):
+            covers = f'mounts {mount}, which contains these files'
+        else:
+            covers = f'mounts {mount}, inside these files'
+        text = f"{state} {owner} {container.get('name') or 'unnamed'}{spec}{where} {covers}"
+    elif detail.get('code') in BLOCKER_TEXT and (node or '{node}' not in BLOCKER_TEXT[detail['code']]):
+        text = BLOCKER_TEXT[detail['code']].format(node=node)
+        if detail['code'] == 'insufficient-space' and 'combined' in str(detail.get('message')):
+            text = text.replace('not enough', 'not enough combined', 1)
+    else:
+        text = blocker_message(str(detail.get('message') or 'storage restriction'), names)
+    if detail.get('snapshot') and not text.startswith(f"{detail['snapshot']}: "):
+        text = f"{detail['snapshot']}: {text}"
+    return text
+
+
+def _blocker_details(out: TerminalWriter, details: list, names: NodeNames) -> None:
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        out.field('Blocker', blocker_detail_text(item, names))
+        if item.get('fix'):
+            out.field('Fix', item['fix'], indent=2)
+
+
 def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
+    if isinstance(document.get('blocker_details'), list) and document['blocker_details']:
+        _blocker_details(out, document['blocker_details'], names)
+        return
     for blocker in document.get('blockers') or []:
         if isinstance(blocker, dict):
             reason = blocker.get('reason') or blocker.get('message')
@@ -210,7 +272,7 @@ def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
             else:
                 blocker = 'Additional storage restriction; inspect --json for details.'
         elif isinstance(blocker, str):
-            blocker = names.prefixed(blocker)
+            blocker = blocker_message(blocker, names)
         out.field('Blocker', blocker)
 
 

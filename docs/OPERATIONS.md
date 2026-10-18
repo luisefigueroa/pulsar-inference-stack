@@ -664,7 +664,13 @@ copies and preserves homes and archives. It removes only the selected recipe's
 bindings; working-copy files remain while any other recipe has a binding, even
 an unpinned one. The final binding can delete the working copy only after the
 usual ownership, container and incomplete-operation checks. Container references
-to a shared path, including stopped containers, still block purge. Before
+to a shared path, including stopped containers, still block purge. A container
+that mounts any directory containing the copy, such as a whole home directory,
+counts. The plan names each such container, its node, whether it is running,
+and the mount, with a fix: Stop for a service Pulsar started, otherwise remove
+the container or its mount. Pulsar never removes a container it did not start.
+In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
+(asked first) and **Open Live service inventory**. Before
 removing a catalog model's home, clear its dependent prepared copies and verify
 its archive.
 An unpromoted model may be explicitly discarded without an archive after
@@ -824,8 +830,9 @@ consequence, and says so when nothing would change. Choose **Yes**, **Show full
 preview** or **No, change nothing**; No is selected first, and Esc also changes
 nothing. **Show full preview** opens the complete rendered plan, with exact
 byte counts, in the pager, then returns to the question. A blocked plan names
-its first blockers and ends without a question; it offers **Show full preview**
-and **Back**. **Back**
+its first blockers with their fixes and ends without a question; it offers
+**Show full preview**, **Stop** and **Open Live service inventory** when a
+Pulsar service's container blocks it, and **Back**. **Back**
 or Esc leaves the current menu or cancels an action prompt to its containing
 menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.

@@ -27,7 +27,7 @@ from typing import Any
 from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, compact_lines as published_lines
 from .node_names import NodeNames
-from .render import preparation_estimate, projected_headroom, size_text
+from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "stop", "status")
@@ -692,16 +692,8 @@ def plan_effect(action: str, plan: dict) -> dict:
     return {"nothing": False}
 
 
-def _blocker_line(text: str, names: NodeNames) -> str:
-    """Name the node in "node_id: reason" or "snapshot: node_id: reason" by hostname.
-
-    A full 64-character spec ID is shortened to the 12-character prefix.
-    """
-    head, separator, rest = text.partition(": ")
-    if separator and names.hostnames and head not in names.hostnames:
-        text = f"{head}: {names.prefixed(rest)}"
-    else:
-        text = names.prefixed(text)
+def _short_ids(text: str) -> str:
+    """Shorten each full 64-character spec ID to its 12-character prefix."""
     return SPEC_ID.sub(lambda match: match.group(0)[:12], text)
 
 
@@ -715,6 +707,25 @@ def _source_size(source: dict) -> tuple[int | None, int | None]:
     return (count if type(count) is int else None), source.get("total_bytes")
 
 
+def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str, str]]:
+    """Menu choices for a blocked plan's Pulsar container blockers, as (kind, spec, model, label).
+
+    Stop for each catalog spec whose Pulsar container mounts the files, then
+    Live service inventory. A container that Pulsar did not start gets no
+    choice: its fix is to remove it or its mount, which the menu never does.
+    """
+    specs: list[str] = []
+    for item in _plan_document(plan).get("blocker_details") or []:
+        container = item.get("container") if isinstance(item, dict) else None
+        if isinstance(container, dict) and container.get("spec_id") and container["spec_id"] not in specs:
+            specs.append(str(container["spec_id"]))
+    models = {entry["spec_id"]: entry["model_id"] for entry in entries}
+    choices = [("stop", spec, models[spec], f"Stop {models[spec]} ({spec[:12]})") for spec in specs if spec in models]
+    if specs:
+        choices.append(("inventory", "", "", "Open Live service inventory"))
+    return choices
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
@@ -725,11 +736,19 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     names = names or NodeNames()
     document = _plan_document(plan)
     effect = plan_effect(action, plan)
-    blockers = [str(item) for item in document.get("blockers") or [] if isinstance(item, str)]
     if plan_blocked(plan):
-        lines = [f"Blocked: {_blocker_line(text, names)}" for text in blockers[:2]] or ["Blocked; the full preview has details."]
-        if len(blockers) > 2:
-            lines.append(f"{_count(len(blockers) - 2, 'more blocker')} in the full preview.")
+        details = [item for item in document.get("blocker_details") or [] if isinstance(item, dict)]
+        if details:
+            causes = [blocker_detail_text(item, names) + (f"; {item['fix']}" if item.get("fix") else "")
+                      for item in details]
+        else:
+            causes = [blocker_message(str(item), names) for item in document.get("blockers") or []
+                      if isinstance(item, str)]
+        shown = causes if len(causes) <= 3 else causes[:2]
+        lines = [f"Blocked: {_short_ids(text).rstrip('.')}." for text in shown] \
+            or ["Blocked; the full preview has details."]
+        if len(causes) > len(shown):
+            lines.append(f"{_count(len(causes) - len(shown), 'more blocker')} in the full preview.")
         return lines
     if action == "prepare":
         plans = ([member for member in document.get("snapshots") or []]
@@ -985,6 +1004,8 @@ def main(argv: list[str] | None = None) -> int:
     preview.add_argument("--spec-id", required=True)
     preview.add_argument("--action", required=True, choices=sorted(MUTATIONS))
     preview.add_argument("--plan-file", required=True)
+    blocked = sub.add_parser("blocked-choices", help="choices for a blocked plan; catalog JSON on stdin")
+    blocked.add_argument("--plan-file", required=True)
     home = sub.add_parser("next", help="the home screen's Next line; catalog JSON on stdin")
     home.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
@@ -1012,6 +1033,14 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 fact = live_fact(entry, live, outcomes.get(entry["spec_id"]))
                 print(f"{entry['spec_id']}\t{menu_label(entry, width, fact)}")
+            return 0
+        if args.command == "blocked-choices":
+            with open(args.plan_file, encoding="utf-8") as handle:
+                plan = json.load(handle)
+            if not isinstance(plan, dict):
+                raise ValueError("plan must be a JSON object")
+            for choice in blocked_choices(plan, json.load(sys.stdin).get("entries") or []):
+                print("\t".join(clean(part) for part in choice))
             return 0
         if args.command == "next":
             line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location)
