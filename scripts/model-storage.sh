@@ -169,7 +169,8 @@ run_operation() {
 
 
 # A failed Start already reports its checks. Offer one narrowly scoped retry
-# only when the existing structured blocker records contain memory warnings.
+# only when the existing structured blocker records contain memory warnings;
+# otherwise offer the menu operations that address the recorded blockers.
 start_catalog_spec() {
   local label="$1" spec="$2" blockers question allow=0 rc
   shift 2
@@ -179,6 +180,11 @@ start_catalog_spec() {
   if [ "$OPERATION_RC" -eq 1 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ] \
       && catalog_menu memory-warning --blockers-file "$blockers"; then
     allow=1
+  elif [ "$OPERATION_RC" -ne 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ]; then
+    rc=0
+    start_choices "$spec" "$blockers" "" "$@" || rc=$?
+    rm -f "$blockers"
+    return "$rc"
   fi
   rm -f "$blockers"
   [ "$allow" -eq 1 ] || return 0
@@ -191,6 +197,64 @@ start_catalog_spec() {
     "$REPO_DIR/pulsar" start "$spec" "$@" --accept-memory-warn
 }
 
+# check_launch_prerequisites LABEL SPEC START_ARGS... — the existing dry run;
+# when it records blockers, the same choices as a refused Start follow.
+check_launch_prerequisites() {
+  local label="$1" spec="$2" blockers rc=0
+  shift 2
+  blockers=$(mktemp) || return 1
+  run_operation readiness "$label" "$spec" "$RECIPE_MODEL" env PULSAR_START_BLOCKERS_FILE="$blockers" \
+    "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run
+  if [ "$OPERATION_RC" -ne 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ]; then
+    start_choices "$spec" "$blockers" --dry-run "$@" || rc=$?
+  fi
+  rm -f "$blockers"
+  return "$rc"
+}
+
+# start_choices SPEC BLOCKERS_FILE [--dry-run] START_ARGS...
+# After a refused or failed Start (or dry run), offers the menu operations that
+# address its recorded blockers, from the codes rather than the printed text.
+# Each runs with its own selection, preview and confirmation, and none passes
+# --replace or --pull-image. The choice stands in for the Continue hold. Read-only
+# choices return here; a declined one returns here too. Returns 130 on Ctrl-C.
+start_choices() {
+  local spec="$1" blockers="$2" dry_run="$3" title="" line kind label choice rc
+  shift 3
+  local -a kinds=() labels=()
+  while true; do
+    title=""; kinds=(); labels=()
+    # Each line is KIND, a tab and a nonempty label.
+    while IFS= read -r line; do
+      kind=${line%%$'\t'*}; label=${line#*$'\t'}
+      [ -n "$kind" ] && [ "$kind" != "$line" ] || continue
+      if [ "$kind" = title ]; then title=$label; else kinds+=("$kind"); labels+=("$label"); fi
+    done < <(printf '%s' "$ROW_JSON" | catalog_menu start-choices --spec-id "$spec" \
+      --archive-location "$(archive_location)" --blockers-file "$blockers" ${dry_run:+--dry-run} || true)
+    [ "${#kinds[@]}" -gt 0 ] || return 0
+    HOLD_SCREEN=0
+    choice=$(choose_index "$title" "${labels[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    [ "$choice" -lt "${#kinds[@]}" ] || return 0
+    rc=0
+    case "${kinds[$choice]}" in
+      inventory) "$REPO_DIR/pulsar" inventory menu || rc=$? ;;
+      topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
+      doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
+      verbose)
+        # A fresh dry run replaces the recorded blockers, and the choices follow it.
+        : >"$blockers"
+        run_operation readiness 'Check launch prerequisites with full diagnostics' "$spec" "$RECIPE_MODEL" \
+          env PULSAR_START_BLOCKERS_FILE="$blockers" "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run --verbose
+        [ "$OPERATION_INTERRUPTED" -eq 0 ] || return 0
+        [ "$OPERATION_RC" -ne 0 ] || return 0
+        dry_run=--dry-run ;;
+      *)
+        perform_action "${kinds[$choice]}" "${labels[$choice]}" "$spec" || rc=$?
+        [ "$rc" -eq 0 ] && [ "$HOLD_SCREEN" = 1 ] && return 0 ;;
+    esac
+    [ "$rc" -ne 130 ] || return 130
+  done
+}
 
 stage_catalog_image() {
   local label="$1" spec="$2" choice plan rc index verb mode_name
@@ -369,7 +433,7 @@ perform_action() {
     check) run_operation check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" check "$spec" "${args[@]}" ;;
     status) run_operation status "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/status.sh" "$spec" "${args[@]}" ;;
     verify) run_operation verify "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive verify "$spec" ;;
-    readiness) run_operation readiness "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" start "$spec" "${args[@]}" --dry-run ;;
+    readiness) check_launch_prerequisites "$label" "$spec" "${args[@]}" ;;
     image-check) run_operation image-check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image check "$spec" "${args[@]}" ;;
     image-stage) stage_catalog_image "$label" "$spec" "${args[@]}" ;;
     start|stop)

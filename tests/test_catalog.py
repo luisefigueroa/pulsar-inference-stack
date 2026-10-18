@@ -543,8 +543,10 @@ if os.path.basename(sys.argv[0]) == "pulsar":
         rc = fixture.get(mode + "_rc", 0)
         if os.environ.get("PULSAR_START_BLOCKERS_FILE"):
             with open(os.environ["PULSAR_START_BLOCKERS_FILE"], "w") as stream:
+                # A blocker is a code, or a record such as {"blocker": ..., "stage": "launch"}.
                 for code in fixture.get("blockers", []):
-                    stream.write(json.dumps({"field": "blocker", "blocker": code, "stage": "check"}) + "\\n")
+                    record = code if isinstance(code, dict) else {"blocker": code}
+                    stream.write(json.dumps({"field": "blocker", "stage": "check", **record}) + "\\n")
     elif sys.argv[1:3] == ["image", "stage"] and "--plan" in sys.argv:
         state = fixture.get("image_state", "missing")
         plan = {"schema_version": 1, "kind": "pulsar-image-check", "operation": "stage-image",

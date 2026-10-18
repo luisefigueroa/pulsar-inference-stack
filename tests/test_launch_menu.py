@@ -8,6 +8,7 @@ from model_library import catalog_menu as menu
 from tests import test_catalog as catalog_tests
 from tests import test_catalog_menu as menu_tests
 from tests import test_start_blockers as start_tests
+from scripts import start_blockers
 
 WITHDRAWN_REVIEW = {"status": "withdrawn", "reviewer": "example-reviewer",
                     "reviewed_at": "2026-09-03T00:00:00Z",
@@ -136,12 +137,112 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(actions, [["pulsar", "start", spec, "--node", "fixture-node"]] * 2)
 
     def test_other_blockers_do_not_offer_memory_acceptance(self):
-        _, result, actions, _, questions = self.run_menu(
+        _, result, actions, choices, questions = self.run_menu(
             ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes"],
             launch={"start_rc": 1, "blockers": ["memory_warning", "image_missing"]})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(questions.splitlines()), 1)
+        self.assertIn("Start was refused: 2 blockers. Choose a next step\nStage pinned image\nBack\n", choices)
+
+    # TUI-34: a refused or failed Start offers the menu operations for its blockers.
+    def refused(self, blockers, *answers, confirms=("yes",), launch=None, **kwargs):
+        return self.run_menu(["#0", "Start", "fixture-host", *answers], confirms=list(confirms),
+                             launch={"start_rc": 1, "blockers": blockers, **(launch or {})}, **kwargs)
+
+    def offered(self, choices, title):
+        return choices.split(title + "\n", 1)[1].split("\n\n", 1)[0].splitlines()
+
+    def test_refused_start_offers_one_choice_per_operation_from_the_recorded_codes(self):
+        _, result, actions, choices, _ = self.refused(
+            ["memory_insufficient", "memory_insufficient", "port_in_use", "image_missing", "node_unreachable"],
+            "Back", "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(self.offered(choices, "Start was refused: 5 blockers. Choose a next step"),
+                         ["Open Live service inventory", "Stage pinned image",
+                          "Check saved nodes and fabric (checks nodes now)", "Back"])
+        # The choice holds the Start output; Back adds no Continue.
+        self.assertNotIn("[continue]", choices)
+
+    def test_read_only_choices_return_to_the_same_choices(self):
+        _, result, actions, choices, _ = self.refused(
+            ["port_in_use", "fabric_incomplete", "docker_unavailable"],
+            "Open Live service inventory", "Check saved nodes and fabric (checks nodes now)", "Host diagnostics",
+            "Back", "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[1:3], [["pulsar", "inventory", "menu"], ["pulsar", "topology", "check"]])
+        self.assertEqual(actions[3], ["pulsar", "doctor"])
+        self.assertEqual(choices.count("Start was refused: 3 blockers"), 4)
+        self.assertIn("[page] Checking saved nodes and fabric…", choices)
+
+    def test_existing_service_offers_live_status_and_a_separately_confirmed_stop(self):
+        spec, result, actions, choices, questions = self.refused(
+            ["service_exists"], "Stop", "fixture-host", "Back", "Back", confirms=["yes", "yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
+                         ["Live status", "Stop", "Back"])
+        self.assertEqual(actions[1:], [["down.sh", spec, "--node", "fixture-node"]])
+        self.assertEqual(len(questions.splitlines()), 2)
+        self.assertEqual(choices.count("[continue]"), 1)
+
+    def test_declined_stop_returns_to_the_choices_and_changes_nothing(self):
+        _, result, actions, choices, _ = self.refused(
+            ["service_exists"], "Stop", "fixture-host", "Back", "Back", "Back", confirms=["yes", "no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(choices.count("Start was refused: 1 blocker"), 2)
+
+    def test_launch_failure_is_named_and_offers_status_and_stop(self):
+        _, result, _, choices, _ = self.refused(
+            [{"blocker": "health_timeout", "stage": "launch"}], "Back", "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.offered(choices, "Start failed after launch: 1 blocker. Choose a next step"),
+                         ["Live status", "Stop", "Back"])
+
+    def test_missing_files_offer_the_operation_saved_records_point_to(self):
+        _, _, _, choices, _ = self.refused(["model_files_not_ready"], "Back", "Back", "Back")
+        self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
+                         ["Download", "Back"])
+        _, _, _, choices, _ = self.refused(["model_files_not_ready"], "Back", "Back", "Back", with_home=True)
+        self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
+                         ["Prepare", "Back"])
+
+    def test_failed_check_reruns_the_dry_run_with_full_diagnostics(self):
+        spec, result, actions, choices, _ = self.refused(
+            ["memory_check_failed"], "Rerun the checks with full diagnostics", "Back", "Back", "Back",
+            launch={"dry_rc": 3})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[1], ["pulsar", "start", spec, "--node", "fixture-node", "--dry-run", "--verbose"])
+        # The rerun recorded the same blocker, so the choices follow its dry run.
+        self.assertIn("Not ready to start: 1 blocker. Choose a next step", choices)
+
+    def test_choices_never_grant_replacement_or_registry_pulls(self):
+        _, _, actions, _, _ = self.refused(
+            ["service_exists", "image_missing"], "Stage pinned image", "fixture-host",
+            "Pull pinned image from registry", "Back", "Back", confirms=["yes", "yes"])
+        flat = [arg for action in actions for arg in action]
+        self.assertNotIn("--replace", flat)
+        self.assertNotIn("--pull-image", flat)
+        self.assertIn(["--plan", "--json"], [action[-2:] for action in actions])
+
+    def test_ctrl_c_at_the_choices_leaves_the_menu(self):
+        _, result, actions, _, _ = self.refused(["port_in_use"], "<ctrl-c>")
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(len(actions), 1)
+
+    def test_a_refusal_without_records_offers_nothing_new(self):
+        _, result, _, choices, _ = self.refused([], "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Choose a next step", choices)
+        self.assertEqual(choices.count("[continue]"), 1)
+
+    def test_refused_dry_run_offers_the_same_choices(self):
+        _, result, _, choices, _ = self.shortcut(
+            "Check launch prerequisites", "Back", launch={"dry_rc": 1, "blockers": ["image_missing"]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.offered(choices, "Not ready to start: 1 blocker. Choose a next step"),
+                         ["Stage pinned image", "Back"])
 
     def test_interrupted_start_does_not_offer_a_retry(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -216,6 +317,22 @@ class LaunchPresentation(unittest.TestCase):
                         [warning, {"stage": "check", "blocker": "memory_insufficient"}]):
             with self.subTest(records=records):
                 self.assertFalse(menu.memory_warning_only(records))
+
+    def test_every_start_blocker_has_choices_or_a_reason_for_none(self):
+        codes = set(start_blockers.BLOCKERS)
+        self.assertEqual(set(menu.START_CHOICES) | menu.START_NO_CHOICE, codes)
+        self.assertFalse(set(menu.START_CHOICES) & menu.START_NO_CHOICE)
+
+    def test_start_choices_ignore_unknown_and_unchoosable_codes(self):
+        row = menu_tests.row()
+        records = [{"blocker": "not_a_code"}, None, {"blocker": "memory_warning"}, {"blocker": "guard_unsupported"}]
+        self.assertEqual(menu.start_choices(records, row, "configured"), [])
+        # An operation the recipe leaves out is not offered from here either.
+        guarded = menu_tests.row(**menu_tests.GUARDED)
+        self.assertEqual(menu.start_choices([{"blocker": "image_missing"}], guarded, "configured"),
+                         [("image-stage", "Stage pinned image")])
+        historical = menu_tests.row(start_unsupported_reason="historical_spec")
+        self.assertEqual(menu.start_choices([{"blocker": "image_missing"}], historical, "configured"), [])
 
     def image_plan(self):
         row = menu_tests.row(image={"digest": "example/image@sha256:" + "c" * 64})

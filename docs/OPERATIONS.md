@@ -944,6 +944,32 @@ because of a memory warning, the menu offers one separately confirmed retry
 with `--accept-memory-warn`, for the same spec and node selection. Insufficient
 memory and other blockers still prevent start. This acknowledgement is not
 remembered for later starts and does not authorize image pulls or replacement.
+
+For any other refusal or failure, and when **Check launch prerequisites**
+finds a blocker, the menu offers a choice for each menu operation that
+addresses a recorded blocker code. The choices are built from the recorded
+codes, not the printed text. A choice is offered once, however many blockers
+lead to it:
+
+| Blocker | Choice |
+| --- | --- |
+| `topology_incomplete`, `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
+| `docker_unavailable`, `container_start_failed` | Host diagnostics |
+| `image_missing` | Stage pinned image |
+| `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
+| `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
+| `service_exists`, `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Stop |
+| `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
+
+Each choice runs the existing operation with its own selections, preview and
+confirmation, and none adds `--replace` or `--pull-image`. The inventory,
+topology check, host diagnostics and a declined confirmation return to the
+same choices. The diagnostics rerun replaces them with its own. Any other
+choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
+inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
+`historical_spec` and `service_stopped` have no menu choice; their printed
+note gives the supported path.
+
 These menu choices operate on catalog specs; they do not author or override
 recipes. Historical schema-1 specs do not offer the new launch shortcuts.
 

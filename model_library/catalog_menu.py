@@ -584,6 +584,70 @@ def memory_warning_only(records: list[dict]) -> bool:
                                 and record.get("blocker") == "memory_warning" for record in records)
 
 
+# Menu choices after a refused or failed Start, by blocker code, in the order
+# offered. "files" resolves to Download, Restore or Prepare from saved records.
+# Each choice runs an existing menu operation with its own selection, preview
+# and confirmation; none adds --replace or --pull-image.
+START_CHOICES = {
+    "topology_incomplete": ("topology-check",), "fabric_incomplete": ("topology-check",),
+    "node_unreachable": ("topology-check",),
+    "docker_unavailable": ("doctor",), "container_start_failed": ("doctor",),
+    "image_missing": ("image-stage",),
+    "model_files_not_ready": ("files",),
+    "memory_insufficient": ("inventory",), "port_in_use": ("inventory",),
+    "service_exists": ("status", "stop"),
+    "smoke_test_failed": ("status", "stop"), "health_timeout": ("status", "stop"),
+    "container_exited": ("status", "stop"),
+    "image_check_failed": ("verbose",), "model_files_check_failed": ("verbose",),
+    "memory_check_failed": ("verbose",), "preflight_failed": ("verbose",),
+}
+# Codes that get no choice here: the memory-warning retry is offered on its
+# own, an interrupted Start's outcome names the next inspection, and the rest
+# have no menu operation that resolves them.
+START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
+                             "service_stopped"})
+START_CHOICE_LABELS = {
+    "topology-check": "Check saved nodes and fabric (checks nodes now)",
+    "doctor": "Host diagnostics",
+    "inventory": "Open Live service inventory",
+    "verbose": "Rerun the checks with full diagnostics",
+}
+
+
+def start_choices(records: list[dict], row: dict, archive_location: str) -> list[tuple[str, str]]:
+    """(action, label) choices for recorded start blockers, without duplicates.
+
+    Actions name existing menu operations, or one of START_CHOICE_LABELS. A
+    code without a choice, or an unknown one, adds nothing; its own next step
+    is already printed with the blocker.
+    """
+    offered, _, _ = operations(row, archive_location)
+    choices: list[tuple[str, str]] = []
+    for record in records:
+        for kind in START_CHOICES.get(record.get("blocker") if isinstance(record, dict) else None, ()):
+            if kind == "files":
+                missing = _next_home(row, offered, archive_location)
+                kind = missing[1] if missing else "prepare"
+            if not kind or kind in (action for action, _ in choices):
+                continue
+            if kind in START_CHOICE_LABELS:
+                choices.append((kind, START_CHOICE_LABELS[kind]))
+            elif kind in offered:
+                choices.append((kind, LABELS[kind]))
+    return choices
+
+
+def start_choices_title(records: list[dict], *, dry_run: bool = False) -> str:
+    """The question above the choices: what happened, and how many blockers."""
+    codes = [record.get("blocker") for record in records if isinstance(record, dict)]
+    count = _count(len(codes), "blocker")
+    if dry_run:
+        return f"Not ready to start: {count}. Choose a next step"
+    if any(isinstance(record, dict) and record.get("stage") == "launch" for record in records):
+        return f"Start failed after launch: {count}. Choose a next step"
+    return f"Start was refused: {count}. Choose a next step"
+
+
 def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, mode: str, width=None) -> bool:
     """Display the public image stage preview; never inspect or stage an image."""
     plan = response.get("result")
@@ -1006,6 +1070,12 @@ def main(argv: list[str] | None = None) -> int:
     labels.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
+    choices = sub.add_parser("start-choices", help="a title, then one menu choice per line for recorded start "
+                             "blockers; catalog JSON on stdin")
+    choices.add_argument("--spec-id", required=True)
+    choices.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
+    choices.add_argument("--blockers-file", required=True)
+    choices.add_argument("--dry-run", action="store_true", help="the blockers come from Check launch prerequisites")
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1069,6 +1139,18 @@ def main(argv: list[str] | None = None) -> int:
                 print(clean(line))
             return 0
         row = read_row(sys.stdin, args.spec_id)
+        if args.command == "start-choices":
+            # Each line is TITLE or ACTION, a tab, then a nonempty label. Nothing
+            # is printed, and the status is 1, when no choice applies.
+            from scripts.start_blockers import read
+            records = read(args.blockers_file)
+            found = start_choices(records, row, args.archive_location)
+            if not found:
+                return 1
+            print(f"title\t{clean(start_choices_title(records, dry_run=args.dry_run))}")
+            for action, label in found:
+                print(f"{action}\t{clean(label)}")
+            return 0
         names = NodeNames.saved()
         if args.command == "image-plan":
             with open(args.plan_file, encoding="utf-8") as handle:
