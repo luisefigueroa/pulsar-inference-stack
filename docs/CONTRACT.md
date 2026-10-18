@@ -270,6 +270,9 @@ codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
 snapshots' records with a `snapshot` field. Branch on `code`; the other text is
 for people.
 
+Change note, 2026-10-17: plans gained `blocker_details` beside the unchanged
+`blockers` messages.
+
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;
 `cleanup_incomplete` means worker exit could not be established. Neither result
