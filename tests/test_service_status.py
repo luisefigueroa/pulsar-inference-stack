@@ -342,6 +342,24 @@ esac
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertIn("spark-2: SSH timed out", result.stderr)
 
+    def test_the_result_file_holds_the_json_result_for_the_connect_card(self):
+        # The menu's Connect card reads this file (scripts/connect_card.py).
+        for observe in ("ok", "fail"):
+            with self.subTest(observe=observe):
+                target = self.root / f"result-{observe}.json"
+                result = self.status(SPEC, observe=observe, PULSAR_SERVICE_RESULT_FILE=str(target))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                document = json.loads(self.status(SPEC, "--json", observe=observe).stdout)
+                self.assertEqual(json.loads(target.read_text()), document)
+        self.assertEqual(json.loads((self.root / "result-ok.json").read_text())["state"], "running")
+        self.assertEqual(json.loads((self.root / "result-fail.json").read_text())["state"], "stale")
+        # No service: an error, and no result.
+        (self.root / "inventory.json").write_text(json.dumps(inventory()))
+        target = self.root / "result.json"
+        result = self.status(SPEC, observe="fail", PULSAR_SERVICE_RESULT_FILE=str(target))
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(target.exists())
+
 
 class Envelope(unittest.TestCase):
     def main(self, error):

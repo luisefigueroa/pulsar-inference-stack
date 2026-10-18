@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -21,6 +22,21 @@ def enrolled_two_node():
 
 def unenrolled_two_node():
     return {"schema_version": 1, "topology_id": "b" * 64, "nodes": [{"rank": 0}, {"rank": 1}]}
+
+
+def never_checked(prefix):
+    """A catalog projection entry with no saved check."""
+    return {"spec_id": prefix * 64, "model_id": "org/model", "snapshot_revision": "0" * 40,
+            "geometry": {"nodes": 1, "tp": 1, "pp": 1}, "local_state": "unknown", "archive_state": "unknown",
+            "checked_at": None, "observation_age_seconds": None, "blockers": [], "home": None,
+            "archive": None, "prepared_copies": []}
+
+
+def ready(prefix):
+    """An entry whose saved check, two hours old, found every file prepared."""
+    return {**never_checked(prefix), "local_state": "ready", "checked_at": "2026-09-05T00:00:00Z",
+            "observation_age_seconds": 7200,
+            "home": {"node_id": "n0", "path": "/fixture/home", "verified_at": "2026-09-05T00:00:00Z"}}
 
 
 class HomeMenu(unittest.TestCase):
@@ -71,13 +87,34 @@ wait_continue() {
                           'case "$*" in "topology setup"|"ssh-trust enroll")\n'
                           '  if [ "${rc:-0}" = 0 ] && [ -n "${SETUP_TOPOLOGY:-}" ]; then\n'
                           '    cp "$SETUP_TOPOLOGY" .cluster-topology.json\n'
-                          '  fi ;; esac\n'
+                          '  fi ;;\n'
+                          '  "models menu") [ -z "${CATALOG_AFTER:-}" ] || cp "$CATALOG_AFTER" "$CATALOG_FILE" ;; esac\n'
                           'exit "${rc:-0}"\n')
         pulsar.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh"):
             probe = scripts / name
             probe.write_text('#!/usr/bin/env bash\necho "probe: $0" >> "$PULSAR_LOG"\nexit 1\n')
             probe.chmod(0o755)
+        # The catalog is a double, so the menu never reads this checkout's
+        # releases or saved records: `catalog list --json` prints CATALOG_FILE
+        # (an empty catalog by default) or fails with CATALOG_RC. Node tools
+        # record a probe.
+        binary = self.root / "bin"
+        binary.mkdir()
+        self.catalog_log = self.root / "catalog.log"
+        self.catalog = self.root / "catalog.json"
+        self.catalog.write_text(json.dumps({"entries": []}))
+        python = binary / "python3"
+        python.write_text('#!/usr/bin/env bash\n'
+                          'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
+                          '  shift 2; printf "%s\\n" "$*" >> "$CATALOG_LOG"\n'
+                          '  [ "${CATALOG_RC:-0}" = 0 ] || { echo "error: fixture catalog" >&2; exit "$CATALOG_RC"; }\n'
+                          '  exec cat "$CATALOG_FILE"\n'
+                          f'fi\nexec {sys.executable} "$@"\n')
+        python.chmod(0o755)
+        for name in ("ssh", "docker", "curl", "nvidia-smi"):
+            (binary / name).write_text('#!/usr/bin/env bash\necho "probe: $0" >> "$PULSAR_LOG"\nexit 1\n')
+            (binary / name).chmod(0o755)
 
     def run_home(self, answers, **extra):
         self.answers.write_text("".join(f"{answer}\n" for answer in answers))
@@ -90,6 +127,9 @@ wait_continue() {
             "ANSWERS": str(self.answers),
             "PULSAR_LOG": str(self.pulsar_log),
             "PYTHONDONTWRITEBYTECODE": "1",
+            "PATH": f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+            "CATALOG_LOG": str(self.catalog_log),
+            "CATALOG_FILE": str(self.catalog),
         }
         env.pop("PULSAR_COLD_ROOT", None)
         env.pop("CLUSTER_TOPOLOGY_FILE", None)
@@ -248,6 +288,68 @@ wait_continue() {
         result = self.run_home(["3", "ctrl-c"], PULSAR_COLD_ROOT="")
         self.assertEqual(result.returncode, 130, result.stderr)
         self.assertEqual(len(self.menus()), 2)
+
+    def catalog_entries(self, *entries):
+        return json.dumps({"entries": list(entries)})
+
+    def test_next_line_follows_the_setup_status_from_saved_records(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        self.catalog.write_text(self.catalog_entries(never_checked("a"), never_checked("b"), ready("c")))
+        result = self.run_home(["6"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        line = ("Next: 2 specs never checked · 1 spec ready to Start — open Catalog and storage. "
+                "Newest saved check: 2 hours ago.")
+        self.assertIn(line, " ".join(result.stdout.split()))
+        self.assertLess(result.stdout.index("Topology"), result.stdout.index("Next:"))
+        # Saved records only: the catalog is listed once and no node is probed.
+        self.assertEqual(self.catalog_log.read_text(), "list --json\n")
+        self.assertEqual(self.commands(), [])
+
+    def test_next_line_prints_again_only_when_saved_records_change(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        self.catalog.write_text(self.catalog_entries(never_checked("a")))
+        result = self.run_home(["2", "6"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("open Catalog and storage"), 1)
+        self.assertEqual(result.stdout.count("Topology"), 1)
+        after = self.root / "after.json"
+        after.write_text(self.catalog_entries(ready("a")))
+        self.answers.with_suffix(".n").unlink()
+        self.choose_log.unlink()
+        result = self.run_home(["0", "6"], CATALOG_AFTER=str(after))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.count("open Catalog and storage"), 2)
+        self.assertLess(result.stdout.index("1 spec never checked"), result.stdout.index("1 spec ready to Start"))
+        self.assertEqual(result.stdout.count("Topology"), 2)
+
+    def test_next_line_is_left_out_without_a_suggested_step_or_a_readable_catalog(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        for fixture, extra, shown in ((self.catalog_entries(never_checked("a")), {}, True),
+                                      (self.catalog_entries(), {}, False),
+                                      (self.catalog_entries(never_checked("a")), {"CATALOG_RC": "2"}, False)):
+            with self.subTest(extra=extra, shown=shown):
+                self.catalog.write_text(fixture)
+                self.answers.with_suffix(".n").unlink(missing_ok=True)
+                result = self.run_home(["6"], **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual("open Catalog and storage" in result.stdout, shown, result.stdout)
+                self.assertIn("Topology", result.stdout)
+                self.assertNotIn("fixture catalog", result.stdout + result.stderr)
+                # The menu still opens; Catalog and storage reports any error.
+                self.assertEqual(self.menus()[-1][1], "Catalog and storage")
+
+    def test_the_next_line_appears_once_setup_is_complete(self):
+        self.catalog.write_text(self.catalog_entries(never_checked("a")))
+        topology = self.root / "enrolled.json"
+        topology.write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["0", "6"], SETUP_TOPOLOGY=str(topology))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["topology setup"])
+        # First use reads no catalog; the full menu's status ends with the line.
+        self.assertEqual(self.catalog_log.read_text(), "list --json\n")
+        self.assertEqual(result.stdout.count("open Catalog and storage"), 1)
+        self.assertLess(result.stdout.index("Topology  not confirmed"), result.stdout.index("Topology  2 nodes"))
+        self.assertLess(result.stdout.index("Topology  2 nodes"), result.stdout.index("1 spec never checked"))
 
 
 if __name__ == "__main__":
