@@ -29,6 +29,17 @@ def saved_hostnames(path: str | Path) -> dict[str, str]:
         return {}
 
 
+def saved_order(path: str | Path) -> list[str]:
+    """Node IDs in saved topology order, which is ordinary start's rank order; unreadable maps nothing."""
+    from scripts.topology_manifest import extract_topology
+    try:
+        topology = extract_topology(json.loads(Path(path).read_text(encoding="utf-8")))
+        return [str(node["node_id"]) for node in topology.get("nodes") or [] if isinstance(node, dict)
+                and node.get("node_id")]
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
+        return []
+
+
 class NodeNames:
     """Name nodes for people. Without a mapping, node IDs are shown unchanged.
 
@@ -36,12 +47,25 @@ class NodeNames:
     an unknown machine is never presented as a known one.
     """
 
-    def __init__(self, hostnames: dict[str, str] | None = None):
+    def __init__(self, hostnames: dict[str, str] | None = None, order: list[str] | None = None):
         self.hostnames = hostnames
+        # Node IDs in saved topology order, when known.
+        self.order = order or []
 
     @classmethod
     def saved(cls, repo: str | Path = ROOT) -> "NodeNames":
-        return cls(saved_hostnames(topology_path(repo)))
+        path = topology_path(repo)
+        return cls(saved_hostnames(path), saved_order(path))
+
+    def serving_hostnames(self, count: int) -> list[str] | None:
+        """Ordinary start's ranks 0..count-1: the first ``count`` saved nodes, named.
+
+        None when the saved topology is unknown or has fewer nodes; start then
+        refuses, and callers say "count nodes" instead of guessing machines.
+        """
+        if count < 1 or len(self.order) < count:
+            return None
+        return [self(node_id) for node_id in self.order[:count]]
 
     def __call__(self, node_id: object) -> str:
         text = str(node_id)

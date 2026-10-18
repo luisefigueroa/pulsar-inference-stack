@@ -12,7 +12,7 @@ sys.path.insert(0,str(ROOT))
 from model_library.render import render
 from model_library.planning import storage_budget
 from model_library.integrity import StorageError
-from model_library.node_names import NodeNames, saved_hostnames
+from model_library.node_names import NodeNames, saved_hostnames, saved_order
 from scripts.terminal_format import TerminalWriter
 
 SPEC='a'*64
@@ -59,6 +59,15 @@ class StorageRendering(unittest.TestCase):
             self.assertEqual(saved_hostnames(path),{})
             path.write_text(json.dumps({'nodes':[{'rank':0,'node_id':'node-0','hostname':'spark-a'}]}))
             self.assertEqual(saved_hostnames(path),{'node-0':'spark-a'})
+
+    def test_saved_order_is_topology_order_and_tolerates_absence(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'topology.json'
+            self.assertEqual(saved_order(path),[])
+            path.write_text(json.dumps({'nodes':[{'node_id':'node-1','hostname':'spark-b'},
+                                                 {'node_id':'node-0','hostname':'spark-a'}]}))
+            self.assertEqual(saved_order(path),['node-1','node-0'])
 
     def test_verified_reuse_does_not_claim_a_download(self):
         _,flat=self.display(dict(kind='pulsar-acquisition-result',reused=True,manifest=MANIFEST,home=HOME),'acquire')

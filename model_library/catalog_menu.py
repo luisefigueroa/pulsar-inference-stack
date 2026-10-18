@@ -922,6 +922,18 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     raise ValueError(f"no preview summary for {action}")
 
 
+def _start_place(nodes: int, place: str | None, names: NodeNames) -> str:
+    """Where Start runs: the selected node, or each rank's node from the saved
+    topology, which ordinary start uses in order. Without enough saved nodes,
+    only the count, since start then refuses before anything runs."""
+    if place:
+        return place
+    hosts = names.serving_hostnames(nodes) if nodes > 1 else None
+    if not hosts:
+        return _count(nodes, "node")
+    return ", ".join(f"{host} (rank {rank})" for rank, host in enumerate(hosts))
+
+
 def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str | None = None,
              node: str | None = None, names: NodeNames | None = None) -> str:
     """Confirmation question naming the action, model, placement and consequence."""
@@ -982,12 +994,12 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         return (f"Create an archive of {identity}{' in ' + root if root else ''}? "
                 "An existing archive is never replaced.")
     if action == "start":
-        where = place or f"{nodes} nodes"
-        return f"{warning}Start {model} on {where}? Start rechecks prerequisites and never replaces a running service."
+        return (f"{warning}Start {model} on {_start_place(nodes, place, names)}? Start rechecks prerequisites "
+                "and never replaces a running service. Loading can take several minutes.")
     if action == "start-memory":
-        where = place or f"{nodes} nodes"
-        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on {where}? "
-                "Insufficient memory and all other blockers still prevent start.")
+        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on "
+                f"{_start_place(nodes, place, names)}? Insufficient memory and all other blockers still prevent "
+                "start. Loading can take several minutes.")
     if action == "stop":
         where = f" on {place}" if place else ""
         return f"Stop {model}{where}? Model files and pins are kept."

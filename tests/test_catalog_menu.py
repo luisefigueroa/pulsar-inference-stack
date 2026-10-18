@@ -705,6 +705,22 @@ class Question(unittest.TestCase):
         self.assertIn("Files come back only through Restore or Download",
                       menu.question("remove", state, plan={"eligible": True, "home": HOME}, names=NAMES))
         self.assertIn("never replaces a running service", menu.question("start", state, names=NAMES))
+        self.assertIn("Loading can take several minutes", menu.question("start", state, names=NAMES))
+
+    def test_start_questions_name_each_rank_from_the_saved_topology_order(self):
+        state = checked(home=HOME)
+        ordered = NodeNames({"n0": "spark-1", "n1": "spark-2", "n2": "spark-3"}, ["n0", "n1", "n2"])
+        where = "spark-1 (rank 0), spark-2 (rank 1), spark-3 (rank 2)"
+        self.assertIn(f"Start org/model on {where}?", menu.question("start", state, names=ordered))
+        self.assertIn(f"retry Start for org/model on {where}?", menu.question("start-memory", state, names=ordered))
+        # Fewer saved nodes than ranks, or no saved order: start refuses, so only the count is named.
+        short = NodeNames({"n0": "spark-1"}, ["n0"])
+        for names in (short, NAMES, NodeNames()):
+            with self.subTest(names=names.order):
+                self.assertIn("Start org/model on 3 nodes?", menu.question("start", state, names=names))
+        # A one-node recipe names the selected node only.
+        one = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        self.assertIn("Start org/model on spark-2?", menu.question("start", one, node="n1", names=ordered))
         self.assertEqual(menu.question("stop", state, node="n1", names=NAMES),
                          "Stop org/model on spark-2? Model files and pins are kept.")
         self.assertIn("Download org/model @ 01234567 to spark-2",
