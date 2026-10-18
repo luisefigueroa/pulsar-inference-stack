@@ -169,8 +169,11 @@ SSH trust; use the menu's separate SSH-trust enrollment action or
 **Cluster topology → Configure membership or add a machine** to use the same
 candidate review. It runs `topology configure --candidate HOST` with your added
 addresses, then returns to the menu for separate enrollment after saving.
-`topology setup` alone reuses valid saved membership; candidates passed to it do
-not add machines to that membership. Cancelling configuration does not add a
+`topology setup` reuses valid saved membership and never adds machines to it.
+Candidates apply only to a fresh setup or to diagnostic discovery for invalid
+saved membership. With valid saved membership, `setup --candidate HOST` exits
+with status 2 before running anything, says that HOST was not added, and names
+`topology configure --candidate HOST`. Cancelling configuration does not add a
 machine or start enrollment. Explicit `--accept-new-host-keys` is
 available only on configuration through this CLI, not on read-only detection.
 Before the prompt, configuration reports homes, prepared views, and pins affected
@@ -661,7 +664,13 @@ copies and preserves homes and archives. It removes only the selected recipe's
 bindings; working-copy files remain while any other recipe has a binding, even
 an unpinned one. The final binding can delete the working copy only after the
 usual ownership, container and incomplete-operation checks. Container references
-to a shared path, including stopped containers, still block purge. Before
+to a shared path, including stopped containers, still block purge. A container
+that mounts any directory containing the copy, such as a whole home directory,
+counts. The plan names each such container, its node, whether it is running,
+and the mount, with a fix: Stop for a service Pulsar started, otherwise remove
+the container or its mount. Pulsar never removes a container it did not start.
+In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
+(asked first) and **Open Live service inventory**. Before
 removing a catalog model's home, clear its dependent prepared copies and verify
 its archive.
 An unpromoted model may be explicitly discarded without an archive after
@@ -774,7 +783,11 @@ are gone. `start --json` reports the same record in its `cancelled` error.
 The home menu reads saved configuration without probing nodes. It prints the
 setup status when it opens, and again after a choice only when that choice
 changed it. Cluster setup requires confirmed membership and, for multiple
-nodes, enrolled SSH trust.
+nodes, enrolled SSH trust. After setup, the status ends with a Next line built
+from saved catalog records, such as `Next: 2 specs never checked · 1 spec needs
+Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
+each spec's suggested step from the catalog menu and runs no probe; it is left
+out when no spec has a suggested step or the catalog cannot be read.
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
@@ -809,15 +822,24 @@ session; it is a starting point, not a readiness check. `models list` and
 the node the saved records already use; without one it leaves `--node` out and
 goes to the default destination (the deployment overlay's placement, or this
 node), while the menu asks for a node. The recipe
-list labels show the same short saved state. Storage mutations show
-the operation's own `--plan` preview before a confirmation that names the
-model, nodes and consequence; a blocked plan ends without a question. **Back**
+list labels show the same short saved state. Storage mutations run the
+operation's own `--plan` preview and show a one-to-three-line summary of it:
+what changes, where, how much, and the headroom left, or that nothing would be
+copied, deleted or changed. A question then names the model, nodes and
+consequence, and says so when nothing would change. Choose **Yes**, **Show full
+preview** or **No, change nothing**; No is selected first, and Esc also changes
+nothing. **Show full preview** opens the complete rendered plan, with exact
+byte counts, in the pager, then returns to the question. A blocked plan names
+its first blockers with their fixes and ends without a question; it offers
+**Show full preview**, **Stop** and **Open Live service inventory** when a
+Pulsar service's container blocks it, and **Back**. **Back**
 or Esc leaves the current menu or cancels an action prompt to its containing
 menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
 Long read-only output opens in a pager when it runs past a few lines: **Show
-details**, **Published results**, a comparison, **Help**, **Host diagnostics**,
-**Detailed status**, the full inventory, and saved membership or its check.
+details**, **Published results**, a comparison, a full storage preview,
+**Help**, **Host diagnostics**, **Detailed status**, the full inventory, and
+saved membership or its check.
 ↑/↓ scroll, `/` searches, and q or Esc returns to the menu; shorter output
 prints in place. Ctrl-C at a choose, input, confirmation, **Continue** or pager
 prompt exits the menu with status `130`, including membership and SSH
@@ -845,8 +867,8 @@ Each operation ends with an outcome worded by its
 [exit status](CONTRACT.md#error-codes-and-exit-statuses), then an indented line
 with the status, the time taken and where to look. The outcome stays on screen
 until **Continue** (Esc also continues), so the command's output can be read
-before the menu redraws. A preview that ends without a question, such as a
-blocked plan, waits the same way; a declined confirmation returns at once.
+before the menu redraws. A preview that fails waits the same way; a blocked
+plan waits at its own choices, and a declined confirmation returns at once.
 `✓` is success. A "no"
 (exit 1) reads by action: after **Live status**, `▲ … is not running` means no
 node runs it, so starting it won't conflict; a refused Start, a failed check or
@@ -937,7 +959,7 @@ it to create a shared binding.
 `prepare --plan` reports which ranks will reuse a binding, bind existing files,
 or copy files. A recipe change still requires preparation of its own bindings.
 
-Preparation previews also show the unique snapshot payload and, for each node,
+The full preparation preview also shows the unique snapshot payload and, for each node,
 the new copy size, existing files used, prepared-copy root, observed disk free
 space, reserve and copy allowance. Named snapshots with the same manifest are
 counted once per physical node. The projected headroom subtracts all new copies

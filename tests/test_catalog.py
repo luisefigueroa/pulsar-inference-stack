@@ -529,6 +529,7 @@ confirm() {
   printf '%s\n' "$1" >>"$CONFIRM_LOG"
   case "$(_pop "$MENU_CONFIRMS")" in yes) return 0 ;; "<ctrl-c>") return 130 ;; *) return 1 ;; esac
 }
+confirm_or_review() { confirm "$1"; }
 ''' + "".join(re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", (ROOT / "scripts/ui.sh").read_text(), re.S | re.M).group(0)
              for name in ("elapsed_text", "report_outcome"))
     ACTION = """#!/usr/bin/env python3
@@ -966,7 +967,9 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"],
                                    ["model-library.sh", "restore", spec, "--node", "fixture-node", "--yes"]])
-        self.assertIn("Restoration preview", result.stdout)
+        # A summary leads; the full preview opens only on request.
+        self.assertIn("Copy the snapshot (size not observed) from the archive to fixture-node", result.stdout)
+        self.assertNotIn("Restoration preview", result.stdout)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
 
     def test_recorded_home_does_not_prevent_a_restore_preview(self):
@@ -1090,16 +1093,18 @@ raise SystemExit(rc)
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],
                          "views": [], "actions": []}, "incomplete_preparations": []}
         _, result, actions, choices, questions = self.run_menu(
-            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"], plan=plan)
+            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back", "Back"], plan=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([a[-2:] for a in actions], [["--plan", "--json"]])
-        self.assertIn("prepared copy is pinned", result.stdout)
+        self.assertIn("Blocked: prepared copy is pinned.", result.stdout)
         self.assertIn("The plan is blocked; nothing changed.", result.stdout)
         self.assertEqual(questions, "")
-        # The reason stays on screen until Continue; then the submenu returns.
-        held = choices.index("[continue]")
+        # The reason stays on screen at the blocked plan's own choices; Back
+        # returns to the submenu.
+        held = choices.index("Blocked plan\nShow full preview\nBack\n")
         self.assertLess(choices.index("Storage and archive\n"), held)
         self.assertLess(held, choices.rindex("Storage and archive\n"))
+        self.assertNotIn("[continue]", choices)
 
     def test_escape_steps_back_one_level(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "<esc>", "Back", "Back"])

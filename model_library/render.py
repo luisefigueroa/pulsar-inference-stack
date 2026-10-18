@@ -25,6 +25,16 @@ def bytes_text(value: Any) -> str:
     return f'{value:,} bytes'
 
 
+def size_text(value: Any) -> str:
+    """A size in binary units, without the exact byte count of bytes_text."""
+    if type(value) is not int or value < 0:
+        return 'not observed'
+    for divisor, unit in ((1024**4, 'TiB'), (1024**3, 'GiB'), (1024**2, 'MiB'), (1024, 'KiB')):
+        if value >= divisor:
+            return f'{value/divisor:.2f} {unit}'
+    return f'{value:,} bytes'
+
+
 def _known_bytes(value: Any) -> bool:
     return type(value) is int and value >= 0
 
@@ -39,6 +49,21 @@ def _minimum_headroom(budgets: list[dict], available: str, used: str) -> int | N
     if not budgets or any(not _known_bytes(b.get(available)) or not _known_bytes(b.get(used)) for b in budgets):
         return None
     return min(b[available] - b[used] for b in budgets)
+
+
+def _headroom(budgets: list[dict]) -> tuple[int | None, int | None]:
+    """Lowest disk headroom after reserve and copy allowance left; unknown across storage roots."""
+    if len({b['path'] for b in budgets if b.get('path')}) > 1:
+        return None, None
+    return _minimum_headroom(budgets, 'available', 'reserve'), _minimum_headroom(budgets, 'limit', 'used')
+
+
+def projected_headroom(budgets: list[dict], new_copy: int | None) -> int | None:
+    """Headroom left after the planned copies, from the tighter of disk and allowance."""
+    disk, allowance = _headroom(budgets)
+    if disk is None or allowance is None or new_copy is None:
+        return None
+    return min(disk, allowance) - new_copy
 
 
 def _budget_context(out: TerminalWriter, budgets: list[dict], *, new_copy: int | None = None,
@@ -58,21 +83,22 @@ def _budget_context(out: TerminalWriter, budgets: list[dict], *, new_copy: int |
             out.field(label, bytes_text(budget.get(key)))
         if 'total' in budget:
             out.field('Disk total', bytes_text(budget['total']))
-    disk = _minimum_headroom(budgets, 'available', 'reserve')
-    allowance = _minimum_headroom(budgets, 'limit', 'used')
-    roots = {b['path'] for b in budgets if b.get('path')}
-    if len(roots) > 1:
+    if len({b['path'] for b in budgets if b.get('path')}) > 1:
         out.emit('Storage roots differ between observations; combined headroom is unknown.')
-        disk = allowance = None
+    disk, allowance = _headroom(budgets)
     out.field('Disk after reserve', _headroom_text(disk))
     out.field('Copy allowance left', _headroom_text(allowance))
     if project:
-        after = min(disk, allowance) - new_copy if disk is not None and allowance is not None and new_copy is not None else None
-        out.field('After planned copies', _headroom_text(after))
+        out.field('After planned copies', _headroom_text(projected_headroom(budgets, new_copy)))
 
 
-def _preparation_capacity(out: TerminalWriter, plans: list[dict], names: NodeNames) -> None:
-    """Count each manifest once per node, as the combined copy-budget check does."""
+def preparation_estimate(plans: list[dict]) -> tuple[int | None, dict[str, dict]]:
+    """Count each manifest once per node, as the combined copy-budget check does.
+
+    Returns the unique snapshot payload and, for each node in plan order, its
+    new copy, existing files used, the budgets observed for it, and whether
+    every action there is a known kind. Unknown sizes stay None.
+    """
     sizes = {}
     placements: dict[str, dict[Any, set[str]]] = {}
     for index, plan in enumerate(plans):
@@ -83,10 +109,8 @@ def _preparation_capacity(out: TerminalWriter, plans: list[dict], names: NodeNam
         for action in plan.get('actions') or []:
             placements.setdefault(action.get('node_id', 'unknown'), {}).setdefault(identity, set()).add(action.get('action'))
     total = sum(sizes.values()) if sizes and all(size is not None for size in sizes.values()) else None
-    out.emit('Storage estimate (snapshot payload only)')
-    out.field('Unique snapshots', bytes_text(total))
+    nodes = {}
     for node, groups in placements.items():
-        out.field('Node', names(node))
         copy_sizes, existing_sizes = [], []
         for identity, actions in groups.items():
             if not actions <= {'copy', 'reuse', 'home-view', 'bind'}:
@@ -95,13 +119,25 @@ def _preparation_capacity(out: TerminalWriter, plans: list[dict], names: NodeNam
                 copy_sizes.append(sizes[identity])
             else:
                 existing_sizes.append(sizes[identity])
-        new_copy = sum(copy_sizes) if all(size is not None for size in copy_sizes) else None
-        existing = sum(existing_sizes) if all(size is not None for size in existing_sizes) else None
-        out.field('New copy', bytes_text(new_copy))
-        out.field('Existing files used', bytes_text(existing))
-        budgets = [(plan.get('budgets') or {}).get(node) or {} for plan in plans
-                   if any(action.get('node_id') == node for action in plan.get('actions') or [])]
-        _budget_context(out, budgets, new_copy=new_copy, project=True)
+        nodes[node] = {
+            'new_copy': sum(copy_sizes) if all(size is not None for size in copy_sizes) else None,
+            'existing': sum(existing_sizes) if all(size is not None for size in existing_sizes) else None,
+            'copies': any('copy' in actions for actions in groups.values()),
+            'budgets': [(plan.get('budgets') or {}).get(node) or {} for plan in plans
+                        if any(action.get('node_id') == node for action in plan.get('actions') or [])],
+        }
+    return total, nodes
+
+
+def _preparation_capacity(out: TerminalWriter, plans: list[dict], names: NodeNames) -> None:
+    total, nodes = preparation_estimate(plans)
+    out.emit('Storage estimate (snapshot payload only)')
+    out.field('Unique snapshots', bytes_text(total))
+    for node, estimate in nodes.items():
+        out.field('Node', names(node))
+        out.field('New copy', bytes_text(estimate['new_copy']))
+        out.field('Existing files used', bytes_text(estimate['existing']))
+        _budget_context(out, estimate['budgets'], new_copy=estimate['new_copy'], project=True)
     out.emit('Estimates exclude filesystem overhead and do not reserve space; preparation rechecks its budgets.')
 
 
@@ -164,7 +200,69 @@ def _copy(out: TerminalWriter, row: dict, names: NodeNames) -> None:
         out.field('Path', row.get('path') or row['hub_path'], indent=2)
 
 
+def blocker_message(text: str, names: NodeNames) -> str:
+    """Name the node in "node_id: reason" or "snapshot: node_id: reason" by hostname."""
+    head, separator, rest = text.partition(": ")
+    if separator and names.hostnames and head not in names.hostnames:
+        return f"{head}: {names.prefixed(rest)}"
+    return names.prefixed(text)
+
+
+# Each structured blocker as a cause, without its fix; {node} is the hostname.
+BLOCKER_TEXT = {
+    'pinned': 'the prepared copy on {node} is pinned',
+    'changed-copy': 'the prepared copy on {node} changed since it was prepared',
+    'insufficient-space': 'not enough copy budget or disk space on {node}',
+    'reuse-unverified': 'a shared prepared copy on {node} failed verification',
+    'dependent-copies': 'prepared copies still depend on this home',
+    'incomplete-preparations': 'incomplete preparations still depend on this snapshot',
+    'archive-required': 'removing a catalog home requires a fully verified archive',
+    'discard-required': 'this snapshot has no verified archive',
+    'catalog-snapshot': 'a catalog snapshot cannot be discarded as an experiment',
+}
+
+
+def blocker_detail_text(detail: dict, names: NodeNames) -> str:
+    """One structured plan blocker as a cause; its fix is separate (see planning)."""
+    container = detail.get('container')
+    node = names(detail['node_id']) if detail.get('node_id') else None
+    if detail.get('code') == 'container-reference' and isinstance(container, dict):
+        state = container.get('state') if container.get('state') in ('running', 'stopped') else 'state-unknown'
+        owner = 'Pulsar container' if container.get('spec_id') else 'container'
+        spec = f" (spec {str(container['spec_id'])[:12]})" if container.get('spec_id') else ''
+        where = f' on {node}' if node else ''
+        mount, path = detail.get('mount'), detail.get('path')
+        if not mount or mount == path:
+            covers = 'mounts these files'
+        elif path and path.startswith(mount.rstrip('/') + '/'):
+            covers = f'mounts {mount}, which contains these files'
+        else:
+            covers = f'mounts {mount}, inside these files'
+        text = f"{state} {owner} {container.get('name') or 'unnamed'}{spec}{where} {covers}"
+    elif detail.get('code') in BLOCKER_TEXT and (node or '{node}' not in BLOCKER_TEXT[detail['code']]):
+        text = BLOCKER_TEXT[detail['code']].format(node=node)
+        if detail['code'] == 'insufficient-space' and 'combined' in str(detail.get('message')):
+            text = text.replace('not enough', 'not enough combined', 1)
+    else:
+        text = blocker_message(str(detail.get('message') or 'storage restriction'), names)
+    if detail.get('snapshot') and not text.startswith(f"{detail['snapshot']}: "):
+        text = f"{detail['snapshot']}: {text}"
+    return text
+
+
+def _blocker_details(out: TerminalWriter, details: list, names: NodeNames) -> None:
+    for item in details:
+        if not isinstance(item, dict):
+            continue
+        out.field('Blocker', blocker_detail_text(item, names))
+        if item.get('fix'):
+            out.field('Fix', item['fix'], indent=2)
+
+
 def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
+    if isinstance(document.get('blocker_details'), list) and document['blocker_details']:
+        _blocker_details(out, document['blocker_details'], names)
+        return
     for blocker in document.get('blockers') or []:
         if isinstance(blocker, dict):
             reason = blocker.get('reason') or blocker.get('message')
@@ -174,17 +272,19 @@ def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
             else:
                 blocker = 'Additional storage restriction; inspect --json for details.'
         elif isinstance(blocker, str):
-            blocker = names.prefixed(blocker)
+            blocker = blocker_message(blocker, names)
         out.field('Blocker', blocker)
 
 
-def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames, *, capacity: bool = True) -> None:
+def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames, *, capacity: bool = True,
+          title: bool = True) -> None:
     titles = {'acquire': 'Acquisition preview', 'prepare': 'Preparation preview',
               'archive': 'Archive preview', 'restore': 'Restoration preview',
               'move': 'Home movement preview', 'pin': 'Pin preview', 'unpin': 'Unpin preview',
               'purge': 'Prepared-copy removal preview', 'remove': 'Home removal preview'}
-    out.emit(titles.get(operation, 'Storage operation preview'))
-    out.emit('Review this plan before confirming the operation.')
+    if title:
+        out.emit(titles.get(operation, 'Storage operation preview'))
+        out.emit('Review this plan before confirming the operation.')
     if document.get('eligible') is False:
         out.field('Result', 'blocked')
     elif document.get('eligible') is True:
@@ -289,7 +389,7 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         _preparation_capacity(out, document['snapshots'], names)
         for member in document['snapshots']:
             out.field('Snapshot',member['snapshot'])
-            _plan(out,member,operation,names,capacity=False)
+            _plan(out,member,operation,names,capacity=False,title=False)
         return
 
     if isinstance(document.get('plan'), dict):

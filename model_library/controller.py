@@ -8,7 +8,7 @@ import sys
 from release_spec import load_spec
 from .integrity import StorageError, read_json, verify_manifest
 from .local import prepared_record
-from .planning import preparation_plan, preparation_candidates, purge_plan, removal_plan
+from .planning import detail, preparation_plan, preparation_candidates, purge_plan, removal_plan
 from .state import (Store, checked_id, now, validate_home, validate_view, view_record_key,
                     shared_view, copy_references, VIEW_IDENTITY_FIELDS)
 
@@ -168,6 +168,8 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         if request.get('transactions'):
             plan['eligible']=False
             plan['blockers'].append('incomplete preparations still depend on this snapshot; explicitly purge them first')
+            plan['blocker_details'].append(detail('incomplete-preparations', plan['blockers'][-1],
+                                                  'purge the prepared copies of each dependent spec first'))
         return plan
     if op=='save-observation':
         store.put('observations',request['spec_id'],{'schema_version':1,'kind':'pulsar-saved-observation','spec_id':request['spec_id'],'checked_at':now(),**request['observation']})

@@ -231,13 +231,51 @@ stage_catalog_image() {
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }
 
+# FULL_PREVIEW PLAN RENDER_ARGS... runs the whole rendered plan, for page_output.
+FULL_PREVIEW=(bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _)
+
+# blocked_plan PLAN RENDER_ARGS... — choices after a blocked plan: the full
+# preview, Stop for a Pulsar service whose container mounts the files (asked
+# first), Live service inventory, and Back. Returns 130 on Ctrl-C, else 1.
+blocked_plan() {
+  local plan="$1" choice rc kind spec model label question
+  shift
+  local -a kinds=() specs=() models=() labels=()
+  while IFS=$'\t' read -r kind spec model label; do
+    [ -n "$kind" ] || continue
+    kinds+=("$kind"); specs+=("$spec"); models+=("$model"); labels+=("$label")
+  done < <(catalog list --json | catalog_menu blocked-choices --plan-file "$plan" || true)
+  while true; do
+    choice=$(choose_index "Blocked plan" "Show full preview" "${labels[@]}" "Back") \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
+    if [ "$choice" -eq 0 ]; then
+      page_output "" "${FULL_PREVIEW[@]}" "$plan" "$@" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      continue
+    fi
+    choice=$((choice - 1))
+    [ "$choice" -lt "${#kinds[@]}" ] || return 1
+    case "${kinds[$choice]}" in
+      stop)
+        question=$(catalog show "${specs[$choice]}" --json \
+          | catalog_menu confirm --spec-id "${specs[$choice]}" --action stop) || continue
+        confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; continue; }
+        run_operation stop Stop "${specs[$choice]}" "${models[$choice]}" "$REPO_DIR/scripts/down.sh" "${specs[$choice]}"
+        return 1 ;;
+      inventory)
+        "$REPO_DIR/pulsar" inventory menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+    esac
+  done
+}
+
 # plan_and_confirm ACTION LABEL SPEC OPERATION_ARGS...
-# Shows the operation's own --plan preview, then asks a question that names
-# the model, placement and consequence. Returns 0 only after an explicit yes.
+# Runs the operation's own --plan preview and shows its summary, then asks a
+# question that names the model, placement and consequence. Show full preview
+# opens the whole rendered plan. Returns 0 only after an explicit yes; No is
+# selected first, and Esc also changes nothing.
 plan_and_confirm() {
   local action="$1" label="$2" spec="$3" plan question rc
   shift 3
-  local -a render_args=(--operation "$1")
+  local -a render_args=(--operation "$1") plan_args=()
   [ "$1" != archive ] || render_args+=(--archive-action create)
   plan=$(mktemp)
   if spin "Planning ${label,,}…" "$REPO_DIR/scripts/model-library.sh" "$@" --plan --json >"$plan"; then
@@ -253,23 +291,35 @@ plan_and_confirm() {
     HOLD_SCREEN=1
     return 1
   fi
-  echo
-  python3 -m model_library.render "${render_args[@]}" <"$plan" || true
+  plan_args=(--spec-id "$spec" --action "$action" --plan-file "$plan")
   echo
   set +e
-  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" \
-    --plan-file "$plan" ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} ${MENU_NODE:+--node "$MENU_NODE"})
+  printf '%s' "$ROW_JSON" | catalog_menu preview "${plan_args[@]}"
+  rc=$?
+  # A plan without a summary is shown whole.
+  [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || python3 -m model_library.render "${render_args[@]}" <"$plan"
+  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm "${plan_args[@]}" \
+    ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} ${MENU_NODE:+--node "$MENU_NODE"})
   rc=$?
   set -e
-  rm -f "$plan"
   if [ "$rc" -eq 3 ]; then
     printf '✗ The plan is blocked; nothing changed.\n'
-    HOLD_SCREEN=1
+    rc=0
+    blocked_plan "$plan" "${render_args[@]}" || rc=$?
+    rm -f "$plan"
+    [ "$rc" -ne 130 ] || return 130
     return 1
   fi
-  [ "$rc" -eq 0 ] || { HOLD_SCREEN=1; return 1; }
-  # Gum Ctrl-C (130) at the question leaves the menu, as at any other prompt.
-  confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -eq 130 ] && return 130; return 1; }
+  [ "$rc" -eq 0 ] || { rm -f "$plan"; HOLD_SCREEN=1; return 1; }
+  # Gum Ctrl-C (130) at the question or in the pager leaves the menu, as at
+  # any other prompt.
+  rc=0
+  confirm_or_review "$question" "$label" "${FULL_PREVIEW[@]}" "$plan" "${render_args[@]}" || rc=$?
+  rm -f "$plan"
+  [ "$rc" -ne 0 ] || return 0
+  echo 'Nothing changed.'
+  [ "$rc" -ne 130 ] || return 130
+  return 1
 }
 
 # perform ACTION LABEL SPEC — runs one menu action, then holds what it printed

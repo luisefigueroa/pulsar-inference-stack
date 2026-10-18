@@ -70,7 +70,7 @@ for item in raw:
  for mount in item["Mounts"]:
   if not isinstance(mount,dict) or not isinstance(mount.get("Source"),str): raise SystemExit("mount source is unobservable")
   mounts.append(mount["Source"])
- rows.append({"id":item["Id"],"mounts":mounts,"running":(item.get("State") or {}).get("Running"),"labels":(item.get("Config") or {}).get("Labels") or {}})
+ rows.append({"id":item["Id"],"name":str(item.get("Name") or "").lstrip("/"),"mounts":mounts,"running":(item.get("State") or {}).get("Running"),"labels":(item.get("Config") or {}).get("Labels") or {}})
 print(json.dumps({"node_id":node,"observable":True,"containers":rows}))
 ' "${CLUSTER_NODE_IDS[$rank]}"
 }
