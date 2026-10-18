@@ -13,7 +13,9 @@ Each error exits with its code's status, with or without --json: service_absent
 
 A running service's API gets one GET /health with a 3-second timeout. Nothing
 here changes a node. Errors are printed for people and, when
-PULSAR_STATUS_ERROR_FILE is set, written there for the --json envelope.
+PULSAR_STATUS_ERROR_FILE is set, written there for the --json envelope. When
+PULSAR_SERVICE_RESULT_FILE is set, the result is also written there; the menu's
+Connect card reads it (scripts/connect_card.py).
 """
 from __future__ import annotations
 
@@ -291,6 +293,9 @@ def main(argv: list[str] | None = None) -> int:
         TerminalWriter(stream=sys.stderr).emit(f"error: {exc}")
         # Absent (1) and could not tell (3) call for different next steps.
         return ERROR_CODES[exc.code][0]
+    target = os.environ.get("PULSAR_SERVICE_RESULT_FILE")
+    if target:
+        Path(target).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
     if args.json:
         print(json.dumps(result, sort_keys=True))
     else:

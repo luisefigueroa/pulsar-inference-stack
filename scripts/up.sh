@@ -685,6 +685,13 @@ fi
 START_PHASE=ready
 head -c 400 "$smoke_body"; echo
 rm -f "$smoke_body" "$smoke_body.err"
+# The menu's Connect card reads this (scripts/connect_card.py).
+if [ -n "${PULSAR_SERVICE_RESULT_FILE:-}" ]; then
+  python3 -c 'import json,sys; plan=json.load(open(sys.argv[1]))
+open(sys.argv[2],"w").write(json.dumps(dict(state="running",service_id=plan["service_id"],api_url=sys.argv[3],
+    served_name=plan.get("served_name"),api_auth=plan.get("api_auth"))))' \
+    "$PLAN_FILE" "$PULSAR_SERVICE_RESULT_FILE" "$SERVICE_API_BASE" || true
+fi
 
 cat <<EOF
 

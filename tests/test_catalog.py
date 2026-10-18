@@ -608,6 +608,8 @@ raise SystemExit(rc)
             (self.repo / "releases" / f"{extra['spec_id']}.json").write_bytes(pretty_json_bytes(extra))
         shell_root = self.root / "shell"; scripts = shell_root / "scripts"; scripts.mkdir(parents=True)
         shutil.copyfile(ROOT / "scripts/model-storage.sh", scripts / "model-storage.sh")
+        for name in ("with-connect-card.sh", "connect_card.py"):
+            shutil.copy(ROOT / "scripts" / name, scripts / name)
         (scripts / "lib.sh").write_text('PULSAR_MODEL_LIBRARY_DIR="'+str(self.store.root)+'"\nrequire_cluster_nodes() { CLUSTER_NODE_IDS=(fixture-node); CLUSTER_NODE_HOSTNAMES=(fixture-host); }\nhuman_node_name() { printf "%s\\n" "${CLUSTER_NODE_HOSTNAMES[$1]}"; }\n')
         (scripts / "ui.sh").write_text(self.UI)
         for name in ("model-library.sh", "status.sh", "up.sh", "down.sh"):
