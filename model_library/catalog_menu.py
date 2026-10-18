@@ -727,6 +727,46 @@ def inventory_line(live: dict) -> str:
     return line + "."
 
 
+# The home screen's Next line groups each spec's suggested step. Each entry is
+# (singular, plural) wording after the spec count, in display order.
+HOME_NEXT = {"never-checked": ("never checked", "never checked"),
+             "check": ("needs a check", "need a check"),
+             "acquire": ("needs Download", "need Download"),
+             "restore": ("needs Restore", "need Restore"),
+             "prepare": ("needs Prepare", "need Prepare"),
+             "start": ("ready to Start", "ready to Start")}
+
+
+def home_next(rows: list[dict], archive_location: str, *, now=None) -> str | None:
+    """One line for the home screen: what the saved records suggest, and their age.
+
+    Uses the same suggestion as each recipe menu, without session outcomes or
+    service observations; nothing here probes nodes. None when no spec has a
+    suggested step.
+    """
+    counts: dict[str, int] = {}
+    for row in rows:
+        offered, _, _ = operations(row, archive_location)
+        found = suggestion(row, offered, archive_location, now=now)
+        if not found or found[0] not in HOME_NEXT:
+            continue
+        key = "never-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    parts = []
+    for key, (one, many) in HOME_NEXT.items():
+        if key in counts:
+            count = counts[key]
+            parts.append(f"{count} spec{'' if count == 1 else 's'} {one if count == 1 else many}")
+    line = "Next: " + " · ".join(parts) + " — open Catalog and storage."
+    ages = [row["observation_age_seconds"] for row in rows
+            if row.get("checked_at") and type(row.get("observation_age_seconds")) is int]
+    if ages:
+        line += f" Newest saved check: {age_text(min(ages))}."
+    return line
+
+
 def read_row(stream, spec_id: str) -> dict:
     document = json.load(stream)
     rows = [row for row in document.get("entries") or [] if row.get("spec_id") == spec_id]
@@ -761,6 +801,8 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS
                                                 | {"start", "stop", "check", "check-failed", "storage-failed"}))
     view.add_argument("--after-at", type=int, help="when --after happened, as a Unix time")
+    home = sub.add_parser("next", help="the home screen's Next line; catalog JSON on stdin")
+    home.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
@@ -786,6 +828,11 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 fact = live_fact(entry, live, outcomes.get(entry["spec_id"]))
                 print(f"{entry['spec_id']}\t{menu_label(entry, width, fact)}")
+            return 0
+        if args.command == "next":
+            line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location)
+            if line:
+                print(clean(line))
             return 0
         row = read_row(sys.stdin, args.spec_id)
         names = NodeNames.saved()

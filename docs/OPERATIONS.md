@@ -777,7 +777,11 @@ are gone. `start --json` reports the same record in its `cancelled` error.
 The home menu reads saved configuration without probing nodes. It prints the
 setup status when it opens, and again after a choice only when that choice
 changed it. Cluster setup requires confirmed membership and, for multiple
-nodes, enrolled SSH trust.
+nodes, enrolled SSH trust. After setup, the status ends with a Next line built
+from saved catalog records, such as `Next: 2 specs never checked · 1 spec needs
+Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
+each spec's suggested step from the catalog menu and runs no probe; it is left
+out when no spec has a suggested step or the catalog cannot be read.
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
