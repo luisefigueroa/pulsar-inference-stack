@@ -164,6 +164,7 @@ case "$action" in
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "the topology menu" "pulsar topology show | check | setup | detect | configure"
     # Each action runs as a child and returns here; Back leaves this menu.
+    # Saved membership and the check's report open in the pager when long.
     while true; do
       choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \
         "Check saved nodes and fabric" "Detect cluster candidates" \
@@ -172,8 +173,8 @@ case "$action" in
       set +e
       case "$choice" in
         0) "$0" setup ;;
-        1) "$0" show ;;
-        2) "$0" check ;;
+        1) page_output "" "$0" show ;;
+        2) page_output "Checking saved nodes and fabric…" "$0" check ;;
         3) "$0" detect ;;
         4)
           if review_candidates; then

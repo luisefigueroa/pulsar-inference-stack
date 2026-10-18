@@ -35,6 +35,16 @@ select_node() {
 declare -A LAST_RESULT=() LAST_AT=()
 OPERATION_RC=0 OPERATION_INTERRUPTED=0
 
+# Output to read before the menu redraws: an operation's outcome, or a preview
+# that ended without a question. The action that produced it releases it with
+# one Continue when it returns.
+HOLD_SCREEN=0
+hold_screen() {
+  [ "$HOLD_SCREEN" = 1 ] || return 0
+  HOLD_SCREEN=0
+  wait_continue
+}
+
 # What this session observed about services: a service inventory captured only
 # on request, and each spec's latest Live status, Start or Stop outcome as
 # ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age.
@@ -68,20 +78,25 @@ check_running_services() {
     return 0
   fi
   rm -f -- "$captured"
+  local detail=""
+  [ -z "$LIVE_FILE" ] || detail="the earlier service inventory is still shown, with its age"
   if [ "$rc" -eq 0 ]; then
     printf '✗ The service inventory could not be read; running services are not shown.\n'
   else
-    printf '✗ Running services could not be checked (exit %s); the reason is above.\n' "$rc"
+    printf '✗ Running services could not be checked; the reason is above.\n'
+    detail="exit $rc${detail:+ · $detail}"
   fi
-  [ -z "$LIVE_FILE" ] || printf '  The earlier service inventory is still shown, with its age.\n'
+  [ -z "$detail" ] || printf '  %s\n' "$detail"
+  HOLD_SCREEN=1
   return 0
 }
 
 # run_operation ACTION LABEL SPEC MODEL COMMAND...
-# Runs one explicit operation and reports its outcome. The command owns
-# interruption and cleanup; the menu cannot independently confirm its effects.
+# Runs one explicit operation and reports its outcome, held on screen until
+# the caller's Continue. The command owns interruption and cleanup; the menu
+# cannot independently confirm its effects.
 run_operation() {
-  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" recovery outcome
+  local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" outcome
   shift 4
   [ "$action" != check ] || result=$(mktemp)
   printf '\n→ %s %s. Ctrl-C requests interruption; this menu returns when the command exits.\n' "$label" "$model" \
@@ -114,24 +129,13 @@ run_operation() {
   # The contract reports a command interrupted by a signal as 128+signal.
   if [ "$interrupted" = 1 ] || { [ "$rc" -gt 128 ] && [ "$rc" -lt 160 ]; }; then
     interrupted=1
-    recovery='Rerun this inspection when ready; its partial output may be incomplete.'
     case "$action" in
-      acquire|restore|prepare|move|archive|pin|unpin|purge|remove)
-        LAST_RESULT[$spec]=storage-interrupted
-        recovery='Use Check now to inspect current files before retrying. Retained staging may be recoverable by the same operation.' ;;
-      start|stop)
-        LAST_RESULT[$spec]=service-interrupted
-        recovery='Use Live status to inspect the service before retrying Start or Stop.' ;;
-      image-stage)
-        LAST_RESULT[$spec]=image-interrupted
-        recovery='Use Launch options → Check pinned image before retrying staging.' ;;
+      acquire|restore|prepare|move|archive|pin|unpin|purge|remove) LAST_RESULT[$spec]=storage-interrupted ;;
+      start|stop) LAST_RESULT[$spec]=service-interrupted ;;
+      image-stage) LAST_RESULT[$spec]=image-interrupted ;;
       check) LAST_RESULT[$spec]=check-interrupted ;;
     esac
-    {
-      printf 'Interruption requested: %s for %s after %s (command exit %s).\n' "$label" "$model" "$took" "$rc"
-      printf 'This menu has not confirmed cleanup or partial effects. Review the command output above.\n'
-      printf '%s\n' "$recovery"
-    } | python3 -m scripts.terminal_format
+    report_outcome "$action" "$label" "$model" "$rc" "$took" --interrupted
   elif [ "$rc" -ne 0 ] && [ "$action" = check ] && [ "${LAST_RESULT[$spec]:-}" = check ]; then
     report_outcome check "$label" "$model" "$rc" "$took" --recorded
   else
@@ -158,7 +162,7 @@ run_operation() {
         SERVICE_OUTCOME[$spec]="$action:$outcome:$(date +%s)${MENU_NODE:+:$MENU_NODE}" ;;
     esac
   fi
-  OPERATION_RC="$rc" OPERATION_INTERRUPTED="$interrupted"
+  OPERATION_RC="$rc" OPERATION_INTERRUPTED="$interrupted" HOLD_SCREEN=1
   return 0
 }
 
@@ -179,6 +183,8 @@ start_catalog_spec() {
   [ "$allow" -eq 1 ] || return 0
   question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" \
     --action start-memory ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
+  # The question keeps the first outcome on screen; no Continue before it.
+  HOLD_SCREEN=0
   confirm "$question" no || { rc=$?; echo 'Start was not retried.'; [ "$rc" -ne 130 ] || return 130; return 0; }
   run_operation start 'Start accepting memory warning' "$spec" "$RECIPE_MODEL" \
     "$REPO_DIR/pulsar" start "$spec" "$@" --accept-memory-warn
@@ -210,11 +216,13 @@ stage_catalog_image() {
     else
       report_outcome image-stage "$label" "$RECIPE_MODEL" "$rc" "" --preview
     fi
+    HOLD_SCREEN=1
     return 0
   fi
   if ! printf '%s' "$ROW_JSON" | catalog_menu image-plan --spec-id "$spec" --plan-file "$plan" \
       --mode "$mode_name" "${names[@]}"; then
     rm -f "$plan"
+    HOLD_SCREEN=1
     return 0
   fi
   rm -f "$plan"
@@ -242,6 +250,7 @@ plan_and_confirm() {
     else
       report_outcome "$action" "$label" "$RECIPE_MODEL" "$rc" "" --preview
     fi
+    HOLD_SCREEN=1
     return 1
   fi
   echo
@@ -255,15 +264,27 @@ plan_and_confirm() {
   rm -f "$plan"
   if [ "$rc" -eq 3 ]; then
     printf '✗ The plan is blocked; nothing changed.\n'
+    HOLD_SCREEN=1
     return 1
   fi
-  [ "$rc" -eq 0 ] || return 1
+  [ "$rc" -eq 0 ] || { HOLD_SCREEN=1; return 1; }
   # Gum Ctrl-C (130) at the question leaves the menu, as at any other prompt.
   confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -eq 130 ] && return 130; return 1; }
 }
 
-# perform ACTION LABEL SPEC — gathers snapshot and node, previews, confirms, runs.
+# perform ACTION LABEL SPEC — runs one menu action, then holds what it printed
+# on screen until Continue. Ctrl-C at the hold returns 130.
 perform() {
+  local rc=0
+  HOLD_SCREEN=0
+  perform_action "$@" || rc=$?
+  if [ "$rc" -eq 130 ]; then HOLD_SCREEN=0; return 130; fi
+  hold_screen || return $?
+  return "$rc"
+}
+
+# perform_action ACTION LABEL SPEC — gathers snapshot and node, previews, confirms, runs.
+perform_action() {
   local action="$1" label="$2" spec="$3" rc question choice
   local -a args=() choices=()
   MENU_SNAPSHOT="" MENU_NODE=""
@@ -323,8 +344,8 @@ compare_catalog_spec() {
   index=$(choose_index "Compare the selected spec with another catalog spec" "${labels[@]}" "Back") \
     || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   [ "$index" -lt "${#ids[@]}" ] || return 0
-  printf '\nSelected spec: %s\nCompared with: %s\n' "$spec" "${ids[$index]}"
-  "$REPO_DIR/pulsar" spec compare --before "$REPO_DIR/releases/$spec.json" \
+  page_output "" bash -c 'printf "Selected spec: %s\nCompared with: %s\n\n" "$1" "$2"; shift 2; exec "$@"' _ \
+    "$spec" "${ids[$index]}" "$REPO_DIR/pulsar" spec compare --before "$REPO_DIR/releases/$spec.json" \
     --after "$REPO_DIR/releases/${ids[$index]}.json" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
 }
 
@@ -389,8 +410,10 @@ recipe_menu() {
             [ "$rc" -eq 1 ] || break
           fi
         done ;;
-      "Show details") catalog show "$spec" || true ;;
-      "Published results") catalog results "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      "Show details")
+        page_output "" python3 -m model_library.catalog show "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      "Published results")
+        page_output "" python3 -m model_library.catalog results "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       "Compare catalog specs") compare_catalog_spec "$spec" || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       *) return 0 ;;
     esac
@@ -430,9 +453,12 @@ browse() {
       continue
     fi
     case "${labels[$index]:-Back}" in
-      "Check running services (service inventory)") check_running_services "$result" || return $? ;;
+      "Check running services (service inventory)")
+        check_running_services "$result" || return $?
+        hold_screen || return $? ;;
       "Storage budget (all nodes)")
-        run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget ;;
+        run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget
+        hold_screen || return $? ;;
       *) return 0 ;;
     esac
   done

@@ -188,5 +188,57 @@ if index=$(choose_index "Pick fixture option" "$@"); then printf '\\nPICKED=%s\\
         self.assertIn("Same (2)", output)
         self.assertIn("PICKED=1", output)
 
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumOutput(BundledGum):
+    """Long read-only output opens in the pager; an outcome waits for Continue."""
+    PAGE = '''
+. "$REPO_DIR/scripts/ui.sh"
+rc=0
+page_output "" bash -c 'for i in $(seq 1 "$1"); do echo "fixture line $i"; done; exit "$2"' _ "$@" || rc=$?
+printf '\\nPAGED=%s\\n' "$rc"
+exit "$rc"
+'''
+    CONTINUE = '''
+. "$REPO_DIR/scripts/ui.sh"
+rc=0
+wait_continue "Fixture outcome above" || rc=$?
+printf '\\nCONTINUED=%s\\n' "$rc"
+exit "$rc"
+'''
+
+    def page(self, lines, keys, status=0):
+        return self.drive(self.PAGE, keys, ready=b"fixture line 1", args=[str(lines), str(status)])
+
+    def test_long_output_opens_the_pager_until_q_or_esc(self):
+        for keys in (b"q", b"\x1b"):
+            with self.subTest(keys=keys):
+                code, output = self.page(40, keys, status=3)
+                self.assertEqual(code, 3, output)
+                self.assertIn("PAGED=3", output)
+                self.assertIn("esc quit", output)
+                self.assertIn("\x1b[?1049h", output)  # the pager's own screen
+
+    def test_ctrl_c_in_the_pager_returns_130(self):
+        code, output = self.page(40, b"\x03")
+        self.assertEqual(code, 130, output)
+        self.assertIn("PAGED=130", output)
+
+    def test_short_output_prints_without_the_pager(self):
+        code, output = self.page(3, b"")
+        self.assertEqual(code, 0, output)
+        self.assertIn("fixture line 3", output)
+        self.assertNotIn("esc quit", output)
+        self.assertNotIn("\x1b[?1049h", output)
+
+    def test_continue_returns_on_enter_or_esc_and_keeps_ctrl_c(self):
+        for keys, expected in ((b"\r", 0), (b"\x1b", 0), (b"\x03", 130)):
+            with self.subTest(keys=keys):
+                code, output = self.drive(self.CONTINUE, keys, ready=b"Fixture outcome above")
+                self.assertEqual(code, expected, output)
+                self.assertIn(f"CONTINUED={expected}", output)
+                self.assertIn("Continue", output)
+
 if __name__ == "__main__":
     unittest.main()

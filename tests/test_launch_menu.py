@@ -116,12 +116,14 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(questions, "")
 
     def test_memory_warning_retry_is_separately_confirmed_for_the_same_spec_and_node(self):
-        spec, result, actions, _, questions = self.run_menu(
+        spec, result, actions, choices, questions = self.run_menu(
             ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes", "yes"],
             launch={"start_rc": 1, "blockers": ["memory_warning"]})
         self.assertEqual(result.returncode, 0, result.stderr)
         command = ["pulsar", "start", spec, "--node", "fixture-node"]
         self.assertEqual(actions, [command, command + ["--accept-memory-warn"]])
+        # The retry question holds the first outcome; one Continue follows the retry.
+        self.assertEqual(choices.count("[continue]"), 1)
         self.assertEqual(len(questions.splitlines()), 2)
         self.assertIn("Accept the reduced free-memory headroom", questions)
         self.assertIn("all other blockers still prevent start", questions)

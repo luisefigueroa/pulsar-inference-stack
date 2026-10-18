@@ -209,6 +209,15 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(result, 0, output); self.assertEqual(f.path.read_bytes(), before)
         self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?'])
 
+    def test_saved_membership_opens_in_the_pager_without_probing(self):
+        f = self.fixture
+        self.use_gum(TOPOLOGY_GUM_CHOICE='1,7')
+        result, output = self.interactive(['topology', 'menu'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.probes(), [])
+        self.assertEqual(self.gum_prompts('choose'), ['Cluster topology', 'Cluster topology'])
+        self.assertIn('fixture-rank-1', (f.root/'pager.txt').read_text())
+
     def test_menus_without_gum_name_commands_and_do_not_probe(self):
         f = self.fixture  # TERM=dumb: Gum cannot draw
         for args, expected in ((['topology', 'menu'], 'the topology menu'), (['topology', 'setup'], 'guided setup')):

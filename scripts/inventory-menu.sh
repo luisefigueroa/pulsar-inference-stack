@@ -54,7 +54,7 @@ service_actions() {
     case "$choice" in
       "Detailed status")
         rc=0 started=$SECONDS
-        "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
+        page_output "Checking service status…" "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
         # Not running (1) and not observable (3) need different next steps.
         [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "spec ${spec:0:12}" "$rc" \
@@ -70,8 +70,10 @@ service_actions() {
         rc=0 started=$SECONDS
         "$REPO_DIR/pulsar" stop "${STOP_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
-        # The same outcome line as the catalog menu's operations.
+        # The same outcome line as the catalog menu's operations, held on
+        # screen until Continue.
         report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))"
+        wait_continue || return $?
         ;;
       "Open in catalog")
         # The recipe opens with this inventory, so its labels and suggestion
@@ -110,7 +112,7 @@ while true; do
     "Refresh inventory") ;;
     "Show full inventory")
       rc=0
-      "$REPO_DIR/pulsar" inventory || rc=$?
+      page_output "Checking service inventory…" "$REPO_DIR/pulsar" inventory || rc=$?
       [ "$rc" -ne 130 ] || exit 130
       ;;
     *) exit 0 ;;

@@ -31,10 +31,20 @@ class UiFrame(unittest.TestCase):
             "if [ \"$1\" = confirm ]; then exit \"${GUM_RC:-0}\"; fi\n"
             # Like Gum versions without --show-output: run the command, drop its output.
             "if [ \"$1\" = spin ]; then while [ \"$1\" != -- ]; do shift; done; shift; \"$@\" >/dev/null 2>&1; exit $?; fi\n"
+            # pager keeps what it was given and exits GUM_PAGER_RC (q or Esc: 0).
+            "if [ \"$1\" = pager ]; then cat > \"${GUM_PAGER_INPUT:-/dev/null}\"; exit \"${GUM_PAGER_RC:-0}\"; fi\n"
             "exit 2\n"
         )
         gum.chmod(0o755)
         self.gum = gum
+        # A read-only command: N lines with an error after the first, its
+        # width, then the given exit status.
+        self.emit = self.root / "emit.sh"
+        self.emit.write_text('#!/usr/bin/env bash\necho "out 1"; echo "err" >&2\n'
+                             'for i in $(seq 2 "$1"); do echo "out $i"; done\n'
+                             'echo "width ${COLUMNS:-unset}"; exit "$2"\n')
+        self.emit.chmod(0o755)
+        self.pager_input = self.root / "pager.txt"
 
     def run_ui(self, body, *, gum=True, **extra):
         env = {
@@ -158,6 +168,69 @@ class UiFrame(unittest.TestCase):
                 self.assertEqual(result.stdout, f"rc={expected}\n")
         result = self.run_ui('confirm "Sure?" || echo "rc=$?"', GUM_RC="130")
         self.assertEqual(result.stdout, "rc=130\n")
+
+    def page(self, lines, status, title="", **extra):
+        self.gum_log.unlink(missing_ok=True)
+        self.pager_input.unlink(missing_ok=True)
+        return self.run_ui(f'rc=0; page_output "{title}" "{self.emit}" {lines} {status} || rc=$?; echo "rc=$rc"',
+                           GUM_PAGER_INPUT=str(self.pager_input), **extra)
+
+    def test_short_output_prints_in_place_with_its_status(self):
+        for status in (0, 3):
+            with self.subTest(status=status):
+                result = self.page(3, status)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Errors stay in order with the output, at the pager's width.
+                self.assertEqual(result.stdout, f"out 1\nerr\nout 2\nout 3\nwidth 40\nrc={status}\n")
+                self.assertEqual(self.gum_calls(), [])
+
+    def test_long_output_opens_the_pager_and_keeps_the_status(self):
+        for status in (0, 3):
+            with self.subTest(status=status):
+                result = self.page(20, status)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, f"rc={status}\n")
+                text = self.pager_input.read_text()
+                self.assertTrue(text.startswith("out 1\nerr\nout 2\n"), text)
+                self.assertTrue(text.endswith("out 20\nwidth 40\n"), text)
+                (pager,) = self.gum_calls()
+                self.assertTrue(pager.startswith("pager --show-line-numbers=false"), pager)
+                self.assertIn("--match.foreground=12", pager)
+        result = self.page(20, 0, NO_COLOR="1")
+        (pager,) = self.gum_calls()
+        self.assertNotIn("foreground", pager)
+
+    def test_a_slow_command_shows_a_spinner_before_its_output(self):
+        result = self.page(20, 0, title="Checking fixture nodes…")
+        self.assertEqual(result.stdout, "rc=0\n")
+        spin, pager = self.gum_calls()
+        self.assertIn("spin", spin)
+        self.assertIn("--title Checking fixture nodes…", spin)
+        self.assertIn("out 20", self.pager_input.read_text())
+
+    def test_ctrl_c_in_the_command_or_the_pager_returns_130(self):
+        result = self.page(20, 130)
+        self.assertEqual(result.stdout, "rc=130\n")
+        self.assertEqual(self.gum_calls(), [])
+        result = self.page(20, 0, GUM_PAGER_RC="130")
+        self.assertEqual(result.stdout, "rc=130\n")
+
+    def test_a_pager_that_cannot_open_prints_the_output_instead(self):
+        result = self.page(20, 3, GUM_PAGER_RC="1")
+        self.assertIn("out 1\nerr\nout 2\n", result.stdout)
+        self.assertTrue(result.stdout.endswith("out 20\nwidth 40\nrc=3\n"), result.stdout)
+
+    def test_continue_holds_the_screen_and_keeps_ctrl_c(self):
+        # choose_index turns errexit back on, so the status is kept explicitly.
+        result = self.run_ui('rc=0; wait_continue "Fixture outcome above" || rc=$?; echo "rc=$rc"',
+                             GUM_CHOOSE_INPUT=str(self.root / "choose.txt"))
+        self.assertEqual(result.stdout, "rc=0\n")
+        self.assertIn("--header Fixture outcome above", self.gum_calls()[0])
+        self.assertEqual((self.root / "choose.txt").read_text(), "Continue\t1\n")
+        for rc, expected in (("1", 0), ("130", 130)):
+            with self.subTest(gum_rc=rc):
+                result = self.run_ui('rc=0; wait_continue || rc=$?; echo "rc=$rc"', GUM_RC=rc)
+                self.assertEqual(result.stdout, f"rc={expected}\n")
 
     def test_without_gum_a_menu_names_commands_and_exits_2(self):
         # A PATH with only what ui.sh runs, so an installed gum cannot be found.

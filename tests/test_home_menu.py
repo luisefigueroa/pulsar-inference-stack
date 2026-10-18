@@ -53,6 +53,14 @@ choose_index() {
     *) printf '%s\n' "$answer" ;;
   esac
 }
+# Long output: PAGE_LOG records each spinner title ("" for none).
+page_output() { [ -z "${PAGE_LOG:-}" ] || printf '%s\n' "$1" >> "$PAGE_LOG"; shift; "$@"; }
+# The real hold: one menu with a single Continue.
+wait_continue() {
+  local rc=0
+  choose_index "${1:-Review the output above}" "Continue" >/dev/null || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+}
 ''')
         # Every menu action is a pulsar command; the double records it and
         # exits with the next PULSAR_RC status (default 0).
@@ -130,20 +138,23 @@ choose_index() {
         result = self.run_home(['0', '0', '6'], PULSAR_RC='2')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ['models menu'])
-        self.assertEqual(self.menus()[1], ['Catalog error', 'Back'])
+        self.assertEqual(self.menus()[1], ['Catalog error', 'Continue'])
         self.assertEqual(len(self.menus()), 3)
-        self.assertIn('Catalog could not be displayed (exit 2)', result.stdout)
+        self.assertIn('✗ The catalog could not be displayed; review the error above.\n  exit 2\n', result.stdout)
 
     def test_first_run_catalog_error_can_be_interrupted(self):
         result = self.run_home(['1', 'ctrl-c'], PULSAR_RC='2')
         self.assertEqual(result.returncode, 130, result.stderr)
-        self.assertEqual(self.menus()[1], ['Catalog error', 'Back'])
+        self.assertEqual(self.menus()[1], ['Catalog error', 'Continue'])
         self.assertEqual(len(self.menus()), 2)
 
     def test_inspection_and_help_are_available_before_setup(self):
-        result = self.run_home(["2", "3", "4", "5"], PULSAR_RC="1,2,0")
+        pages = self.root / "pages.log"
+        result = self.run_home(["2", "3", "4", "5"], PULSAR_RC="1,2,0", PAGE_LOG=str(pages))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "topology show", "help"])
+        # Their output opens in the pager; only diagnostics, which probe nodes, show a spinner.
+        self.assertEqual(pages.read_text(), "Running host diagnostics…\n\n\n")
         self.assertEqual(len(self.menus()), 4)
         self.assertNotIn("Setup step did not complete", result.stdout)
         self.assertFalse((self.root / ".cluster-topology.json").exists())
@@ -154,10 +165,10 @@ choose_index() {
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology setup"])
         self.assertIn("✗ Setup step did not complete; details above", result.stdout)
-        # The report comes before the status and menu are shown again.
-        self.assertEqual(result.stdout.count("Cluster membership is not configured."), 2)
-        self.assertLess(result.stdout.index("✗ Setup step"),
-                        result.stdout.rindex("Cluster membership is not configured."))
+        # The unchanged status is not printed again, so the report stays above the menu.
+        self.assertEqual(result.stdout.count("Cluster membership is not configured."), 1)
+        self.assertLess(result.stdout.index("Cluster membership is not configured."),
+                        result.stdout.index("✗ Setup step"))
 
     def test_ctrl_c_during_a_setup_step_leaves_the_menu(self):
         result = self.run_home(["0"], PULSAR_RC="130")
@@ -189,6 +200,18 @@ choose_index() {
         self.assertEqual(self.menus()[0][1], "Set up cluster membership and SSH trust")
         self.assertEqual(self.menus()[1][1], "Catalog and storage")
         self.assertFalse((self.root / ".env").exists())
+        # The changed status is printed again before the full menu.
+        self.assertEqual(result.stdout.count("Topology  not confirmed"), 1)
+        self.assertEqual(result.stdout.count("Topology  2 nodes"), 1)
+        self.assertLess(result.stdout.index("Topology  not confirmed"), result.stdout.index("Topology  2 nodes"))
+
+    def test_returning_home_does_not_reprint_an_unchanged_status(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["2", "5", "6"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["doctor", "help"])
+        self.assertEqual(len(self.menus()), 3)
+        self.assertEqual(result.stdout.count("Topology"), 1)
 
     def test_unset_archives_remain_an_explicit_configuration_choice(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))

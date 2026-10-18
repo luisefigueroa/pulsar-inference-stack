@@ -136,7 +136,7 @@ else: sys.exit(99)
 ''')
         pulsar.chmod(0o755)
 
-    def run_menu(self, answers, *, snapshots=None, confirms=(), **config):
+    def run_menu(self, answers, *, snapshots=None, confirms=(), continue_rc=0, **config):
         if snapshots is None:
             snapshots = [snapshot(self.spec["spec_id"])]
         (self.root / "fixture.json").write_text(json.dumps({"snapshots": snapshots, **config}))
@@ -146,7 +146,7 @@ else: sys.exit(99)
         env.update(PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1", COLUMNS="44",
                    INVENTORY_MENU_FIXTURE=str(self.root), MENU_ANSWERS=str(self.root / "answers"),
                    MENU_CONFIRMS=str(self.root / "confirms"), CHOICES_LOG=str(self.root / "choices"),
-                   CONFIRM_LOG=str(self.root / "questions"))
+                   CONFIRM_LOG=str(self.root / "questions"), CONTINUE_RC=str(continue_rc))
         result = subprocess.run(["bash", str(self.root / "scripts/inventory-menu.sh")],
                                 env=env, text=True, capture_output=True, timeout=30)
         choices = (self.root / "choices").read_text() if (self.root / "choices").exists() else ""
@@ -161,6 +161,9 @@ else: sys.exit(99)
         self.assertIn(["status", self.spec["spec_id"], "--node", "node-1"], calls)
         self.assertNotIn("Select a confirmed physical node", choices)
         self.assertEqual(questions, "")
+        # Its output opens in the pager after a spinner; closing it is the Continue.
+        self.assertIn("[page] Checking service status… | ", choices)
+        self.assertNotIn("[continue]", choices)
 
     def test_status_outcome_separates_not_running_from_unknown(self):
         for rc, expected in ((0, None), (1, "▲ spec {id} is not running."),
@@ -246,8 +249,23 @@ else: sys.exit(99)
         result, calls, choices, _ = self.run_menu(["Show full inventory", "Back"], snapshots=[snapshot("f" * 64)])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["inventory"], calls)
+        self.assertIn("[page] Checking service inventory… | ", choices)
+        self.assertIn("Full inventory fixture", result.stdout)
         self.assertFalse(any(call[0] in ("stop", "status") for call in calls))
         self.assertNotIn("Detailed status", choices)
+
+    def test_stop_outcome_waits_for_continue_and_keeps_ctrl_c(self):
+        result, calls, choices, _ = self.run_menu(["#0", "Stop service", "Back", "Back"], confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The outcome stays on screen until Continue; the refreshed menu follows.
+        blocks = [block.splitlines()[0].strip() for block in choices.strip().split("\n\n")]
+        self.assertEqual(blocks[blocks.index("[continue]"):], ["[continue]", "Selected catalog service",
+                                                                "Select a catalog service"])
+        for used in ("counter", "answers.n", "confirms.n", "choices"):
+            (self.root / used).unlink(missing_ok=True)
+        result, calls, choices, _ = self.run_menu(["#0", "Stop service"], confirms=["yes"], continue_rc=130)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertTrue(choices.rstrip().endswith("[continue]"), choices)
 
     def test_ctrl_c_at_confirmation_does_not_stop(self):
         result, calls, _, _ = self.run_menu(["#0", "Stop service"], confirms=["<ctrl-c>"])

@@ -512,6 +512,10 @@ class Catalog(unittest.TestCase):
 require_gum() { :; }
 emit_frame() { cat; }
 spin() { shift; "$@"; }
+# The pager and the Continue hold are recorded where menus are; CONTINUE_RC=130
+# answers every hold with Ctrl-C.
+page_output() { printf '[page] %s | %s\n\n' "$1" "${*:2}" >>"$CHOICES_LOG"; shift; "$@"; }
+wait_continue() { printf '[continue] %s\n\n' "${1:-}" >>"$CHOICES_LOG"; [ "${CONTINUE_RC:-0}" != 130 ] || return 130; }
 _pop() { local n; n=$(cat "$1.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$1.n"; sed -n "$((n + 1))p" "$1"; }
 choose_index() {
   local header="$1" answer i=0 option; shift
@@ -662,6 +666,9 @@ raise SystemExit(rc)
         self.assertEqual(choices.count("Select a catalog spec (read-only)\n"), 2)
         self.assertNotIn("Choose one operation", choices)
         self.assertFalse(self.store.root.exists())
+        self.assertIn(f"[page]  | python3 -m model_library.catalog show {spec}\n", choices)
+        self.assertIn(f"[page]  | python3 -m model_library.catalog results {spec}\n", choices)
+        self.assertNotIn("[continue]", choices)
 
     def test_catalog_comparison_uses_only_the_two_selected_published_specs(self):
         from release_spec.tests.test_serving_guard import FIXTURES, guarded
@@ -696,14 +703,17 @@ raise SystemExit(rc)
         self.assertEqual(choices.count("Check now (suggested)\n"), 2)
         self.assertNotIn('Select a confirmed physical node', choices)
         self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
+        self.assertEqual(choices.count("[continue]"), 1)
+        self.assertLess(choices.index("[continue]"), choices.rindex("Choose one operation"))
 
     def test_empty_catalog_still_offers_storage_budget_inspection(self):
-        _, result, actions, _, questions = self.run_menu(
+        _, result, actions, choices, questions = self.run_menu(
             ["Storage budget (all nodes)", "Back"], empty_catalog=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["pulsar", "model", "budget"]])
         self.assertEqual(questions, "")
         self.assertIn('The catalog is empty.', result.stdout)
+        self.assertLess(choices.index("[continue]"), choices.rindex("Select a catalog spec"))
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -819,7 +829,7 @@ raise SystemExit(rc)
         self.assertNotIn("not running", text)
 
     def test_a_failed_or_unreadable_inventory_leaves_the_menu_usable(self):
-        for rc, fixture, expected in ((3, "", "✗ Running services could not be checked (exit 3); the reason is above."),
+        for rc, fixture, expected in ((3, "", "✗ Running services could not be checked; the reason is above. exit 3"),
                                       (0, "not json", "✗ The service inventory could not be read")):
             with self.subTest(rc=rc):
                 self.setUp()
@@ -829,6 +839,7 @@ raise SystemExit(rc)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, " ".join(result.stdout.split()))
                 self.assertIn("Live service: not observed in this menu session", " ".join(result.stdout.split()))
+                self.assertIn("[continue]", choices)
 
     def test_ctrl_c_while_checking_running_services_exits_the_menu(self):
         _, result, _, choices, _ = self.run_menu(
@@ -894,6 +905,24 @@ raise SystemExit(rc)
         outcome = " ".join(result.stdout.split())
         self.assertRegex(outcome, r"✗ Restore is not possible for \S+ now; nothing changed\. exit 1 · the reason is above")
 
+    def test_an_operation_outcome_waits_for_continue_and_keeps_ctrl_c(self):
+        observation = {"local_state": "ready", "archive_state": "unknown", "blockers": []}
+        _, result, _, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], check_observation=observation)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("✓ Check now finished", result.stdout)
+        # The outcome stays on screen until Continue; only then do the frame and menu return.
+        blocks = [block.splitlines()[0].strip() for block in choices.strip().split("\n\n")]
+        self.assertEqual(blocks, ["Select a catalog spec", "Choose one operation", "Select a confirmed physical node",
+                                  "[continue]", "Choose one operation", "Select a catalog spec"])
+        self.setUp()
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host"], check_observation=observation,
+            env_extra=lambda spec: {"CONTINUE_RC": "130"})
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(len(actions), 1)
+        self.assertTrue(choices.rstrip().endswith("[continue]"), choices)
+
     def test_interrupted_storage_keeps_partial_effects_unknown_and_suggests_recheck(self):
         _, result, actions, choices, _ = self.run_menu(
             ["#0", "Restore", "fixture-host", "Back", "Back"], confirms=["yes"],
@@ -925,7 +954,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         text = " ".join(result.stdout.split())
         self.assertIn("Interruption requested: Check now", text)
-        self.assertIn("command exit 0", text)
+        self.assertIn("exit 0 · this menu has not confirmed cleanup", text)
         self.assertNotIn("✓ Check now finished", text)
         self.assertNotIn("the last check did not record an observation", text)
         self.assertIn("rerun before relying on saved observations", text)
@@ -941,7 +970,7 @@ raise SystemExit(rc)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
 
     def test_recorded_home_does_not_prevent_a_restore_preview(self):
-        spec, result, actions, _, questions = self.run_menu(
+        spec, result, actions, choices, questions = self.run_menu(
             ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True,
             observation={"local_state": "changed", "archive_state": "verified", "blockers": ["home files changed"]},
             confirms=["no"])
@@ -949,6 +978,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [["model-library.sh", "restore", spec, "--node", "fixture-node", "--plan", "--json"]])
         self.assertIn("Restore", questions)
         self.assertIn("Nothing changed.", result.stdout)
+        self.assertNotIn("[continue]", choices)
 
     def test_recorded_home_recovery_still_stops_at_a_blocked_plan(self):
         plan = {"kind": "pulsar-restore-plan", "eligible": False, "blockers": ["existing files must not be replaced"]}
@@ -1059,13 +1089,17 @@ raise SystemExit(rc)
     def test_blocked_plan_is_shown_without_a_confirmation(self):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],
                          "views": [], "actions": []}, "incomplete_preparations": []}
-        _, result, actions, _, questions = self.run_menu(
+        _, result, actions, choices, questions = self.run_menu(
             ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"], plan=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([a[-2:] for a in actions], [["--plan", "--json"]])
         self.assertIn("prepared copy is pinned", result.stdout)
         self.assertIn("The plan is blocked; nothing changed.", result.stdout)
         self.assertEqual(questions, "")
+        # The reason stays on screen until Continue; then the submenu returns.
+        held = choices.index("[continue]")
+        self.assertLess(choices.index("Storage and archive\n"), held)
+        self.assertLess(held, choices.rindex("Storage and archive\n"))
 
     def test_escape_steps_back_one_level(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "<esc>", "Back", "Back"])
