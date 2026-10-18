@@ -45,13 +45,17 @@ doctor_ready_line() {
   local message="$1"
   local use_color=1 colors green reset
   [ -z "${NO_COLOR:-}" ] || use_color=0
+  # PULSAR_COLOR=always colors output shown on a terminal later, such as the
+  # menu's pager; otherwise only a terminal gets color.
   case "${PULSAR_COLOR:-}" in
     never|0|no|off|false) use_color=0 ;;
+    always) ;;
+    *)
+      case "${TERM:-}" in
+        dumb|"") use_color=0 ;;
+      esac
+      [ -t 1 ] || use_color=0 ;;
   esac
-  case "${TERM:-}" in
-    dumb|"") use_color=0 ;;
-  esac
-  [ -t 1 ] || use_color=0
   if [ "$use_color" = 1 ] && command -v tput >/dev/null 2>&1; then
     colors=$(tput colors 2>/dev/null || true)
     if [[ "$colors" =~ ^[0-9]+$ ]] && [ "$colors" -ge 8 ]; then

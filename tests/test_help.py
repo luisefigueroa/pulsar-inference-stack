@@ -13,8 +13,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts import help_guide
-from scripts.terminal_format import TerminalWriter, emit_help
+from unittest import mock
+
+from scripts import help_pages
+from scripts.terminal_format import TerminalWriter, colors_enabled, emit_help, styles_enabled
 
 # The operator commands ./pulsar help lists for setup, catalog and serving.
 # The guide pages read docs/OPERATIONS.md, so a Terms table edit that breaks
@@ -170,10 +172,10 @@ class Help(unittest.TestCase):
         steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)
         self.assertEqual(steps, [("1", "Download or Restore"), ("2", "Prepare"), ("3", "Start"),
                                  ("4", "Connect"), ("5", "Stop"), ("6", "Purge prepared copies")])
-        for step, sentence in help_guide.workflow():
+        for step, sentence in help_pages.workflow():
             with self.subTest(step=step):
                 self.assertTrue(sentence.endswith(".") and ". " not in sentence, sentence)
-        self.assertIn("prepared files do not start a service", " ".join(text.split()))
+        self.assertIn("preparing does not start a service", " ".join(text.split()))
 
     def test_unknown_help_topic_names_the_topics(self):
         result = subprocess.run([str(ROOT / "pulsar"), "help", "glossary"], stdin=subprocess.DEVNULL,
@@ -214,8 +216,9 @@ class Guide(unittest.TestCase):
         if text is not None:
             path.write_text(text)
         out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = help_guide.main(["terms", "--file", str(path)])
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                mock.patch.dict(os.environ, {"PULSAR_COLOR": "never"}):
+            rc = help_pages.main(["terms", "--file", str(path)])
         return rc, out.getvalue(), err.getvalue()
 
     def test_rows_become_plain_text_and_the_table_ends_at_the_next_heading(self):
@@ -245,6 +248,124 @@ class Guide(unittest.TestCase):
                 self.assertEqual(out, "")
                 self.assertTrue(err.startswith("error: ") and message in err, err)
                 self.assertEqual(len(err.splitlines()), 1, err)
+
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class Styles(unittest.TestCase):
+    """A terminal gets styles after clig.dev, NO_COLOR and man-pages(7): headings
+    bold in the accent, menu choices bold, repo terms in the accent, literal text
+    cyan and placeholders underlined. Without them the text is unchanged."""
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    def env(self, **values):
+        clean = {key: value for key, value in os.environ.items()
+                 if key not in ("PULSAR_COLOR", "NO_COLOR", "PULSAR_ACCENT", "TERM")}
+        return mock.patch.dict(os.environ, {**clean, **values}, clear=True)
+
+    def render(self, text, width=80, role=None, **values):
+        out = self.Terminal()
+        with self.env(TERM="xterm-256color", **values):
+            TerminalWriter(width=width, stream=out).emit(text, initial_indent="  ", role=role, markup=role is None)
+        return out.getvalue()
+
+    def page(self, topic, width=80, **values):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("PULSAR_", "CLUSTER_")) and key != "NO_COLOR"}
+        env.update(COLUMNS=str(width), PYTHONDONTWRITEBYTECODE="1", **values)
+        args = ["help"] if topic == "reference" else ["help", topic]
+        result = subprocess.run([str(ROOT / "pulsar"), *args], env=env, stdin=subprocess.DEVNULL,
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_styles_follow_the_terminal_and_the_operator(self):
+        cases = [  # environment, a terminal?, (styles, colors)
+            ({"TERM": "xterm-256color"}, True, (True, True)),
+            ({"TERM": "xterm-256color", "NO_COLOR": "1"}, True, (True, False)),
+            ({"TERM": "xterm-256color", "NO_COLOR": ""}, True, (True, True)),
+            ({"TERM": "xterm-256color", "PULSAR_COLOR": "never"}, True, (False, False)),
+            ({"TERM": "dumb"}, True, (False, False)),
+            ({}, True, (False, False)),
+            ({"TERM": "xterm-256color"}, False, (False, False)),
+            ({"PULSAR_COLOR": "always"}, False, (True, True)),
+            ({"PULSAR_COLOR": "always", "NO_COLOR": "1"}, False, (True, False)),
+        ]
+        for values, terminal, expected in cases:
+            with self.subTest(values=values, terminal=terminal), self.env(**values):
+                stream = self.Terminal() if terminal else io.StringIO()
+                self.assertEqual((styles_enabled(stream), colors_enabled(stream)), expected)
+
+    def test_each_mark_takes_its_style(self):
+        text = "**Start** runs `pulsar start SPEC --node NODE` for a *service*; `PULSAR_COLOR=never` is literal."
+        self.assertEqual(self.render(text, width=100),
+                         "  \x1b[1mStart\x1b[0m runs \x1b[36mpulsar start \x1b[0m\x1b[4;36mSPEC\x1b[0m"
+                         "\x1b[36m --node \x1b[0m\x1b[4;36mNODE\x1b[0m for a \x1b[94mservice\x1b[0m; "
+                         "\x1b[36mPULSAR_COLOR=never\x1b[0m is literal.\n")
+        # NO_COLOR keeps bold and underline (no-color.org, FAQ).
+        self.assertEqual(self.render(text, width=100, NO_COLOR="1"),
+                         "  \x1b[1mStart\x1b[0m runs pulsar start \x1b[4mSPEC\x1b[0m --node \x1b[4mNODE\x1b[0m "
+                         "for a service; PULSAR_COLOR=never is literal.\n")
+        self.assertEqual(self.render(text, width=100, PULSAR_COLOR="never"),
+                         "  Start runs pulsar start SPEC --node NODE for a service; PULSAR_COLOR=never is literal.\n")
+
+    def test_headings_use_the_menu_accent(self):
+        for accent, sgr in (("4", "34"), ("12", "94"), ("208", "38;5;208"), ("#5f87ff", "38;2;95;135;255"),
+                            ("teal", "94")):
+            with self.subTest(accent=accent):
+                self.assertEqual(self.render("Guides", role="heading", PULSAR_ACCENT=accent),
+                                 f"  \x1b[1;{sgr}mGuides\x1b[0m\n")
+        self.assertEqual(self.render("Guides", role="heading", NO_COLOR="1"), "  \x1b[1mGuides\x1b[0m\n")
+
+    def test_a_styled_line_wraps_like_the_plain_one(self):
+        text = "Run `./pulsar topology check` to test every pair of nodes, since *membership* is only saved."
+        for width in (32, 44, 60):
+            with self.subTest(width=width):
+                styled = self.render(text, width)
+                plain = self.render(text, width, PULSAR_COLOR="never")
+                self.assertEqual(ANSI.sub("", styled), plain)
+                self.assertNotIn(" ", styled + plain)
+                self.assertTrue(all(len(line) <= width for line in plain.splitlines()), plain)
+                # A literal that fits on a line never breaks inside.
+                self.assertIn("./pulsar topology check", plain)
+        heading = self.render("A heading long enough to wrap onto a second line", width=32, role="heading")
+        self.assertEqual(heading, "  \x1b[1;94mA heading long enough to wrap\x1b[0m\n"
+                                  "  \x1b[1;94monto a second line\x1b[0m\n")
+
+    def test_pages_strip_to_their_plain_text_and_fit(self):
+        for topic in ("reference", "terms", "workflow"):
+            for width in (44, 60, 80):
+                with self.subTest(topic=topic, width=width):
+                    styled = self.page(topic, width, PULSAR_COLOR="always")
+                    plain = self.page(topic, width)
+                    self.assertNotIn("\x1b", plain)
+                    self.assertEqual(ANSI.sub("", styled), plain)
+                    self.assertTrue(all(len(line) <= width for line in plain.splitlines()))
+
+    def test_pages_mark_headings_terms_choices_and_commands(self):
+        expected = {
+            "reference": ["\x1b[1;94mPulsar Inference Stack\x1b[0m\n", "\n\x1b[1;94mGuides\x1b[0m\n",
+                          "  \x1b[36mpulsar models show \x1b[0m\x1b[4;36mSPEC\x1b[0m\n", "\x1b[1mHelp\x1b[0m",
+                          "\x1b[4;36mSPEC\x1b[0m is a catalog spec ID."],
+            "terms": ["\x1b[1;94mWhat the words mean\x1b[0m\n", "  \x1b[1;94mspec\x1b[0m\n",
+                      "\x1b[36mreleases/\x1b[0m", "\x1b[36m./pulsar topology check\x1b[0m",
+                      "\x1b[36mdocs/OPERATIONS.md\x1b[0m"],
+            "workflow": ["\x1b[1;94mHow serving works\x1b[0m\n", "  \x1b[1;94m1. Download or Restore\x1b[0m\n",
+                         "\x1b[94mhome\x1b[0m", "\x1b[1mRestore\x1b[0m", "\x1b[36mpulsar model acquire\x1b[0m"],
+        }
+        for topic, parts in expected.items():
+            styled = self.page(topic, 100, PULSAR_COLOR="always")
+            muted = self.page(topic, 100, PULSAR_COLOR="always", NO_COLOR="1")
+            for part in parts:
+                with self.subTest(topic=topic, part=part):
+                    self.assertIn(part, styled)
+            # Without color, headings stay bold and placeholders underlined.
+            self.assertNotRegex(muted, r"\x1b\[[0-9;]*(3[0-9]|9[0-7])m")
+            self.assertIn("\x1b[1m", muted)
 
 
 class Renderer(unittest.TestCase):

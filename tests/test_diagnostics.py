@@ -125,6 +125,20 @@ ssh_node() {{
         self.assertEqual(rows['rank_1_docker_nvidia']['level'],'warn')
         self.assertNotIn('install the NVIDIA Container Toolkit',rows['rank_1_docker_nvidia']['message'])
 
+    def test_ready_is_green_only_where_a_terminal_shows_it(self):
+        # PULSAR_COLOR=always: the menu's pager shows this captured output on a terminal.
+        terminal = {'NO_COLOR': '', 'TERM': 'xterm-256color'}
+        for extra, colored in (({**terminal, 'PULSAR_COLOR': 'always'}, True), (terminal, False),
+                               ({**terminal, 'PULSAR_COLOR': 'always', 'NO_COLOR': '1'}, False),
+                               ({**terminal, 'PULSAR_COLOR': 'never'}, False)):
+            with self.subTest(extra=extra):
+                result = self.run_tool('doctor.sh', extra=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('host checks passed', result.stdout)
+                # Only the colored line leads with READY.
+                self.assertEqual('\x1b[32mREADY' in result.stdout, colored, result.stdout)
+                self.assertEqual('\x1b' in result.stdout, colored, result.stdout)
+
     def test_narrow_doctor_and_image_output(self):
         result=self.run_tool('doctor.sh');self.assertEqual(result.returncode,0,result.stderr)
         self.assertIn('catalog is empty',result.stdout)

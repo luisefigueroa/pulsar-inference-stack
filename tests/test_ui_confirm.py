@@ -234,6 +234,28 @@ exit "$rc"
         self.assertEqual(code, 130, output)
         self.assertIn("PAGED=130", output)
 
+    def test_a_page_keeps_terminal_styles_unless_they_are_off(self):
+        # The capture is shown on this terminal: PULSAR_COLOR=always, unless
+        # never; NO_COLOR (set by drive) still reaches the command.
+        script = '''
+{setting}
+. "$REPO_DIR/scripts/ui.sh"
+page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-unset}} no_color=${{NO_COLOR-unset}} line $i"; done'
+'''
+        for setting, expected in (("", "color=always no_color=1"), ("export PULSAR_COLOR=never", "color=never no_color=1")):
+            with self.subTest(setting=setting):
+                code, output = self.drive(script.format(setting=setting), b"q", ready=b"line 1")
+                self.assertEqual(code, 0, output)
+                self.assertIn(expected, output)
+
+    def test_a_help_page_is_styled_in_the_pager(self):
+        script = 'unset NO_COLOR\n. "$REPO_DIR/scripts/ui.sh"\npage_output "" "$REPO_DIR/pulsar" help terms\n'
+        code, output = self.drive(script, b"q", ready=b"What the words mean")
+        self.assertEqual(code, 0, output)
+        self.assertIn("\x1b[?1049h", output)
+        self.assertIn("\x1b[1;94mWhat the words mean\x1b[0m", output)
+        self.assertIn("\x1b[1;94mspec\x1b[0m", output)
+
     def test_short_output_prints_without_the_pager(self):
         code, output = self.page(3, b"")
         self.assertEqual(code, 0, output)

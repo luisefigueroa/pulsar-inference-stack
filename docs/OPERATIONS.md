@@ -47,7 +47,8 @@ preview before copying files.
 Menus and confirmation prompts draw with Gum: the repository bundles it for the
 arm64 Linux nodes (`third_party/gum/`); elsewhere install `gum` from the
 package manager or point `GUM_BIN` at it. `NO_COLOR` or
-`PULSAR_COLOR=never` draws them without color. A menu lists every option on one
+`PULSAR_COLOR=never` draws them without color; see
+[output and messages](#output-and-messages) for text styles. A menu lists every option on one
 page when the terminal has room for it, and its labels use the whole row after
 the cursor; a repeated label gets a numbered suffix such as `(2)`. Without Gum
 or an interactive terminal, a menu opens nothing: it names the equivalent commands and exits
@@ -1084,6 +1085,16 @@ refusals as `BLOCKED <code>: … Next: …` lines. `start --verbose`, or
 `PULSAR_VERBOSE=1` for any command, adds the internal script name to step,
 warning and error lines for debugging; check rows keep their layout. Deprecated aliases (`pulsar gum`, `pulsar wizard`,
 `pulsar release list`) print one warning naming the replacement.
+
+On a terminal, `./pulsar help` and its pages style their text: headings in
+bold and the menu accent, menu choices in bold, [terms](#terms) in the accent,
+commands, options and paths in cyan, and placeholders such as `SPEC`
+underlined. Every styled part also reads without color. `NO_COLOR` removes
+the colors and keeps bold and underline; `PULSAR_COLOR=never` prints no
+styles; `PULSAR_COLOR=always` keeps them in output that is not a terminal.
+The menu's pager runs its pages with `always`, so they keep their styles
+there, and `doctor`'s `READY` line keeps its color. Without `always`, piped
+output stays plain; `--json` output never carries styles.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet
