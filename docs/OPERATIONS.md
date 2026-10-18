@@ -535,9 +535,11 @@ Stop refreshes the inventory and shows the current scope before confirmation.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
-After stop, the menu prints the outcome and how long it took, as the catalog
-menu does (see [operation outcomes](#operation-outcomes)). **Detailed status**
-adds an outcome only when status answers no (exit 1) or cannot tell (exit 3).
+After stop, the menu prints the outcome and how long it took, then waits for
+**Continue**, as the catalog menu does (see
+[operation outcomes](#operation-outcomes)). **Detailed status** and **Show full
+inventory** open in the pager when their output is long. Detailed status adds
+an outcome only when status answers no (exit 1) or cannot tell (exit 3).
 Model files, pins and archives are retained. The ordinary `inventory` and
 `inventory --json` commands remain read-only reports.
 
@@ -769,8 +771,10 @@ are gone. `start --json` reports the same record in its `cancelled` error.
 
 ### Before cluster setup
 
-The home menu reads saved configuration without probing nodes. Cluster setup
-requires confirmed membership and, for multiple nodes, enrolled SSH trust.
+The home menu reads saved configuration without probing nodes. It prints the
+setup status when it opens, and again after a choice only when that choice
+changed it. Cluster setup requires confirmed membership and, for multiple
+nodes, enrolled SSH trust.
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
@@ -811,8 +815,13 @@ model, nodes and consequence; a blocked plan ends without a question. **Back**
 or Esc leaves the current menu or cancels an action prompt to its containing
 menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
-Ctrl-C at a choose, input or confirmation prompt exits the menu with status
-`130`, including membership and SSH enrollment confirmations.
+Long read-only output opens in a pager when it runs past a few lines: **Show
+details**, **Published results**, a comparison, **Help**, **Host diagnostics**,
+**Detailed status**, the full inventory, and saved membership or its check.
+↑/↓ scroll, `/` searches, and q or Esc returns to the menu; shorter output
+prints in place. Ctrl-C at a choose, input, confirmation, **Continue** or pager
+prompt exits the menu with status `130`, including membership and SSH
+enrollment confirmations.
 
 Opening the catalog probes no node. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
@@ -834,7 +843,11 @@ catalog does not offer the check.
 
 Each operation ends with an outcome worded by its
 [exit status](CONTRACT.md#error-codes-and-exit-statuses), then an indented line
-with the status, the time taken and where to look. `✓` is success. A "no"
+with the status, the time taken and where to look. The outcome stays on screen
+until **Continue** (Esc also continues), so the command's output can be read
+before the menu redraws. A preview that ends without a question, such as a
+blocked plan, waits the same way; a declined confirmation returns at once.
+`✓` is success. A "no"
 (exit 1) reads by action: after **Live status**, `▲ … is not running` means no
 node runs it, so starting it won't conflict; a refused Start, a failed check or
 a blocked launch check is marked `✗` and its reasons are in the output above.

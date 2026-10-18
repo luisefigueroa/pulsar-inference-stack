@@ -166,6 +166,18 @@ _ui_gum_style_frame_args() {
   GUM_STYLE_FRAME_ARGS+=(--padding "0 1" --margin "1 0")
 }
 
+# The pager draws its own border; search matches use the accent palette.
+_ui_gum_pager_style_args() {
+  GUM_PAGER_STYLE_ARGS=(--show-line-numbers=false)
+  if pulsar_color_enabled; then
+    GUM_PAGER_STYLE_ARGS+=(
+      --match.foreground="$PULSAR_ACCENT"
+      --match-highlight.foreground="$_PULSAR_CONFIRM_SELECTED_FG"
+      --match-highlight.background="$_PULSAR_CONFIRM_SELECTED_BG"
+    )
+  fi
+}
+
 _ui_gum_input_style_args() {
   GUM_INPUT_STYLE_ARGS=()
   if pulsar_color_enabled; then
@@ -233,6 +245,17 @@ _ui_terminal_rows() {
   [[ "$rows" =~ ^[1-9][0-9]*$ ]] || rows=${LINES:-}
   [[ "$rows" =~ ^[1-9][0-9]*$ ]] || return 1
   printf '%s\n' "$rows"
+}
+
+# _ui_terminal_columns
+# Prints the terminal's width, read like its height; $COLUMNS is the fallback.
+_ui_terminal_columns() {
+  local size columns
+  size=$(stty size <&2 2>/dev/null) || size=""
+  columns=${size##* }
+  [[ "$columns" =~ ^[1-9][0-9]*$ ]] || columns=${COLUMNS:-}
+  [[ "$columns" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$columns"
 }
 
 # choose_index HEADER OPTION...
@@ -344,4 +367,62 @@ spin() {
   cat "$err" >&2
   rm -f "$out" "$err"
   return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Output the next menu must not bury
+# ---------------------------------------------------------------------------
+# Output longer than this opens in the pager; shorter output prints in place,
+# where it stays readable above the next menu.
+_UI_PAGER_LINES=8
+
+# page_output TITLE COMMAND...
+# Shows what a read-only command printed, its errors kept in order with its
+# output. Up to _UI_PAGER_LINES lines print in place; longer output opens in
+# Gum's pager (↑/↓ scroll, / searches, q or Esc returns). A nonempty TITLE
+# shows a spinner while a slow command runs. COMMAND must be an executable,
+# not a shell function: it runs with COLUMNS set to the pager's text width.
+# Returns the command's status, or 130 after Ctrl-C while it runs or in the
+# pager.
+page_output() {
+  local title="$1" out columns rc=0 pager_rc=0
+  shift
+  _ui_require_gum || return
+  local -a command=("$@")
+  # The pager's border and padding take four columns.
+  if columns=$(_ui_terminal_columns) && [ "$columns" -gt 4 ]; then
+    command=(env COLUMNS=$((columns - 4)) "$@")
+  fi
+  out=$(mktemp) || return 1
+  if [ -n "$title" ]; then
+    spin "$title" bash -c '"$@" 2>&1' _ "${command[@]}" >"$out" || rc=$?
+  else
+    "${command[@]}" >"$out" 2>&1 || rc=$?
+  fi
+  if [ "$rc" -eq 130 ]; then
+    rm -f -- "$out"
+    return 130
+  fi
+  if [ "$(wc -l <"$out")" -le "$_UI_PAGER_LINES" ]; then
+    cat -- "$out"
+  else
+    _ui_gum_pager_style_args
+    _ui_gum pager "${GUM_PAGER_STYLE_ARGS[@]}" <"$out" || pager_rc=$?
+    # A pager that could not open must not hide the output.
+    [ "$pager_rc" -eq 0 ] || [ "$pager_rc" -eq 130 ] || cat -- "$out"
+  fi
+  rm -f -- "$out"
+  [ "$pager_rc" -ne 130 ] || return 130
+  return "$rc"
+}
+
+# wait_continue [HEADER]
+# Holds the screen until the operator chooses Continue, so an operation's
+# output and outcome stay readable before a menu redraws. Esc also continues;
+# Ctrl-C returns 130.
+wait_continue() {
+  local rc=0
+  choose_index "${1:-Review the output above}" "Continue" >/dev/null || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  return 0
 }

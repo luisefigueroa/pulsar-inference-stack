@@ -111,6 +111,13 @@ def double_main():
         if args[:1] == ['style']:
             sys.stdout.write(sys.stdin.read())
             return 0
+        if args[:1] == ['pager']:
+            # The pager keeps what it was given; q returns 0.
+            with (root/'pager.txt').open('a') as stream:
+                stream.write(sys.stdin.read())
+            return 0
+        if args[:1] == ['spin']:
+            return subprocess.call(args[args.index('--')+1:])
         # Confirm reads keys from the terminal, never stdin. A comma-separated
         # exit-status list answers successive confirmations.
         if os.environ.get('TOPOLOGY_CONCURRENT_SAVE') == '1' and args[-1].startswith('Save cluster membership with '):

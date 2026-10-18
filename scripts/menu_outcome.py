@@ -5,8 +5,9 @@ Exit statuses follow the CLI contract (docs/CONTRACT.md): 1 is a known "no",
 2 is a request rejected before any action, and 3 is an outcome Stack could
 not establish. "No" and "couldn't tell" must not read alike: Live status exit
 1 means starting is safe, while exit 3 means it is not. The command's own
-output, printed above this outcome, holds the reasons. Interruptions keep
-their separate report in the menu.
+output, printed above this outcome, holds the reasons. An interruption has
+its own report: the menu cannot confirm cleanup or partial effects, even when
+a concurrent completion returned exit 0.
 """
 
 from __future__ import annotations
@@ -38,6 +39,16 @@ NO = {
              "the reasons are above; Live status shows what still runs"),
 }
 NO_DEFAULT = ("✗", "{label} was refused or failed for {subject}.", "the reasons are above")
+
+STORAGE = ("acquire", "restore", "prepare", "move", "archive", "pin", "unpin", "purge", "remove")
+# What to inspect after an interruption, before retrying the operation.
+INTERRUPTED_NEXT = {
+    **dict.fromkeys(STORAGE, "Use Check now to inspect current files before retrying. "
+                             "Retained staging may be recoverable by the same operation."),
+    **dict.fromkeys(("start", "stop"), "Use Live status to inspect the service before retrying Start or Stop."),
+    "image-stage": "Use Launch options → Check pinned image before retrying staging.",
+}
+INTERRUPTED_INSPECTION = "Rerun this inspection when ready; its partial output may be incomplete."
 
 
 def outcome(action: str, label: str, subject: str, status: int, elapsed: str,
@@ -76,6 +87,15 @@ def outcome(action: str, label: str, subject: str, status: int, elapsed: str,
             f"{after} · {detail}")
 
 
+def interruption(action: str, label: str, subject: str, status: int,
+                 elapsed: str) -> tuple[str, list[str]]:
+    """Return the headline and detail lines for an interrupted operation."""
+    return (f"Interruption requested: {label} for {subject} after {elapsed}.",
+            [f"exit {status} · this menu has not confirmed cleanup or partial effects; "
+             "review the command output above",
+             INTERRUPTED_NEXT.get(action, INTERRUPTED_INSPECTION)])
+
+
 def _preview(label: str, subject: str, status: int) -> tuple[str, str]:
     """A --plan preview changes nothing, whatever its status."""
     if status == 1:
@@ -98,12 +118,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--elapsed", default="")
     parser.add_argument("--preview", action="store_true", help="the operation's --plan preview failed")
     parser.add_argument("--recorded", action="store_true", help="a check saved an observation")
+    parser.add_argument("--interrupted", action="store_true", help="the operation was interrupted")
     args = parser.parse_args(argv)
-    headline, detail = outcome(args.action, args.label, args.subject, args.status, args.elapsed,
-                               preview=args.preview, recorded=args.recorded)
+    if args.interrupted:
+        headline, details = interruption(args.action, args.label, args.subject, args.status, args.elapsed)
+    else:
+        headline, detail = outcome(args.action, args.label, args.subject, args.status, args.elapsed,
+                                   preview=args.preview, recorded=args.recorded)
+        details = [detail] if detail else []
     writer = TerminalWriter()
     writer.emit(headline, subsequent_indent="  ")
-    if detail:
+    for detail in details:
         writer.emit(detail, initial_indent="  ")
     return 0
 

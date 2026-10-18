@@ -84,6 +84,18 @@ class OutcomeWording(unittest.TestCase):
                 self.assertIn("nothing changed", headline)
                 self.assertTrue(detail.startswith(f"exit {status} · "), detail)
 
+    def test_an_interruption_confirms_nothing_and_names_the_next_inspection(self):
+        for action, status, follow_up in (("restore", 130, "Use Check now"), ("stop", 130, "Use Live status"),
+                                          ("image-stage", 143, "Check pinned image"),
+                                          ("check", 0, "Rerun this inspection")):
+            with self.subTest(action=action):
+                headline, details = menu_outcome.interruption(action, LABELS[action], "Fixture-Model",
+                                                              status, "3s")
+                self.assertEqual(headline, f"Interruption requested: {LABELS[action]} for Fixture-Model after 3s.")
+                self.assertTrue(details[0].startswith(f"exit {status} · this menu has not confirmed cleanup"),
+                                details)
+                self.assertIn(follow_up, details[1])
+
     def test_a_check_that_saved_an_observation_reports_findings(self):
         headline, detail = outcome("check", 1, recorded=True)
         self.assertEqual(headline, "▲ Check now saved an observation with findings for Fixture-Model in 3s.")
@@ -103,6 +115,17 @@ class OutcomeCommand(unittest.TestCase):
         self.assertTrue(lines[0].startswith("? Whether org/a-rather-long-model-name"), lines)
         self.assertTrue(all(len(line) <= 44 for line in lines), lines)
         self.assertTrue(all(line.startswith("  ") for line in lines[1:]), lines)
+
+    def test_an_interruption_keeps_its_status_on_a_detail_line(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            menu_outcome.main(["--action", "prepare", "--label", "Prepare", "--subject", "Fixture-Model",
+                               "--status", "130", "--elapsed", "4s", "--interrupted"])
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[0], "Interruption requested: Prepare for Fixture-Model after 4s.")
+        self.assertTrue(lines[1].startswith("  exit 130 · this menu has not confirmed cleanup"), lines)
+        self.assertTrue(all(line.startswith("  ") for line in lines[1:]), lines)
+        self.assertIn("Use Check now", " ".join(lines))
 
     def test_success_is_one_line(self):
         output = io.StringIO()
