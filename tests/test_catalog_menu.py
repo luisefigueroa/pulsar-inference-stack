@@ -441,6 +441,9 @@ class View(unittest.TestCase):
             (checked(home=HOME, local_state="ready"), {**running, "age": 3600},
              "Download ✓ → Prepare ✓ → [Start] · Stop → Purge"),
             (row(snapshots=two_snapshots(HOME, None)), None, "[Download] → Prepare → Start · Stop → Purge"),
+            # A guarded spec's Start is left out of the menu, so it is never the marked step.
+            (checked(home=HOME, local_state="ready", **GUARDED), None,
+             "Download ✓ → Prepare ✓ → Start (not offered here) · Stop → Purge"),
         )
         for state, live, expected in cases:
             with self.subTest(expected=expected):

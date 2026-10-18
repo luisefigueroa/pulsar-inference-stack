@@ -620,6 +620,9 @@ def lifecycle(row: dict, live: dict | None, *, mark: bool = True) -> str:
         done, current = 1, "Prepare"
     elif homes:
         done, current, note = 1, None, " (files not checked)"
+    if current == "Start" and start_unsupported(row):
+        # The menu leaves Start out for this spec; don't point at it.
+        current, note = None, " (not offered here)"
     steps = []
     for index, step in enumerate(("Download", "Prepare", "Start")):
         if index < done:
