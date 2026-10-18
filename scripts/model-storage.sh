@@ -239,10 +239,21 @@ FULL_PREVIEW=(bash -c 'python3 -m model_library.render "${@:2}" <"$1"' _)
 # preview, Stop for a Pulsar service whose container mounts the files (asked
 # first), Live service inventory, and Back. Returns 130 on Ctrl-C, else 1.
 blocked_plan() {
-  local plan="$1" choice rc kind spec model label question
+  local plan="$1" choice rc kind spec model label question line field
   shift
   local -a kinds=() specs=() models=() labels=()
-  while IFS=$'\t' read -r kind spec model label; do
+  # Each line is KIND, SPEC, MODEL and LABEL; the inventory line leaves SPEC
+  # and MODEL empty. IFS=$'\t' read would merge those empty fields, so split on
+  # each of the first three tabs; the label is the rest of the line.
+  while IFS= read -r line; do
+    for field in kind spec model; do
+      if [[ "$line" == *$'\t'* ]]; then
+        printf -v "$field" '%s' "${line%%$'\t'*}"; line=${line#*$'\t'}
+      else
+        printf -v "$field" '%s' "$line"; line=""
+      fi
+    done
+    label=$line
     [ -n "$kind" ] || continue
     kinds+=("$kind"); specs+=("$spec"); models+=("$model"); labels+=("$label")
   done < <(catalog list --json | catalog_menu blocked-choices --plan-file "$plan" || true)

@@ -1135,10 +1135,8 @@ raise SystemExit(rc)
             plan=plan, confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(spec, spec_id)
-        # Stop for the catalog spec, then the inventory (its label: see
-        # test_blocked_plan_names_the_inventory_choice), then Back.
-        options = self.blocked_menu(choices)
-        self.assertEqual((len(options), options[:2], options[-1]), (4, ["Show full preview", stop], "Back"))
+        self.assertEqual(self.blocked_menu(choices),
+                         ["Show full preview", stop, "Open Live service inventory", "Back"])
         text = " ".join(result.stdout.split())
         self.assertIn(f"Blocked: running Pulsar container pulsar-fixture (spec {spec_id[:12]})", text)
         self.assertIn("Blocked: stopped container someone-else", text)
@@ -1156,9 +1154,10 @@ raise SystemExit(rc)
         plan = self.container_plan({"id": "d" * 64, "name": "someone-else", "state": "running"},
                                    {"id": "e" * 64, "name": "other-spec", "state": "running", "spec_id": "ef" * 32})
         _, result, actions, choices, questions = self.run_menu(
-            ["#0", "Storage and archive…", "Purge prepared copies", "#1", "Back", "Back", "Back", "Back"], plan=plan)
+            ["#0", "Storage and archive…", "Purge prepared copies", "Open Live service inventory", "Back",
+             "Back", "Back", "Back"], plan=plan)
         self.assertEqual(result.returncode, 0, result.stderr)
-        # A spec outside the catalog has no Stop; only the inventory (option 1) opens.
+        # A spec outside the catalog has no Stop; only the inventory opens.
         options = self.blocked_menu(choices)
         self.assertEqual((len(options), options[0], options[-1]), (3, "Show full preview", "Back"))
         self.assertIn("Blocked: running container someone-else on fixture-node (not in saved topology) mounts "
@@ -1167,11 +1166,9 @@ raise SystemExit(rc)
         self.assertEqual([action[:3] for action in actions if action[-2:] != ["--plan", "--json"]],
                          [["pulsar", "inventory", "menu"]])
 
-    @unittest.expectedFailure
     def test_blocked_plan_names_the_inventory_choice(self):
-        # Known defect: blocked_plan reads blocked-choices with IFS=$'\t'
-        # read, which collapses the inventory line's empty fields, so the
-        # choice is drawn without its label (it still opens the inventory).
+        # Its spec and model fields are empty; splitting on every tab keeps
+        # the label in place (IFS=$'\t' read would merge them).
         plan = self.container_plan({"id": "d" * 64, "name": "other-spec", "state": "running", "spec_id": "ef" * 32})
         _, result, _, choices, _ = self.run_menu(
             ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back", "Back"], plan=plan)
