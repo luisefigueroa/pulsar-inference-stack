@@ -1813,6 +1813,9 @@ container_managed_label_is_true() {
   [ "$managed" = "true" ]
 }
 
+# Prints TOPOLOGY<tab>NODE_ID from the container labels; either may be empty.
+# Readers split on the tab: IFS=$'\t' read would merge an empty topology
+# field and read the node ID as the topology.
 container_placement_identity_fields() {
   local metadata="${1:?}"
   printf '%s' "$metadata" | python3 -c '
@@ -1844,11 +1847,11 @@ placement_index_for_role() {
 # they were observed. Missing identity remains a compatibility path only for
 # historical local one-node containers.
 container_single_node_identity_is_proven() {
-  local metadata="${1:?}" placement="${2:?}" index expected_id have_topology have_id
+  local metadata="${1:?}" placement="${2:?}" index expected_id have_topology have_id fields
   index=$(placement_index_for_role "$placement") || return 1
   load_cluster_topology || return 1
-  IFS=$'\t' read -r have_topology have_id \
-    < <(container_placement_identity_fields "$metadata")
+  fields=$(container_placement_identity_fields "$metadata") || fields=""
+  have_topology=${fields%%$'\t'*} have_id=${fields#*$'\t'}
 
   if [ -z "$have_id" ]; then
     [ "$index" -eq 0 ]
@@ -1864,10 +1867,10 @@ container_single_node_identity_is_proven() {
 }
 
 container_single_node_identity_refuse_reason() {
-  local metadata="${1:?}" placement="${2:?}" index expected_id have_topology have_id
+  local metadata="${1:?}" placement="${2:?}" index expected_id have_topology have_id fields
   index=$(placement_index_for_role "$placement" 2>/dev/null || echo "?")
-  IFS=$'\t' read -r have_topology have_id \
-    < <(container_placement_identity_fields "$metadata")
+  fields=$(container_placement_identity_fields "$metadata") || fields=""
+  have_topology=${fields%%$'\t'*} have_id=${fields#*$'\t'}
   if [ -z "$have_id" ]; then
     if [ "$index" = 0 ]; then
       echo "local legacy single-node container has no node-id"
