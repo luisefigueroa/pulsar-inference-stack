@@ -511,6 +511,8 @@ class Catalog(unittest.TestCase):
     UI = r'''
 require_gum() { :; }
 emit_frame() { cat; }
+# FIXTURE_ROWS sets the terminal height; unset, the height is unknown.
+_ui_terminal_rows() { [ -n "${FIXTURE_ROWS:-}" ] && echo "$FIXTURE_ROWS"; }
 spin() { shift; "$@"; }
 # The pager and the Continue hold are recorded where menus are; CONTINUE_RC=130
 # answers every hold with Ctrl-C.
@@ -803,10 +805,10 @@ raise SystemExit(rc)
         text = " ".join(result.stdout.split())
         first, _, second = text.partition("Running services: service inventory less than a minute ago.")
         self.assertTrue(second, text)
-        self.assertIn("Live service: not observed in this menu session; Live status checks it.", first)
-        self.assertIn("Suggested: Check now", first)
-        self.assertIn("Live service: running on fixture-remote (service inventory, less than a minute ago).", second)
-        self.assertIn("Suggested: Live status — running on fixture-remote", second)
+        self.assertIn("Running? not checked here; choose Live status", first)
+        self.assertIn("Next Check now", first)
+        self.assertIn("Running? running on fixture-remote (service inventory, less than a minute ago)", second)
+        self.assertIn("Next Live status — running on fixture-remote", second)
         menus = choices.split("\n\n")
         # The list, a recipe, the list again, then the list and recipe after the check.
         self.assertNotIn("running on", menus[0] + menus[2])
@@ -819,7 +821,7 @@ raise SystemExit(rc)
             inventory=self.live_inventory(age_minutes=30))
         self.assertEqual(result.returncode, 0, result.stderr)
         text = " ".join(result.stdout.split())
-        self.assertIn("Live service: last seen running on fixture-remote (service inventory, 30 minutes ago).", text)
+        self.assertIn("Running? last seen running on fixture-remote (service inventory, 30 minutes ago)", text)
         self.assertIn("last seen running 30 minutes ago", choices)
         self.assertIn("Live status (suggested)", choices)
 
@@ -830,7 +832,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         text = " ".join(result.stdout.split())
         self.assertIn("not observed: fixture-remote", text)
-        self.assertIn("Live service: unknown; fixture-remote was not observed", text)
+        self.assertIn("Running? unknown; fixture-remote was not observed", text)
         self.assertNotIn("not running", text)
 
     def test_a_failed_or_unreadable_inventory_leaves_the_menu_usable(self):
@@ -843,7 +845,7 @@ raise SystemExit(rc)
                     inventory=fixture, inventory_rc=rc)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(expected, " ".join(result.stdout.split()))
-                self.assertIn("Live service: not observed in this menu session", " ".join(result.stdout.split()))
+                self.assertIn("Running? not checked here", " ".join(result.stdout.split()))
                 self.assertIn("[continue]", choices)
 
     def test_ctrl_c_while_checking_running_services_exits_the_menu(self):
@@ -860,11 +862,11 @@ raise SystemExit(rc)
     def test_live_status_and_stop_outcomes_date_the_frame(self):
         _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=1)
         text = " ".join(result.stdout.split())
-        self.assertIn("Live service: not running on any node (Live status, less than a minute ago).", text)
+        self.assertIn("Running? not running on any node (Live status, less than a minute ago)", text)
         self.setUp()
         _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=0)
         text = " ".join(result.stdout.split())
-        self.assertIn("Live service: a service exists (Live status, less than a minute ago).", text)
+        self.assertIn("Running? a service exists (Live status, less than a minute ago)", text)
         self.assertIn("Live status (suggested)", text + self.root.joinpath("choices.log").read_text())
 
     def test_live_status_after_start_replaces_the_started_suggestion(self):
@@ -874,7 +876,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["status.sh", actions[1][1]]])
         text = " ".join(result.stdout.split())
-        last = text.rpartition("Live service:")[2]
+        last = text.rpartition("Running?")[2]
         self.assertTrue(last.startswith(" not running on any node (Live status"), last)
         self.assertNotIn("started from this menu", last)
 
@@ -882,7 +884,7 @@ raise SystemExit(rc)
         _, result, _, _, _ = self.run_menu(["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         text = " ".join(result.stdout.split())
-        self.assertIn("Live service: stopped on fixture-node; other nodes not observed since (Stop,", text)
+        self.assertIn("Running? stopped on fixture-node; other nodes not observed since (Stop,", text)
         self.assertNotIn("not running on any node", text)
 
     def test_open_in_catalog_opens_one_recipe_with_the_captured_inventory(self):
@@ -895,7 +897,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         self.assertTrue(choices.startswith("Choose one operation\n"), choices)
         self.assertNotIn("Select a catalog spec", choices)
-        self.assertIn("Live service: running on fixture-remote", " ".join(result.stdout.split()))
+        self.assertIn("Running? running on fixture-remote", " ".join(result.stdout.split()))
         self.assertTrue(captured.exists())
         self.setUp()
         _, result, _, _, _ = self.run_menu(["<ctrl-c>"], env_extra=opened)
@@ -1024,9 +1026,9 @@ raise SystemExit(rc)
         last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("Start (suggested)", last_options)
         text = " ".join(result.stdout.split())
-        last_frame = text.rpartition("Current observations (saved)")[2]
-        self.assertIn("Files: prepared in this session (less than a minute ago); saved check:", last_frame)
-        self.assertIn("Suggested: Start — prepared on every serving rank just now", last_frame)
+        last_frame = text.rpartition("Settings ")[2]
+        self.assertIn("Files prepared in this session (less than a minute ago); saved check:", last_frame)
+        self.assertIn("Next Start — prepared on every serving rank just now", last_frame)
 
     def test_a_successful_restore_moves_on_to_prepare(self):
         def record(spec_id):
@@ -1040,7 +1042,7 @@ raise SystemExit(rc)
         self.assertIn("Prepare (suggested)", last_options)
         self.assertNotIn("Check now (suggested)", last_options)
         text = " ".join(result.stdout.split())
-        self.assertIn("Suggested: Prepare — restore finished; every required snapshot has a verified home", text)
+        self.assertIn("Next Prepare — restore finished; every required snapshot has a verified home", text)
 
     def test_a_failed_storage_change_replaces_an_earlier_prepare(self):
         plan = {"kind": "pulsar-preparation-plan", "eligible": True,
@@ -1055,9 +1057,9 @@ raise SystemExit(rc)
         last_options = choices.rsplit("Choose one operation\n", 1)[1].split("\n\n", 1)[0]
         self.assertIn("Check now (suggested)", last_options)
         self.assertNotIn("Start (suggested)", last_options)
-        last_frame = " ".join(result.stdout.split()).rpartition("Current observations (saved)")[2]
+        last_frame = " ".join(result.stdout.split()).rpartition("Settings ")[2]
         self.assertNotIn("prepared in this session", last_frame)
-        self.assertIn("Suggested: Check now — the last storage change did not succeed", last_frame)
+        self.assertIn("Next Check now — the last storage change did not succeed", last_frame)
 
     def test_recorded_missing_home_guides_restore_after_a_nonzero_check(self):
         spec, result, actions, _, _ = self.run_menu(
@@ -1230,9 +1232,22 @@ raise SystemExit(rc)
                                  "Launch options…", "Storage and archive…", "Show details", "Published results",
                                  "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
-        self.assertIn("Suggested: Check now — no saved check", shown)
+        self.assertIn("Next Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
         self.assertIn("Not shown: Prepare, Move home, Create archive, Remove home (no home is recorded)", shown)
+
+    def test_a_short_terminal_keeps_only_the_first_frame_line_and_next(self):
+        for rows, full in (("24", False), ("60", True)):
+            with self.subTest(rows=rows):
+                self.setUp()
+                _, result, _, _, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None,
+                                                   env_extra=lambda spec_id: {"FIXTURE_ROWS": rows})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                shown = " ".join(result.stdout.split())
+                self.assertIn("example/model [", shown)
+                self.assertIn("Next Check now — no saved check", shown)
+                self.assertEqual("Files unknown" in shown, full)
+                self.assertEqual("Not shown:" in shown, full)
 
     def test_guarded_spec_menu_leaves_out_start_and_explains_why(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None, guarded=True)

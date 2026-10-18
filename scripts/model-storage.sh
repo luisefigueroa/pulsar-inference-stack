@@ -480,18 +480,21 @@ recipe_menu() {
   local spec="$1" read_only="${2:-0}" kind a b c index rc default group title="Choose one operation"
   local -a view_args=()
   if [ "$read_only" = 1 ]; then view_args+=(--read-only); title="Catalog spec (read-only)"; fi
-  local -a header=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=() labels=()
+  local -a header=() next=() frame=() main=() main_labels=() launch=() launch_labels=() storage=() storage_labels=()
+  local -a labels=()
+  local rows
   while true; do
     ROW_JSON=$(catalog show "$spec" --json) || return 0
     live_args
     VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
       --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${view_args[@]}" "${LIVE_ARGS[@]}" \
       ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"} ${LAST_AT[$spec]:+--after-at "${LAST_AT[$spec]}"}) || return 0
-    header=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
+    header=(); next=(); main=(); main_labels=(); launch=(); launch_labels=(); storage=(); storage_labels=(); default=""
     while IFS=$'\t' read -r kind a b c; do
       case "$kind" in
         recipe) RECIPE_NODES="$a"; RECIPE_MODEL="$b" ;;
         header) header+=("$a") ;;
+        next) next+=("$a") ;;
         option)
           if [ "$a" = main ]; then main+=("$b"); main_labels+=("$c")
           elif [ "$a" = launch ]; then launch+=("$b"); launch_labels+=("$c")
@@ -500,12 +503,20 @@ recipe_menu() {
           for index in "${!main[@]}"; do [ "${main[$index]}" != "$a" ] || default="$index"; done ;;
       esac
     done <<<"$VIEW"
-    echo
-    printf '%s\n' "${header[@]}" | emit_frame
     labels=("${main_labels[@]}")
     [ "${#launch[@]}" -eq 0 ] || labels+=("Launch options…")
     [ "${#storage[@]}" -eq 0 ] || labels+=("Storage and archive…")
     labels+=("Show details" "Published results" "Compare catalog specs" "Back")
+    # Next is the frame's last line. When the frame (with its border and the
+    # blank line above) and every choice (with Gum's 5 rows) don't fit the
+    # terminal, the frame keeps only its first line and Next.
+    frame=("${header[@]}" "${next[@]}")
+    if rows=$(_ui_terminal_rows) \
+        && [ $(( ${#frame[@]} + 3 + ${#labels[@]} + 5 )) -gt "$rows" ]; then
+      frame=("${header[0]}" "${next[@]}")
+    fi
+    echo
+    printf '%s\n' "${frame[@]}" | emit_frame
     index=$(PULSAR_CHOOSE_DEFAULT="$default" choose_index "$title" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     if [ "$index" -lt "${#main[@]}" ]; then

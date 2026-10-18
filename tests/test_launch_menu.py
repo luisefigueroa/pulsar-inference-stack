@@ -98,7 +98,7 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(len(questions.splitlines()), 1)
         text = " ".join(result.stdout.split())
         self.assertIn("Interruption requested", text)
-        self.assertIn("Suggested: Check serving image", text)
+        self.assertIn("Next Check serving image", text)
         self.assertNotIn("Stage serving image finished", text)
 
     def test_already_present_image_does_not_offer_staging(self):

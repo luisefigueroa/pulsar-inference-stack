@@ -30,6 +30,12 @@ def row(**fields):
     return base
 
 
+def frame_text(lines):
+    """The recipe frame's text from view lines, whitespace collapsed."""
+    return " ".join(" ".join(line.split("\t", 1)[1] for line in lines
+                             if line.startswith(("header\t", "next\t"))).split())
+
+
 def checked(**fields):
     return row(**{"checked_at": "2026-09-05T00:00:00Z", "observation_age_seconds": 7200, **fields})
 
@@ -258,10 +264,10 @@ class NextLifecycleStep(unittest.TestCase):
         state = checked(home=HOME, local_state="missing", observation_age_seconds=12 * 86400)
         lines = menu.view_lines(state, "configured", after="prepare", after_age=120, width=200, names=NAMES,
                                 now=self.NOW)
-        frame = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
-        self.assertIn("Files: prepared in this session (2 minutes ago); saved check: ", frame)
+        frame = frame_text(lines)
+        self.assertIn("Files prepared in this session (2 minutes ago); saved check: ", frame)
         self.assertIn("12 days ago", frame)
-        self.assertIn("Suggested: Start — prepared on every serving rank just now", frame)
+        self.assertIn("Next Start — prepared on every serving rank just now", frame)
         unmarked = menu.view_lines(state, "configured", after="move", after_age=120, width=200, names=NAMES,
                                    now=self.NOW)
         self.assertFalse(any("prepared in this session" in line for line in unmarked))
@@ -354,10 +360,10 @@ class ArchiveSuggestions(unittest.TestCase):
         for width in (44, 80):
             with self.subTest(width=width):
                 lines = menu.view_lines(state, "configured", width=width, names=NAMES, now=self.NOW)
-                headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+                headers = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
                 text = " ".join(" ".join(headers).split())
                 self.assertIn("target verified 1 hour ago", text)
-                self.assertIn("Suggested: Restore", text)
+                self.assertIn("Next Restore", text)
                 self.assertIn("archive: verified 1 hour ago; Restore rechecks contents", text)
                 self.assertTrue(all(len(line) <= width - 4 for line in headers))
                 output = io.StringIO()
@@ -368,13 +374,43 @@ class ArchiveSuggestions(unittest.TestCase):
 
 
 class View(unittest.TestCase):
+    # TUI-22: aligned fields, Files and Archive apart, Next last.
+    def test_the_frame_is_aligned_fields_with_next_last(self):
+        state = checked(home=HOME, local_state="missing", blockers=["A long saved blocker that wraps at narrow widths."])
+        for width in (64, 84):
+            with self.subTest(width=width):
+                lines = menu.view_lines(state, "configured", width=width, names=NAMES)
+                kinds = [line.split("\t", 1)[0] for line in lines if line.startswith(("header\t", "next\t"))]
+                self.assertEqual(kinds, sorted(kinds, key=lambda kind: kind == "next"))
+                body = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+                fields = [line.split()[0] for line in body[1:] if not line.startswith(" ")]
+                for field in ("Recipe", "Settings", "Image", "Files", "Archive", "Running?", "Results"):
+                    self.assertIn(field, fields)
+                # Values start in one column; wrapped values hang under them.
+                for line in body[1:]:
+                    if line.startswith(("Not shown", "These are")):
+                        continue
+                    self.assertTrue(line[10:11].strip() and not line[9:10].strip(), line)
+                self.assertTrue(all(len(line) <= width - 4 for line in body))
+                nexts = [line.split("\t", 1)[1] for line in lines if line.startswith("next\t")]
+                self.assertTrue(nexts[0].startswith("Next      Prepare — "), nexts)
+                self.assertTrue(all(line.startswith(" " * 10) for line in nexts[1:]), nexts)
+        self.assertIn("Running? not checked here; choose Live status", frame_text(lines))
+        read_only = menu.view_lines(state, "configured", width=84, names=NAMES, read_only=True)
+        self.assertIn("Running? not checked here", frame_text(read_only))
+        self.assertNotIn("choose Live status", frame_text(read_only))
+        self.assertFalse(any(line.startswith("next\t") for line in read_only))
+
+    def test_frame_lines_keep_alignment_but_never_a_tab(self):
+        self.assertEqual(menu.frame_line("          wrapped\tvalue \n"), "          wrapped value")
+
     def test_lines_mark_suggestion_and_explain_hidden_operations(self):
         lines = menu.view_lines(checked(home=HOME, local_state="ready"), "not-configured", width=60, names=NAMES)
         self.assertEqual(lines[0], "recipe\t3\torg/model")
-        text = "\n".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
+        text = "\n".join(line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t")))
         self.assertIn("org/model [abababababab]", text)
         self.assertIn("checked 2 hours ago", text)
-        self.assertIn("Suggested: Start", text)
+        self.assertIn("Next Start", " ".join(text.split()))
         self.assertIn("no archive location is configured", " ".join(text.split()))
         self.assertIn("option\tmain\tacquire\tDownload", lines)
         self.assertFalse(any(line.startswith("option\tmain\trestore\t") for line in lines))
@@ -682,9 +718,8 @@ class SessionServices(unittest.TestCase):
                     patch.object(menu.NodeNames, "saved", return_value=NAMES):
                 self.assertEqual(menu.main(["view", "--spec-id", self.SPEC, "--archive-location", "configured",
                                             "--live", handle.name]), 0)
-            frame = " ".join(line.split("\t", 1)[1] for line in output.getvalue().splitlines()
-                             if line.startswith("header\t"))
-            self.assertIn("Live service: running on spark-1 (service inventory, less than a minute ago).", frame)
+            frame = frame_text(output.getvalue().splitlines())
+            self.assertIn("Running? running on spark-1 (service inventory, less than a minute ago)", frame)
             self.assertIn("suggest\tstatus", output.getvalue())
 
 
@@ -736,12 +771,12 @@ class Question(unittest.TestCase):
         self.assertEqual(menu.suggestion(state, offered, "configured", names=NAMES)[0], "start")
         for width in (44, 80):
             lines = menu.view_lines(state, "configured", width=width, names=NAMES)
-            headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+            headers = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
             text = " ".join(" ".join(headers).split())
             for expected in ("Maintainer warning: withdrawn", state["review"]["reason"],
                              state["review"]["reviewed_at"], "Advisory metadata"):
                 self.assertIn(expected, text)
-            self.assertLess(text.index("Maintainer warning"), text.index("Suggested: Start"))
+            self.assertLess(text.index("Maintainer warning"), text.index("Next Start"))
             self.assertTrue(all(len(line) <= width - 4 for line in headers))
         self.assertEqual(state, before)
 

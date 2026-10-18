@@ -25,7 +25,7 @@ import sys
 from typing import Any
 
 from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
-from .published_results import collect as published_results, compact_lines as published_lines
+from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
 from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
@@ -189,6 +189,13 @@ def live_line(fact: dict | None, *, read_only: bool = False) -> str:
             f"not observed {when}." if unobserved else f"Live service: unknown; a node could not be observed {when}.")
 
 
+def live_value(fact: dict | None, *, read_only: bool = False) -> str:
+    """The recipe frame's Running? field: live_line's words without its label."""
+    if fact is None:
+        return "not checked here" if read_only else "not checked here; choose Live status"
+    return live_line(fact).removeprefix("Live service: ").rstrip(".")
+
+
 def start_unsupported(row: dict) -> str | None:
     """The reason Start is left out, or None when this Stack can start the spec."""
     if row.get("start_supported") is not False:
@@ -301,7 +308,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if after == "start" and not superseded:
         return "status", "started from this menu; live status observes the service"
     if live and live["kind"] in ("service", "exists") and "status" in offered:
-        seen = live_line(live).removeprefix("Live service: ").rstrip(".")
+        seen = live_value(live)
         return "status", seen + ("; Live status shows its state" if live.get("source") == "status"
                                  else "; Live status checks it now")
     if after in ("acquire", "restore"):
@@ -317,7 +324,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if after == "prepare" and "start" in offered:
         # Prepare ends by verifying the prepared copy on every serving rank.
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
-            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
+            return "status", live_value(live) + "; check before starting"
         return "start", "prepared on every serving rank just now; start rechecks prerequisites"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
@@ -344,7 +351,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", blocker
     if local == "ready":
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
-            return "status", live_line(live).removeprefix("Live service: ").rstrip(".") + "; check before starting"
+            return "status", live_value(live) + "; check before starting"
         return "start", "files prepared as of the last check; start rechecks prerequisites"
     return None
 
@@ -511,34 +518,44 @@ def explicit_settings(arguments: list[str]) -> str:
     return "; ".join(parts) if parts else "see Show details"
 
 
+# Frame fields share one label column; continuation lines hang under the value.
+FRAME_LABEL_WIDTH = 10
+
+
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
            published=None, live: dict | None = None, read_only: bool = False,
-           after: str | None = None, after_age: int | None = None) -> list[str]:
+           after: str | None = None, after_age: int | None = None) -> tuple[list[str], list[str]]:
+    """The recipe frame as (body lines, Next lines).
+
+    The body starts with the model and spec; saved facts follow as aligned
+    fields. Next is kept apart so it stays the frame's last line, and so a
+    short terminal can show only the first line and Next.
+    """
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
+
+    def field(label: str, value: object) -> None:
+        out.field(label, value, label_width=FRAME_LABEL_WIDTH)
+
     out.emit(f"{row['model_id']} [{row['spec_id'][:12]}]")
     for line in withdrawal_notice(row):
         out.emit(line)
-    out.emit("Selected recipe: " + recipe_text(row["geometry"]))
+    field("Recipe", recipe_text(row["geometry"]))
+    field("Settings", explicit_settings(row.get("engine_args") or []))
     digest = str((row.get("image") or {}).get("digest") or "not recorded")
     image = digest if len(digest) <= 24 else digest[:24] + "…"
-    out.emit(f"Image: {image}")
-    out.emit("Settings: " + explicit_settings(row.get("engine_args") or []))
+    field("Image", f"{image} (exact digest)" if digest != "not recorded" else digest)
     review = row.get("review") or {}
     if review.get("status") and review["status"] != "withdrawn":
-        out.emit(f"Maintainer review (advisory): {review['status']} · "
-                 f"{review.get('reviewed_at') or 'date not recorded'}")
-    out.emit("Current observations (saved)")
+        field("Review", f"{review['status']} · {review.get('reviewed_at') or 'date not recorded'} (advisory)")
     files = files_text(row)
     if after == "prepare" and after_age is not None:
         # Prepare saves no observation; keep the old check visible as such.
         files = f"prepared in this session ({age_text(after_age)}); saved check: {files}"
-    out.emit(f"Files: {files} · Archive: {archive_text(row, now)}")
-    out.emit(live_line(live, read_only=read_only))
-    for line in published_lines(published, now=now):
-        out.emit(line)
-    if suggested:
-        out.emit(f"Suggested: {LABELS[suggested[0]]} — {suggested[1]}")
+    field("Files", files)
+    field("Archive", archive_text(row, now))
+    field("Running?", live_value(live, read_only=read_only))
+    field("Results", published_line(published, now=now))
     by_reason: dict[str, list[str]] = {}
     for action in MAIN + LAUNCH + STORAGE:
         if action in hidden:
@@ -547,11 +564,22 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
         out.emit(f"Not shown: {', '.join(labels)} ({reason})")
     if by_reason:
         out.emit("These are saved records; Check now refreshes them.")
-    return buffer.getvalue().splitlines()
+    body = buffer.getvalue().splitlines()
+    if not suggested:
+        return body, []
+    buffer.seek(0)
+    buffer.truncate()
+    field("Next", f"{LABELS[suggested[0]]} — {suggested[1]}")
+    return body, buffer.getvalue().splitlines()
 
 
 def clean(text: object) -> str:
     return " ".join(str(text).split())
+
+
+def frame_line(text: object) -> str:
+    """One frame line for the shell: no tabs or newlines, leading spaces kept for alignment."""
+    return str(text).replace("\t", " ").replace("\n", " ").replace("\r", " ").rstrip()
 
 
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
@@ -562,9 +590,10 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
     suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live)
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
-    lines += ["header\t" + clean(line) for line in header(row, hidden, suggested, frame_width, now=now,
-                                                          published=published, live=live, read_only=read_only,
-                                                          after=after, after_age=after_age)]
+    body, next_lines = header(row, hidden, suggested, frame_width, now=now, published=published, live=live,
+                              read_only=read_only, after=after, after_age=after_age)
+    lines += ["header\t" + frame_line(line) for line in body]
+    lines += ["next\t" + frame_line(line) for line in next_lines]
     for action in offered:
         group = "main" if action in MAIN else ("launch" if action in LAUNCH else "storage")
         label = LABELS[action] + (" (suggested)" if suggested and suggested[0] == action else "")

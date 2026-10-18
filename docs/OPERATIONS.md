@@ -250,8 +250,12 @@ complete ID.
 
 ### Read recipe details
 
-The selected-spec menu separates **Selected recipe**, **Current observations
-(saved)** and **Published results**. Recipe geometry and explicitly recorded
+The selected-spec menu shows a frame of aligned fields: **Recipe**,
+**Settings** and **Image** describe the spec; **Files**, **Archive** and
+**Running?** give saved and session observations with their age; **Results**
+summarizes published results on one line; **Next** is always the last line.
+On a terminal too short for the frame and every choice, the frame keeps only
+its first line and Next. Recipe geometry and explicitly recorded
 context, sequence and quantization settings describe intended execution; the
 menu does not infer engine defaults or resolve repeated arguments. The image
 digest is abbreviated here; **Show details** retains the complete identity and
@@ -851,7 +855,7 @@ Opening the catalog probes no node. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
 result while the catalog menu is open; leaving it for the root menu starts
 over. The list then says when it was observed and which nodes were not, and
-labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Live service** line gives the state, nodes, source
+labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Running?** field gives the state, nodes, source
 and age; **Live status**, **Start** and **Stop** in the same catalog menu
 update it, and the newest observation wins. Live status exit 0 means a service exists, not
 that it is running. A node that was not observed, or a failed node probe,
@@ -922,8 +926,8 @@ now does), the suggestion is the next required snapshot without a home, then
 **Prepare** once every snapshot has one. After a successful
 **Prepare**, which ends by verifying the prepared copy on every serving rank,
 the suggestion is **Start**, which rechecks its prerequisites. Prepare saves no
-observation, so the frame reads `Files: prepared in this session (…); saved
-check: …` until the next Check now. Other storage changes still suggest
+observation, so the frame's Files field reads `prepared in this session (…);
+saved check: …` until the next Check now. Other storage changes still suggest
 **Check now**, and so does any storage change that fails, since it may have
 partial effects; one rejected before it ran (exit 2) changes nothing. Each
 operation keeps its own preview and confirmation.
