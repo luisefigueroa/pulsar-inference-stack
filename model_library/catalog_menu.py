@@ -675,7 +675,7 @@ def memory_warning_only(records: list[dict]) -> bool:
 # Each choice runs an existing menu operation with its own selection, preview
 # and confirmation; none adds --replace or --pull-image.
 START_CHOICES = {
-    "topology_incomplete": ("topology-check",), "fabric_incomplete": ("topology-check",),
+    "topology_incomplete": ("topology-menu",), "fabric_incomplete": ("topology-check",),
     "node_unreachable": ("topology-check",),
     "docker_unavailable": ("doctor",), "container_start_failed": ("doctor",),
     "image_missing": ("image-stage",),
@@ -693,6 +693,7 @@ START_CHOICES = {
 START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
                              "service_stopped"})
 START_CHOICE_LABELS = {
+    "topology-menu": "Open Cluster topology (membership)",
     "topology-check": "Check saved nodes and fabric (checks nodes now)",
     "doctor": "Host diagnostics",
     "inventory": "Open Live service inventory",
@@ -710,7 +711,17 @@ def start_choices(records: list[dict], row: dict, archive_location: str) -> list
     offered, _, _ = operations(row, archive_location)
     choices: list[tuple[str, str]] = []
     for record in records:
-        for kind in START_CHOICES.get(record.get("blocker") if isinstance(record, dict) else None, ()):
+        if not isinstance(record, dict):
+            continue
+        kinds = START_CHOICES.get(record.get("blocker"), ())
+        # A failed launch's record says whether its containers remain: none
+        # to stop once every rank's was seen removed, and Stop clears what an
+        # unconfirmed removal may have left.
+        if record.get("stage") == "launch" and record.get("cleanup") == "removed":
+            kinds = tuple(kind for kind in kinds if kind not in ("status", "stop"))
+        elif record.get("stage") == "launch" and record.get("cleanup") == "unconfirmed":
+            kinds = (*kinds, "status", "stop")
+        for kind in kinds:
             if kind == "files":
                 missing = _next_home(row, offered, archive_location)
                 kind = missing[1] if missing else "prepare"

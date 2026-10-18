@@ -238,6 +238,7 @@ start_choices() {
     rc=0
     case "${kinds[$choice]}" in
       inventory) "$REPO_DIR/pulsar" inventory menu || rc=$? ;;
+      topology-menu) "$REPO_DIR/pulsar" topology menu || rc=$? ;;
       topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
       doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
       verbose)

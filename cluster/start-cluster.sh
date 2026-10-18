@@ -212,7 +212,7 @@ cluster_abort() {
 # otherwise names the nodes left and suggests stop. An unobservable node is left.
 cluster_failure() {
   local code="$1" rank="$2" left="" other host
-  local -a unconfirmed=()
+  local -a cleanup=(--removed)
   shift 2
   for ((other = 0; other < NODES; other++)); do
     host=""
@@ -220,10 +220,9 @@ cluster_failure() {
     [ "$(container_state_exact "$CONTAINER" "$host")" = absent ] \
       || left+="${left:+, }$(human_node_name "$other") (rank $other)"
   done
-  [ -z "$left" ] || unconfirmed=(--unconfirmed "$left")
+  [ -z "$left" ] || cleanup=(--unconfirmed "$left")
   START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(human_node_name "$rank")" \
-    --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" \
-    ${unconfirmed[@]+"${unconfirmed[@]}"}
+    --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
 }
 
 existing=0

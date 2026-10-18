@@ -260,6 +260,10 @@ class Catalog(unittest.TestCase):
         self.assertEqual(record["fix"], "./pulsar stop abababababab")
         self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1); "
                                          "stop removes what remains.")
+        self.assertEqual(record["cleanup"], "unconfirmed")
+        # Only a launch's own observation sets cleanup; other records leave it null.
+        self.assertIsNone(start_blockers.blocker("health_timeout", spec=SPEC)["cleanup"])
+        self.assertEqual(start_blockers.blocker("container_exited", spec=SPEC, removed=True)["cleanup"], "removed")
 
     def test_launcher_suggestions_keep_the_operator_estimate(self):
         # The launchers reset their own estimate arguments; start exports the operator's.
@@ -860,6 +864,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual((record["fix"], record["note"]), (None, note))
         self.assertEqual((record["node"], record["node_id"], record["rank"], record["service_id"]),
                          ("spark-1", "node-0", 0, SERVICE_ID))
+        self.assertEqual(record["cleanup"], "removed")
 
     def test_an_unconfirmed_node_is_named_and_stop_is_suggested(self):
         record = self.failure("absent unknown running", "container_exited", "1", "--no-command", "--note",
@@ -868,6 +873,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual(record["note"], "Removing its containers could not be confirmed on spark-2 (rank 1), "
                                          "spark-3 (rank 2); stop removes what remains.")
         self.assertEqual(record["service_id"], SERVICE_ID)
+        self.assertEqual(record["cleanup"], "unconfirmed")
 
     def test_a_start_failure_after_a_replacement_says_nothing_runs_only_when_confirmed(self):
         note = "Docker's error is shown above. The cluster's containers were removed."
@@ -876,6 +882,7 @@ class ClusterCleanup(unittest.TestCase):
         self.assertEqual(record["note"], note + " " + start_blockers.AFTER_REPLACE_NOTE)
         record = self.failure("running absent absent", "container_start_failed", "2", "--note", note, replaced=True)
         self.assertEqual(record["fix"], "./pulsar stop abababababab")
+        self.assertEqual(record["cleanup"], "unconfirmed")
         self.assertNotIn(start_blockers.AFTER_REPLACE_NOTE, record["note"])
 
 

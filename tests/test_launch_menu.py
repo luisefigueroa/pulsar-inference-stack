@@ -208,6 +208,26 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
                          ["Prepare", "Back"])
 
+    def test_incomplete_membership_opens_the_topology_menu(self):
+        _, result, actions, choices, _ = self.refused(
+            ["topology_incomplete", "node_unreachable"], "Open Cluster topology (membership)", "Back", "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.offered(choices, "Start was refused: 2 blockers. Choose a next step"),
+                         ["Open Cluster topology (membership)", "Check saved nodes and fabric (checks nodes now)",
+                          "Back"])
+        self.assertEqual(actions[1:], [["pulsar", "topology", "menu"]])
+
+    def test_a_launch_records_cleanup_decides_whether_stop_is_offered(self):
+        _, _, _, choices, _ = self.refused(
+            [{"blocker": "health_timeout", "stage": "launch", "cleanup": "removed"}], "Back", "Back")
+        # Every rank's container was seen removed: nothing to stop, so no choice.
+        self.assertNotIn("Choose a next step", choices)
+        _, _, _, choices, _ = self.refused(
+            [{"blocker": "container_start_failed", "stage": "launch", "cleanup": "unconfirmed"}],
+            "Back", "Back", "Back")
+        self.assertEqual(self.offered(choices, "Start failed after launch: 1 blocker. Choose a next step"),
+                         ["Host diagnostics", "Live status", "Stop", "Back"])
+
     def test_failed_check_reruns_the_dry_run_with_full_diagnostics(self):
         spec, result, actions, choices, _ = self.refused(
             ["memory_check_failed"], "Rerun the checks with full diagnostics", "Back", "Back", "Back",

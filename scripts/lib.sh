@@ -103,7 +103,7 @@ start_blocker() {
   # --option=VALUE keeps a value such as "--dry-run" from reading as an option.
   while [ $# -gt 0 ]; do
     case "$1" in
-      --no-command|--after-replace) options+=("$1") ;;
+      --no-command|--after-replace|--removed) options+=("$1") ;;
       --*) options+=("$1=${2-}"); shift ;;
       *) options+=("$1") ;;
     esac

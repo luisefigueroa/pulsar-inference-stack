@@ -420,8 +420,8 @@ before relying on a command or format.
 When `start --json` fails, the error is `prerequisite_failed` and `details`
 holds one record per start blocker: `field` is `blocker`, plus `blocker` (a
 code from `start_blocker_codes` in the contract), `stage`, `node` (hostname) and
-`node_id` (stable), `rank`, `message`, `fix`, `note` and `service_id`. Fields
-that do not apply are null.
+`node_id` (stable), `rank`, `message`, `fix`, `note`, `service_id` and
+`cleanup`. Fields that do not apply are null.
 
 - `stage` is `check` when start refused before launching anything, and
   `launch` when a launch was attempted after the checks passed:
@@ -435,9 +435,14 @@ that do not apply are null.
   explanation. Suggested start commands repeat the flags start was given, such
   as `--dry-run` or `--pull-image`, and add only the flag the fix is about.
 
+- `cleanup` is set on a failed multi-node launch's record: `removed` when every
+  rank's container was observed absent afterwards, and `unconfirmed` when one
+  may remain (`fix` is then `./pulsar stop`). It is null otherwise, including
+  for a one-node launch failure, whose service is left as it was.
+
 Start runs every independent check before it reports, so one refusal can list
-several blockers. Branch on `blocker` and `stage`; `message`, `fix` and `note`
-are for people.
+several blockers. Branch on `blocker`, `stage` and `cleanup`; `message`, `fix`
+and `note` are for people.
 
 When `start --json` is interrupted after it launched a service, the error is
 `cancelled` (or `cleanup_incomplete`) and `details` holds one
@@ -454,6 +459,9 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `image_check_failed`, `model_files_check_failed`, `port_in_use`,
 `container_start_failed`, `smoke_test_failed`, `health_timeout`,
 `container_exited` and `service_stopped`.
+
+Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
+Earlier records lack it, which reads as null.
 
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,

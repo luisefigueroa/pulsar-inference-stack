@@ -149,9 +149,11 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
             memory_estimate_file: str | None = None, memory_estimate_id: str | None = None,
             start_flags: str = "", home_node: str | None = None, state_root: str | None = None,
             service_id: str | None = None, no_command: bool = False, note: str | None = None,
-            after_replace: bool = False, unconfirmed: str | None = None) -> dict:
+            after_replace: bool = False, unconfirmed: str | None = None, removed: bool = False) -> dict:
     """One blocker record. ``unconfirmed`` names nodes where removing a failed
-    launch's containers could not be confirmed; stop then becomes the fix."""
+    launch's containers could not be confirmed; stop then becomes the fix.
+    ``removed`` says every rank's container was observed absent. Either sets
+    the record's ``cleanup``, so callers need not read ``fix`` or ``note``."""
     if code not in BLOCKERS:
         raise ValueError(f"unknown start blocker: {code}")
     kind = BLOCKERS[code]
@@ -194,9 +196,10 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
     message = f"{where}: {kind.summary}" if where else kind.summary
     if detail:
         message += f" {detail}" if kind.detail_inline else f" ({detail})"
+    cleanup = "unconfirmed" if unconfirmed else ("removed" if removed else None)
     return {"field": "blocker", "blocker": code, "stage": kind.stage, "node": node, "node_id": node_id,
             "rank": rank, "message": message, "fix": fix, "note": resolved_note,
-            "service_id": service_id}
+            "service_id": service_id, "cleanup": cleanup}
 
 
 def human(record: dict) -> str:
@@ -240,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     record.add_argument("--note")
     record.add_argument("--after-replace", action="store_true")
     record.add_argument("--unconfirmed")
+    record.add_argument("--removed", action="store_true")
     for flag in ("--spec-file", "--override-file", "--memory-estimate-file", "--memory-estimate-id"):
         record.add_argument(flag)
     args = parser.parse_args(argv)
@@ -250,7 +254,8 @@ def main(argv: list[str] | None = None) -> int:
                     memory_estimate_id=args.memory_estimate_id or None, start_flags=args.start_flags,
                     home_node=args.home_node or None, state_root=args.state_root or None,
                     service_id=args.service_id or None, no_command=args.no_command, note=args.note,
-                    after_replace=args.after_replace, unconfirmed=args.unconfirmed or None)
+                    after_replace=args.after_replace, unconfirmed=args.unconfirmed or None,
+                    removed=args.removed)
     print(human(value))
     target = os.environ.get("PULSAR_START_BLOCKERS_FILE")
     if target:

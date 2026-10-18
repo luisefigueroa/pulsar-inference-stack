@@ -964,18 +964,21 @@ lead to it:
 
 | Blocker | Choice |
 | --- | --- |
-| `topology_incomplete`, `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
+| `topology_incomplete` | Open Cluster topology, where membership can be set up or changed |
+| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
 | `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
 | `service_exists`, `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Stop |
+| A failed launch whose containers may remain (`cleanup` is `unconfirmed`) | Live status; Stop, added to the choices above |
 | `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
 
 Each choice runs the existing operation with its own selections, preview and
-confirmation, and none adds `--replace` or `--pull-image`. The inventory,
-topology check, host diagnostics and a declined confirmation return to the
-same choices. The diagnostics rerun replaces them with its own. Any other
+confirmation, and none adds `--replace` or `--pull-image`. A failed
+multi-node launch whose containers were all seen removed offers no Live
+status or Stop. The inventory, Cluster topology, topology check, host
+diagnostics and a declined confirmation return to the same choices. The diagnostics rerun replaces them with its own. Any other
 choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
 inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
 `historical_spec` and `service_stopped` have no menu choice; their printed
