@@ -673,8 +673,14 @@ def plan_effect(action: str, plan: dict) -> dict:
     document = _plan_document(plan)
     steps = _plan_actions(plan)
     if action == "prepare":
-        copied = sum(1 for step in steps if step.get("action") == "copy")
-        return {"copied": copied, "reused": len(steps) - copied, "nothing": bool(steps) and not copied}
+        # A manifest shared by several snapshots is copied once per node; later
+        # snapshots reuse that copy, as preparation_estimate counts it.
+        members = (document.get("snapshots") or []) if document.get("kind") == "pulsar-preparation-set-plan" \
+            else [document]
+        copies = {(step.get("node_id"), member.get("snapshot_manifest_id") or index)
+                  for index, member in enumerate(members) for step in member.get("actions") or []
+                  if step.get("action") == "copy"}
+        return {"copied": len(copies), "reused": len(steps) - len(copies), "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -752,6 +758,8 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         else:
             causes = [blocker_message(str(item), names) for item in document.get("blockers") or []
                       if isinstance(item, str)]
+        # One mount over several copies repeats the same cause; show it once.
+        causes = list(dict.fromkeys(causes))
         shown = causes if len(causes) <= 3 else causes[:2]
         lines = [f"Blocked: {_short_ids(text).rstrip('.')}." for text in shown] \
             or ["Blocked; the full preview has details."]
@@ -775,10 +783,11 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])
-            lines.append(f"Short by {size_text(-low)} on {names(node)}." if low < 0
-                         else f"Headroom after copying: {size_text(low)} on {names(node)}.")
+            lines.append(f"Short by about {size_text(-low)} on {names(node)}." if low < 0
+                         else f"Estimated headroom after copying: {size_text(low)} on {names(node)} "
+                              "(file sizes only; space is not reserved).")
         else:
-            lines.append("Headroom after copying: not observed.")
+            lines.append("Estimated headroom after copying: not observed.")
         return lines
     if action == "purge":
         if effect["nothing"]:
@@ -816,7 +825,8 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         home = document.get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
         root = document.get("archive_root")
-        return [f"Copy the home on {where} into the archive{' at ' + root if root else ''}."]
+        return [f"Copy the home on {where} into the archive{' at ' + root if root else ''}; "
+                "an archive already there is verified, never replaced."]
     if action == "restore":
         target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
         size, count = document.get("total_bytes"), document.get("file_count")
@@ -824,13 +834,16 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}."]
         if type(available) is int and type(size) is int and available >= 0 and size >= 0:
             after = available - size
-            lines.append(f"Short by {size_text(-after)} on {target}." if after < 0
-                         else f"Disk free after the copy: {size_text(after)} on {target}.")
+            lines.append(f"Short by about {size_text(-after)} on {target}." if after < 0
+                         else f"Estimated disk free after the copy: {size_text(after)} on {target} "
+                              "(file sizes only; space is not reserved).")
         else:
             lines.append(f"Disk free on {target}: not observed.")
         return lines
     if action == "acquire":
-        target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
+        # A reuse plan names its node only in the home it registers.
+        node = document.get("selected_node") or (document.get("home") or {}).get("node_id")
+        target = names(node) if node else "the selected node"
         if effect["nothing"]:
             return [f"Nothing to download: verified files are already recorded on {target}; Download registers them."]
         count, size = _source_size(document.get("source") or {})
@@ -856,7 +869,8 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     nodes = row["geometry"]["nodes"]
     warning = "Withdrawn spec. " if (row.get("review") or {}).get("status") == "withdrawn" else ""
     if action == "acquire":
-        target = names(plan.get("selected_node") or node) if (plan.get("selected_node") or node) else "the selected node"
+        where = plan.get("selected_node") or (plan.get("home") or {}).get("node_id") or node
+        target = names(where) if where else "the selected node"
         if plan.get("action") == "reuse":
             return f"Register the existing verified files of {identity} on {target}? Nothing is downloaded."
         return f"Download {identity} to {target}?"
