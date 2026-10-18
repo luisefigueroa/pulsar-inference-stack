@@ -776,6 +776,253 @@ class Question(unittest.TestCase):
                                         "--plan-file", "plan.json"]), 3)
 
 
+class HomeNext(unittest.TestCase):
+    """The home screen's Next line, from saved records only (TUI-26)."""
+    def specs(self):
+        return [row(spec_id="a" * 64), row(spec_id="b" * 64),
+                checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
+                checked(spec_id="d" * 64, local_state="missing"),
+                checked(spec_id="e" * 64, local_state="missing", archive_state="verified"),
+                checked(spec_id="f" * 64, home=HOME, local_state="changed", observation_age_seconds=600),
+                checked(spec_id="0" * 64, home=HOME, local_state="ready")]
+
+    def test_groups_suggestions_in_lifecycle_order_with_the_newest_check(self):
+        self.assertEqual(menu.home_next(self.specs(), "configured"),
+                         "Next: 2 specs never checked · 1 spec needs a check · 1 spec needs Download · "
+                         "1 spec needs Restore · 1 spec needs Prepare · 1 spec ready to Start — open Catalog "
+                         "and storage. Newest saved check: 10 minutes ago.")
+
+    def test_counts_use_singular_and_plural_wording(self):
+        ready = [checked(spec_id=c * 64, home=HOME, local_state="ready") for c in "ab"]
+        self.assertEqual(menu.home_next(ready, "configured"),
+                         "Next: 2 specs ready to Start — open Catalog and storage. Newest saved check: 2 hours ago.")
+        stale = [checked(spec_id=c * 64, observation_age_seconds=3 * 86400) for c in "ab"]
+        self.assertTrue(menu.home_next(stale, "configured").startswith("Next: 2 specs need a check — "))
+        self.assertTrue(menu.home_next([row()], "configured").startswith("Next: 1 spec never checked — "))
+
+    def test_never_checked_alone_has_no_check_age(self):
+        self.assertEqual(menu.home_next([row(spec_id="a" * 64), row(spec_id="b" * 64)], "configured"),
+                         "Next: 2 specs never checked — open Catalog and storage.")
+
+    def test_the_archive_location_decides_restore(self):
+        state = [checked(local_state="missing", archive_state="verified")]
+        self.assertIn("1 spec needs Restore", menu.home_next(state, "configured"))
+        self.assertIn("1 spec needs Download", menu.home_next(state, "disabled"))
+
+    def test_no_suggested_step_and_no_catalog_give_no_line(self):
+        self.assertIsNone(menu.home_next([], "configured"))
+        self.assertIsNone(menu.home_next([checked(home=HOME, local_state="ready", **GUARDED)], "configured"))
+
+    def test_saved_service_and_session_records_are_not_read(self):
+        # Ready files suggest Start even though a service may run: the line
+        # never probes or reads session outcomes.
+        state = checked(home=HOME, local_state="ready")
+        with patch.object(menu, "live_fact", side_effect=AssertionError("service read")), \
+                patch.object(menu, "service_outcomes", side_effect=AssertionError("session read")):
+            self.assertIn("ready to Start", menu.home_next([state], "configured"))
+
+    def test_cli_reads_the_catalog_projection_and_prints_nothing_without_a_step(self):
+        for entries, expected in ((self.specs()[:1], "Next: 1 spec never checked — open Catalog and storage.\n"),
+                                  ([], "")):
+            with self.subTest(entries=len(entries)):
+                out = io.StringIO()
+                with patch("sys.stdin", io.StringIO(json.dumps({"entries": entries}))), patch("sys.stdout", out):
+                    self.assertEqual(menu.main(["next", "--archive-location", "configured"]), 0)
+                self.assertEqual(out.getvalue(), expected)
+
+
+GIB = 1024 ** 3
+MANIFEST = "1" * 64
+
+
+def preparation(*actions, manifest=MANIFEST, size=2 * GIB, budgets=None, **fields):
+    return {"kind": "pulsar-preparation-plan", "eligible": True, "snapshot_manifest_id": manifest,
+            "total_bytes": size, "actions": [{"rank": rank, "node_id": node, "action": action}
+                                             for rank, (node, action) in enumerate(actions)],
+            "budgets": budgets or {}, **fields}
+
+
+def budget(available=100 * GIB, reserve=10 * GIB, used=0, limit=50 * GIB):
+    return {"available": available, "reserve": reserve, "used": used, "limit": limit}
+
+
+class PlanSummary(unittest.TestCase):
+    """Each storage preview leads with a summary built from its own plan (TUI-73, #58)."""
+    def summary(self, action, plan, state=None):
+        return menu.plan_summary(action, state or checked(home=HOME), plan, names=NAMES)
+
+    def test_prepare_copies_with_estimated_headroom(self):
+        plan = preparation(("n0", "home-view"), ("n1", "copy"), ("n2", "copy"),
+                           budgets={"n1": budget(), "n2": budget(limit=40 * GIB)})
+        self.assertEqual(self.summary("prepare", plan), [
+            "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
+            "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "nothing": False})
+
+    def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
+        plan = preparation(("n0", "home-view"), ("n1", "copy"), budgets={"n1": budget(limit=GIB)})
+        self.assertEqual(self.summary("prepare", plan)[1], "Short by about 1.00 GiB on spark-2.")
+        plan = preparation(("n0", "home-view"), ("n1", "copy"))
+        self.assertEqual(self.summary("prepare", plan)[1], "Estimated headroom after copying: not observed.")
+
+    def test_prepare_with_nothing_to_copy(self):
+        plan = preparation(("n0", "home-view"), ("n1", "reuse"), ("n2", "bind"))
+        self.assertEqual(self.summary("prepare", plan), [
+            "Nothing to copy: the snapshot is already on spark-1, spark-2, spark-3. "
+            "Prepare verifies the files and records them."])
+        self.assertTrue(menu.plan_effect("prepare", plan)["nothing"])
+        self.assertIn("Nothing is copied", menu.question("prepare", checked(home=HOME), plan=plan, names=NAMES))
+        both = {"kind": "pulsar-preparation-set-plan", "eligible": True,
+                "snapshots": [preparation(("n0", "home-view"), snapshot="target"),
+                              preparation(("n0", "home-view"), manifest="2" * 64, snapshot="draft")]}
+        self.assertTrue(self.summary("prepare", both)[0].startswith("Nothing to copy: both snapshots are already on spark-1."))
+
+    def test_a_manifest_shared_by_two_snapshots_is_copied_once_per_node(self):
+        plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
+            preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
+            preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "nothing": False})
+        self.assertEqual(self.summary("prepare", plan), [
+            "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",
+            "Estimated headroom after copying: 48.00 GiB on spark-2 (file sizes only; space is not reserved)."])
+        self.assertEqual(menu.question("prepare", checked(home=HOME), plan=plan, names=NAMES),
+                         "Prepare org/model on spark-1, spark-2? 1 new copy, 3 reused.")
+        # Different manifests are separate copies on the same node.
+        plan["snapshots"][1]["snapshot_manifest_id"] = "2" * 64
+        self.assertEqual(menu.plan_effect("prepare", plan)["copied"], 2)
+
+    def test_purge(self):
+        plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": [
+            {"node_id": "n1", "action": "remove-copy"}, {"node_id": "n2", "action": "remove-copy"},
+            {"node_id": "n0", "action": "release-binding"}]}, "incomplete_preparations": [{}]}
+        self.assertEqual(self.summary("purge", plan), [
+            "Delete 2 working copies, release 1 binding whose files are kept, clear 1 incomplete preparation "
+            "on spark-2, spark-3, spark-1."])
+        empty = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": []}, "incomplete_preparations": []}
+        self.assertEqual(self.summary("purge", empty), [
+            "Nothing to purge: no prepared copies or incomplete preparations are recorded for this spec."])
+
+    def test_pin_and_unpin(self):
+        views = [{"node_id": "n0", "pinned": True}, {"node_id": "n1", "pinned": False}]
+        self.assertEqual(self.summary("pin", {"views": views}), ["Pin 1 prepared copy on spark-2; 1 already pinned."])
+        self.assertEqual(self.summary("unpin", {"views": views}), ["Unpin 1 prepared copy on spark-1; 1 already unpinned."])
+        self.assertEqual(self.summary("pin", {"views": views[:1]}), ["The prepared copy is already pinned; nothing changes."])
+        self.assertEqual(self.summary("unpin", {"views": [views[1]] * 2}),
+                         ["All 2 prepared copies are already unpinned; nothing changes."])
+        self.assertEqual(self.summary("pin", {"views": []}), ["No prepared copies are recorded for this spec; nothing to pin."])
+
+    def test_move(self):
+        plan = {"source_node": "n0", "destination_node": "n2", "transfer_route": "direct-ssh-roce"}
+        self.assertEqual(self.summary("move", plan),
+                         ["Move the home from spark-1 to spark-3: a direct copy over the confirmed RoCE rail."])
+        self.assertEqual(self.summary("move", {**plan, "transfer_route": "already-home"}),
+                         ["Nothing to move: the home is already on spark-3."])
+
+    def test_an_existing_archive_is_verified_never_replaced(self):
+        self.assertEqual(self.summary("archive", {"home": HOME, "archive_root": "/fixture/archive"}),
+                         ["Copy the home on spark-1 into the archive at /fixture/archive; "
+                          "an archive already there is verified, never replaced."])
+
+    def test_restore_with_estimated_disk_free_and_shortfall(self):
+        plan = {"selected_node": "n1", "total_bytes": 3 * GIB, "file_count": 40,
+                "destination_space": {"available": 10 * GIB}}
+        self.assertEqual(self.summary("restore", plan), [
+            "Copy 3.00 GiB (40 files) from the archive to spark-2.",
+            "Estimated disk free after the copy: 7.00 GiB on spark-2 (file sizes only; space is not reserved)."])
+        plan["destination_space"]["available"] = GIB
+        self.assertEqual(self.summary("restore", plan)[1], "Short by about 2.00 GiB on spark-2.")
+        self.assertEqual(self.summary("restore", {"selected_node": "n1"}), [
+            "Copy the snapshot (size not observed) from the archive to spark-2.", "Disk free on spark-2: not observed."])
+
+    def test_download_and_a_reuse_naming_the_homes_node(self):
+        files = [{"path": "a", "size": GIB}, {"path": "b", "size": GIB}]
+        self.assertEqual(self.summary("acquire", {"selected_node": "n1", "snapshot_revision": "89abcdef" * 5,
+                                                 "source": {"files": files}}),
+                         ["Download 2.00 GiB (2 files) of org/model @ 89abcdef to spark-2."])
+        # A reuse plan names its node only in the home it registers.
+        reuse = {"action": "reuse", "home": {**HOME, "node_id": "n2"}}
+        self.assertEqual(self.summary("acquire", reuse), [
+            "Nothing to download: verified files are already recorded on spark-3; Download registers them."])
+        self.assertEqual(menu.question("acquire", checked(), plan=reuse, names=NAMES),
+                         "Register the existing verified files of org/model @ 01234567 on spark-3? Nothing is downloaded.")
+
+    def test_remove(self):
+        self.assertEqual(self.summary("remove", {"home": HOME}),
+                         ["Delete the home on spark-1; its files come back only through Restore or Download."])
+
+    def test_blocked_plans_name_each_distinct_cause_once(self):
+        container = {"code": "container-reference", "message": "m", "node_id": "n1",
+                     "container": {"id": "c1", "name": "vllm", "state": "running", "spec_id": "cd" * 32},
+                     "mount": "/fixture/hub", "path": "/fixture/hub/snapshot", "fix": "stop the Pulsar service"}
+        pinned = {"code": "pinned", "message": "p", "node_id": "n2", "fix": "unpin the prepared copies first"}
+        plan = {"eligible": False, "blocker_details": [container, dict(container), pinned]}
+        self.assertEqual(self.summary("purge", plan), [
+            "Blocked: running Pulsar container vllm (spec cdcdcdcdcdcd) on spark-2 mounts /fixture/hub, which "
+            "contains these files; stop the Pulsar service.",
+            "Blocked: the prepared copy on spark-3 is pinned; unpin the prepared copies first."])
+        self.assertTrue(menu.plan_blocked(plan))
+
+    def test_more_than_three_causes_show_two_and_a_count(self):
+        details = [{"code": "insufficient-space", "message": "m", "node_id": node, "fix": "free space"}
+                   for node in ("n0", "n1", "n2", "n3")]
+        lines = self.summary("prepare", {"eligible": False, "blocker_details": details})
+        self.assertEqual(lines, ["Blocked: not enough copy budget or disk space on spark-1; free space.",
+                                 "Blocked: not enough copy budget or disk space on spark-2; free space.",
+                                 "2 more blockers in the full preview."])
+
+    def test_blocked_plans_without_details_use_their_messages(self):
+        plan = {"eligible": False, "blockers": ["n1: disk is full", "n1: disk is full"]}
+        self.assertEqual(self.summary("restore", plan), ["Blocked: spark-2: disk is full."])
+        self.assertEqual(self.summary("restore", {"eligible": False}), ["Blocked; the full preview has details."])
+
+    def test_cli_preview_exits_3_when_blocked_and_0_otherwise(self):
+        state = checked(home=HOME)
+        for plan, status in (({"selected_node": "n1"}, 0), ({"eligible": False, "blockers": ["pinned"]}, 3)):
+            with self.subTest(status=status):
+                out = io.StringIO()
+                with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
+                        patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(plan))):
+                    self.assertEqual(menu.main(["preview", "--spec-id", state["spec_id"], "--action", "restore",
+                                                "--plan-file", "plan.json"]), status)
+                self.assertTrue(out.getvalue().strip())
+
+
+def container_detail(spec_id=None, node="n1"):
+    container = {"id": "c" * 64, "name": "fixture-vllm", "state": "running", **({"spec_id": spec_id} if spec_id else {})}
+    return {"code": "container-reference", "message": "a container references the prepared copy", "node_id": node,
+            "container": container, "mount": "/fixture/hub", "path": "/fixture/hub", "fix": "fix"}
+
+
+class BlockedChoices(unittest.TestCase):
+    """A blocked plan offers Stop only for a Pulsar container of a catalog spec (TUI-74)."""
+    def test_stop_then_inventory_for_each_catalog_spec_once(self):
+        other = checked(spec_id="cd" * 32, model_id="org/other")
+        plan = {"plan": {"eligible": False, "blocker_details": [
+            container_detail("cd" * 32), container_detail("cd" * 32, node="n2"), container_detail(),
+            {"code": "pinned", "message": "p", "node_id": "n0", "fix": "unpin"}]}}
+        self.assertEqual(menu.blocked_choices(plan, [checked(), other]), [
+            ("stop", "cd" * 32, "org/other", "Stop org/other (cdcdcdcdcdcd)"),
+            ("inventory", "", "", "Open Live service inventory")])
+
+    def test_a_spec_outside_the_catalog_gets_only_the_inventory(self):
+        plan = {"eligible": False, "blocker_details": [container_detail("ef" * 32)]}
+        self.assertEqual(menu.blocked_choices(plan, [checked()]), [("inventory", "", "", "Open Live service inventory")])
+
+    def test_a_container_pulsar_did_not_start_gets_no_choice(self):
+        plan = {"eligible": False, "blocker_details": [container_detail(), {"code": "pinned", "message": "p"}]}
+        self.assertEqual(menu.blocked_choices(plan, [checked()]), [])
+        self.assertEqual(menu.blocked_choices({"eligible": False, "blockers": ["pinned"]}, [checked()]), [])
+
+    def test_cli_prints_tab_separated_choices(self):
+        plan = {"eligible": False, "blocker_details": [container_detail("ab" * 32)]}
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(json.dumps({"entries": [checked()]}))), patch("sys.stdout", out), \
+                patch("builtins.open", unittest.mock.mock_open(read_data=json.dumps(plan))):
+            self.assertEqual(menu.main(["blocked-choices", "--plan-file", "plan.json"]), 0)
+        self.assertEqual(out.getvalue(), f"stop\t{'ab' * 32}\torg/model\tStop org/model (abababababab)\n"
+                                         "inventory\t\t\tOpen Live service inventory\n")
+
+
 class Historical(unittest.TestCase):
     def test_schema1_specs_are_not_startable_from_this_stack(self):
         from model_library.catalog import start_support

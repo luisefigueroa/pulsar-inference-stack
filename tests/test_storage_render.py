@@ -207,4 +207,37 @@ class StorageRendering(unittest.TestCase):
         self.assertEqual(result.returncode,2);self.assertNotIn('complete',result.stdout)
 
 
+    def test_blocker_details_lead_with_the_cause_and_its_fix(self):
+        names=NodeNames({'node-1':'spark-b'})
+        container=dict(code='container-reference',message='a container references the prepared copy',node_id='node-1',
+                       container=dict(id='c'*64,name='vllm',state='running',spec_id=SPEC),mount=PATH,path=PATH,
+                       fix='stop the Pulsar service for spec '+SPEC[:12])
+        document=dict(kind='pulsar-purge-plan',eligible=False,blockers=['raw planner message'],views=[],actions=[],
+                      blocker_details=[container,dict(code='pinned',message='m',node_id='node-1',fix='unpin the prepared copies first')])
+        _,flat=self.display(document,'purge',names)
+        self.assertIn('Blocker running Pulsar container vllm (spec '+SPEC[:12]+') on spark-b mounts these files',flat)
+        self.assertIn('Fix stop the Pulsar service for spec '+SPEC[:12],flat)
+        self.assertIn('Blocker the prepared copy on spark-b is pinned Fix unpin the prepared copies first',flat)
+        # Details replace the messages they explain.
+        self.assertNotIn('raw planner message',flat)
+        _,flat=self.display({**document,'blocker_details':[]},'purge',names)
+        self.assertIn('Blocker raw planner message',flat)
+
+    def test_container_blockers_say_how_the_mount_covers_the_files(self):
+        from model_library.render import blocker_detail_text
+        names=NodeNames({'node-1':'spark-b'})
+        base=dict(code='container-reference',message='m',node_id='node-1',path='/hub/snapshots/rev')
+        for mount,state,expected in (('/hub/snapshots/rev','stopped','stopped container x on spark-b mounts these files'),
+                                     ('/hub','running','running container x on spark-b mounts /hub, which contains these files'),
+                                     ('/hub/snapshots/rev/sub','other','state-unknown container x on spark-b mounts /hub/snapshots/rev/sub, inside these files')):
+            with self.subTest(mount=mount):
+                detail=dict(base,mount=mount,container=dict(id='1',name='x',state=state))
+                self.assertEqual(blocker_detail_text(detail,names),expected)
+        # A set plan's member names its snapshot once; unknown codes fall back to the message.
+        detail=dict(code='insufficient-space',message='draft: node-1: insufficient combined snapshot copy budget or disk space',
+                    node_id='node-1',snapshot='draft')
+        self.assertEqual(blocker_detail_text(detail,names),'draft: not enough combined copy budget or disk space on spark-b')
+        self.assertEqual(blocker_detail_text(dict(code='future-code',message='node-1: something new'),names),
+                         'spark-b: something new')
+
 if __name__=='__main__':unittest.main()

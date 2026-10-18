@@ -9,6 +9,7 @@ import select
 import signal
 import struct
 import subprocess
+import tempfile
 import termios
 import time
 import unittest
@@ -18,8 +19,13 @@ GUM = ROOT / "third_party/gum/linux-arm64/gum"
 
 
 class BundledGum(unittest.TestCase):
-    def drive(self, script, keys, *, ready, args=(), columns=80, rows=24):
-        """Run SCRIPT on a terminal, send KEYS once READY is drawn; return (exit, output)."""
+    def drive(self, script, keys, *, ready, args=(), columns=80, rows=24, then=()):
+        """Run SCRIPT on a terminal, send KEYS once READY is drawn; return (exit, output).
+
+        THEN is further (ready, keys) stages, each sent once its READY is drawn
+        after the previous send: Gum reads a whole burst of input at once.
+        """
+        stages = [(ready, keys), *then]
         self.assertTrue(GUM.is_file() and os.access(GUM, os.X_OK), "bundled Gum is unavailable")
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PULSAR_", "GUM_")) and key not in ("BASH_ENV", "ENV")}
@@ -38,7 +44,8 @@ class BundledGum(unittest.TestCase):
             slave = None
             output = b""
             pending = b""
-            sent = False
+            sent = 0
+            since = 0
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline:
                 if not select.select([master], [], [], .1)[0]:
@@ -63,11 +70,13 @@ class BundledGum(unittest.TestCase):
                         os.write(master, reply)
                         pending = pending.replace(query, b"")
                 pending = pending[-64:]
-                if not sent and ready in output:
-                    os.write(master, keys)
-                    sent = True
+                if sent < len(stages) and stages[sent][0] in output[since:]:
+                    os.write(master, stages[sent][1])
+                    sent += 1
+                    since = len(output)
             text = output.decode(errors="replace")
-            self.assertTrue(sent, f"Gum did not display {ready!r}: {text!r}")
+            missing = stages[sent][0] if sent < len(stages) else None
+            self.assertIsNone(missing, f"Gum did not display {missing!r}: {text!r}")
             try:
                 code = process.wait(timeout=1)
             except subprocess.TimeoutExpired:
@@ -239,6 +248,63 @@ exit "$rc"
                 self.assertEqual(code, expected, output)
                 self.assertIn(f"CONTINUED={expected}", output)
                 self.assertIn("Continue", output)
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumReview(BundledGum):
+    """A storage question: No first, Yes only when chosen, and the full preview on request."""
+    SCRIPT = '''
+. "$REPO_DIR/scripts/ui.sh"
+rc=0
+confirm_or_review "Purge fixture/model: delete 1 working copy?" "Purge prepared copies" \\
+  bash -c 'echo PREVIEW_RAN >>"$1"; for i in $(seq 1 40); do echo "full preview line $i"; done' _ "$PREVIEW_LOG" || rc=$?
+printf '\\nREVIEWED=%s\\n' "$rc"
+exit "$rc"
+'''
+
+    def review(self, keys, then=()):
+        log = Path(self.enterContext(tempfile.TemporaryDirectory())) / "preview.log"
+        code, output = self.drive(f"export PREVIEW_LOG={log}" + self.SCRIPT, keys, ready=b"No, change nothing",
+                                  then=then)
+        return code, output, log.read_text().count("PREVIEW_RAN") if log.exists() else 0
+
+    def test_the_question_prints_above_choices_with_no_selected_first(self):
+        code, output, previews = self.review(b"\r")
+        self.assertEqual((code, previews), (1, 0), output)
+        self.assertIn("REVIEWED=1", output)
+        self.assertLess(output.index("Purge fixture/model: delete 1 working copy?"), output.index("Yes, purge prepared copies"))
+        for option in ("Yes, purge prepared copies", "Show full preview", "No, change nothing"):
+            self.assertIn(option, output)
+
+    def test_escape_declines_and_ctrl_c_keeps_130(self):
+        for keys, expected in ((b"\x1b", 1), (b"\x03", 130)):
+            with self.subTest(keys=keys):
+                code, output, previews = self.review(keys)
+                self.assertEqual((code, previews), (expected, 0), output)
+                self.assertIn(f"REVIEWED={expected}", output)
+
+    def test_only_choosing_yes_confirms(self):
+        code, output, previews = self.review(b"\x1b[A\x1b[A\r")
+        self.assertEqual((code, previews), (0, 0), output)
+        self.assertIn("REVIEWED=0", output)
+
+    def test_show_full_preview_opens_the_pager_and_asks_again(self):
+        code, output, previews = self.review(b"\x1b[A\r", then=[(b"full preview line 1", b"q"),
+                                                                    (b"No, change nothing", b"\x1b")])
+        self.assertEqual((code, previews), (1, 1), output)
+        self.assertIn("\x1b[?1049h", output)  # the pager's own screen
+        self.assertIn("REVIEWED=1", output)
+        # After the pager, Yes still confirms.
+        code, output, previews = self.review(b"\x1b[A\r", then=[(b"full preview line 1", b"q"),
+                                                                    (b"No, change nothing", b"\x1b[A\x1b[A\r")])
+        self.assertEqual((code, previews), (0, 1), output)
+
+    def test_ctrl_c_in_the_full_preview_returns_130(self):
+        code, output, previews = self.review(b"\x1b[A\r", then=[(b"full preview line 1", b"\x03")])
+        self.assertEqual((code, previews), (130, 1), output)
+        self.assertIn("REVIEWED=130", output)
+
 
 if __name__ == "__main__":
     unittest.main()

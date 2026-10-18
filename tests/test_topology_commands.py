@@ -357,6 +357,46 @@ class TopologyCommands(unittest.TestCase):
         self.assertIn('without saving', output)
 
 
+    def test_setup_refuses_candidates_only_with_valid_membership_and_before_any_probe(self):
+        f = self.fixture
+        before = f.path.read_bytes(), f.config.read_bytes()
+        for args, hosts in ((['--candidate', 'alias-9'], 'alias-9 was'),
+                            (['--candidate', 'alias-8', '--candidate', 'alias-9'], 'alias-8, alias-9 were')):
+            with self.subTest(args=args):
+                # No terminal: the refusal does not depend on Gum.
+                result = f.run('topology', 'setup', *args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(result.stdout, '')
+                text = ' '.join(result.stderr.split())
+                candidates = ' '.join(args)
+                self.assertIn(f"error: setup doesn't add machines to saved membership; {hosts} not added.", text)
+                self.assertIn(f'To add a machine, run ./pulsar topology configure {candidates}', text)
+                self.assertIn('Cluster topology → Configure membership or add a machine', text)
+                self.assertIn(f'To discover without saving, run ./pulsar topology detect {candidates}', text)
+                self.assertNotIn('interactive terminal', text)
+        self.assertEqual(f.calls(), [])
+        self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+        # The same refusal on a terminal with Gum: nothing is asked or probed.
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-9'], '', '')
+        self.assertEqual(result, 2, output)
+        self.assertIn('alias-9 was not added', output)
+        self.assertEqual(f.calls(), [])
+        self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+        # Invalid saved membership is not refused: its candidates join
+        # diagnostic discovery, which never replaces the file.
+        f.path.write_text('{broken')
+        self.use_gum()
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertNotEqual(result, 2, output)
+        self.assertNotIn('not added', output)
+        self.assertIn('diagnostic discovery', output)
+        self.assertTrue(any(tool == 'avahi-browse' for tool, _ in f.calls()))
+        # The explicit address is part of that discovery.
+        self.assertTrue(any(tool == 'ssh' and 'alias-1' in args for tool, args in f.calls()))
+        self.assertEqual(f.path.read_text(), '{broken')
+
     def fresh_fixture(self, nodes=2, enrolled=True):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

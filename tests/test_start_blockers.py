@@ -67,7 +67,7 @@ container_ownership_inspect_local() { return "${FIXTURE_EXISTING:-3}"; }
 container_ownership_inspect_remote() { return "${FIXTURE_EXISTING:-3}"; }
 port_free() { [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
 resolve_library_hot_for_profile() { :; }
-write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"}\n' "$FIXTURE_SERVICE_ID" >"$1"; }
+write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"%s}\n' "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
 '''
@@ -319,16 +319,17 @@ class StartScenarios(unittest.TestCase):
             path.write_text(body); path.chmod(0o700)
         self.blockers = self.root / "blockers.jsonl"
 
-    def start(self, *flags, image="missing-on-head", weights=0, memory=0, **fixture):
+    def start(self, *flags, image="missing-on-head", weights=0, memory=0, extra_env=None, **fixture):
         env = {**os.environ, "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT),
                "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_START_BLOCKERS_FILE": str(self.blockers),
                "PULSAR_MODEL_LIBRARY_DIR": str(self.root / "library"), "PULSAR_DOCKER": str(self.root / "bin/docker"),
                "FIXTURE_DIR": str(self.root), "FIXTURE_IMAGE": image, "FIXTURE_WEIGHTS_RC": str(weights),
                "FIXTURE_MEMORY_RC": str(memory), "FIXTURE_SERVICE_ID": SERVICE_ID,
                "WAIT_ATTEMPTS": "2", "WAIT_SECONDS": "0"}
-        for key in ("PULSAR_SPEC_FILE", "PULSAR_VERBOSE", "PULSAR_LAUNCH_PLAN_OUT"):
+        for key in ("PULSAR_SPEC_FILE", "PULSAR_VERBOSE", "PULSAR_LAUNCH_PLAN_OUT", "PULSAR_SERVICE_RESULT_FILE"):
             env.pop(key, None)
         env.update({f"FIXTURE_{key.upper()}": str(value) for key, value in fixture.items()})
+        env.update(extra_env or {})
         result = subprocess.run(["bash", str(self.root / "scripts/up.sh"), SPEC, *flags],
                                 env=env, text=True, capture_output=True, timeout=60)
         self.records = start_blockers.read(self.blockers)
@@ -497,6 +498,29 @@ class StartScenarios(unittest.TestCase):
         self.assertIn("\nREADY\n", result.stdout)
         self.assertTrue(self.ran("locks-released"))
         self.assertEqual((self.root / "launched").read_text(), f"serve.sh {SPEC} -d --node node-0\n")
+
+    def test_only_ready_writes_the_connect_card_result_from_the_launch_plan(self):
+        target = self.root / "service-result.json"
+        result, codes = self.start(image="ok", plan_fields=', "served_name": "example", "api_auth": true',
+                                   extra_env={"PULSAR_SERVICE_RESULT_FILE": str(target)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("\nREADY\n", result.stdout)
+        self.assertEqual(json.loads(target.read_text()), {
+            "state": "running", "service_id": SERVICE_ID, "api_url": "http://127.0.0.1:8000",
+            "served_name": "example", "api_auth": True})
+        # Unrecorded fields stay null; the card then says so.
+        self.reset(); target.unlink()
+        self.assertEqual(self.start(image="ok", extra_env={"PULSAR_SERVICE_RESULT_FILE": str(target)})[0].returncode, 0)
+        self.assertEqual(json.loads(target.read_text())["api_auth"], None)
+        # Only READY writes it.
+        target.unlink()
+        for flags, fixture in ((("--dry-run",), {}), ((), {"smoke": "500"}), ((), {"weights": 1})):
+            with self.subTest(flags=flags, fixture=fixture):
+                self.reset()
+                result, _ = self.start(*flags, image="ok", extra_env={"PULSAR_SERVICE_RESULT_FILE": str(target)},
+                                       **fixture)
+                self.assertNotIn("\nREADY\n", result.stdout)
+                self.assertFalse(target.exists())
 
     def test_failed_test_completion_leaves_the_service_running(self):
         for smoke, detail in (("500", 'HTTP 500: {"error":"engine failure"}'),

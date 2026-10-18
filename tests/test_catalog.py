@@ -1108,6 +1108,94 @@ raise SystemExit(rc)
         self.assertLess(held, choices.rindex("Storage and archive\n"))
         self.assertNotIn("[continue]", choices)
 
+    def container_plan(self, *containers):
+        """A blocked purge whose prepared copy is mounted by CONTAINERS (labels as the planner reads them)."""
+        details = [{"code": "container-reference", "message": "a container references the prepared copy",
+                    "node_id": "fixture-node", "container": container, "mount": "/fixture/hub",
+                    "path": "/fixture/hub/snapshot", "fix": "fix"} for container in containers]
+        return {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "views": [], "actions": [],
+                         "blockers": ["a container references the prepared copy"], "blocker_details": details},
+                "incomplete_preparations": []}
+
+    @staticmethod
+    def blocked_menu(choices):
+        """The options of the first Blocked plan menu, through its Back."""
+        lines = choices[choices.index("Blocked plan\n"):].splitlines()
+        return lines[1:lines.index("Back") + 1]
+
+    def test_blocked_plan_offers_stop_for_the_catalog_specs_pulsar_container(self):
+        from release_spec.tests.test_serving_guard import FIXTURES
+        fixture = json.loads((FIXTURES / "spec.json").read_text())
+        spec_id, model = fixture["spec_id"], fixture["recipe"]["model"]["model_id"]
+        plan = self.container_plan({"id": "c" * 64, "name": "pulsar-fixture", "state": "running", "spec_id": spec_id},
+                                   {"id": "d" * 64, "name": "someone-else", "state": "stopped"})
+        stop = f"Stop {model} ({spec_id[:12]})"
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Purge prepared copies", "Show full preview", stop, "Back", "Back", "Back"],
+            plan=plan, confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(spec, spec_id)
+        self.assertEqual(self.blocked_menu(choices),
+                         ["Show full preview", stop, "Open Live service inventory", "Back"])
+        text = " ".join(result.stdout.split())
+        self.assertIn(f"Blocked: running Pulsar container pulsar-fixture (spec {spec_id[:12]})", text)
+        self.assertIn("Blocked: stopped container someone-else", text)
+        # Show full preview pages the whole plan, then the choices return.
+        self.assertIn("[page]  | bash -c", choices)
+        self.assertIn("Prepared-copy removal preview", result.stdout)
+        # Stop asks first, then stops only the catalog spec's service; nothing
+        # removes the other container.
+        self.assertEqual(questions, f"Stop {model}? Model files and pins are kept.\n")
+        self.assertEqual([action for action in actions if action[-2:] != ["--plan", "--json"]],
+                         [["down.sh", spec_id]])
+        self.assertNotIn("someone-else", json.dumps(actions))
+
+    def test_blocked_plan_never_offers_to_remove_a_container_pulsar_did_not_start(self):
+        plan = self.container_plan({"id": "d" * 64, "name": "someone-else", "state": "running"},
+                                   {"id": "e" * 64, "name": "other-spec", "state": "running", "spec_id": "ef" * 32})
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Purge prepared copies", "Open Live service inventory", "Back",
+             "Back", "Back", "Back"], plan=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # A spec outside the catalog has no Stop; only the inventory opens.
+        options = self.blocked_menu(choices)
+        self.assertEqual((len(options), options[0], options[-1]), (3, "Show full preview", "Back"))
+        self.assertIn("Blocked: running container someone-else on fixture-node (not in saved topology) mounts "
+                      "/fixture/hub, which contains these files", " ".join(result.stdout.split()))
+        self.assertEqual(questions, "")
+        self.assertEqual([action[:3] for action in actions if action[-2:] != ["--plan", "--json"]],
+                         [["pulsar", "inventory", "menu"]])
+
+    def test_blocked_plan_names_the_inventory_choice(self):
+        # Its spec and model fields are empty; splitting on every tab keeps
+        # the label in place (IFS=$'\t' read would merge them).
+        plan = self.container_plan({"id": "d" * 64, "name": "other-spec", "state": "running", "spec_id": "ef" * 32})
+        _, result, _, choices, _ = self.run_menu(
+            ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back", "Back"], plan=plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.blocked_menu(choices), ["Show full preview", "Open Live service inventory", "Back"])
+
+    def test_a_plan_the_summary_cannot_read_is_shown_whole(self):
+        plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
+                         "actions": [{"rank": 0, "node_id": "fixture-node", "action": "remove-copy",
+                                      "retained_bindings": 0}]}, "incomplete_preparations": []}
+        answers = ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"]
+        _, result, _, _, questions = self.run_menu(answers, plan=plan, confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Delete 1 working copy on fixture-node", result.stdout)
+        self.assertNotIn("Prepared-copy removal preview", result.stdout)
+        self.assertIn("Purge", questions)
+        # The summary cannot count these incomplete preparations; the whole
+        # rendered plan stands in for it, and nothing is asked or run.
+        self.setUp()
+        plan["incomplete_preparations"] = 5
+        _, result, actions, _, questions = self.run_menu(answers, plan=plan, confirms=["yes"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Prepared-copy removal preview", result.stdout)
+        self.assertNotIn("Delete 1 working copy", result.stdout)
+        self.assertEqual(questions, "")
+        self.assertEqual([action[-2:] for action in actions], [["--plan", "--json"]])
+
     def test_escape_steps_back_one_level(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "<esc>", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
