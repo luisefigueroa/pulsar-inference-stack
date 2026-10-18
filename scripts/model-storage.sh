@@ -260,8 +260,8 @@ stage_catalog_image() {
   local label="$1" spec="$2" choice plan rc index verb mode_name
   shift 2
   local -a mode=() names=()
-  choice=$(choose_index "Stage the catalog's pinned image" "Pull pinned image from registry" \
-    "Copy pinned image from this node" "Back") || { rc=$?; return "$rc"; }
+  choice=$(choose_index "Stage the serving image (exact digest)" "Pull exact digest from registry" \
+    "Copy serving image from this node" "Back") || { rc=$?; return "$rc"; }
   case "$choice" in
     0) mode=(--pull); verb=Pull; mode_name=pull-exact-digest ;;
     1) verb=Copy; mode_name=stream-from-controller ;;
@@ -270,7 +270,7 @@ stage_catalog_image() {
   require_cluster_nodes "$RECIPE_NODES" >/dev/null || return 0
   for index in "${!CLUSTER_NODE_IDS[@]}"; do names+=(--node-name "$index=$(human_node_name "$index")"); done
   plan=$(mktemp) || return 1
-  if spin "Planning pinned image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
+  if spin "Planning serving image staging…" "$REPO_DIR/pulsar" image stage "$spec" "$@" \
       "${mode[@]}" --plan --json >"$plan"; then
     :
   else
@@ -291,7 +291,7 @@ stage_catalog_image() {
     return 0
   fi
   rm -f "$plan"
-  confirm "$verb the pinned image for $RECIPE_MODEL on the nodes shown? No service starts or is replaced." no \
+  confirm "$verb the serving image for $RECIPE_MODEL on the nodes shown? No service starts or is replaced." no \
     || { rc=$?; echo 'Nothing was staged.'; return "$rc"; }
   run_operation image-stage "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --yes
 }

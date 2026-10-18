@@ -85,6 +85,8 @@ JSON fields, and container labels retain their existing names.
 | snapshot | An exact set of model files from one model commit. Its manifest lists the files, sizes, and hashes used to verify that set. |
 | home | The one verified source copy of a snapshot, on a confirmed member. |
 | prepared copies | The per-rank copies or bindings that serving reads. |
+| pin | Protection of prepared copies from purge, until they are unpinned. |
+| serving image | The recipe's container image, identified by its exact digest. Image command output calls it the pinned image. |
 | archive, archive location | The verified recovery copy, and the directory that holds archives. |
 | node | A confirmed machine, named by its hostname. |
 | rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
@@ -898,7 +900,7 @@ command; the menu resumes when that command exits. The menu does not infer
 confirmed cleanup, absence of a service, or unchanged files from the exit code.
 It labels the interruption even when a concurrent command completion returned
 zero, retains the command's output, and gives an explicit next inspection:
-**Check now** for storage, **Live status** for Start/Stop, or **Check pinned image**
+**Check now** for storage, **Live status** for Start/Stop, or **Check serving image**
 for image staging. These are suggestions, not automatic actions. Existing
 backend cleanup and retry behavior continues to own retained staging and service
 resources. Other command menus retain their command's interrupt exit status.
@@ -933,10 +935,10 @@ operation keeps its own preview and confirmation.
 - **Check launch prerequisites** runs the existing `start --dry-run` checks.
   It does not launch or stage images. Its output identifies checks, such as the
   multi-node preflight, that will run only during an actual Start.
-- **Check pinned image** runs `image check` on the selected serving nodes.
-- **Stage pinned image** previews `image stage` before confirmation. Choose
+- **Check serving image** runs `image check` on the selected serving nodes.
+- **Stage serving image** previews `image stage` before confirmation. Choose
   between pulling the exact catalog digest from its registry and copying the
-  pinned image from this node. Copying never silently falls back to a pull.
+  serving image from this node. Copying never silently falls back to a pull.
   Staging does not start or replace a service or select a different image.
 
 **Start** continues to run its existing checks. If it refuses the start only
@@ -955,7 +957,7 @@ lead to it:
 | --- | --- |
 | `topology_incomplete`, `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
-| `image_missing` | Stage pinned image |
+| `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
 | `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
 | `service_exists`, `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Stop |

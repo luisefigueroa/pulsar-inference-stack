@@ -33,40 +33,40 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(questions, "")
 
     def test_image_check_uses_existing_command(self):
-        spec, result, actions, _, questions = self.shortcut("Check pinned image")
+        spec, result, actions, _, questions = self.shortcut("Check serving image")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["pulsar", "image", "check", spec, "--node", "fixture-node"]])
         self.assertEqual(questions, "")
 
     def test_pull_stages_only_after_preview_and_confirmation(self):
         spec, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", confirms=["yes"])
+            "Stage serving image", "Pull exact digest from registry", confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         command = ["pulsar", "image", "stage", spec, "--node", "fixture-node", "--pull"]
         self.assertEqual(actions, [command + ["--plan", "--json"], command + ["--yes"]])
-        self.assertIn("Pinned image staging preview", result.stdout)
+        self.assertIn("Serving image staging preview", result.stdout)
         self.assertIn("fixture-host", result.stdout)
-        self.assertIn("Pull the pinned image", questions)
+        self.assertIn("Pull the serving image", questions)
         self.assertIn("No service starts or is replaced", questions)
 
     def test_copy_never_adds_registry_fallback(self):
         spec, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Copy pinned image from this node", confirms=["yes"])
+            "Stage serving image", "Copy serving image from this node", confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         command = ["pulsar", "image", "stage", spec, "--node", "fixture-node"]
         self.assertEqual(actions, [command + ["--plan", "--json"], command + ["--yes"]])
-        self.assertIn("Copy the pinned image", questions)
+        self.assertIn("Copy the serving image", questions)
 
     def test_declined_staging_does_not_apply(self):
         _, result, actions, _, _ = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", confirms=["no"], cancelled=True)
+            "Stage serving image", "Pull exact digest from registry", confirms=["no"], cancelled=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(actions[0][-2:], ["--plan", "--json"])
         self.assertIn("Nothing was staged", result.stdout)
 
     def test_back_from_staging_does_not_run_a_command(self):
-        _, result, actions, choices, questions = self.shortcut("Stage pinned image", "Back", cancelled=True)
+        _, result, actions, choices, questions = self.shortcut("Stage serving image", "Back", cancelled=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [])
         self.assertEqual(questions, "")
@@ -74,17 +74,17 @@ class LaunchMenu(unittest.TestCase):
 
     def test_failed_preview_does_not_offer_confirmation(self):
         _, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", launch={"plan_rc": 3})
+            "Stage serving image", "Pull exact digest from registry", launch={"plan_rc": 3})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
         # Exit 3: the preview could not tell, which is not the same as a refusal.
-        self.assertIn("? The Stage pinned image preview could not finish", result.stdout)
+        self.assertIn("? The Stage serving image preview could not finish", result.stdout)
         self.assertIn("nothing changed", " ".join(result.stdout.split()))
 
     def test_interrupted_preview_does_not_request_staging_or_claim_completion(self):
         _, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", launch={"plan_rc": 130})
+            "Stage serving image", "Pull exact digest from registry", launch={"plan_rc": 130})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
@@ -92,18 +92,18 @@ class LaunchMenu(unittest.TestCase):
 
     def test_interrupted_staging_suggests_inspection_without_automatic_retry(self):
         _, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", confirms=["yes"], launch={"stage_rc": 130})
+            "Stage serving image", "Pull exact digest from registry", confirms=["yes"], launch={"stage_rc": 130})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 2)
         self.assertEqual(len(questions.splitlines()), 1)
         text = " ".join(result.stdout.split())
         self.assertIn("Interruption requested", text)
-        self.assertIn("Suggested: Check pinned image", text)
-        self.assertNotIn("Stage pinned image finished", text)
+        self.assertIn("Suggested: Check serving image", text)
+        self.assertNotIn("Stage serving image finished", text)
 
     def test_already_present_image_does_not_offer_staging(self):
         _, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", launch={"image_state": "ok"})
+            "Stage serving image", "Pull exact digest from registry", launch={"image_state": "ok"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
@@ -111,7 +111,7 @@ class LaunchMenu(unittest.TestCase):
 
     def test_unobservable_image_plan_cannot_be_confirmed(self):
         _, result, actions, _, questions = self.shortcut(
-            "Stage pinned image", "Pull pinned image from registry", launch={"image_state": "unreachable"})
+            "Stage serving image", "Pull exact digest from registry", launch={"image_state": "unreachable"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(questions, "")
@@ -143,7 +143,7 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(len(questions.splitlines()), 1)
-        self.assertIn("Start was refused: 2 blockers. Choose a next step\nStage pinned image\nBack\n", choices)
+        self.assertIn("Start was refused: 2 blockers. Choose a next step\nStage serving image\nBack\n", choices)
 
     # TUI-34: a refused or failed Start offers the menu operations for its blockers.
     def refused(self, blockers, *answers, confirms=("yes",), launch=None, **kwargs):
@@ -160,7 +160,7 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(actions), 1)
         self.assertEqual(self.offered(choices, "Start was refused: 5 blockers. Choose a next step"),
-                         ["Open Live service inventory", "Stage pinned image",
+                         ["Open Live service inventory", "Stage serving image",
                           "Check saved nodes and fabric (checks nodes now)", "Back"])
         # The choice holds the Start output; Back adds no Continue.
         self.assertNotIn("[continue]", choices)
@@ -219,8 +219,8 @@ class LaunchMenu(unittest.TestCase):
 
     def test_choices_never_grant_replacement_or_registry_pulls(self):
         _, _, actions, _, _ = self.refused(
-            ["service_exists", "image_missing"], "Stage pinned image", "fixture-host",
-            "Pull pinned image from registry", "Back", "Back", confirms=["yes", "yes"])
+            ["service_exists", "image_missing"], "Stage serving image", "fixture-host",
+            "Pull exact digest from registry", "Back", "Back", confirms=["yes", "yes"])
         flat = [arg for action in actions for arg in action]
         self.assertNotIn("--replace", flat)
         self.assertNotIn("--pull-image", flat)
@@ -242,7 +242,7 @@ class LaunchMenu(unittest.TestCase):
             "Check launch prerequisites", "Back", launch={"dry_rc": 1, "blockers": ["image_missing"]})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.offered(choices, "Not ready to start: 1 blocker. Choose a next step"),
-                         ["Stage pinned image", "Back"])
+                         ["Stage serving image", "Back"])
 
     def test_interrupted_start_does_not_offer_a_retry(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -330,7 +330,7 @@ class LaunchPresentation(unittest.TestCase):
         # An operation the recipe leaves out is not offered from here either.
         guarded = menu_tests.row(**menu_tests.GUARDED)
         self.assertEqual(menu.start_choices([{"blocker": "image_missing"}], guarded, "configured"),
-                         [("image-stage", "Stage pinned image")])
+                         [("image-stage", "Stage serving image")])
         historical = menu_tests.row(start_unsupported_reason="historical_spec")
         self.assertEqual(menu.start_choices([{"blocker": "image_missing"}], historical, "configured"), [])
 

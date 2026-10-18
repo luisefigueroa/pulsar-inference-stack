@@ -36,8 +36,8 @@ STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remo
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
-    "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
-    "image-stage": "Stage pinned image",
+    "readiness": "Check launch prerequisites", "image-check": "Check serving image",
+    "image-stage": "Stage serving image",
     "budget": "Storage budget (all nodes)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
@@ -295,7 +295,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if after == "service-interrupted" and not superseded:
         return "status", "service outcome unconfirmed; current service state is unknown"
     if after == "image-interrupted" and "image-check" in offered:
-        return "image-check", "staging outcome unconfirmed; inspect the pinned image before retrying"
+        return "image-check", "staging outcome unconfirmed; inspect the serving image before retrying"
     if after == "check-failed":
         return "check", "the last check did not record an observation"
     if after == "start" and not superseded:
@@ -655,9 +655,9 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
             or not isinstance(plan, dict) or plan.get("kind") != "pulsar-image-check"
             or plan.get("operation") != "stage-image" or plan.get("model") != row["spec_id"]
             or plan.get("image") != row["image"]["digest"]):
-        raise ValueError("image preview does not name the selected catalog spec and pinned image")
+        raise ValueError("image preview does not name the selected catalog spec and serving image")
     modes = {"pull-exact-digest": "Pull the exact digest from its registry",
-             "stream-from-controller": "Copy the pinned image from this node; no registry fallback"}
+             "stream-from-controller": "Copy the serving image from this node; no registry fallback"}
     ranks = plan.get("ranks")
     if (mode not in modes or plan.get("mode") != mode or not isinstance(ranks, list)
             or type(plan.get("nodes")) is not int or plan["nodes"] != row["geometry"]["nodes"]
@@ -670,7 +670,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
     if len({rank["topology_index"] for rank in ranks}) != len(ranks):
         raise ValueError("image preview repeats a selected node")
     out = TerminalWriter(width=width)
-    out.emit("Pinned image staging preview")
+    out.emit("Serving image staging preview")
     out.field("Model", row["model_id"])
     out.field("Spec", row["spec_id"])
     out.field("Image", plan["image"])
@@ -680,7 +680,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
         action = "will stage" if rank["state"] == "missing" else "already present"
         out.field(f"Rank {rank['rank']}", f"{node}: {action}")
     missing = any(rank["state"] == "missing" for rank in ranks)
-    out.emit("No service is started or replaced." if missing else "The pinned image is already present; nothing to stage.")
+    out.emit("No service is started or replaced." if missing else "The serving image is already present; nothing to stage.")
     return missing
 
 

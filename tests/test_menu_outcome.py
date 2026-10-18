@@ -14,8 +14,8 @@ from scripts import menu_outcome  # noqa: E402
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
-    "readiness": "Check launch prerequisites", "image-check": "Check pinned image",
-    "image-stage": "Stage pinned image", "budget": "Inspect storage budget",
+    "readiness": "Check launch prerequisites", "image-check": "Check serving image",
+    "image-stage": "Stage serving image", "budget": "Inspect storage budget",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -52,13 +52,13 @@ class OutcomeWording(unittest.TestCase):
     def test_no_answers_name_the_blocker_and_where_to_go(self):
         self.assertEqual(outcome("readiness", 1)[0], "✗ Fixture-Model is not ready to start.")
         self.assertIn("blockers", outcome("readiness", 1)[1])
-        self.assertIn("Stage pinned image", outcome("image-check", 1)[1])
+        self.assertIn("Stage serving image", outcome("image-check", 1)[1])
         self.assertIn("Live status", outcome("stop", 1)[1])
         self.assertEqual(outcome("restore", 1)[0], "✗ Restore was refused or failed for Fixture-Model.")
 
     def test_unknown_outcomes_name_the_inspection_that_establishes_them(self):
         for action, inspection in (("start", "Live status"), ("stop", "Live status"),
-                                   ("image-stage", "Check pinned image"), ("prepare", "Check now"),
+                                   ("image-stage", "Check serving image"), ("prepare", "Check now"),
                                    ("purge", "Check now")):
             with self.subTest(action=action):
                 headline, detail = outcome(action, 3)
@@ -86,7 +86,7 @@ class OutcomeWording(unittest.TestCase):
 
     def test_an_interruption_confirms_nothing_and_names_the_next_inspection(self):
         for action, status, follow_up in (("restore", 130, "Use Check now"), ("stop", 130, "Use Live status"),
-                                          ("image-stage", 143, "Check pinned image"),
+                                          ("image-stage", 143, "Check serving image"),
                                           ("check", 0, "Rerun this inspection")):
             with self.subTest(action=action):
                 headline, details = menu_outcome.interruption(action, LABELS[action], "Fixture-Model",
