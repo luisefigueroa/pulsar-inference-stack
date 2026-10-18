@@ -169,8 +169,11 @@ SSH trust; use the menu's separate SSH-trust enrollment action or
 **Cluster topology → Configure membership or add a machine** to use the same
 candidate review. It runs `topology configure --candidate HOST` with your added
 addresses, then returns to the menu for separate enrollment after saving.
-`topology setup` alone reuses valid saved membership; candidates passed to it do
-not add machines to that membership. Cancelling configuration does not add a
+`topology setup` reuses valid saved membership and never adds machines to it.
+Candidates apply only to a fresh setup or to diagnostic discovery for invalid
+saved membership. With valid saved membership, `setup --candidate HOST` exits
+with status 2 before running anything, says that HOST was not added, and names
+`topology configure --candidate HOST`. Cancelling configuration does not add a
 machine or start enrollment. Explicit `--accept-new-host-keys` is
 available only on configuration through this CLI, not on read-only detection.
 Before the prompt, configuration reports homes, prepared views, and pins affected

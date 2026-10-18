@@ -9,7 +9,7 @@ from terminal_format import TerminalWriter
 writer = TerminalWriter()
 writer.emit("Usage: pulsar topology COMMAND [options]")
 for command, description in [
-    ("setup [--candidate HOST ...]", "Guided first use: confirm membership, enroll SSH identity, then check readiness."),
+    ("setup [--candidate HOST ...]", "Guided first use: confirm membership, enroll SSH identity, then check readiness. Candidates apply only when no valid membership is saved; setup refuses them otherwise (exit 2)."),
     ("show [--json]", "Read saved membership; no live probes."),
     ("check [--json]", "Check all saved nodes and fabric without saving."),
     ("detect [--json] [--candidate HOST ...]", "Discover without changing membership or SSH trust."),
@@ -101,6 +101,26 @@ case "$action" in
       esac
       shift
     done
+    # Setup reuses valid saved membership and never adds a machine to it. An
+    # explicit address would be ignored by a successful run, so it is refused
+    # before anything runs, with or without a terminal.
+    if [ "${#setup_detect_flags[@]}" -gt 0 ]; then
+      . "$REPO_DIR/scripts/lib.sh"
+      if [ -e "$CLUSTER_TOPOLOGY_FILE" ] && "$0" show >/dev/null 2>&1; then
+        rejected=()
+        for ((i = 1; i < ${#setup_detect_flags[@]}; i += 2)); do rejected+=("${setup_detect_flags[$i]}"); done
+        hosts=$(printf '%s, ' "${rejected[@]}"); hosts=${hosts%, }
+        candidate_args=$(printf -- '--candidate %s ' "${rejected[@]}"); candidate_args=${candidate_args% }
+        {
+          verb=was; [ "${#rejected[@]}" -eq 1 ] || verb=were
+          printf "error: setup doesn't add machines to saved membership; %s %s not added.\n" "$hosts" "$verb"
+          printf '  To add a machine, run ./pulsar topology configure %s\n' "$candidate_args"
+          printf '  or choose Cluster topology → Configure membership or add a machine.\n'
+          printf '  To discover without saving, run ./pulsar topology detect %s\n' "$candidate_args"
+        } >&2
+        exit 2
+      fi
+    fi
     # Its confirmations draw with Gum; without it, run the steps separately.
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "guided setup" "pulsar topology detect, then topology configure --yes and ssh-trust enroll --yes after review"
