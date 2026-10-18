@@ -1,4 +1,5 @@
 """Operator help shares one style, fits a narrow terminal and covers the README."""
+import contextlib
 import io
 import json
 import os
@@ -12,11 +13,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from scripts import help_guide
 from scripts.terminal_format import TerminalWriter, emit_help
 
 # The operator commands ./pulsar help lists for setup, catalog and serving.
+# The guide pages read docs/OPERATIONS.md, so a Terms table edit that breaks
+# them fails here.
 COMMANDS = [
-    ("help",), ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
+    ("help",), ("help", "terms"), ("help", "workflow"),
+    ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
     ("status", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
     ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
     ("image", "--help"), ("guarded", "--help"),
@@ -137,6 +142,47 @@ class Help(unittest.TestCase):
         self.assertIn("Author and inspect a complete JSON serving spec.", text)
         self.assertNotIn("--spec-file SPEC", text)
 
+    def test_reference_lists_the_guides_and_stop_all(self):
+        text = self.run_help(("help",), 100)
+        self.assertLess(text.index("Guides"), text.index("Set up this checkout"))
+        for command in ("pulsar help terms", "pulsar help workflow", "pulsar stop --all --yes"):
+            self.assertRegex(text, rf"(?m)^  {re.escape(command)}$")
+
+    def test_terms_page_shows_every_row_of_the_docs_table(self):
+        lines = (ROOT / "docs/OPERATIONS.md").read_text().split("## Terms\n", 1)[1].split("\n## ", 1)[0]
+        # The header and separator rows come first.
+        rows = [line.strip("|").split(" | ") for line in lines.splitlines() if line.startswith("| ")][2:]
+        self.assertGreaterEqual(len(rows), 16)
+        text = self.run_help(("help", "terms"), 100)
+        terms = re.findall(r"(?m)^  (\S.*)$", text)
+        self.assertEqual(terms, [term.strip().replace("`", "") for term, _ in rows])
+        joined = " ".join(text.split())
+        for _, meaning in rows:
+            self.assertIn(" ".join(meaning.replace("`", "").split()), joined)
+        # The words the setup steps use are explained.
+        for word in ("membership", "SSH trust", "fabric", "controller", "service"):
+            self.assertIn(word, terms)
+        for marker in ("`", "**", "]("):
+            self.assertNotIn(marker, text)
+
+    def test_workflow_page_has_one_sentence_per_step_in_lifecycle_order(self):
+        text = self.run_help(("help", "workflow"), 100)
+        steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)
+        self.assertEqual(steps, [("1", "Download or Restore"), ("2", "Prepare"), ("3", "Start"),
+                                 ("4", "Connect"), ("5", "Stop"), ("6", "Purge prepared copies")])
+        for step, sentence in help_guide.workflow():
+            with self.subTest(step=step):
+                self.assertTrue(sentence.endswith(".") and ". " not in sentence, sentence)
+        self.assertIn("prepared files do not start a service", " ".join(text.split()))
+
+    def test_unknown_help_topic_names_the_topics(self):
+        result = subprocess.run([str(ROOT / "pulsar"), "help", "glossary"], stdin=subprocess.DEVNULL,
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "Unknown help topic: glossary\n"
+                                        "Try: ./pulsar help, ./pulsar help terms or ./pulsar help workflow\n")
+
     def test_readme_example_commands_exist_in_help(self):
         readme = (ROOT / "README.md").read_text()
         commands = [line for block in re.findall(r"```sh\n(.*?)```", readme, re.S)
@@ -155,6 +201,50 @@ class Help(unittest.TestCase):
                         self.assertIn(token, text)
                     elif token.islower() and token.isalpha():
                         self.assertRegex(text, rf"\b{token}\b")
+
+
+class Guide(unittest.TestCase):
+    """The terms page reads a Terms table; anything else is an error naming the line."""
+    TABLE = ("# Guide\n\n## Terms\n\nIntro.\n\n| Term | Meaning |\n| --- | --- |\n"
+             "| spec | The `releases/` spec, see [Terms](#terms). |\n| pipe | Shown as `a \\| b`, **always**. |\n"
+             "\n## Next\n\n| not | a term |\n")
+
+    def page(self, text):
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "OPERATIONS.md"
+        if text is not None:
+            path.write_text(text)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = help_guide.main(["terms", "--file", str(path)])
+        return rc, out.getvalue(), err.getvalue()
+
+    def test_rows_become_plain_text_and_the_table_ends_at_the_next_heading(self):
+        rc, out, err = self.page(self.TABLE)
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("  spec\n    The releases/ spec, see Terms.\n  pipe\n    Shown as a | b, always.\n", out)
+        self.assertNotIn("not", out.split("pipe", 1)[1])
+
+    def test_a_table_it_cannot_read_is_an_error_not_an_empty_page(self):
+        cases = {
+            "missing file": (None, "cannot read "),
+            "no section": (self.TABLE.replace("## Terms", "## Words"), "has no '## Terms' section"),
+            "no table": ("## Terms\n\nIntro only.\n", "the Terms section has no table rows"),
+            "header": (self.TABLE.replace("| Term | Meaning |", "| Word | Meaning |"),
+                       "line 7: the Terms table's header must read 'Term | Meaning'"),
+            "separator": (self.TABLE.replace("| --- | --- |", "| spec | x |"),
+                          "line 8: expected the Terms table's separator row"),
+            "extra cell": (self.TABLE.replace("| spec | The", "| spec | extra | The"),
+                           "line 9: a Terms row needs 2 cells, a term and its meaning; found 3"),
+            "empty meaning": (self.TABLE.replace("| pipe | Shown as `a \\| b`, **always**. |", "| pipe |  |"),
+                              "line 10: a Terms row has an empty meaning"),
+        }
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                rc, out, err = self.page(text)
+                self.assertEqual(rc, 1)
+                self.assertEqual(out, "")
+                self.assertTrue(err.startswith("error: ") and message in err, err)
+                self.assertEqual(len(err.splitlines()), 1, err)
 
 
 class Renderer(unittest.TestCase):

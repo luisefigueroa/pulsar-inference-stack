@@ -14,15 +14,33 @@ review_catalog_error() {
   wait_continue "Catalog error"
 }
 
+# Help: the words, the serving steps and the command reference. Each page opens
+# in the pager and returns here; Back or Esc returns to the home menu.
+help_menu() {
+  local choice rc
+  while true; do
+    choice=$(choose_index "Help" "What the words mean" "How serving works" "Command reference" "Back") \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    rc=0
+    case "$choice" in
+      0) page_output "" "$REPO_DIR/pulsar" help terms || rc=$? ;;
+      1) page_output "" "$REPO_DIR/pulsar" help workflow || rc=$? ;;
+      2) page_output "" "$REPO_DIR/pulsar" help || rc=$? ;;
+      *) return 0 ;;
+    esac
+    [ "$rc" -ne 130 ] || return 130
+  done
+}
+
 SETUP_PY="${PULSAR_SETUP_STATUS_PY:-$REPO_DIR/scripts/setup_status.py}"
 status_json=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format json)
 complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" if json.load(sys.stdin).get("complete") else "0")')
 next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_action") or "")')
 # Without Gum the menu does not open; name the commands behind its choices.
 case "$complete:$next_action" in
-  1:*) require_gum "the Pulsar menu" "pulsar models list | inventory | doctor | configure archive-root | topology show | help" ;;
-  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | models list | models show SPEC | doctor | topology show | help" ;;
-  *) require_gum "the Pulsar menu" "pulsar topology setup | models list | models show SPEC | doctor | topology show | help" ;;
+  1:*) require_gum "the Pulsar menu" "pulsar models list | inventory | doctor | configure archive-root | topology show | help [terms|workflow]" ;;
+  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
+  *) require_gum "the Pulsar menu" "pulsar topology setup | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
 esac
 # The setup status prints on entry, then again only when a choice changed it;
 # the previous run of this menu passes what it printed.
@@ -53,7 +71,7 @@ if [ "$complete" = 1 ]; then
     2) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor ;;
     3) "$REPO_DIR/pulsar" configure archive-root menu ;;
     4) "$REPO_DIR/scripts/topology.sh" menu ;;
-    5) page_output "" "$REPO_DIR/pulsar" help ;;
+    5) help_menu ;;
     *) exit 0 ;;
   esac
   rc=$?
@@ -80,7 +98,7 @@ case "$choice:$next_action" in
   1:*) "$REPO_DIR/pulsar" models menu --read-only ;;
   2:*) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor ;;
   3:*) page_output "" "$REPO_DIR/pulsar" topology show ;;
-  4:*) page_output "" "$REPO_DIR/pulsar" help ;;
+  4:*) help_menu ;;
   *) exit 0 ;;
 esac
 rc=$?

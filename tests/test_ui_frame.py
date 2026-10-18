@@ -327,6 +327,9 @@ class MenuEntries(unittest.TestCase):
                     rc, output = self.run_in_terminal(*args, term=term)
                     self.assertEqual(rc, 2, output)
                     self.assertIn(expected, " ".join(output.split()))
+                    if not args:
+                        # Help's pages are commands too.
+                        self.assertIn("| help [terms|workflow]", " ".join(output.split()))
                     self.assertFalse((self.root / "model-library").exists())
                     self.assertFalse((self.root / "topology.json").exists())
         # pulsar models, which names no menu, shows the catalog list instead.

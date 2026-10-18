@@ -78,12 +78,22 @@ case "$command" in
       *) echo 'usage: pulsar configure archive-root [show|set|disable]' >&2; exit 2 ;;
     esac ;;
   help|-h|--help)
+    # Guide pages; the menu's Help runs these same commands.
+    case "${1:-}" in
+      terms|workflow) exec python3 "$REPO_DIR/scripts/help_guide.py" "$1" ;;
+      ""|-*) ;;
+      *) printf 'Unknown help topic: %s\nTry: ./pulsar help, ./pulsar help terms or ./pulsar help workflow\n' "$1" >&2
+         exit 2 ;;
+    esac
     PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PY'
 from scripts.terminal_format import TerminalWriter
 w=TerminalWriter()
 w.emit('Pulsar Inference Stack')
 w.emit('Catalog, model storage, recovery and exact-spec serving.')
 for heading,rows in [
+ ('Guides',[
+  ('pulsar help terms','What the words mean: spec, recipe, home, prepared copies and more.'),
+  ('pulsar help workflow','How serving works, from download to purge, one step at a time.')]),
  ('Set up this checkout',[
   ('pulsar','Open the menu on a terminal with Gum: cluster setup, read-only catalog details, diagnostics and Help. Full operations follow membership and SSH setup; archives are optional.'),
   ('pulsar topology setup','First-use membership and SSH enrollment with separate confirmations.'),
@@ -105,6 +115,7 @@ for heading,rows in [
   ('pulsar guarded template|validate|run|stop|reconcile','Own a bounded trial and reconcile its completed locator.'),
   ('pulsar status SPEC','Observe the live service on all participating nodes.'),
   ('pulsar stop SPEC','Stop the owned service; retain model files and pins.'),
+  ('pulsar stop --all --yes','Stop every Stack-managed service on all confirmed nodes; retain model files and pins.'),
   ('pulsar inventory','Inspect service ownership and current resource use; read-only.'),
   ('pulsar inventory menu','Select a running catalog service for live status or a confirmed stop.')]),
  ('Contributors and integrations',[
