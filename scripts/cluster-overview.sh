@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Cluster overview (home menu): runs topology check, inventory and model budget
+# in turn, each under a spinner naming it, then shows one screen built from
+# their JSON (scripts/cluster_overview.py). Nothing runs until the operator
+# chooses it; Refresh runs all three again and Back returns home. The sources
+# are read-only; model budget takes the shared storage lock, so it runs last.
+set -euo pipefail
+REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
+# shellcheck source=ui.sh
+. "$REPO_DIR/scripts/ui.sh"
+require_gum "the cluster overview" "pulsar topology check | inventory | model budget"
+ui_keep_styles
+
+WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-overview.XXXXXX")
+trap 'rm -rf -- "$WORK"' EXIT
+
+# source_json STEP NAME TITLE COMMAND...: one source's JSON, errors and exit status.
+source_json() {
+  local step="$1" name="$2" title="$3" rc=0
+  shift 3
+  # Gum draws the spinner on stderr, so only the command's own stderr is kept.
+  spin "$title ($step/3)…" bash -c 'err="$1"; shift; "$@" 2>"$err"' _ "$WORK/$name.err" \
+    "$REPO_DIR/pulsar" "$@" --json >"$WORK/$name.json" || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  printf '%s\n' "$rc" >"$WORK/$name.rc"
+}
+
+observe() {
+  local started
+  started=$(date +%s)
+  source_json 1 topology "Checking nodes and fabric" topology check || return
+  source_json 2 inventory "Listing services and memory" inventory || return
+  source_json 3 budget "Reading storage budgets" model budget || return
+  echo
+  python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$started" --finished "$(date +%s)"
+}
+
+while true; do
+  observe || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit "$rc"; }
+  choice=$(choose_index "Cluster overview" "Refresh" "Back") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+  [ "$choice" = 0 ] || exit 0
+done
