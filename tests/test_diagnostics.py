@@ -159,6 +159,17 @@ ssh_node() {{
         self.assertEqual(rows['rank_1_memory']['message'], 'rank-1: MemAvailable 120 GiB')
         self.assertNotIn('`', json.dumps(rows))
 
+    def test_a_path_with_a_backtick_is_reported_exactly(self):
+        # Marks are added to what people read, never removed from a value.
+        home = self.root / 'ho`mes'
+        home.mkdir()
+        rows = [c for c in json.loads(self.run_tool('doctor.sh', ['--json'], extra={'PULSAR_HOME_ROOT': str(home)})
+                                      .stdout)['checks'] if c['id'] == 'model_storage']
+        self.assertEqual(rows[0]['message'], f'Managed storage directory accessible: {home}')
+        styled = self.run_tool('doctor.sh', extra={'PULSAR_HOME_ROOT': str(home), 'PULSAR_COLOR': 'always',
+                                                   'NO_COLOR': '', 'COLUMNS': '400'}).stdout
+        self.assertIn(f'Managed storage directory accessible: {home}\n', styled)
+
     def test_doctor_marks_commands_and_counts_warnings(self):
         result = self.run_tool('doctor.sh', mode='memory-low', extra={'PULSAR_COLOR': 'always', 'NO_COLOR': '',
                                                                      'COLUMNS': '100'})

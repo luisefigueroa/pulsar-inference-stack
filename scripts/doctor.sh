@@ -32,11 +32,11 @@ SECTION_ROWS=()
 SECTIONS_SHOWN=0
 
 # record LEVEL ID MESSAGE [TEXT]
-# MESSAGE marks commands and paths with backticks for the terminal; JSON
-# carries it without them. TEXT, when given, is what people read instead.
+# MESSAGE is the JSON message, exactly as given. TEXT, when given, is what
+# people read instead; it may mark commands and paths with backticks.
 record() {
   local level="$1" id="$2" msg="$3" text="${4:-$3}"
-  CHECKS+=("${level}|${id}|${msg//\`/}")
+  CHECKS+=("${level}|${id}|${msg}")
   SECTION_ROWS+=("$level" "$text")
   case "$level" in
     warn) WARN=1; WARN_COUNT=$((WARN_COUNT + 1)) ;;
@@ -57,6 +57,10 @@ flush_section() {
   fi
   SECTION_ROWS=()
 }
+
+# lit VALUE: VALUE marked as literal text for people. A value with a backtick of
+# its own stays plain, so neither the value nor the marks change.
+lit() { case "$1" in *'`'*) printf '%s' "$1" ;; *) printf '`%s`' "$1" ;; esac; }
 
 # Human text shows a 64-character ID by its 12-character prefix.
 short_ids() { sed -E 's/([0-9a-f]{12})[0-9a-f]{52}/\1…/g' <<<"$1"; }
@@ -99,7 +103,8 @@ if command -v "${PULSAR_NVIDIA_SMI:-nvidia-smi}" >/dev/null 2>&1; then
     record fail gpu "GPU '$gpu' (want ${PULSAR_GPU_NAME}); this host does not match the selected platform"
   fi
 else
-  record fail gpu "nvidia-smi not found; install the NVIDIA driver utilities (\`docs/OPERATIONS.md#installation-prerequisites\`)"
+  record fail gpu "nvidia-smi not found; install the NVIDIA driver utilities (docs/OPERATIONS.md#installation-prerequisites)" \
+    "nvidia-smi not found; install the NVIDIA driver utilities (\`docs/OPERATIONS.md#installation-prerequisites\`)"
 fi
 
 if command -v "$PULSAR_DOCKER" >/dev/null 2>&1; then
@@ -115,13 +120,15 @@ if command -v "$PULSAR_DOCKER" >/dev/null 2>&1; then
       || command -v nvidia-container-cli >/dev/null 2>&1; then
       record warn docker_nvidia "nvidia container tools installed but runtime is not listed in docker info; inspect the Docker NVIDIA configuration"
     else
-      record fail docker_nvidia "docker nvidia runtime missing (expected Runtimes includes nvidia); install and configure the NVIDIA Container Toolkit (\`docs/OPERATIONS.md#installation-prerequisites\`)"
+      record fail docker_nvidia "docker nvidia runtime missing (expected Runtimes includes nvidia); install and configure the NVIDIA Container Toolkit (docs/OPERATIONS.md#installation-prerequisites)" \
+        "docker nvidia runtime missing (expected Runtimes includes nvidia); install and configure the NVIDIA Container Toolkit (\`docs/OPERATIONS.md#installation-prerequisites\`)"
     fi
   else
     record fail docker "docker present but daemon unavailable (start/fix Docker, then retry)"
   fi
 else
-  record fail docker "docker not found; install Docker with NVIDIA GPU access (\`docs/OPERATIONS.md#installation-prerequisites\`)"
+  record fail docker "docker not found; install Docker with NVIDIA GPU access (docs/OPERATIONS.md#installation-prerequisites)" \
+    "docker not found; install Docker with NVIDIA GPU access (\`docs/OPERATIONS.md#installation-prerequisites\`)"
 fi
 
 port="${PORT:-8000}"
@@ -201,11 +208,14 @@ fi
 
 for storage_path in "${PULSAR_HOME_ROOT:-$HOME/.cache/pulsar-inference-stack}" "$PULSAR_HOT_ROOT"; do
   if [ -d "$storage_path" ] && [ -r "$storage_path" ] && [ -w "$storage_path" ] && [ -x "$storage_path" ]; then
-    record ok model_storage "Managed storage directory accessible: \`$storage_path\`"
+    record ok model_storage "Managed storage directory accessible: $storage_path" \
+      "Managed storage directory accessible: $(lit "$storage_path")"
   elif [ -e "$storage_path" ]; then
-    record fail model_storage "Managed storage path is not an accessible directory: \`$storage_path\`; fix its ownership or permissions"
+    record fail model_storage "Managed storage path is not an accessible directory: $storage_path; fix its ownership or permissions" \
+      "Managed storage path is not an accessible directory: $(lit "$storage_path"); fix its ownership or permissions"
   else
-    record warn model_storage "Managed storage directory does not exist yet: \`$storage_path\`"
+    record warn model_storage "Managed storage directory does not exist yet: $storage_path" \
+      "Managed storage directory does not exist yet: $(lit "$storage_path")"
   fi
 done
 if [ -n "${VLLM_API_KEY:-${API_KEY:-}}" ]; then
@@ -218,10 +228,12 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   if [ -z "${PULSAR_COLD_ROOT}" ]; then
     record ok cold_storage "archives are disabled"
   elif [ ! -d "${PULSAR_COLD_ROOT}" ]; then
-    record fail cold_storage "archive location is missing or not a directory; choose one with \`./pulsar configure archive-root set PATH --yes\`"
+    record fail cold_storage "archive location is missing or not a directory; choose one with ./pulsar configure archive-root set PATH --yes" \
+      "archive location is missing or not a directory; choose one with \`./pulsar configure archive-root set PATH --yes\`"
   elif [ ! -r "${PULSAR_COLD_ROOT}" ] || [ ! -x "${PULSAR_COLD_ROOT}" ]; then
     record fail cold_storage \
-      "archive location \`${PULSAR_COLD_ROOT}\` is not readable and searchable; fix its permissions or choose another with \`./pulsar configure archive-root set PATH --yes\`"
+      "archive location ${PULSAR_COLD_ROOT} is not readable and searchable; fix its permissions or choose another with ./pulsar configure archive-root set PATH --yes" \
+      "archive location $(lit "$PULSAR_COLD_ROOT") is not readable and searchable; fix its permissions or choose another with \`./pulsar configure archive-root set PATH --yes\`"
   elif [ ! -w "${PULSAR_COLD_ROOT}" ]; then
     record warn cold_storage \
       "archive location is configured · current write access unavailable"
@@ -230,12 +242,13 @@ if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
   fi
 else
   record warn cold_storage \
+    "archive location is not configured; choose one with ./pulsar configure archive-root set PATH --yes" \
     "archive location is not configured; choose one with \`./pulsar configure archive-root set PATH --yes\`"
 fi
 
 avail=$(mem_available_gib_local)
 if awk -v a="$avail" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 < f)}'; then
-  record fail memory "MemAvailable ${avail} GiB < hard floor ${HARD_FLOOR_AVAILABLE_GIB} GiB; free memory or stop other GPU work (\`./pulsar inventory\`)" \
+  record fail memory "MemAvailable ${avail} GiB < hard floor ${HARD_FLOOR_AVAILABLE_GIB} GiB; free memory or stop other GPU work (./pulsar inventory)" \
     "${avail} GiB memory available, below the ${HARD_FLOOR_AVAILABLE_GIB} GiB floor; free memory or stop other GPU work (\`./pulsar inventory\`)"
 else
   record ok memory "MemAvailable ${avail} GiB" "${avail} GiB memory available"
@@ -243,19 +256,23 @@ fi
 
 section "Cluster membership"
 if ! load_cluster_topology; then
-  record fail topology "Confirmed topology or saved SSH identity configuration is invalid; inspect it with \`./pulsar topology show\`"
+  record fail topology "Confirmed topology or saved SSH identity configuration is invalid; inspect it with ./pulsar topology show" \
+    "Confirmed topology or saved SSH identity configuration is invalid; inspect it with \`./pulsar topology show\`"
 elif [ "$CLUSTER_TOPOLOGY_COUNT" -lt 1 ] || [ -z "$CLUSTER_TOPOLOGY_ID" ]; then
-  record fail topology "No confirmed topology; run \`./pulsar topology setup\` to confirm cluster membership"
+  record fail topology "No confirmed topology; run ./pulsar topology setup to confirm cluster membership" \
+    "No confirmed topology; run \`./pulsar topology setup\` to confirm cluster membership"
 else
   record ok topology "Confirmed membership: $CLUSTER_TOPOLOGY_COUNT nodes"
   if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
-    record fail ssh_trust "Multi-node operation requires enrolled SSH identities; run \`./pulsar ssh-trust enroll\`"
+    record fail ssh_trust "Multi-node operation requires enrolled SSH identities; run ./pulsar ssh-trust enroll" \
+    "Multi-node operation requires enrolled SSH identities; run \`./pulsar ssh-trust enroll\`"
   fi
   if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ]; then
     if local_fabric=$(probe_node_json_for_rank 0 2>/dev/null) && printf '%s' "$local_fabric" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("qualified") is True else 1)'; then
       record ok local_fabric "Local platform and active RDMA prerequisites are available"
     else
-      record fail local_fabric "Local platform or active RDMA prerequisites could not be verified; run \`./pulsar topology check\`"
+      record fail local_fabric "Local platform or active RDMA prerequisites could not be verified; run ./pulsar topology check" \
+    "Local platform or active RDMA prerequisites could not be verified; run \`./pulsar topology check\`"
     fi
   fi
   for ((rank=1; rank<CLUSTER_TOPOLOGY_COUNT; rank++)); do
@@ -271,27 +288,30 @@ words={"gpu":("GPU {}","GPU {} (want "+sys.argv[1]+"); this node does not match 
  "docker_nvidia":("Docker NVIDIA runtime present","Docker NVIDIA runtime missing; install the NVIDIA Container Toolkit"),
  "qualified":("platform and RDMA prerequisites verified","platform or RDMA prerequisites not verified; run `./pulsar topology check`"),
  "node_id":("node identity matches saved membership","node identity differs from saved membership; run `./pulsar topology check`")}
+def row(level,field,template,value=""):
+ # The JSON message drops the marks from the template, never from the value.
+ print("\x1f".join((level,field,template.replace("`","").format(value),template.format(value))))
 for field,expected in (("gpu",sys.argv[1]),("docker_ok",True),("docker_nvidia",True),("qualified",True),("node_id",sys.argv[3])):
  value=p.get(field); valid=value==expected and type(value) is type(expected)
  if field=="docker_nvidia" and p.get("docker_ok") is not True:
   # The runtime query needs Docker, so its absence is not observed.
-  print("warn|docker_nvidia|Docker NVIDIA runtime not observed because Docker is unavailable"); continue
- print(("ok" if valid else "fail")+"|"+field+"|"+words[field][0 if valid else 1].format(value))
+  row("warn","docker_nvidia","Docker NVIDIA runtime not observed because Docker is unavailable"); continue
+ row("ok" if valid else "fail",field,words[field][0 if valid else 1],value)
 arch_ok=p.get("arch") in sys.argv[2].split()
-print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+"); this node does not match the selected platform"))
-' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows="fail|probe|Unreadable remote hardware probe; run \`./pulsar topology check\`"
-      while IFS='|' read -r level id message; do
-        record "$level" "rank_${rank}_${id}" "$node_name: $message" "$message"
+row("ok" if arch_ok else "fail","arch","arch {}"+("" if arch_ok else " (selected platform requires "+sys.argv[2].split()[0]+"); this node does not match the selected platform"),p.get("arch"))
+' "$PULSAR_GPU_NAME" "$PULSAR_ARCHITECTURES" "${CLUSTER_NODE_IDS[$rank]}") || probe_rows=$'fail\x1fprobe\x1fUnreadable remote hardware probe; run ./pulsar topology check\x1fUnreadable remote hardware probe; run `./pulsar topology check`'
+      while IFS=$'\x1f' read -r level id message text; do
+        record "$level" "rank_${rank}_${id}" "$node_name: $message" "$text"
       done <<<"$probe_rows"
       remote_available=$(mem_available_gib_remote "${CLUSTER_NODE_SSH_HOSTS[$rank]}") || remote_available=""
       if awk -v a="$remote_available" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 >= f)}'; then
         record ok "rank_${rank}_memory" "$node_name: MemAvailable $remote_available GiB" "$remote_available GiB memory available"
       else
-        record fail "rank_${rank}_memory" "$node_name: memory unavailable or below the hard floor; run \`./pulsar inventory\`" \
+        record fail "rank_${rank}_memory" "$node_name: memory unavailable or below the hard floor; run ./pulsar inventory" \
           "memory unavailable or below the hard floor; run \`./pulsar inventory\`"
       fi
     else
-      record fail "rank_${rank}_probe" "$node_name cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`" \
+      record fail "rank_${rank}_probe" "$node_name cannot be inspected through its confirmed control endpoint; run ./pulsar topology check" \
         "cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`"
     fi
   done
@@ -304,7 +324,8 @@ if catalog=$("$REPO_DIR/scripts/release.sh" list --json 2>/dev/null); then
   record ok catalog "$count catalog specs readable; use models check for selected storage readiness" \
     "$count catalog specs readable; \`./pulsar models check SPEC\` checks a spec's storage"
 else
-  record fail catalog "Catalog contains an unreadable or invalid spec; \`scripts/check-catalog.py\` names it"
+  record fail catalog "Catalog contains an unreadable or invalid spec; scripts/check-catalog.py names it" \
+    "Catalog contains an unreadable or invalid spec; \`scripts/check-catalog.py\` names it"
 fi
 
 result=pass
