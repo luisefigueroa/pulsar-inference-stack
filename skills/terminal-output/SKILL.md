@@ -24,9 +24,10 @@ Gum's default pink.
 
 ## Build
 
-- Print through `TerminalWriter` or `emit_help`, and don't write escape codes
-  by hand. The one older exception is `doctor`'s READY line, which `tput`
-  colors.
+- Print through `TerminalWriter`, `emit_help` or `emit_checks`, and don't
+  write escape codes by hand. Bash prints check sections with
+  `scripts/terminal_format.py --checks TITLE [LEVEL TEXT]...` and a verdict
+  with `--status LEVEL WORD TEXT`.
 - Give styled text a role instead of a color:
   - `heading`: titles, section headings and entry headings.
   - `choice`: menu choices and other on-screen names, which the docs also bold.
@@ -34,6 +35,8 @@ Gum's default pink.
     them automatically, or every "spec" and "node" lights up.
   - Literal: commands, options and paths. Capitals standing alone inside a
     literal are placeholders and get underlined.
+  - Status: `warn`, `fail` and `pass` (READY) words. Leave `ok` plain: color
+    marks what needs attention, and thirty green rows mean nothing.
 - With `markup=True`, write `` `literal` ``, `**choice**` and `*term*` marks.
   Use `role="command"` for a usage line or option term, and `role="option"` for
   an aligned `  TERM  DESCRIPTION` row.
@@ -43,7 +46,11 @@ Gum's default pink.
   through `emit_help` and must stay plain.
 - Long output shown from a menu goes through `page_output`. It runs the command
   with `PULSAR_COLOR=always`, so styles survive the capture and the pager.
-- Add no new colors. Green is `doctor`'s READY. JSON is never styled.
+- Group check rows by the object they describe, such as one section per node
+  named by its hostname, instead of repeating it on every row. Count warnings
+  and failures in the closing verdict.
+- Add no colors beyond the roles. JSON is never styled: keep its messages,
+  and let marks and human wording differ only in what people read.
 
 ## Gotchas
 

@@ -1092,12 +1092,16 @@ commands, options and paths in cyan, and placeholders such as `SPEC`
 underlined. Each command's `--help` styles its usage lines and option names
 the same way and leaves descriptions plain; help that Python's argparse
 formats, for `contract`, `resources` and contributor subcommands such as
-`evidence verify`, stays plain. Every styled part also reads without color. `NO_COLOR` removes
-the colors and keeps bold and underline; `PULSAR_COLOR=never` prints no
-styles; `PULSAR_COLOR=always` keeps them in output that is not a terminal.
-The menu's pager runs its pages with `always`, so they keep their styles
-there, and `doctor`'s `READY` line keeps its color. Without `always`, piped
-output stays plain; `--json` output never carries styles.
+`evidence verify`, stays plain. Check results mark what needs attention:
+`warn` in yellow, `FAIL` and `NOT READY` in bold red, `READY` in bold green;
+`ok` stays plain. `./pulsar doctor` groups its checks under this node, cluster
+membership, each other node by hostname and the catalog, then counts warnings
+and blocking issues in its verdict; its `--json` output is unchanged. Every
+styled part also reads without color. `NO_COLOR` removes the colors and keeps
+bold and underline; `PULSAR_COLOR=never` prints no styles;
+`PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's
+pager runs its pages with `always`, so they keep their styles there. Without
+`always`, piped output stays plain; `--json` output never carries styles.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet

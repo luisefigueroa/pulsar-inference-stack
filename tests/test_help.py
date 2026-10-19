@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT))
 from unittest import mock
 
 from scripts import help_pages
-from scripts.terminal_format import TerminalWriter, colors_enabled, emit_help, emit_laid_out_help, styles_enabled
+from scripts.terminal_format import (TerminalWriter, colors_enabled, emit_checks, emit_help, emit_laid_out_help,
+                                     emit_status, styles_enabled)
 
 # The operator commands ./pulsar help lists for setup, catalog and serving.
 # The guide pages read docs/OPERATIONS.md, so a Terms table edit that breaks
@@ -408,6 +409,42 @@ class Styles(unittest.TestCase):
             # Without color, headings stay bold and placeholders underlined.
             self.assertNotRegex(muted, r"\x1b\[[0-9;]*(3[0-9]|9[0-7])m")
             self.assertIn("\x1b[1m", muted)
+
+
+class Checks(unittest.TestCase):
+    """Check results: a heading, status words in a column, and a verdict.
+    Only what needs attention is colored: warn, FAIL and the verdict."""
+    ROWS = [("ok", "arch aarch64"), ("warn", "API key authentication is not configured"),
+            ("fail", "Docker unavailable; run `./pulsar topology check`")]
+    PLAIN = ("rank-1\n  ok    arch aarch64\n  warn  API key authentication is not\n        configured\n"
+             "  FAIL  Docker unavailable; run\n        ./pulsar topology check\n"
+             "NOT READY — 2 blocking issues above; fix\n            them before serving\n")
+
+    def render(self, terminal=False, **values):
+        output = Styles.Terminal() if terminal else io.StringIO()
+        clean = {key: value for key, value in os.environ.items()
+                 if key not in ("PULSAR_COLOR", "NO_COLOR", "PULSAR_ACCENT", "TERM")}
+        with mock.patch.dict(os.environ, {**clean, "TERM": "xterm-256color", **values}, clear=True):
+            writer = TerminalWriter(width=40, stream=output)
+            emit_checks("rank-1", self.ROWS, writer)
+            emit_status("fail", "NOT READY", "2 blocking issues above; fix them before serving", writer)
+        return output.getvalue()
+
+    def test_rows_hang_under_their_status_word(self):
+        self.assertEqual(self.render(), self.PLAIN)
+
+    def test_only_warnings_failures_and_the_verdict_are_colored(self):
+        styled = self.render(terminal=True)
+        self.assertEqual(ANSI.sub("", styled), self.PLAIN)
+        self.assertIn("\x1b[1;94mrank-1\x1b[0m\n  ok    arch aarch64\n  \x1b[33mwarn\x1b[0m  API key", styled)
+        self.assertIn("  \x1b[1;31mFAIL\x1b[0m  Docker unavailable; run\n        \x1b[36m./pulsar topology check\x1b[0m\n",
+                      styled)
+        self.assertIn("\x1b[1;31mNOT READY\x1b[0m — 2 blocking issues", styled)
+        # Without color the status words stay bold; nothing else changes.
+        muted = self.render(terminal=True, NO_COLOR="1")
+        self.assertIn("  \x1b[1mwarn\x1b[0m  ", muted)
+        self.assertIn("\x1b[1mNOT READY\x1b[0m — ", muted)
+        self.assertNotRegex(muted, r"\x1b\[[0-9;]*(3[0-9]|9[0-7])m")
 
 
 class Renderer(unittest.TestCase):

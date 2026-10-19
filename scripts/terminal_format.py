@@ -89,10 +89,15 @@ def _accent() -> str:
 
 
 def _sgr(colors: bool) -> dict[str, str]:
+    """Each role's SGR parameters. Status words: pass (READY) in bold green,
+    warn in yellow and fail in bold red; ok stays plain, so the rows that need
+    attention stand out. Without color, status words keep bold."""
     accent = _accent()
     if not colors:
-        return {"heading": "1", "choice": "1", "term": "", "literal": "", "placeholder": "4"}
-    return {"heading": f"1;{accent}", "choice": "1", "term": accent, "literal": "36", "placeholder": "4;36"}
+        return {"heading": "1", "choice": "1", "term": "", "literal": "", "placeholder": "4",
+                "pass": "1", "warn": "1", "fail": "1"}
+    return {"heading": f"1;{accent}", "choice": "1", "term": accent, "literal": "36", "placeholder": "4;36",
+            "pass": "1;32", "warn": "33", "fail": "1;31"}
 
 
 def _marked(text: str, room: int) -> tuple[str, list[str | None]]:
@@ -155,13 +160,15 @@ class TerminalWriter:
         *,
         role: str | None = None,
         markup: bool = False,
+        prefix_role: str | None = None,
     ) -> None:
         """Print TEXT wrapped to the width. ROLE styles all of it: heading,
         choice, term or literal; command, a usage line or option term with its
         metavariables underlined; or option, an aligned "  TERM  DESCRIPTION"
         row whose term is a command. MARKUP reads `literal`, **choice** and
-        *term* marks inside it. Lines wrap on the visible text, so styled and
-        plain output break at the same places."""
+        *term* marks inside it. PREFIX_ROLE styles the label that INITIAL_INDENT
+        carries, such as a status word. Lines wrap on the visible text, so
+        styled and plain output break at the same places."""
         if text is None or text == "":
             print(file=self.stream)
             return
@@ -174,9 +181,10 @@ class TerminalWriter:
             break_long_words=True,
             break_on_hyphens=break_on_hyphens,
         )
+        first = self._prefix(initial_indent, prefix_role)
         if role is None and not markup:
-            for line in wrapper.wrap(str(text)):
-                print(line, file=self.stream)
+            for number, line in enumerate(wrapper.wrap(str(text))):
+                print(first + line[len(initial_indent):] if number == 0 else line, file=self.stream)
             return
         # One character of whitespace stays one, so each wrapped line maps back
         # to its characters' roles.
@@ -204,8 +212,18 @@ class TerminalWriter:
                 for rest in lines[number:]:
                     print(rest.replace(_KEEP, " "), file=self.stream)
                 return
-            print(indent + self._styled(content, roles[cursor:cursor + len(content)]), file=self.stream)
+            print((first if number == 0 else indent) + self._styled(content, roles[cursor:cursor + len(content)]),
+                  file=self.stream)
             cursor += len(content)
+
+    def _prefix(self, indent: str, role: str | None) -> str:
+        """INDENT with its label styled: the text between the leading and
+        trailing spaces, without a closing dash or colon."""
+        label = re.sub(r"\s*[—:]$", "", indent.strip())
+        if not (role and self.styles and label):
+            return indent
+        start = indent.index(label)
+        return indent[:start] + self._styled(label, [role] * len(label)) + indent[start + len(label):]
 
     def command_line(self, text: str) -> str:
         """TEXT, a usage line or an option term, as literal text with its
@@ -354,6 +372,46 @@ def emit_laid_out_help(text: str, writer: TerminalWriter | None = None) -> None:
         out.emit(line, subsequent_indent="    " if line.startswith("  ") else "", role=role)
 
 
+_STATUS_WORDS = {"ok": "ok", "warn": "warn", "fail": "FAIL"}
+
+
+def emit_checks(title: str, rows: list[tuple[str, str]], writer: TerminalWriter | None = None) -> None:
+    """One section of check results: TITLE as a heading, then each row's
+    status word (ok, warn or FAIL) and its message in a hanging column. A
+    message may carry `literal` marks."""
+    out = writer or TerminalWriter()
+    if title:
+        out.emit(title, role="heading")
+    for level, text in rows:
+        out.emit(text, initial_indent=f"  {_STATUS_WORDS.get(level, level):<6}", subsequent_indent=" " * 8,
+                 markup=True, prefix_role=level if level in ("warn", "fail") else None)
+
+
+def emit_status(level: str, word: str, text: str, writer: TerminalWriter | None = None) -> None:
+    """A closing verdict such as `READY — …`: WORD in the LEVEL's style
+    (pass, warn or fail), then TEXT, which may carry `literal` marks."""
+    out = writer or TerminalWriter()
+    prefix = f"{word} — "
+    out.emit(text, initial_indent=prefix, subsequent_indent=" " * len(prefix), markup=True, prefix_role=level)
+
+
+def main(argv: list[str]) -> int:
+    """Scripts pipe a help screen here (python3 scripts/terminal_format.py
+    <<'HELP'), or pass check results:
+      --checks TITLE [LEVEL TEXT]...   one section of check rows
+      --status LEVEL WORD TEXT         a closing verdict line"""
+    if argv[:1] == ["--checks"] and len(argv) >= 2 and len(argv) % 2 == 0:
+        emit_checks(argv[1], list(zip(argv[2::2], argv[3::2])))
+    elif argv[:1] == ["--status"] and len(argv) == 4:
+        emit_status(*argv[1:])
+    elif not argv:
+        emit_help(sys.stdin.read())
+    else:
+        print("usage: terminal_format.py [--checks TITLE [LEVEL TEXT]... | --status LEVEL WORD TEXT]",
+              file=sys.stderr)
+        return 2
+    return 0
+
+
 if __name__ == "__main__":
-    # Scripts pipe a help screen here: python3 scripts/terminal_format.py <<'HELP'
-    emit_help(sys.stdin.read())
+    sys.exit(main(sys.argv[1:]))
