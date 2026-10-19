@@ -89,6 +89,32 @@ class Cards(unittest.TestCase):
         self.assertIn("\x1b[1;94mFirst request:\x1b[0m\n\x1b[36mcurl --fail-with-body", styled)
 
 
+class ParsedOutput(unittest.TestCase):
+    """Menus run under PULSAR_COLOR=always, and model-storage.sh parses these
+    outputs (prefixes such as header and next, labels split at " — "), so
+    they never carry escape codes."""
+
+    def test_catalog_menu_protocol_output_stays_plain(self):
+        from model_library import catalog_menu as menu
+        from tests.test_catalog_menu import HOME, checked, row
+        state = checked(local_state="ready", home=HOME)
+        cases = {
+            "labels": (["labels"], [row(), state]),
+            "view": (["view", "--spec-id", state["spec_id"], "--archive-location", "configured"], [state]),
+            "confirm": (["confirm", "--spec-id", state["spec_id"], "--action", "start"], [state]),
+            "next": (["next", "--archive-location", "configured"], [row()]),
+        }
+        for name, (args, entries) in cases.items():
+            with self.subTest(command=name):
+                out, err = io.StringIO(), io.StringIO()
+                with mock.patch.dict(os.environ, environment(PULSAR_COLOR="always", COLUMNS="80"), clear=True), \
+                        mock.patch("sys.stdin", io.StringIO(json.dumps({"entries": entries}))), \
+                        contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    self.assertEqual(menu.main(args), 0)
+                self.assertTrue(out.getvalue().strip(), name)
+                self.assertNotIn("\x1b", out.getvalue() + err.getvalue())
+
+
 class BlockerLines(unittest.TestCase):
     def test_a_blocker_line_marks_its_word_and_next_command(self):
         record = start_blockers.blocker("port_in_use", spec="a" * 64, node="rank-1", rank=0, detail="8000")

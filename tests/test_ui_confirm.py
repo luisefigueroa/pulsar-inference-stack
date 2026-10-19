@@ -258,7 +258,8 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
                 self.assertEqual(code, 0, output)
                 self.assertIn(expected, output)
         # Off a terminal nothing changes.
-        piped = subprocess.run(["bash", "-c", script.format(setting="")], env={**os.environ, "REPO_DIR": str(ROOT)},
+        clean = {key: value for key, value in os.environ.items() if key != "PULSAR_COLOR"}
+        piped = subprocess.run(["bash", "-c", script.format(setting="")], env={**clean, "REPO_DIR": str(ROOT)},
                                stdout=subprocess.PIPE, text=True, timeout=30)
         self.assertNotIn("KEPT=always", piped.stdout)
 
