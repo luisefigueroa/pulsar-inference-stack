@@ -92,6 +92,9 @@ wait_continue() {
                           '  "models menu") [ -z "${CATALOG_AFTER:-}" ] || cp "$CATALOG_AFTER" "$CATALOG_FILE" ;; esac\n'
                           'exit "${rc:-0}"\n')
         pulsar.chmod(0o755)
+        overview = scripts / "cluster-overview.sh"
+        overview.write_text('#!/usr/bin/env bash\necho "cluster overview" >> "$PULSAR_LOG"\nexit "${OVERVIEW_RC:-0}"\n')
+        overview.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh"):
             probe = scripts / name
             probe.write_text('#!/usr/bin/env bash\necho "probe: $0" >> "$PULSAR_LOG"\nexit 1\n')
@@ -176,7 +179,7 @@ wait_continue() {
 
     def test_catalog_error_waits_before_redrawing_the_home_menu(self):
         (self.root / '.cluster-topology.json').write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(['0', '0', '6'], PULSAR_RC='2')
+        result = self.run_home(['0', '0', '7'], PULSAR_RC='2')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ['models menu'])
         self.assertEqual(self.menus()[1], ['Catalog error', 'Continue'])
@@ -218,7 +221,7 @@ wait_continue() {
 
     def test_help_from_the_full_menu_returns_home_on_esc(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["5", "1", "esc", "6"])
+        result = self.run_home(["6", "1", "esc", "7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["help workflow"])
         self.assertEqual([menu[0] for menu in self.menus()],
@@ -265,7 +268,7 @@ wait_continue() {
 
     def test_configured_cluster_without_archives_opens_full_operations(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "1", "2", "5", "2", "3", "6"])
+        result = self.run_home(["0", "1", "3", "6", "2", "3", "7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[0][1], "Catalog and storage")
         self.assertEqual(self.commands(), ["models menu", "inventory menu", "doctor", "help"])
@@ -275,7 +278,7 @@ wait_continue() {
     def test_completing_cluster_setup_opens_full_menu_without_saving_archives(self):
         topology = self.root / "enrolled.json"
         topology.write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "6"], SETUP_TOPOLOGY=str(topology))
+        result = self.run_home(["0", "7"], SETUP_TOPOLOGY=str(topology))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology setup"])
         self.assertEqual(self.menus()[0][1], "Set up cluster membership and SSH trust")
@@ -288,7 +291,7 @@ wait_continue() {
 
     def test_returning_home_does_not_reprint_an_unchanged_status(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["2", "5", "2", "3", "6"])
+        result = self.run_home(["3", "6", "2", "3", "7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "help"])
         self.assertEqual(len(self.menus()), 5)
@@ -296,7 +299,7 @@ wait_continue() {
 
     def test_unset_archives_remain_an_explicit_configuration_choice(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["3", "6"])
+        result = self.run_home(["4", "7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["configure archive-root menu"])
 
@@ -307,7 +310,7 @@ wait_continue() {
 
     def test_complete_menu_starts_with_catalog_and_archive_opens_menu(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["3", "6"], PULSAR_COLD_ROOT="")
+        result = self.run_home(["4", "7"], PULSAR_COLD_ROOT="")
         self.assertEqual(result.returncode, 0, result.stderr)
         options = self.menus()[0]
         self.assertEqual(options[1], "Catalog and storage")
@@ -318,15 +321,29 @@ wait_continue() {
         self.assertEqual(len(menus), 2)
         self.assertEqual(menus[1][0], "Pulsar Inference Stack")
 
+    def test_cluster_overview_runs_only_when_chosen(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["2", "7"], PULSAR_COLD_ROOT="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[0][1:4], ["Catalog and storage", "Live service inventory",
+                                                "Cluster overview (checks nodes now)"])
+        self.assertEqual(self.commands(), ["cluster overview"])
+        # Entering home probes nothing; the overview's own commands run inside it.
+        self.answers.with_suffix(".n").unlink()
+        self.choose_log.unlink()
+        result = self.run_home(["7"], PULSAR_COLD_ROOT="")
+        self.assertEqual(self.commands(), ["cluster overview"])
+        self.assertNotIn("probe:", self.pulsar_log.read_text())
+
     def test_inventory_choice_opens_the_service_menu(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["1", "6"], PULSAR_COLD_ROOT="")
+        result = self.run_home(["1", "7"], PULSAR_COLD_ROOT="")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["inventory menu"])
 
     def test_ctrl_c_at_the_home_menu_exits_with_130(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["3", "ctrl-c"], PULSAR_COLD_ROOT="")
+        result = self.run_home(["4", "ctrl-c"], PULSAR_COLD_ROOT="")
         self.assertEqual(result.returncode, 130, result.stderr)
         self.assertEqual(len(self.menus()), 2)
 
@@ -336,7 +353,7 @@ wait_continue() {
     def test_next_line_follows_the_setup_status_from_saved_records(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
         self.catalog.write_text(self.catalog_entries(never_checked("a"), never_checked("b"), ready("c")))
-        result = self.run_home(["6"])
+        result = self.run_home(["7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         line = ("Next: 2 specs never checked · 1 spec ready to Start — open Catalog and storage. "
                 "Newest saved check: 2 hours ago.")
@@ -349,7 +366,7 @@ wait_continue() {
     def test_next_line_prints_again_only_when_saved_records_change(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
         self.catalog.write_text(self.catalog_entries(never_checked("a")))
-        result = self.run_home(["2", "6"])
+        result = self.run_home(["3", "7"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("open Catalog and storage"), 1)
         self.assertEqual(result.stdout.count("Topology"), 1)
@@ -357,7 +374,7 @@ wait_continue() {
         after.write_text(self.catalog_entries(ready("a")))
         self.answers.with_suffix(".n").unlink()
         self.choose_log.unlink()
-        result = self.run_home(["0", "6"], CATALOG_AFTER=str(after))
+        result = self.run_home(["0", "7"], CATALOG_AFTER=str(after))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("open Catalog and storage"), 2)
         self.assertLess(result.stdout.index("1 spec never checked"), result.stdout.index("1 spec ready to Start"))
@@ -371,7 +388,7 @@ wait_continue() {
             with self.subTest(extra=extra, shown=shown):
                 self.catalog.write_text(fixture)
                 self.answers.with_suffix(".n").unlink(missing_ok=True)
-                result = self.run_home(["6"], **extra)
+                result = self.run_home(["7"], **extra)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual("open Catalog and storage" in result.stdout, shown, result.stdout)
                 self.assertIn("Topology", result.stdout)
@@ -383,7 +400,7 @@ wait_continue() {
         self.catalog.write_text(self.catalog_entries(never_checked("a")))
         topology = self.root / "enrolled.json"
         topology.write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "6"], SETUP_TOPOLOGY=str(topology))
+        result = self.run_home(["0", "7"], SETUP_TOPOLOGY=str(topology))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology setup"])
         # First use reads no catalog; the full menu's status ends with the line.

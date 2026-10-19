@@ -70,6 +70,9 @@ Gum's default pink.
   option row.
 - `gum style` strips escape codes, so the recipe frame's text stays plain; only
   its border takes the accent.
+- `spin` draws on stderr. Capture a spun command's stderr inside the command
+  (`spin TITLE bash -c '"$@" 2>FILE' _ CMD...`), never `spin`'s own, or the
+  spinner disappears and its frames land in the captured error.
 - Styles go in free text only. Shell parses Gum labels and prefixes such as
   `header\t`, and parses captured stderr (`lib.sh` strips `error: `). So error
   and warning labels are styled only on a real terminal, never for `always`.
