@@ -33,7 +33,15 @@ observe() {
   source_json 2 inventory "Listing services and memory" inventory || return
   source_json 3 budget "Reading storage budgets" model budget || return
   echo
-  python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$started" --finished "$(date +%s)"
+  # The sources' failures show in the overview; a failure to render it is a
+  # Stack defect, so it is held on screen before home redraws over it.
+  local rc=0
+  python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$started" --finished "$(date +%s)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '\n✗ The cluster overview could not be displayed; review the error above.\n  exit %s\n' "$rc"
+    wait_continue "Cluster overview error" || return
+    return "$rc"
+  fi
 }
 
 while true; do

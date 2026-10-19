@@ -142,6 +142,7 @@ class Runner(unittest.TestCase):
         (scripts / "ui.sh").write_text(r'''
 require_gum() { :; }
 ui_keep_styles() { :; }
+wait_continue() { printf 'continue: %s\n' "$1" >> "$SPIN_LOG"; }
 # Like Gum, the spinner draws on stderr while the command runs.
 spin() { printf '%s\n' "$1" >> "$SPIN_LOG"; printf 'spinner: %s\n' "$1" >&2; shift; "$@"; }
 choose_index() {
@@ -192,6 +193,15 @@ choose_index() {
         self.assertIn("  pulsar topology check exited 1: fixture failure\n", result.stdout)
         self.assertNotIn("spinner", result.stdout)
         self.assertEqual(result.stderr.count("spinner: "), 3)
+
+    def test_a_renderer_failure_is_held_on_screen(self):
+        (self.root / "scripts/cluster_overview.py").write_text("raise SystemExit('renderer defect')\n")
+        result = self.run_overview([])
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("renderer defect", result.stderr)
+        self.assertIn("✗ The cluster overview could not be displayed; review the error above.\n  exit 1\n",
+                      result.stdout)
+        self.assertEqual((self.root / "spin.log").read_text().splitlines()[-1], "continue: Cluster overview error")
 
     def test_esc_returns_and_ctrl_c_stops(self):
         self.assertEqual(self.run_overview(["esc"]).returncode, 0)
