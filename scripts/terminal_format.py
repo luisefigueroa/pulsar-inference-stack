@@ -50,6 +50,9 @@ _MARKUP = re.compile(r"`([^`]+)`|\*\*(.+?)\*\*|\*([^*\s][^*]*)\*")
 # SPEC, NODE, ID|..., [N]. Capitals within a name, such as PULSAR_COLOR or
 # docs/OPERATIONS.md, are literal.
 _PLACEHOLDER = re.compile(r"(?<![^\s|\[(,])[A-Z]+(?![^\s|\]),])")
+# In usage lines and option terms every word in capitals is a metavariable, as
+# argparse names them: SPEC_ID, SHA256, ORG/NAME.
+_METAVAR = re.compile(r"(?<![^\s|\[(,/=])[A-Z][A-Z0-9_]*(?![^\s|\]),/])")
 _WRAP_WHITESPACE = re.compile(r"[\t\n\x0b\x0c\r]")
 
 
@@ -118,6 +121,18 @@ def _marked(text: str, room: int) -> tuple[str, list[str | None]]:
     return "".join(plain), roles
 
 
+def _command_roles(text: str) -> list[str | None]:
+    """Roles for a usage line or option term: literal, with metavariables as
+    placeholders and a leading `usage:` label as a heading."""
+    roles: list[str | None] = ["literal"] * len(text)
+    label = re.match(r"\s*usage:", text, re.IGNORECASE)
+    if label:
+        roles[:label.end()] = ["heading"] * label.end()
+    for metavar in _METAVAR.finditer(text):
+        roles[metavar.start():metavar.end()] = ["placeholder"] * len(metavar.group())
+    return roles
+
+
 class TerminalWriter:
     """Render labeled fields and hanging-indented text without line overflow."""
 
@@ -141,10 +156,12 @@ class TerminalWriter:
         role: str | None = None,
         markup: bool = False,
     ) -> None:
-        """Print TEXT wrapped to the width. ROLE styles all of it (heading,
-        choice, term, literal); MARKUP reads `literal`, **choice** and *term*
-        marks inside it. Lines wrap on the visible text, so styled and plain
-        output break at the same places."""
+        """Print TEXT wrapped to the width. ROLE styles all of it: heading,
+        choice, term or literal; command, a usage line or option term with its
+        metavariables underlined; or option, an aligned "  TERM  DESCRIPTION"
+        row whose term is a command. MARKUP reads `literal`, **choice** and
+        *term* marks inside it. Lines wrap on the visible text, so styled and
+        plain output break at the same places."""
         if text is None or text == "":
             print(file=self.stream)
             return
@@ -166,6 +183,13 @@ class TerminalWriter:
         text = _WRAP_WHITESPACE.sub(" ", str(text))
         if markup:
             plain, roles = _marked(text, self.width - max(len(initial_indent), len(subsequent_indent)))
+        elif role == "command":
+            plain, roles = text, _command_roles(text)
+        elif role == "option":
+            row = _OPTION.match(text)
+            plain, roles = text, [None] * len(text)
+            if row:
+                roles[row.start(2):row.end(2)] = _command_roles(row.group(2))
         else:
             plain, roles = text, [role] * len(text)
         lines = wrapper.wrap(plain)
@@ -182,6 +206,11 @@ class TerminalWriter:
                 return
             print(indent + self._styled(content, roles[cursor:cursor + len(content)]), file=self.stream)
             cursor += len(content)
+
+    def command_line(self, text: str) -> str:
+        """TEXT, a usage line or an option term, as literal text with its
+        metavariables underlined; a leading `usage:` label is a heading."""
+        return self._styled(text, _command_roles(text)) if self.styles and text else text
 
     def _styled(self, content: str, roles: list[str | None]) -> str:
         pieces = []
@@ -219,6 +248,8 @@ _USAGE = re.compile(r"^\s*usage:", re.IGNORECASE)
 # then its description.
 _OPTION = re.compile(r"^( {2,})(\S+(?: \S+)*?) {2,}(\S.*)$")
 _BULLET = re.compile(r"^\s*[*-] ")
+# A short label of its own, such as "Options:", heads a help screen's section.
+_SECTION = re.compile(r"[A-Z][A-Za-z ]{0,30}:")
 
 
 def _keep_brackets(text: str) -> str:
@@ -238,11 +269,19 @@ def emit_help(text: str, writer: TerminalWriter | None = None) -> None:
     """
     out = writer or TerminalWriter()
 
-    def wrap(value: str, first: str, rest: str) -> None:
+    def wrapped(value: str, first: str, rest: str) -> list[str]:
         wrapper = textwrap.TextWrapper(width=out.width, initial_indent=first, subsequent_indent=rest,
                                        break_long_words=True, break_on_hyphens=False)
-        for line in wrapper.wrap(value):
-            print(line.replace(_KEEP, " "), file=out.stream)
+        return [line.replace(_KEEP, " ") for line in wrapper.wrap(value)]
+
+    def wrap(value: str, first: str, rest: str, literal: bool = False) -> None:
+        """Print VALUE wrapped; LITERAL styles each line after its indent as a
+        usage line or option term."""
+        for number, line in enumerate(wrapped(value, first, rest)):
+            indent = first if number == 0 else rest
+            if literal and styled:
+                line = indent + out.command_line(line[len(indent):])
+            print(line, file=out.stream)
 
     blocks: list[list] = []  # [kind, indent, items]
     for raw in text.splitlines():
@@ -267,24 +306,52 @@ def emit_help(text: str, writer: TerminalWriter | None = None) -> None:
             blocks.append(["text", indent, [line.strip()]])
     while blocks and blocks[-1][0] == "blank":
         blocks.pop()
+    # Only a help screen, a text with a usage line, is styled; other text that
+    # passes through here, such as a question, prints as it is.
+    styled = out.styles and any(kind == "usage" for kind, _, _ in blocks)
     for kind, indent, items in blocks:
         if kind == "blank":
             out.blank()
         elif kind == "usage":
             # A wrapped usage line indents past the start of the next usage form.
             continuation = " " * 9 if _USAGE.match(items[0]) else indent + "  "
-            wrap(_keep_brackets(items[0]), indent, continuation)
+            wrap(_keep_brackets(items[0]), indent, continuation, literal=True)
         elif kind == "text":
+            if styled and _SECTION.fullmatch(items[0]):
+                print(indent + out._styled(items[0], ["heading"] * len(items[0])), file=out.stream)
+                continue
             wrap(items[0], indent, indent + ("  " if _BULLET.match(items[0]) else ""))
         else:
             column = len(indent) + max(len(term) for term, _ in items) + 2
             if column <= max(24, out.width // 2):
                 for term, description in items:
-                    wrap(description, (indent + term).ljust(column), " " * column)
+                    lines = wrapped(description, (indent + term).ljust(column), " " * column)
+                    if styled:
+                        lines[0] = indent + out.command_line(term) + lines[0][len(indent) + len(term):]
+                    for line in lines:
+                        print(line, file=out.stream)
             else:
                 for term, description in items:
-                    wrap(_keep_brackets(term), indent, indent + "  ")
+                    wrap(_keep_brackets(term), indent, indent + "  ", literal=True)
                     wrap(description, indent + "    ", indent + "    ")
+
+
+def emit_laid_out_help(text: str, writer: TerminalWriter | None = None) -> None:
+    """Print a help screen whose own spacing lays out its columns. Each line
+    wraps on its own, an indented line under a four-space indent. A help
+    screen is styled like emit_help: usage lines, option terms and labels."""
+    out = writer or TerminalWriter()
+    lines = text.splitlines()
+    styled = any(_USAGE.match(line) for line in lines)
+    for line in (line.rstrip() for line in lines):
+        role = None
+        if styled and _USAGE.match(line):
+            role = "command"
+        elif styled and _SECTION.fullmatch(line.strip()):
+            role = "heading"
+        elif styled and _OPTION.match(line):
+            role = "option"
+        out.emit(line, subsequent_indent="    " if line.startswith("  ") else "", role=role)
 
 
 if __name__ == "__main__":

@@ -1089,7 +1089,10 @@ warning and error lines for debugging; check rows keep their layout. Deprecated 
 On a terminal, `./pulsar help` and its pages style their text: headings in
 bold and the menu accent, menu choices in bold, [terms](#terms) in the accent,
 commands, options and paths in cyan, and placeholders such as `SPEC`
-underlined. Every styled part also reads without color. `NO_COLOR` removes
+underlined. Each command's `--help` styles its usage lines and option names
+the same way and leaves descriptions plain; help that Python's argparse
+formats, for `contract`, `resources` and contributor subcommands such as
+`evidence verify`, stays plain. Every styled part also reads without color. `NO_COLOR` removes
 the colors and keeps bold and underline; `PULSAR_COLOR=never` prints no
 styles; `PULSAR_COLOR=always` keeps them in output that is not a terminal.
 The menu's pager runs its pages with `always`, so they keep their styles

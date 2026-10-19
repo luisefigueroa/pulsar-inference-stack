@@ -12,7 +12,7 @@ JSON=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --json) JSON=1 ;;
-    --help|-h) echo 'Usage: ./pulsar doctor [--json]'; exit 0 ;;
+    --help|-h) python3 "$REPO_DIR/scripts/terminal_format.py" <<<'Usage: ./pulsar doctor [--json]'; exit 0 ;;
     *) die "unknown argument: $1" 2 ;;
   esac
   shift

@@ -16,7 +16,7 @@ sys.path.insert(0, str(ROOT))
 from unittest import mock
 
 from scripts import help_pages
-from scripts.terminal_format import TerminalWriter, colors_enabled, emit_help, styles_enabled
+from scripts.terminal_format import TerminalWriter, colors_enabled, emit_help, emit_laid_out_help, styles_enabled
 
 # The operator commands ./pulsar help lists for setup, catalog and serving.
 # The guide pages read docs/OPERATIONS.md, so a Terms table edit that breaks
@@ -283,6 +283,48 @@ class Styles(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 
+    def command(self, args, width=80, **values):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("PULSAR_", "CLUSTER_")) and key != "NO_COLOR"}
+        env.update(COLUMNS=str(width), PYTHONDONTWRITEBYTECODE="1", PULSAR_SSH="/bin/false",
+                   PULSAR_DOCKER="/bin/false", **values)
+        result = subprocess.run([str(ROOT / "pulsar"), *args], env=env, stdin=subprocess.DEVNULL,
+                                text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_every_command_help_strips_to_its_plain_text(self):
+        from scripts.public_cli import SUBCOMMANDS
+        screens = [args for args in COMMANDS if args[0] != "help"]
+        screens += [(command, name, "--help") for command, (_, names) in SUBCOMMANDS.items() for name in names]
+        for args in screens:
+            with self.subTest(command=" ".join(args)):
+                plain = self.command(args, 44)
+                self.assertNotIn("\x1b", plain)
+                self.assertEqual(ANSI.sub("", self.command(args, 44, PULSAR_COLOR="always")), plain)
+
+    def test_command_help_marks_usage_option_terms_and_metavariables(self):
+        expected = {
+            ("models", "--help"): ["\x1b[1;94musage:\x1b[0m\x1b[36m pulsar models list [--json]\x1b[0m\n",
+                                   "  \x1b[36mshow \x1b[0m\x1b[4;36mSPEC\x1b[0m     One spec in detail",
+                                   "\nnever contact nodes.\n"],
+            ("start", "--help"): ["\x1b[36m pulsar start \x1b[0m\x1b[4;36mSPEC_ID\x1b[0m",
+                                  "  \x1b[36m--spec-file \x1b[0m\x1b[4;36mFILE\x1b[0m             Use"],
+            ("guarded", "--help"): ["\x1b[4;36mSHA256\x1b[0m", "\x1b[4;36mNEW_DIR\x1b[0m"],
+            ("model", "--help"): ["\x1b[1;94mUsage:\x1b[0m\x1b[36m pulsar model \x1b[0m\x1b[4;36mOPERATION\x1b[0m",
+                                  "\n\x1b[1;94mOptions:\x1b[0m\n",
+                                  "\x1b[4;36mORG\x1b[0m\x1b[36m/\x1b[0m\x1b[4;36mNAME\x1b[0m",
+                                  "  \x1b[36m--placement-nodes \x1b[0m\x1b[4;36mLIST\x1b[0m  Ordered"],
+            ("topology", "--help"): ["\x1b[1;94mUsage:\x1b[0m\x1b[36m pulsar topology \x1b[0m\x1b[4;36mCOMMAND\x1b[0m",
+                                     "  \x1b[36msetup [--candidate \x1b[0m\x1b[4;36mHOST\x1b[0m\x1b[36m ...]\x1b[0m\n"],
+            ("doctor", "--help"): ["\x1b[1;94mUsage:\x1b[0m\x1b[36m ./pulsar doctor [--json]\x1b[0m\n"],
+        }
+        for args, parts in expected.items():
+            styled = self.command(args, 80, PULSAR_COLOR="always")
+            for part in parts:
+                with self.subTest(command=" ".join(args), part=part):
+                    self.assertIn(part, styled)
+
     def test_styles_follow_the_terminal_and_the_operator(self):
         cases = [  # environment, a terminal?, (styles, colors)
             ({"TERM": "xterm-256color"}, True, (True, True)),
@@ -385,10 +427,66 @@ A note.
   * another bullet
 """
 
-    def render(self, width):
-        output = io.StringIO()
-        emit_help(self.TEXT, TerminalWriter(width=width, stream=output))
+    LAID_OUT = """\
+Usage: pulsar example OPERATION [SPEC_ID] [options]
+
+  acquire       Download an exact snapshot
+  archive create|verify   Save or verify an archive
+
+Options:
+  --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
+  --one SPACE Not an option row
+Archive location is explicit PULSAR_COLD_ROOT.
+"""
+
+    def render(self, width, text=None, render=emit_help, terminal=False, **values):
+        output = Styles.Terminal() if terminal else io.StringIO()
+        clean = {key: value for key, value in os.environ.items()
+                 if key not in ("PULSAR_COLOR", "NO_COLOR", "PULSAR_ACCENT", "TERM")}
+        values = values or ({"TERM": "xterm-256color"} if terminal else {"PULSAR_COLOR": "never"})
+        with mock.patch.dict(os.environ, {**clean, **values}, clear=True):
+            render(self.TEXT if text is None else text, TerminalWriter(width=width, stream=output))
         return output.getvalue()
+
+    def test_a_help_screen_styles_its_usage_and_option_terms_only(self):
+        for width in (80, 32):
+            with self.subTest(width=width):
+                styled = self.render(width, terminal=True)
+                self.assertEqual(ANSI.sub("", styled), self.render(width))
+                # Paragraphs and bullets stay plain.
+                self.assertIn("\nA note.\n  * a bullet\n  * another bullet\n", styled)
+        styled = self.render(80, terminal=True)
+        self.assertIn("\x1b[1;94musage:\x1b[0m\x1b[36m pulsar example \x1b[0m\x1b[4;36mSPEC_ID\x1b[0m"
+                      "\x1b[36m [--node \x1b[0m\x1b[4;36mNODE_ID\x1b[0m\x1b[36m] [--spec-file \x1b[0m"
+                      "\x1b[4;36mFILE\x1b[0m\x1b[36m]\x1b[0m\n       \x1b[36mpulsar example --all\x1b[0m\n", styled)
+        self.assertIn("  \x1b[36m--node \x1b[0m\x1b[4;36mNODE_ID\x1b[0m    One node\n", styled)
+        # A wide option stacks; its term is styled on its own line.
+        stacked = self.render(44, "usage: pulsar x\n\n  --memory-estimate-file FILE  Explicit estimate\n",
+                              terminal=True)
+        self.assertIn("  \x1b[36m--memory-estimate-file \x1b[0m\x1b[4;36mFILE\x1b[0m\n      Explicit estimate\n",
+                      stacked)
+
+    def test_text_without_a_usage_line_is_never_styled(self):
+        # Questions and the SSH help pass through here too.
+        for text in ("\nPurge fixture/model: delete 1 working copy?\n", "Options:\n  --node NODE  One node\n"):
+            with self.subTest(text=text):
+                self.assertEqual(self.render(80, text, terminal=True), self.render(80, text))
+
+    def test_a_laid_out_help_screen_keeps_its_lines_and_styles_them(self):
+        expected = io.StringIO()
+        with mock.patch.dict(os.environ, {"PULSAR_COLOR": "never"}):
+            writer = TerminalWriter(width=60, stream=expected)
+            for line in self.LAID_OUT.splitlines():
+                writer.emit(line.rstrip(), subsequent_indent="    " if line.startswith("  ") else "")
+        self.assertEqual(self.render(60, self.LAID_OUT, emit_laid_out_help), expected.getvalue())
+        styled = self.render(60, self.LAID_OUT, emit_laid_out_help, terminal=True)
+        self.assertEqual(ANSI.sub("", styled), expected.getvalue())
+        self.assertIn("\x1b[1;94mUsage:\x1b[0m\x1b[36m pulsar example \x1b[0m\x1b[4;36mOPERATION\x1b[0m", styled)
+        self.assertIn("  \x1b[36marchive create|verify\x1b[0m   Save or verify an archive\n", styled)
+        self.assertIn("\n\x1b[1;94mOptions:\x1b[0m\n", styled)
+        self.assertIn("\x1b[36m--model-id \x1b[0m\x1b[4;36mORG\x1b[0m\x1b[36m/\x1b[0m\x1b[4;36mNAME\x1b[0m", styled)
+        # One space is not a column, and a paragraph's capitals are not metavariables.
+        self.assertIn("\n  --one SPACE Not an option row\nArchive location is explicit PULSAR_COLD_ROOT.\n", styled)
 
     def test_options_align_and_wrap_under_their_column(self):
         text = self.render(80)

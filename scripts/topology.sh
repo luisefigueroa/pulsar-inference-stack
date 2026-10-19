@@ -7,7 +7,7 @@ usage() {
   PYTHONPATH="$REPO_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PYHELP'
 from terminal_format import TerminalWriter
 writer = TerminalWriter()
-writer.emit("Usage: pulsar topology COMMAND [options]")
+writer.emit("Usage: pulsar topology COMMAND [options]", role="command")
 for command, description in [
     ("setup [--candidate HOST ...]", "Guided first use: confirm membership, enroll SSH identity, then check readiness. Candidates apply only when no valid membership is saved; setup refuses them otherwise (exit 2)."),
     ("show [--json]", "Read saved membership; no live probes."),
@@ -16,7 +16,7 @@ for command, description in [
     ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys]", "Review and explicitly save membership; no model actions."),
     ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
-    writer.emit(command, initial_indent="  ", subsequent_indent="    ")
+    writer.emit(command, initial_indent="  ", subsequent_indent="    ", role="command")
     writer.emit(description, initial_indent="    ", subsequent_indent="    ")
 writer.blank()
 writer.emit("New SSH trust requires separate authorization. Existing low-level topology utilities remain available with their original arguments.")
