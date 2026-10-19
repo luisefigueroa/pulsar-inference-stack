@@ -125,3 +125,4 @@ Lead human output with the action, affected object, and blocker. Keep JSON
 separate and stable, use hanging indentation for long paths, and check narrow
 terminal output. Saved catalog observations show their age; unknown is not
 absent, and prepared files do not imply a running or guaranteed launch.
+Lay out and style terminal output with the [terminal-output skill](skills/terminal-output/SKILL.md).
