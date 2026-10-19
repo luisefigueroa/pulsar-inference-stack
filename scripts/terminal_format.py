@@ -20,7 +20,17 @@ def error_line(message: object, *, tag: str, stream: TextIO | None = None) -> No
     """One `error: …` line, as scripts/lib.sh prints it: the message leads, and
     PULSAR_VERBOSE=1 adds the internal tool name for debugging."""
     prefix = f"[{tag}] " if os.environ.get("PULSAR_VERBOSE") == "1" else ""
-    print(f"{prefix}error: {message}", file=stream or sys.stderr)
+    stream = stream or sys.stderr
+    label = "error:"
+    # On a terminal the label takes the fail style. Captured stderr stays plain
+    # even under PULSAR_COLOR=always: callers parse it.
+    try:
+        terminal = stream.isatty()
+    except (AttributeError, ValueError):
+        terminal = False
+    if terminal:
+        label = TerminalWriter(stream=stream).paint(label, ["fail"] * len(label))
+    print(f"{prefix}{label} {message}", file=stream)
 
 
 def terminal_width(
@@ -225,6 +235,10 @@ class TerminalWriter:
         start = indent.index(label)
         return indent[:start] + self._styled(label, [role] * len(label)) + indent[start + len(label):]
 
+    def paint(self, text: str, roles: list[str | None]) -> str:
+        """TEXT, one line that is not wrapped, with each character's role."""
+        return self._styled(text, roles) if self.styles and text else text
+
     def command_line(self, text: str) -> str:
         """TEXT, a usage line or an option term, as literal text with its
         metavariables underlined; a leading `usage:` label is a heading."""
@@ -247,13 +261,18 @@ class TerminalWriter:
         value: object,
         indent: int = 0,
         label_width: int = 10,
+        *,
+        label_role: str | None = None,
+        markup: bool = False,
     ) -> None:
+        """LABEL then VALUE in an aligned column; LABEL_ROLE styles the label,
+        such as warn for a blocker, and MARKUP reads marks in VALUE."""
         label_text = str(label)
         # label_width is an alignment target, not permission to concatenate a
         # long label directly with its value.
         effective_width = max(label_width, len(label_text) + 1)
         prefix = f"{' ' * indent}{label_text:<{effective_width}}"
-        self.emit(value, prefix, " " * len(prefix))
+        self.emit(value, prefix, " " * len(prefix), prefix_role=label_role, markup=markup)
 
     def blank(self) -> None:
         print(file=self.stream)
@@ -399,15 +418,29 @@ def main(argv: list[str]) -> int:
     """Scripts pipe a help screen here (python3 scripts/terminal_format.py
     <<'HELP'), or pass check results:
       --checks TITLE [LEVEL TEXT]...   one section of check rows
-      --status LEVEL WORD TEXT         a closing verdict line"""
-    if argv[:1] == ["--checks"] and len(argv) >= 2 and len(argv) % 2 == 0:
+      --status LEVEL WORD TEXT         a closing verdict line
+      --sgr TTY                        shell assignments of the status styles for
+                                       output that is (1) or is not (0) a terminal
+      --text                           paragraphs from stdin, with their marks"""
+    if argv[:1] == ["--sgr"] and len(argv) == 2:
+        class Destination:
+            def isatty(self) -> bool:
+                return argv[1] == "1"
+        sgr = _sgr(colors_enabled(Destination())) if styles_enabled(Destination()) else {}
+        for role in ("pass", "warn", "fail"):
+            print(f"_SGR_{role.upper()}='{sgr.get(role, '')}'")
+    elif argv == ["--text"]:
+        writer = TerminalWriter()
+        for line in sys.stdin.read().splitlines():
+            writer.emit(line, markup=True)
+    elif argv[:1] == ["--checks"] and len(argv) >= 2 and len(argv) % 2 == 0:
         emit_checks(argv[1], list(zip(argv[2::2], argv[3::2])))
     elif argv[:1] == ["--status"] and len(argv) == 4:
         emit_status(*argv[1:])
     elif not argv:
         emit_help(sys.stdin.read())
     else:
-        print("usage: terminal_format.py [--checks TITLE [LEVEL TEXT]... | --status LEVEL WORD TEXT]",
+        print("usage: terminal_format.py [--checks TITLE [LEVEL TEXT]... | --status LEVEL WORD TEXT | --sgr TTY | --text]",
               file=sys.stderr)
         return 2
     return 0

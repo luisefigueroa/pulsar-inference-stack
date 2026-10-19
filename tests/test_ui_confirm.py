@@ -248,6 +248,20 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
                 self.assertEqual(code, 0, output)
                 self.assertIn(expected, output)
 
+    def test_a_menu_keeps_styles_for_output_it_captures(self):
+        # On a terminal, menus style captured output unless styles are off; NO_COLOR still applies.
+        script = '{setting}\n. "$REPO_DIR/scripts/ui.sh"\nui_keep_styles\necho "KEPT=${{PULSAR_COLOR-unset}} ${{NO_COLOR-unset}}"\n'
+        for setting, expected in (("", "KEPT=always 1"), ("export PULSAR_COLOR=never", "KEPT=never 1"),
+                                  ("export PULSAR_COLOR=off", "KEPT=off 1")):
+            with self.subTest(setting=setting):
+                code, output = self.drive(script.format(setting=setting), b"", ready=b"KEPT=")
+                self.assertEqual(code, 0, output)
+                self.assertIn(expected, output)
+        # Off a terminal nothing changes.
+        piped = subprocess.run(["bash", "-c", script.format(setting="")], env={**os.environ, "REPO_DIR": str(ROOT)},
+                               stdout=subprocess.PIPE, text=True, timeout=30)
+        self.assertNotIn("KEPT=always", piped.stdout)
+
     def test_a_help_page_is_styled_in_the_pager(self):
         script = 'unset NO_COLOR\n. "$REPO_DIR/scripts/ui.sh"\npage_output "" "$REPO_DIR/pulsar" help terms\n'
         code, output = self.drive(script, b"q", ready=b"What the words mean")

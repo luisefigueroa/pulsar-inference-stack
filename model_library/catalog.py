@@ -388,16 +388,16 @@ def _command_field(out, label, tokens, *, label_width):
     lines = group_lines(argument_groups(tokens), out.width - len(prefix) - 2,
                         out.width - len(continuation) - 2)
     for index, line in enumerate(lines):
-        end = " \\" if index < len(lines) - 1 else ""
-        print((prefix if index == 0 else continuation) + line + end, file=out.stream)
+        line += " \\" if index < len(lines) - 1 else ""
+        print((prefix if index == 0 else continuation) + out.paint(line, ["literal"] * len(line)), file=out.stream)
 
 
 def _heading(out, row):
     title = f"{row['model_id']}   spec {row['spec_id'][:12]}"
     if len(title) <= out.width:
-        out.emit(title)
+        out.emit(title, role="heading")
     else:
-        out.emit(row["model_id"], break_on_hyphens=True)
+        out.emit(row["model_id"], break_on_hyphens=True, role="heading")
         out.emit(f"spec {row['spec_id'][:12]}", initial_indent="  ")
 
 
@@ -459,8 +459,8 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
     location = location or archive_location_status()
     label_width = DETAILS_LABEL_WIDTH if details else LIST_LABEL_WIDTH
 
-    def field(label, value):
-        out.field(label, value, indent=2, label_width=label_width)
+    def field(label, value, label_role=None):
+        out.field(label, value, indent=2, label_width=label_width, label_role=label_role)
 
     if not rows:
         out.emit("The catalog is empty.")
@@ -500,7 +500,7 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
                          initial_indent="    ", subsequent_indent="      ", break_on_hyphens=True)
         if details:
             for blocker in row["blockers"]:
-                field("Blocker", blocker_text(blocker, row, names, now))
+                field("Blocker", blocker_text(blocker, row, names, now), label_role="warn")
         command = suggested_command(row, location, names, now=now)
         if command:
             _command_field(out, "Suggested", command, label_width=label_width)

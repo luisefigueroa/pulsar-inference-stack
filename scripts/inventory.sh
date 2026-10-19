@@ -1399,6 +1399,12 @@ def field(label, value, indent=2):
     term.field(label, value, indent=indent)
 
 
+def section(label, rest):
+    """A section line such as "SERVICES  2 shown / 2 total"; LABEL is its heading."""
+    line = f"{label}  {rest}"
+    print(term.paint(line, ["heading"] * len(label) + [None] * (len(line) - len(label))))
+
+
 def fmt_mem(n):
     if n is None:
         return "n/a"
@@ -1493,7 +1499,7 @@ def print_service(s):
     fp = s.get("estimated_footprint_gib_per_rank")
     fp_s = f"{fp:.2f} GiB per node" if fp is not None else "n/a"
 
-    emit(f"{state.upper()}  {sid}", subsequent_indent="  ")
+    emit(f"{state.upper()}  {sid}", subsequent_indent="  ", role="heading")
     endpoint = f"{served} on :{port}" if port is not None else served
     field("serves", endpoint)
     field("status", f"{own} · {complete} · {safe}")
@@ -1536,7 +1542,7 @@ def print_service(s):
         field("reason", reason)
 
 
-print("INVENTORY")
+emit("INVENTORY", role="heading")
 if verbose:
     field("Schema", f"version {inv.get('schema_version')}", indent=0)
     field("Generated", inv.get("generated_at") or "?", indent=0)
@@ -1620,9 +1626,9 @@ for s in services:
 
 print()
 if not services:
-    print("SERVICES  none")
+    section("SERVICES", "none")
 else:
-    print(f"SERVICES  {len(shown)} shown / {len(services)} total")
+    section("SERVICES", f"{len(shown)} shown / {len(services)} total")
     if not shown and not inactive_diag:
         emit("none", initial_indent="  ")
     for s in shown:
@@ -1630,7 +1636,7 @@ else:
         print_service(s)
     if inactive_diag and not verbose:
         print()
-        print(f"OTHER CONTAINERS  {len(inactive_diag)} inactive/legacy")
+        section("OTHER CONTAINERS", f"{len(inactive_diag)} inactive/legacy")
         emit(
             "Hidden by default; not safe_to_stop. Use --verbose.",
             initial_indent="  ",
@@ -1644,7 +1650,7 @@ if unmanaged:
     measured = [m for m in measured if isinstance(m, (int, float))]
     aggregate = f" · {int(sum(measured)):,} MiB" if measured else ""
     noun = "process" if len(unmanaged) == 1 else "processes"
-    print(f"UNMANAGED GPU  {len(unmanaged)} {noun}{aggregate}")
+    section("UNMANAGED GPU", f"{len(unmanaged)} {noun}{aggregate}")
     emit(
         "Read-only; Pulsar will not stop these processes.",
         initial_indent="  ",
@@ -1663,6 +1669,6 @@ if unmanaged:
         if verbose and process_path != process_name:
             field("path", process_path, indent=4)
 else:
-    print("UNMANAGED GPU  none observed")
+    section("UNMANAGED GPU", "none observed")
 PY
 fi

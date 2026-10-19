@@ -233,7 +233,7 @@ def human(result: dict, nodes: str, writer: TerminalWriter | None = None) -> Non
     else:
         state_words = STATE_WORDS.get(state, str(state))
     verified = "recipe and files verified" if result.get("verified") else f"not verified ({result.get('reason')})"
-    out.emit(f"spec {spec}: {state_words} on {nodes}; {verified}")
+    out.emit(f"spec {spec}: {state_words} on {nodes}; {verified}", role="heading")
     if result.get("verified") and not result.get("matches_selected_spec", True):
         out.emit(f"Modified recipe. Selected catalog spec: {result.get('selected_spec_id')}")
         out.emit("Selected-recipe measurements are reference only.")
@@ -241,7 +241,7 @@ def human(result: dict, nodes: str, writer: TerminalWriter | None = None) -> Non
         out.emit(f"API: {result['api_url'].rstrip('/')}/v1")
     if state in ("stale", "stopped"):
         # The complete ID: a prefix resolves only for specs in the current catalog.
-        out.emit(f"Remove it with ./pulsar stop {result.get('selected_spec_id') or spec}")
+        out.emit(f"Remove it with `./pulsar stop {result.get('selected_spec_id') or spec}`", markup=True)
 
 
 def load(path: str | None, what: str):

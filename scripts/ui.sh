@@ -117,6 +117,18 @@ require_gum() {
   exit 2
 }
 
+# A menu shows output it captured on this terminal: the home status, a page,
+# a preview. Its commands style that output as for a terminal
+# (PULSAR_COLOR=always, scripts/terminal_format.py) unless the operator turned
+# styles off; NO_COLOR still removes the colors. Call after require_gum.
+ui_keep_styles() {
+  [ -t 1 ] || return 0
+  case "${PULSAR_COLOR:-}" in
+    never|0|no|off|false) ;;
+    *) export PULSAR_COLOR=always ;;
+  esac
+}
+
 # Every primitive below draws with Gum only. Menu entries call require_gum
 # first; this refusal only stops a prompt that would otherwise wait unseen.
 _ui_require_gum() {

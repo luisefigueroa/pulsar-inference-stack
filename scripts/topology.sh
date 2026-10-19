@@ -124,6 +124,7 @@ case "$action" in
     # Its confirmations draw with Gum; without it, run the steps separately.
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "guided setup" "pulsar topology detect, then topology configure --yes and ssh-trust enroll --yes after review"
+    ui_keep_styles
     . "$REPO_DIR/scripts/lib.sh"
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo 'No saved membership. Detecting candidates without saving first.'
@@ -183,6 +184,7 @@ case "$action" in
     [ $# = 0 ] || { echo "error: the topology menu is interactive; use ./pulsar topology show --json" >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "the topology menu" "pulsar topology show | check | setup | detect | configure"
+    ui_keep_styles
     # Each action runs as a child and returns here; Back leaves this menu.
     # Saved membership and the check's report open in the pager when long.
     while true; do

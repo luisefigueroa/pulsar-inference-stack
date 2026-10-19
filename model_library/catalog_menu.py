@@ -767,7 +767,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
     if len({rank["topology_index"] for rank in ranks}) != len(ranks):
         raise ValueError("image preview repeats a selected node")
     out = TerminalWriter(width=width)
-    out.emit("Serving image staging preview")
+    out.emit("Serving image staging preview", role="heading")
     out.field("Model", row["model_id"])
     out.field("Spec", row["spec_id"])
     out.field("Image", plan["image"])
@@ -1130,7 +1130,7 @@ HOME_NEXT = {"never-checked": ("never checked", "never checked"),
              "start": ("ready to Start", "ready to Start")}
 
 
-def home_next(rows: list[dict], archive_location: str, *, now=None) -> str | None:
+def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool = False) -> str | None:
     """One line for the home screen: what the saved records suggest, and their age.
 
     Uses the same suggestion as each recipe menu, without session outcomes or
@@ -1152,7 +1152,8 @@ def home_next(rows: list[dict], archive_location: str, *, now=None) -> str | Non
         if key in counts:
             count = counts[key]
             parts.append(f"{count} spec{'' if count == 1 else 's'} {one if count == 1 else many}")
-    line = "Next: " + " · ".join(parts) + " — open Catalog and storage."
+    choice = "**Catalog and storage**" if marked else "Catalog and storage"
+    line = "Next: " + " · ".join(parts) + f" — open {choice}."
     ages = [row["observation_age_seconds"] for row in rows
             if row.get("checked_at") and type(row.get("observation_age_seconds")) is int]
     if ages:
@@ -1243,7 +1244,8 @@ def main(argv: list[str] | None = None) -> int:
                 print("\t".join(clean(part) for part in choice))
             return 0
         if args.command == "next":
-            line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location)
+            # The home screen renders the menu choice's mark (terminal_format.py --text).
+            line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location, marked=True)
             if line:
                 print(clean(line))
             return 0

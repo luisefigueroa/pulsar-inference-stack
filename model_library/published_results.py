@@ -187,7 +187,7 @@ def render(report: dict, spec_id: str, *, writer: TerminalWriter | None = None) 
     def metric(value, unit):
         return f"{value} {unit}" if value is not None else "not recorded"
 
-    out.emit(f"Published results for spec {spec_id[:12]}")
+    out.emit(f"Published results for spec {spec_id[:12]}", role="heading")
     out.emit("Historical measurements for this exact spec and recorded workloads. "
              "They do not establish current service health or suitability for another workload.")
     if report.get("historical"):

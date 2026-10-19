@@ -493,9 +493,9 @@ def doctor_rows(report: dict[str, Any]) -> None:
 
 def render_human(report: dict[str, Any]) -> None:
     term = TerminalWriter()
-    term.emit("TOPOLOGY SSH TRUST")
+    term.emit("TOPOLOGY SSH TRUST", role="heading")
     term.field("Cluster", report["topology_id"][:12])
-    term.field("Result", "PASS" if report["ok"] else "FAIL")
+    term.field("Result", "PASS" if report["ok"] else "FAIL", label_role=None if report["ok"] else "fail")
     hostnames = node_hostnames(report)
     for node in report["nodes"]:
         term.blank()
@@ -503,6 +503,7 @@ def render_human(report: dict[str, Any]) -> None:
             node["hostname"],
             initial_indent="  ",
             subsequent_indent="    ",
+            role="heading",
         )
         term.field("Alias", node["ssh_host"], indent=4)
         for endpoint in node["endpoints"]:
@@ -513,7 +514,7 @@ def render_human(report: dict[str, Any]) -> None:
             value = f"{endpoint['endpoint']}{via} · {status}"
             if endpoint.get("detail"):
                 value += f" · {endpoint['detail']}"
-            term.field(endpoint["kind"].upper(), value, indent=4)
+            term.field(endpoint["kind"].upper(), value, indent=4, label_role=None if endpoint["ok"] else "fail")
 
 
 def parse_args() -> argparse.Namespace:

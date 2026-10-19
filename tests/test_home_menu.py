@@ -57,6 +57,7 @@ class HomeMenu(unittest.TestCase):
         (scripts / "ui.sh").write_text(r'''
 emit_frame() { cat; }
 require_gum() { :; }
+ui_keep_styles() { :; }
 choose_index() {
   local n answer
   { printf '%s\n' "$@"; printf '\n'; } >> "$CHOOSE_LOG"

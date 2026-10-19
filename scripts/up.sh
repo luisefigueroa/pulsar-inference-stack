@@ -230,7 +230,7 @@ for row in (json.load(sys.stdin).get("ranks") or []):
 
 # --- topology: every spec; the later checks need the confirmed nodes ---
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then
-  echo "FAIL  topology  spec needs $NODES confirmed node(s); confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
+  status_line "FAIL  topology  spec needs $NODES confirmed node(s); confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   stop_if_blocked
 fi
@@ -239,7 +239,7 @@ if [ "$NODES" -gt 1 ]; then
   if ! require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$fabric_err"; then
     fabric_reason=$(sed -n 's/^topology: //p' "$fabric_err" | tail -n1)
     rm -f "$fabric_err"
-    echo "FAIL  fabric    ${fabric_reason:-the confirmed fabric does not meet this spec}"
+    status_line "FAIL  fabric    ${fabric_reason:-the confirmed fabric does not meet this spec}"
     blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
     stop_if_blocked
   fi
@@ -457,7 +457,7 @@ else
     if port_free "$checked_port" ${port_host:+"$port_host"}; then
       continue
     fi
-    echo "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
+    status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
     blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
       --detail "port $checked_port"
   done
@@ -502,7 +502,7 @@ if [ "$NODES" -gt 1 ]; then
           echo "PASS  preflight cluster OK"
           rm -f "$_pf_log"
         else
-          echo "FAIL  preflight — see $_pf_log"
+          status_line "FAIL  preflight — see $_pf_log"
           tail -20 "$_pf_log" >&2 || true
           blocked preflight_failed --detail "log: $_pf_log"
           stop_if_blocked
@@ -699,9 +699,9 @@ open(sys.argv[2],"w").write(json.dumps(dict(state="running",service_id=plan["ser
     "$PLAN_FILE" "$PULSAR_SERVICE_RESULT_FILE" "$SERVICE_API_BASE" || true
 fi
 
+echo
+status_line "READY"
 cat <<EOF
-
-READY
   spec:     $NAME
   served:   $SERVED_NAME
   url:      ${SERVICE_API_BASE}/v1

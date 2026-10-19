@@ -19,6 +19,7 @@ class ArchiveMenu(unittest.TestCase):
         self.ui = self.root / "ui.sh"
         self.ui.write_text(r'''
 require_gum() { :; }
+ui_keep_styles() { :; }
 choose_index() {
   printf '%s\n' "$1" >> "$CHOOSE_LOG"
   local n value

@@ -25,9 +25,13 @@ Gum's default pink.
 ## Build
 
 - Print through `TerminalWriter`, `emit_help` or `emit_checks`, and don't
-  write escape codes by hand. Bash prints check sections with
-  `scripts/terminal_format.py --checks TITLE [LEVEL TEXT]...` and a verdict
-  with `--status LEVEL WORD TEXT`.
+  write escape codes by hand. A label takes `field(..., label_role=...)`, and
+  one line that must not wrap takes `paint(text, roles)`.
+- In Bash, print check sections with `scripts/terminal_format.py --checks
+  TITLE [LEVEL TEXT]...` and a verdict with `--status LEVEL WORD TEXT`. A
+  single row goes through `status_line` or `print_hanging`, which style a
+  leading WARN, FAIL, BLOCKED or READY from the same map. `warn` and
+  `error_line` style their labels.
 - Give styled text a role instead of a color:
   - `heading`: titles, section headings and entry headings.
   - `choice`: menu choices and other on-screen names, which the docs also bold.
@@ -44,8 +48,9 @@ Gum's default pink.
   option rows with at least two spaces between a term and its description.
   Only a text with a usage line is styled. Questions and the SSH help also pass
   through `emit_help` and must stay plain.
-- Long output shown from a menu goes through `page_output`. It runs the command
-  with `PULSAR_COLOR=always`, so styles survive the capture and the pager.
+- Long output shown from a menu goes through `page_output`. A menu calls
+  `ui_keep_styles` after `require_gum`, which exports `PULSAR_COLOR=always`
+  on a terminal, so output it captures and shows later keeps its styles.
 - Group check rows by the object they describe, such as one section per node
   named by its hostname, instead of repeating it on every row. Count warnings
   and failures in the closing verdict.
@@ -63,6 +68,11 @@ Gum's default pink.
   word is a metavariable: `SPEC_ID`, `SHA256`, `ORG/NAME`.
 - A row with one space before its description is read as a paragraph, not an
   option row.
+- `gum style` strips escape codes, so the recipe frame's text stays plain; only
+  its border takes the accent.
+- Styles go in free text only. Shell parses Gum labels and prefixes such as
+  `header\t`, and parses captured stderr (`lib.sh` strips `error: `). So error
+  and warning labels are styled only on a real terminal, never for `always`.
 
 ## Verify
 

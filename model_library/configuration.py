@@ -193,7 +193,8 @@ def run_locked(repo, command, *, allow_unconfigured=False):
 
 
 def display(state):
-    print('Archive location')
+    from scripts.terminal_format import TerminalWriter
+    print(TerminalWriter().paint('Archive location', ['heading'] * len('Archive location')))
     print(f"  Status: {state['status']}\n  Source: {state['source']}")
     if state['path']:
         print(f"  Path:\n    {state['path']}")

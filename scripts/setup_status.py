@@ -144,18 +144,19 @@ def render_text(
         else ("1 spec" if specs == 1 else f"{specs} specs")
     )
     if document["complete"]:
-        out.emit("Cluster")
+        out.emit("Cluster", role="heading")
         out.field("Topology", topology_text, indent=2)
         if document["ssh_trust"]["status"] != "not-required":
             out.field("SSH trust", trust, indent=2)
         out.field("Archives", archives, indent=2)
         if document["archives"]["status"] == "not-configured":
-            out.emit("Archive actions need a location; choose Archive storage configuration when needed.")
+            out.emit("Archive actions need a location; choose **Archive storage configuration** when needed.",
+                     markup=True)
         out.blank()
-        out.emit("Catalog")
+        out.emit("Catalog", role="heading")
         out.emit(catalog, initial_indent="  ", subsequent_indent="  ")
         return
-    out.emit("Setup")
+    out.emit("Setup", role="heading")
     out.field("Topology", topology_text, indent=2)
     out.field("SSH trust", trust, indent=2)
     out.field("Archives", archives, indent=2)
@@ -167,7 +168,7 @@ def render_text(
         out.emit("Saved cluster membership is invalid.")
     else:
         out.emit("Cluster membership is not configured.")
-    out.emit(f"Next: {document['next_label']}.")
+    out.emit(f"Next: **{document['next_label']}**.", markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:

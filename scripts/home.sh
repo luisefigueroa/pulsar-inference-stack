@@ -42,6 +42,7 @@ case "$complete:$next_action" in
   *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
   *) require_gum "the Pulsar menu" "pulsar topology setup | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
 esac
+ui_keep_styles
 # The setup status prints on entry, then again only when a choice changed it;
 # the previous run of this menu passes what it printed.
 status_text=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text)
@@ -51,7 +52,7 @@ if [ "$complete" = 1 ]; then
   archives=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["archives"]["status"])')
   next_line=$(python3 -m model_library.catalog list --json 2>/dev/null \
     | python3 -m model_library.catalog_menu next --archive-location "$archives" 2>/dev/null \
-    | python3 -m scripts.terminal_format) || next_line=""
+    | python3 -m scripts.terminal_format --text) || next_line=""
   [ -z "$next_line" ] || status_text+=$'\n\n'"$next_line"
 fi
 shown=${PULSAR_HOME_STATUS_SHOWN-}

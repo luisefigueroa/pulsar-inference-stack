@@ -1102,6 +1102,11 @@ bold and underline; `PULSAR_COLOR=never` prints no styles;
 `PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's
 pager runs its pages with `always`, so they keep their styles there. Without
 `always`, piped output stays plain; `--json` output never carries styles.
+Menus set `PULSAR_COLOR=always` for the commands they run, unless it is
+`never`, so the home status, catalog views, previews, inventory, topology
+reports and outcomes keep their styles; the recipe frame's text stays plain
+because Gum draws it. `error:` and `warning:` labels are styled only on a
+terminal.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet

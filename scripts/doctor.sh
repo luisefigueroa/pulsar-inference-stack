@@ -62,6 +62,7 @@ flush_section() {
 short_ids() { sed -E 's/([0-9a-f]{12})[0-9a-f]{52}/\1…/g' <<<"$1"; }
 
 plural() { if [ "$1" = 1 ]; then printf '1 %s' "$2"; else printf '%s %ss' "$1" "$2"; fi; }
+them() { if [ "$1" = 1 ]; then printf it; else printf them; fi; }
 
 doctor_ready_line() {
   python3 "$REPO_DIR/scripts/terminal_format.py" --status pass READY "$1"
@@ -339,13 +340,13 @@ else
     if [ "${count:-1}" = 0 ]; then
       doctor_ready_line "host checks passed; catalog is empty until a spec is published"
     elif [ "$WARN" = 1 ]; then
-      doctor_ready_line "host checks passed with $(plural "$WARN_COUNT" warning); review them and run selected-spec launch checks"
+      doctor_ready_line "host checks passed with $(plural "$WARN_COUNT" warning); review $(them "$WARN_COUNT") and run selected-spec launch checks"
     else
       doctor_ready_line "host checks passed; selected-spec launch checks still apply"
     fi
   else
     python3 "$REPO_DIR/scripts/terminal_format.py" --status fail "NOT READY" \
-      "$(plural "$FAIL_COUNT" "blocking issue") above; fix them before serving"
+      "$(plural "$FAIL_COUNT" "blocking issue") above; fix $(them "$FAIL_COUNT") before serving"
   fi
 fi
 

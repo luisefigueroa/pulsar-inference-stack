@@ -98,15 +98,22 @@ def observation(path, directory=None):
 
 def render_observation(document):
     writer = TerminalWriter()
-    writer.emit(f"Cluster topology: {document['status']}")
+    writer.emit(f"Cluster topology: {document['status']}", role="heading")
     topology = document.get("topology")
     if topology and not document["nodes"]:
         for node in topology["nodes"]:
             writer.emit(f"Node {node['rank']}: {node['hostname']}", initial_indent="  ")
             writer.emit(f"Control: {node['control']['ip']}", initial_indent="    ")
-        writer.emit("Saved membership only; run pulsar topology check for current readiness.")
+        writer.emit("Saved membership only; run `pulsar topology check` for current readiness.", markup=True)
     for node in document["nodes"]:
-        writer.emit(f"Node {node['rank']}: {node['hostname']} — {node['status']}", initial_indent="  ")
+        line = f"  Node {node['rank']}: {node['hostname']} — {node['status']}"
+        if len(line) <= writer.width:
+            # A node that is not ready takes the fail style.
+            role = None if node["status"] == "ready" else "fail"
+            print(writer.paint(line, [None] * (len(line) - len(node["status"])) + [role] * len(node["status"])),
+                  file=writer.stream)
+        else:
+            writer.emit(line.strip(), initial_indent="  ")
         for issue in node["issues"]:
             writer.emit(issue, initial_indent="    ", subsequent_indent="    ")
     for issue in document["issues"]:
