@@ -217,9 +217,13 @@ def human(record: dict) -> str:
 
 def styled_human(record: dict) -> str:
     """human(RECORD) for stdout: its leading word in the fail style (warn for a
-    memory warning) and its Next command as literal text."""
-    from scripts.terminal_format import TerminalWriter
+    memory warning) and its Next command as literal text. Styles are never a
+    reason to lose the line: without the formatter it prints plainly."""
     line = human(record)
+    try:
+        from scripts.terminal_format import TerminalWriter
+    except ImportError:
+        return line
     first, newline, rest = line.partition("\n")
     roles: list[str | None] = [None] * len(first)
     word = first.split(" ", 1)[0]
