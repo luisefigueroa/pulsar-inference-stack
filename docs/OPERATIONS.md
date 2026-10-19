@@ -47,7 +47,8 @@ preview before copying files.
 Menus and confirmation prompts draw with Gum: the repository bundles it for the
 arm64 Linux nodes (`third_party/gum/`); elsewhere install `gum` from the
 package manager or point `GUM_BIN` at it. `NO_COLOR` or
-`PULSAR_COLOR=never` draws them without color. A menu lists every option on one
+`PULSAR_COLOR=never` draws them without color; see
+[output and messages](#output-and-messages) for text styles. A menu lists every option on one
 page when the terminal has room for it, and its labels use the whole row after
 the cursor; a repeated label gets a numbered suffix such as `(2)`. Without Gum
 or an interactive terminal, a menu opens nothing: it names the equivalent commands and exits
@@ -75,7 +76,8 @@ must not overlap directories managed as removable homes or working copies.
 ## Terms
 
 Commands and guides use these terms. Public flags, environment variables,
-JSON fields, and container labels retain their existing names.
+JSON fields, and container labels retain their existing names. The menu's
+**Help → What the words mean** and `./pulsar help terms` show this table.
 
 | Term | Meaning |
 | --- | --- |
@@ -87,9 +89,14 @@ JSON fields, and container labels retain their existing names.
 | prepared copies | The per-rank copies or bindings that serving reads. |
 | pin | Protection of prepared copies from purge, until they are unpinned. |
 | serving image | The recipe's container image, identified by its exact digest. Image command output calls it the pinned image. |
+| service | The model server Pulsar started for a spec: one container per rank, answering requests at its API URL. |
 | archive, archive location | The verified recovery copy, and the directory that holds archives. |
 | node | A confirmed machine, named by its hostname. |
 | rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
+| controller | The machine that runs `./pulsar` from this checkout and keeps its saved records. It may also be a node. |
+| membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
+| SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
+| fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
 
 ## Configure topology and storage
 
@@ -810,6 +817,12 @@ run only when selected. The same catalog browser is available directly as
 `./pulsar models menu --read-only`. Command-level prerequisites and confirmations
 still apply to all operational actions after setup.
 
+**Help**, before and after setup, offers three pages, each in the pager:
+**What the words mean** (the [terms](#terms) above, `./pulsar help terms`),
+**How serving works** (one sentence for each step from Download to Purge,
+`./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
+a page returns to Help; **Back** or Esc returns to the home menu.
+
 ### Catalog operations and confirmations
 
 The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
@@ -1072,6 +1085,28 @@ refusals as `BLOCKED <code>: … Next: …` lines. `start --verbose`, or
 `PULSAR_VERBOSE=1` for any command, adds the internal script name to step,
 warning and error lines for debugging; check rows keep their layout. Deprecated aliases (`pulsar gum`, `pulsar wizard`,
 `pulsar release list`) print one warning naming the replacement.
+
+On a terminal, `./pulsar help` and its pages style their text: headings in
+bold and the menu accent, menu choices in bold, [terms](#terms) in the accent,
+commands, options and paths in cyan, and placeholders such as `SPEC`
+underlined. Each command's `--help` styles its usage lines and option names
+the same way and leaves descriptions plain; help that Python's argparse
+formats, for `contract`, `resources` and contributor subcommands such as
+`evidence verify`, stays plain. Check results mark what needs attention:
+`warn` in yellow, `FAIL` and `NOT READY` in bold red, `READY` in bold green;
+`ok` stays plain. `./pulsar doctor` groups its checks under this node, cluster
+membership, each other node by hostname and the catalog, then counts warnings
+and blocking issues in its verdict; its `--json` output is unchanged. Every
+styled part also reads without color. `NO_COLOR` removes the colors and keeps
+bold and underline; `PULSAR_COLOR=never` prints no styles;
+`PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's
+pager runs its pages with `always`, so they keep their styles there. Without
+`always`, piped output stays plain; `--json` output never carries styles.
+Menus set `PULSAR_COLOR=always` for the commands they run, unless it is
+`never`, so the home status, catalog views, previews, inventory, topology
+reports and outcomes keep their styles; the recipe frame's text stays plain
+because Gum draws it. `error:` and `warning:` labels are styled only on a
+terminal.
 
 Long storage operations report each phase on stderr, such as
 `[acquire 3/4] verifying SHA-256 of every downloaded file`. Previews stay quiet

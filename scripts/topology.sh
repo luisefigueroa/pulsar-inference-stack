@@ -7,7 +7,7 @@ usage() {
   PYTHONPATH="$REPO_DIR/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 - <<'PYHELP'
 from terminal_format import TerminalWriter
 writer = TerminalWriter()
-writer.emit("Usage: pulsar topology COMMAND [options]")
+writer.emit("Usage: pulsar topology COMMAND [options]", role="command")
 for command, description in [
     ("setup [--candidate HOST ...]", "Guided first use: confirm membership, enroll SSH identity, then check readiness. Candidates apply only when no valid membership is saved; setup refuses them otherwise (exit 2)."),
     ("show [--json]", "Read saved membership; no live probes."),
@@ -16,7 +16,7 @@ for command, description in [
     ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys]", "Review and explicitly save membership; no model actions."),
     ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
-    writer.emit(command, initial_indent="  ", subsequent_indent="    ")
+    writer.emit(command, initial_indent="  ", subsequent_indent="    ", role="command")
     writer.emit(description, initial_indent="    ", subsequent_indent="    ")
 writer.blank()
 writer.emit("New SSH trust requires separate authorization. Existing low-level topology utilities remain available with their original arguments.")
@@ -124,6 +124,7 @@ case "$action" in
     # Its confirmations draw with Gum; without it, run the steps separately.
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "guided setup" "pulsar topology detect, then topology configure --yes and ssh-trust enroll --yes after review"
+    ui_keep_styles
     . "$REPO_DIR/scripts/lib.sh"
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
       echo 'No saved membership. Detecting candidates without saving first.'
@@ -183,6 +184,7 @@ case "$action" in
     [ $# = 0 ] || { echo "error: the topology menu is interactive; use ./pulsar topology show --json" >&2; exit 2; }
     . "$REPO_DIR/scripts/ui.sh"
     require_gum "the topology menu" "pulsar topology show | check | setup | detect | configure"
+    ui_keep_styles
     # Each action runs as a child and returns here; Back leaves this menu.
     # Saved membership and the check's report open in the pager when long.
     while true; do

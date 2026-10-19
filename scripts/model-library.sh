@@ -22,7 +22,7 @@ if [ -z "${PULSAR_VERIFICATION_OWNER:-}" ]; then
 fi
 
 usage() {
-  cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; out=TerminalWriter(); [out.emit(line.rstrip(),subsequent_indent="    " if line.startswith("  ") else "") for line in sys.stdin]'
+  cat <<'HELP' | python3 -c 'import sys; from scripts.terminal_format import emit_laid_out_help; emit_laid_out_help(sys.stdin.read())'
 Usage: pulsar model OPERATION [SPEC_ID] [options]
 
   acquire       Download an exact snapshot or reuse verified files
@@ -41,7 +41,7 @@ Options:
   --spec-file FILE       Explicit lab candidate spec
   --snapshot NAME       Select target (the serving model) or a required snapshot's declared name
   --node NODE            Home node or one-node placement: hostname or node ID
-  --placement-nodes LIST Ordered confirmed nodes for prepare/info/check
+  --placement-nodes LIST  Ordered confirmed nodes for prepare/info/check
   --manifest FILE       Retained source manifest for lab storage
   --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
   --manifest-out FILE   Save the resulting verified source manifest

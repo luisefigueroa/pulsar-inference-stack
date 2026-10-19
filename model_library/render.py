@@ -273,7 +273,7 @@ def _blockers(out: TerminalWriter, document: dict, names: NodeNames) -> None:
                 blocker = 'Additional storage restriction; inspect --json for details.'
         elif isinstance(blocker, str):
             blocker = blocker_message(blocker, names)
-        out.field('Blocker', blocker)
+        out.field('Blocker', blocker, label_role='warn')
 
 
 def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames, *, capacity: bool = True,
@@ -283,10 +283,10 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
               'move': 'Home movement preview', 'pin': 'Pin preview', 'unpin': 'Unpin preview',
               'purge': 'Prepared-copy removal preview', 'remove': 'Home removal preview'}
     if title:
-        out.emit(titles.get(operation, 'Storage operation preview'))
+        out.emit(titles.get(operation, 'Storage operation preview'), role='heading')
         out.emit('Review this plan before confirming the operation.')
     if document.get('eligible') is False:
-        out.field('Result', 'blocked')
+        out.field('Result', 'blocked', label_role='fail')
     elif document.get('eligible') is True:
         out.field('Result', 'prerequisites passed at this check')
     _identity(out, document)
@@ -464,7 +464,7 @@ def render(document: Any, *, operation: str, archive_action: str = '',
             out.field('Archive', 'retained')
         return
     if operation == 'budget' and isinstance(document.get('nodes'), list):
-        out.emit('Managed storage usage')
+        out.emit('Managed storage usage', role='heading')
         for index, node in enumerate(document['nodes']):
             if index:
                 out.blank()

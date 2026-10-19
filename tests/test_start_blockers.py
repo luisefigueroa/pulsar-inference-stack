@@ -81,6 +81,8 @@ LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
 LOAD_PROGRESS = _source_lib[_source_lib.index('_message_tag() {'):_source_lib.index('\nlog()')] + "\n" + \
     _source_lib[_source_lib.index('# load_progress STARTED'):_source_lib.index('die()  {')]
 LIB += LOAD_PROGRESS
+# The real status-word helpers, so up.sh's check rows keep their wiring.
+LIB += _source_lib[_source_lib.index('# Status words in check rows take'):_source_lib.index('print_hanging() {')]
 IMAGE = r'''#!/usr/bin/env bash
 touch "$FIXTURE_DIR/image-checked"
 # "hang": a check still running when start is interrupted.

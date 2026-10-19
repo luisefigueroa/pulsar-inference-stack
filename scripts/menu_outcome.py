@@ -127,7 +127,12 @@ def main(argv: list[str] | None = None) -> int:
                                    preview=args.preview, recorded=args.recorded)
         details = [detail] if detail else []
     writer = TerminalWriter()
-    writer.emit(headline, subsequent_indent="  ")
+    # The leading ✓ or ✗ takes the pass or fail style.
+    role = {"✓": "pass", "✗": "fail"}.get(headline[:1])
+    if role and headline[1:2] == " ":
+        writer.emit(headline[2:], initial_indent=headline[:2], subsequent_indent="  ", prefix_role=role)
+    else:
+        writer.emit(headline, subsequent_indent="  ")
     for detail in details:
         writer.emit(detail, initial_indent="  ")
     return 0

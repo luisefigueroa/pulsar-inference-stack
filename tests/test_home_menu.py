@@ -57,6 +57,7 @@ class HomeMenu(unittest.TestCase):
         (scripts / "ui.sh").write_text(r'''
 emit_frame() { cat; }
 require_gum() { :; }
+ui_keep_styles() { :; }
 choose_index() {
   local n answer
   { printf '%s\n' "$@"; printf '\n'; } >> "$CHOOSE_LOG"
@@ -190,15 +191,55 @@ wait_continue() {
 
     def test_inspection_and_help_are_available_before_setup(self):
         pages = self.root / "pages.log"
-        result = self.run_home(["2", "3", "4", "5"], PULSAR_RC="1,2,0", PAGE_LOG=str(pages))
+        # Help → Command reference, then Back from Help.
+        result = self.run_home(["2", "3", "4", "2", "3", "5"], PULSAR_RC="1,2,0", PAGE_LOG=str(pages))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "topology show", "help"])
         # Their output opens in the pager; only diagnostics, which probe nodes, show a spinner.
         self.assertEqual(pages.read_text(), "Running host diagnostics…\n\n\n")
-        self.assertEqual(len(self.menus()), 4)
+        self.assertEqual([menu[0] for menu in self.menus()],
+                         ["Pulsar Inference Stack"] * 3 + ["Help"] * 2 + ["Pulsar Inference Stack"])
         self.assertNotIn("Setup step did not complete", result.stdout)
         self.assertFalse((self.root / ".cluster-topology.json").exists())
         self.assertFalse((self.root / ".env").exists())
+
+    def test_help_opens_each_guide_page_and_returns_to_help(self):
+        pages = self.root / "pages.log"
+        result = self.run_home(["4", "0", "1", "2", "3", "5"], PAGE_LOG=str(pages))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        menus = self.menus()
+        self.assertEqual(menus[1], ["Help", "What the words mean", "How serving works", "Command reference", "Back"])
+        self.assertEqual([menu[0] for menu in menus],
+                         ["Pulsar Inference Stack"] + ["Help"] * 4 + ["Pulsar Inference Stack"])
+        self.assertEqual(self.commands(), ["help terms", "help workflow", "help"])
+        # Every page goes to the pager without a spinner; none probes a node.
+        self.assertEqual(pages.read_text(), "\n\n\n")
+        self.assertNotIn("probe:", self.pulsar_log.read_text())
+
+    def test_help_from_the_full_menu_returns_home_on_esc(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        result = self.run_home(["5", "1", "esc", "6"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["help workflow"])
+        self.assertEqual([menu[0] for menu in self.menus()],
+                         ["Pulsar Inference Stack", "Help", "Help", "Pulsar Inference Stack"])
+        self.assertEqual(self.menus()[-1][1], "Catalog and storage")
+
+    def test_a_failed_help_page_returns_to_help(self):
+        result = self.run_home(["4", "0", "3", "5"], PULSAR_RC="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["help terms"])
+        self.assertEqual([menu[0] for menu in self.menus()],
+                         ["Pulsar Inference Stack", "Help", "Help", "Pulsar Inference Stack"])
+
+    def test_ctrl_c_in_help_or_its_page_exits_130(self):
+        for answers, rc, menus in ((["4", "ctrl-c"], "0", 2), (["4", "0"], "130", 2)):
+            with self.subTest(answers=answers):
+                self.answers.with_suffix(".n").unlink(missing_ok=True)
+                self.choose_log.unlink(missing_ok=True)
+                result = self.run_home(answers, PULSAR_RC=rc)
+                self.assertEqual(result.returncode, 130, result.stderr)
+                self.assertEqual(len(self.menus()), menus)
 
     def test_a_failed_setup_step_is_reported_before_the_menu_returns(self):
         result = self.run_home(["0", "5"], PULSAR_RC="1")
@@ -224,7 +265,7 @@ wait_continue() {
 
     def test_configured_cluster_without_archives_opens_full_operations(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "1", "2", "5", "6"])
+        result = self.run_home(["0", "1", "2", "5", "2", "3", "6"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[0][1], "Catalog and storage")
         self.assertEqual(self.commands(), ["models menu", "inventory menu", "doctor", "help"])
@@ -247,10 +288,10 @@ wait_continue() {
 
     def test_returning_home_does_not_reprint_an_unchanged_status(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["2", "5", "6"])
+        result = self.run_home(["2", "5", "2", "3", "6"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "help"])
-        self.assertEqual(len(self.menus()), 3)
+        self.assertEqual(len(self.menus()), 5)
         self.assertEqual(result.stdout.count("Topology"), 1)
 
     def test_unset_archives_remain_an_explicit_configuration_choice(self):

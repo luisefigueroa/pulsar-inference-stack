@@ -117,8 +117,24 @@ start_blocker() {
     --start-flags="${START_BLOCKER_START_FLAGS:-}" --home-node="${START_BLOCKER_HOME_NODE:-}" \
     --state-root="${PULSAR_MODEL_LIBRARY_DIR:-}" ${options[@]+"${options[@]}"}
 }
-warn() { printf '%swarning: %s\n' "$(_message_tag)" "$*" >&2; }
-error_line() { printf '%serror: %s\n' "$(_message_tag)" "$*" >&2; }
+# On a terminal, warning: and error: take the warn and fail styles. Captured
+# stderr stays plain even under PULSAR_COLOR=always: callers parse it.
+warn() {
+  local label="warning:"
+  if [ -t 2 ]; then
+    _status_style warn 2
+    [ -z "$_STATUS_SGR" ] || label=$'\033['"${_STATUS_SGR}m${label}"$'\033[0m'
+  fi
+  printf '%s%s %s\n' "$(_message_tag)" "$label" "$*" >&2
+}
+error_line() {
+  local label="error:"
+  if [ -t 2 ]; then
+    _status_style fail 2
+    [ -z "$_STATUS_SGR" ] || label=$'\033['"${_STATUS_SGR}m${label}"$'\033[0m'
+  fi
+  printf '%s%s %s\n' "$(_message_tag)" "$label" "$*" >&2
+}
 
 # load_progress STARTED CHECK LIMIT [STATE] — health-wait progress on stderr.
 # On a terminal one line is rewritten on every check: elapsed time, which
@@ -200,18 +216,60 @@ terminal_width() {
   printf '%s\n' "$width"
 }
 
+# Status words in check rows take the shared terminal styles: WARN in the
+# warn style, FAIL, FAILED, BLOCKED and INTERRUPTED in the fail style, READY in
+# the pass style; PASS, INFO and ok stay plain. scripts/terminal_format.py
+# supplies the codes once per script for this stdout.
+_STATUS_SGR_FOR=""
+_status_style() {  # _status_style WORD [FD]: sets _STATUS_SGR for WORD on FD (stdout)
+  local tty=0
+  [ -t "${2:-1}" ] && tty=1
+  if [ "$_STATUS_SGR_FOR" != "$tty" ]; then
+    _SGR_PASS="" _SGR_WARN="" _SGR_FAIL=""
+    # Off a terminal, only PULSAR_COLOR=always asks for styles.
+    if [ "$tty" = 1 ] || [ "${PULSAR_COLOR:-}" = always ]; then
+      eval "$(python3 "$REPO_DIR/scripts/terminal_format.py" --sgr "$tty" 2>/dev/null)" || true
+    fi
+    _STATUS_SGR_FOR=$tty
+  fi
+  case "$1" in
+    WARN|warn) _STATUS_SGR=$_SGR_WARN ;;
+    FAIL|FAILED|BLOCKED|INTERRUPTED|fail) _STATUS_SGR=$_SGR_FAIL ;;
+    READY) _STATUS_SGR=$_SGR_PASS ;;
+    *) _STATUS_SGR="" ;;
+  esac
+}
+
+# status_line TEXT: a check row such as "FAIL  port  8000 is in use", with its
+# leading status word styled.
+status_line() {
+  local text="$1" word="${1%% *}"
+  _status_style "$word"
+  if [ -n "$_STATUS_SGR" ]; then
+    printf '\033[%sm%s\033[0m%s\n' "$_STATUS_SGR" "$word" "${text#"$word"}"
+  else
+    printf '%s\n' "$text"
+  fi
+}
+
 print_hanging() {
   # print_hanging PREFIX MESSAGE — wrap MESSAGE with PREFIX-width continuation.
-  local prefix="$1" message="$2" width content_width first line continuation
+  local prefix="$1" message="$2" width content_width first line continuation lead word shown
   width=$(terminal_width)
   content_width=$((width - ${#prefix}))
   [ "$content_width" -ge 8 ] || content_width=8
   printf -v continuation '%*s' "${#prefix}" ''
+  # A leading status word, such as FAIL in "FAIL  image  ", takes its style.
+  lead="${prefix%%[! ]*}"; word="${prefix#"$lead"}"; word="${word%% *}"
+  shown="$prefix"
+  if [ -n "$word" ] && _status_style "$word" && [ -n "$_STATUS_SGR" ]; then
+    shown="${lead}"$'\033['"${_STATUS_SGR}m${word}"$'\033[0m'"${prefix#"$lead$word"}"
+  fi
   first=1
   while IFS= read -r line; do
     line="${line%"${line##*[![:space:]]}"}"
     if [ "$first" = 1 ]; then
-      printf '%s%s\n' "$prefix" "$line"
+      printf '%s%s\n' "$shown" "$line"
       first=0
     else
       printf '%s%s\n' "$continuation" "$line"

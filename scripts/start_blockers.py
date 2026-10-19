@@ -215,6 +215,27 @@ def human(record: dict) -> str:
     return line
 
 
+def styled_human(record: dict) -> str:
+    """human(RECORD) for stdout: its leading word in the fail style (warn for a
+    memory warning) and its Next command as literal text. Styles are never a
+    reason to lose the line: without the formatter it prints plainly."""
+    line = human(record)
+    try:
+        from scripts.terminal_format import TerminalWriter
+    except ImportError:
+        return line
+    first, newline, rest = line.partition("\n")
+    roles: list[str | None] = [None] * len(first)
+    word = first.split(" ", 1)[0]
+    roles[:len(word)] = ["warn" if record.get("blocker") == "memory_warning" else "fail"] * len(word)
+    fix = record.get("fix")
+    marker = f" Next: {fix}" if fix else ""
+    if marker and marker in first:
+        start = first.index(marker) + len(" Next: ")
+        roles[start:start + len(fix)] = ["literal"] * len(fix)
+    return TerminalWriter().paint(first, roles) + newline + rest
+
+
 def read(path: str | Path) -> list[dict]:
     """Recorded blockers in order; a missing file means none were recorded."""
     try:
@@ -256,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                     service_id=args.service_id or None, no_command=args.no_command, note=args.note,
                     after_replace=args.after_replace, unconfirmed=args.unconfirmed or None,
                     removed=args.removed)
-    print(human(value))
+    print(styled_human(value))
     target = os.environ.get("PULSAR_START_BLOCKERS_FILE")
     if target:
         with open(target, "a", encoding="utf-8") as stream:

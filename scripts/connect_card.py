@@ -84,8 +84,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0  # no card; the command's own output stands
     lines = card(result) if isinstance(result, dict) else []
     if lines:
-        # Printed as is: wrapping would break the copyable request.
-        print("\n" + "\n".join(lines))
+        # Printed as is: wrapping would break the copyable request. On a
+        # terminal the card's title and the request take their styles.
+        from scripts.terminal_format import TerminalWriter
+        writer, request = TerminalWriter(), lines.index("First request:") if "First request:" in lines else len(lines)
+        shown = [writer.paint(line, ["heading"] * len(line)) if index in (0, request)
+                 else writer.paint(line, ["literal"] * len(line)) if index > request else line
+                 for index, line in enumerate(lines)]
+        print("\n" + "\n".join(shown))
     return 0
 
 

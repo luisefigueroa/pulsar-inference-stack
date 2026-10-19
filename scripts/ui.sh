@@ -31,7 +31,9 @@ fi
 #   confirm selected button — blue bg 4 + bright fg 15
 #   Ordinary list items: no colored backgrounds.
 # NO_COLOR or PULSAR_COLOR=never passes no color flags and runs Gum with
-# NO_COLOR=1, so its defaults draw no color either.
+# NO_COLOR=1, so its defaults draw no color either. page_output runs the
+# command it captures with PULSAR_COLOR=always (unless never), so a page keeps
+# the styles scripts/terminal_format.py gives a terminal.
 
 PULSAR_ACCENT="${PULSAR_ACCENT:-12}"
 _PULSAR_CONFIRM_SELECTED_FG="${PULSAR_CONFIRM_SELECTED_FG:-15}"
@@ -113,6 +115,18 @@ require_gum() {
   ! gum_available || return 0
   printf 'error: %s needs an interactive terminal with Gum; use: %s\n' "$1" "$2" >&2
   exit 2
+}
+
+# A menu shows output it captured on this terminal: the home status, a page,
+# a preview. Its commands style that output as for a terminal
+# (PULSAR_COLOR=always, scripts/terminal_format.py) unless the operator turned
+# styles off; NO_COLOR still removes the colors. Call after require_gum.
+ui_keep_styles() {
+  [ -t 1 ] || return 0
+  case "${PULSAR_COLOR:-}" in
+    never|0|no|off|false) ;;
+    *) export PULSAR_COLOR=always ;;
+  esac
 }
 
 # Every primitive below draws with Gum only. Menu entries call require_gum
@@ -388,11 +402,21 @@ page_output() {
   local title="$1" out columns rc=0 pager_rc=0
   shift
   _ui_require_gum || return
-  local -a command=("$@")
+  local -a command=("$@") page_env=()
   # The pager's border and padding take four columns.
   if columns=$(_ui_terminal_columns) && [ "$columns" -gt 4 ]; then
-    command=(env COLUMNS=$((columns - 4)) "$@")
+    page_env+=(COLUMNS=$((columns - 4)))
   fi
+  # The captured output is shown on this terminal, so it keeps a terminal's
+  # styles (PULSAR_COLOR=always) unless the operator turned them off.
+  # NO_COLOR still removes the colors.
+  if [ -t 1 ]; then
+    case "${PULSAR_COLOR:-}" in
+      never|0|no|off|false) ;;
+      *) page_env+=(PULSAR_COLOR=always) ;;
+    esac
+  fi
+  [ "${#page_env[@]}" -eq 0 ] || command=(env "${page_env[@]}" "$@")
   out=$(mktemp) || return 1
   if [ -n "$title" ]; then
     spin "$title" bash -c '"$@" 2>&1' _ "${command[@]}" >"$out" || rc=$?

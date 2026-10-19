@@ -510,6 +510,7 @@ class Catalog(unittest.TestCase):
     # every operation. No Docker, SSH, topology discovery or model files.
     UI = r'''
 require_gum() { :; }
+ui_keep_styles() { :; }
 emit_frame() { cat; }
 # FIXTURE_ROWS sets the terminal height; unset, the height is unknown.
 _ui_terminal_rows() { [ -n "${FIXTURE_ROWS:-}" ] && echo "$FIXTURE_ROWS"; }

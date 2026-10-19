@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import subprocess
 import sys
@@ -124,6 +125,52 @@ ssh_node() {{
         # The runtime query needs Docker; its absence is not reported as a missing toolkit.
         self.assertEqual(rows['rank_1_docker_nvidia']['level'],'warn')
         self.assertNotIn('install the NVIDIA Container Toolkit',rows['rank_1_docker_nvidia']['message'])
+
+    def test_ready_is_green_only_where_a_terminal_shows_it(self):
+        # PULSAR_COLOR=always: the menu's pager shows this captured output on a terminal.
+        terminal = {'NO_COLOR': '', 'TERM': 'xterm-256color'}
+        for extra, colored in (({**terminal, 'PULSAR_COLOR': 'always'}, True), (terminal, False),
+                               ({**terminal, 'PULSAR_COLOR': 'always', 'NO_COLOR': '1'}, False),
+                               ({**terminal, 'PULSAR_COLOR': 'never'}, False)):
+            with self.subTest(extra=extra):
+                result = self.run_tool('doctor.sh', extra=extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('READY — host checks passed', re.sub(r'\x1b\[[0-9;]*m', '', result.stdout))
+                self.assertEqual('\x1b[1;32mREADY\x1b[0m — ' in result.stdout, colored, result.stdout)
+                # NO_COLOR keeps READY bold; never prints no escape codes.
+                self.assertEqual('\x1b' in result.stdout, extra.get('PULSAR_COLOR') == 'always', result.stdout)
+
+    def test_doctor_groups_checks_under_each_node(self):
+        result = self.run_tool('doctor.sh', mode='remote-docker-down')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertTrue(all(len(line) <= 48 for line in lines), result.stdout)
+        headings = [line for line in lines if line and not line.startswith(' ') and ' — ' not in line]
+        self.assertEqual(headings[1:], ['Cluster membership', 'rank-1', 'rank-2', 'Catalog'])
+        self.assertTrue(headings[0].endswith(' (this node)'), headings[0])
+        # Rows sit under their node: the hostname prefix stays in JSON only.
+        self.assertNotIn('rank-1:', result.stdout)
+        section = result.stdout.split('\nrank-1\n')[1].split('\n\n')[0]
+        self.assertIn('  FAIL  Docker unavailable; start or install', section)
+        self.assertIn('  warn  Docker NVIDIA runtime not observed', section)
+        self.assertIn('  ok    120 GiB memory available', section)
+        self.assertTrue(lines[-2].startswith('NOT READY — 2 blocking issues above'), lines[-2:])
+        rows = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'], 'remote-docker-down').stdout)['checks']}
+        self.assertEqual(rows['rank_1_memory']['message'], 'rank-1: MemAvailable 120 GiB')
+        self.assertNotIn('`', json.dumps(rows))
+
+    def test_doctor_marks_commands_and_counts_warnings(self):
+        result = self.run_tool('doctor.sh', mode='memory-low', extra={'PULSAR_COLOR': 'always', 'NO_COLOR': '',
+                                                                     'COLUMNS': '100'})
+        self.assertIn('\x1b[1;31mFAIL\x1b[0m  ', result.stdout)
+        self.assertIn('\x1b[36m./pulsar inventory\x1b[0m', result.stdout)
+        self.assertIn('\x1b[33mwarn\x1b[0m  API key authentication is not configured', result.stdout)
+        self.assertIn('\x1b[1;31mNOT READY\x1b[0m — 1 blocking issue above', result.stdout)
+        self.assertNotIn('\x1b[32mok', result.stdout)
+        # JSON keeps its message, without the marks.
+        rows = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'], 'memory-low').stdout)['checks']}
+        self.assertRegex(rows['memory']['message'], r'^MemAvailable 0 GiB < hard floor \d+ GiB; free memory or '
+                                                    r'stop other GPU work \(\./pulsar inventory\)$')
 
     def test_narrow_doctor_and_image_output(self):
         result=self.run_tool('doctor.sh');self.assertEqual(result.returncode,0,result.stderr)

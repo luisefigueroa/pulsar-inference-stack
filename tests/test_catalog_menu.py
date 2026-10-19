@@ -923,7 +923,7 @@ class HomeNext(unittest.TestCase):
             self.assertIn("ready to Start", menu.home_next([state], "configured"))
 
     def test_cli_reads_the_catalog_projection_and_prints_nothing_without_a_step(self):
-        for entries, expected in ((self.specs()[:1], "Next: 1 spec never checked — open Catalog and storage.\n"),
+        for entries, expected in ((self.specs()[:1], "Next: 1 spec never checked — open **Catalog and storage**.\n"),
                                   ([], "")):
             with self.subTest(entries=len(entries)):
                 out = io.StringIO()

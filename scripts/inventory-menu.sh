@@ -7,6 +7,7 @@ export PYTHONDONTWRITEBYTECODE=1
 [ $# -eq 0 ] || { echo 'error: the inventory menu is interactive; use ./pulsar inventory --json' >&2; exit 2; }
 . "$REPO_DIR/scripts/ui.sh"
 require_gum "the inventory menu" "pulsar inventory | status SPEC | stop SPEC"
+ui_keep_styles
 work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-inventory-menu.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
