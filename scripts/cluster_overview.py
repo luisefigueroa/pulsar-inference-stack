@@ -59,16 +59,16 @@ def nodes(topology: dict | None, inventory: dict | None, budget: dict | None) ->
     """Every node to show, in membership order: saved nodes from topology check,
     else the nodes another source observed."""
     if topology and isinstance(topology.get("nodes"), list):
-        return [{"node_id": n.get("node_id"), "hostname": n.get("hostname") or n.get("node_id"),
+        return [{"node_id": n.get("node_id"), "hostname": n.get("hostname") or n.get("node_id") or "unnamed node",
                  "rank": n.get("rank"), "status": n.get("status"), "issues": n.get("issues") or []}
                 for n in sorted(topology["nodes"], key=lambda n: (n.get("rank") is None, n.get("rank")))]
     if inventory and isinstance(inventory.get("nodes"), dict):
         found = sorted(inventory["nodes"].values(), key=lambda n: n.get("topology_index") or 0)
-        return [{"node_id": n.get("node_id"), "hostname": n.get("hostname") or n.get("node_id"),
+        return [{"node_id": n.get("node_id"), "hostname": n.get("hostname") or n.get("node_id") or "unnamed node",
                  "rank": n.get("topology_index"), "status": None, "issues": []} for n in found]
     if budget and isinstance(budget.get("nodes"), list):
-        return [{"node_id": n.get("node_id"), "hostname": n.get("node_id"), "rank": None, "status": None,
-                 "issues": []} for n in budget["nodes"]]
+        return [{"node_id": n.get("node_id"), "hostname": n.get("node_id") or "unnamed node", "rank": None,
+                 "status": None, "issues": []} for n in budget["nodes"]]
     return []
 
 
@@ -118,7 +118,7 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
         node_id = node["node_id"]
         observed = by_id.get(node_id) or {}
         out.blank()
-        title = node["hostname"] + (" (this node)" if observed.get("local") else "")
+        title = str(node["hostname"]) + (" (this node)" if observed.get("local") else "")
         out.emit(title, role="heading")
 
         def field(label, value, role=None, markup=False):
@@ -157,15 +157,22 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
             field("Disk", "not observed")
 
         rows = services.get(node_id) or []
-        managed = [row for row in rows if row[0].get("ownership") == "managed"]
-        if not managed and inventory is not None:
-            field("Services", "none")
+
+        def managed_rank(row):
+            # A mixed service keeps each rank's own ownership.
+            service, rank = row
+            return (rank.get("ownership") or service.get("ownership")) == "managed"
+        managed = [row for row in rows if managed_rank(row)]
+        if not managed:
+            # None only for a node inventory actually inspected; unknown is not absent.
+            probed = bool(observed) and observed.get("probe_status") in (None, "ok")
+            field("Services", "none" if probed else "not observed")
         # Pulsar services first, then containers Pulsar does not manage.
         for index, (service, rank) in enumerate(managed + [row for row in rows if row not in managed]):
             state = service.get("state") or "unknown"
             measured = (rank.get("gpu_memory") or {}).get("measured_mib")
             in_use = f" · {gib(measured)} GPU memory in use" if isinstance(measured, (int, float)) else ""
-            if service.get("ownership") == "managed":
+            if managed_rank((service, rank)):
                 spec = str(service.get("selected_spec_id") or service.get("spec_id") or "")
                 text = f"{service.get('served_name') or 'served name not recorded'} · {state} · spec {spec[:12]}{in_use}"
                 role = None if state == "running" else "warn"

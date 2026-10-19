@@ -116,10 +116,37 @@ class Overview(unittest.TestCase):
                                  inventory=("not json", 2, ""))
         text = self.render(directory)
         local = self.section(text, "rank-0")
-        self.assertIn("  Memory    not observed\n  Disk      not observed", local)
-        self.assertNotIn("Services", local)
+        self.assertIn("  Memory    not observed\n  Disk      not observed\n  Services  not observed\n", local)
         self.assertIn("\nNot observed\n  `pulsar inventory` exited 2 without a result\n".replace("`", ""), text)
         self.assertIn("  pulsar model budget exited 1: storage lock is busy\n", text)
+
+    def test_a_node_inventory_could_not_inspect_has_unknown_services(self):
+        document = inventory()
+        document["nodes"]["rank-2"].update(probe_status="unreachable", probe_reason="ssh timed out")
+        document["services"] = []
+        text = self.render(self.sources(inventory=(document, 0, "")))
+        self.assertIn("  Memory    not observed: ssh timed out\n", self.section(text, "rank-2"))
+        self.assertIn("  Services  not observed\n", self.section(text, "rank-2"))
+        # An inspected node with nothing running really has no services.
+        self.assertIn("  Services  none\n", self.section(text, "rank-1"))
+
+    def test_a_mixed_service_labels_each_rank_by_its_own_ownership(self):
+        document = inventory()
+        managed = document["services"][0]
+        managed["ownership"] = "mixed"
+        for rank in managed["ranks"]:
+            rank["ownership"] = "managed"
+        managed["ranks"][2]["ownership"] = "unknown"
+        managed["ranks"][2]["container_name"] = "stray-rank"
+        text = self.render(self.sources(inventory=(document, 0, "")))
+        self.assertIn("  Services  org/example-model · running · spec 5e5e5e5e5e5e", self.section(text, "rank-1"))
+        self.assertIn("  Unmanaged container stray-rank · running", self.section(text, "rank-2"))
+
+    def test_a_node_without_a_name_is_shown_not_a_crash(self):
+        document = inventory()
+        document["nodes"]["worker"].update(hostname=None, node_id=None)
+        text = self.render(self.sources(topology=("", 1, ""), inventory=(document, 0, "")))
+        self.assertIn("\nunnamed node\n", text)
 
     def test_without_topology_check_the_observed_nodes_still_show(self):
         text = self.render(self.sources(topology=("", 1, "error: no confirmed topology\n")))
@@ -143,6 +170,7 @@ class Runner(unittest.TestCase):
 require_gum() { :; }
 ui_keep_styles() { :; }
 wait_continue() { printf 'continue: %s\n' "$1" >> "$SPIN_LOG"; }
+page_output() { printf 'page: %s\n' "$1" >> "$SPIN_LOG"; shift; "$@"; }
 # Like Gum, the spinner draws on stderr while the command runs.
 spin() { printf '%s\n' "$1" >> "$SPIN_LOG"; printf 'spinner: %s\n' "$1" >&2; shift; "$@"; }
 choose_index() {
@@ -177,7 +205,7 @@ choose_index() {
                               capture_output=True, timeout=60)
 
     def test_refresh_runs_the_three_sources_again_in_order(self):
-        result = self.run_overview(["0", "1"])
+        result = self.run_overview(["1", "2"])
         self.assertEqual(result.returncode, 0, result.stderr)
         sources = ["topology check --json", "inventory --json", "model budget --json"]
         self.assertEqual((self.root / "pulsar.log").read_text().splitlines(), sources * 2)
@@ -187,8 +215,16 @@ choose_index() {
         self.assertEqual(result.stdout.count("Cluster overview\n"), 2)
         self.assertIn("rank-0 (this node)", result.stdout)
 
+    def test_show_again_reads_the_same_results_without_probing(self):
+        result = self.run_overview(["0", "2"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len((self.root / "pulsar.log").read_text().splitlines()), 3)
+        self.assertEqual(result.stdout.count("Cluster overview\n"), 2)
+        # Each showing goes through the pager, which opens when it is long.
+        self.assertEqual((self.root / "spin.log").read_text().count("page: \n"), 2)
+
     def test_a_failed_source_reports_its_own_error_and_the_spinner_stays_on_screen(self):
-        result = self.run_overview(["1"], PULSAR_RC="1")
+        result = self.run_overview(["2"], PULSAR_RC="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("  pulsar topology check exited 1: fixture failure\n", result.stdout)
         self.assertNotIn("spinner", result.stdout)
@@ -205,7 +241,7 @@ choose_index() {
 
     def test_esc_returns_and_ctrl_c_stops(self):
         self.assertEqual(self.run_overview(["esc"]).returncode, 0)
-        self.assertEqual(self.run_overview(["0", "ctrl-c"]).returncode, 130)
+        self.assertEqual(self.run_overview(["1", "ctrl-c"]).returncode, 130)
         stopped = self.run_overview(["1"], PULSAR_RC="130")
         self.assertEqual(stopped.returncode, 130)
         self.assertEqual((self.root / "pulsar.log").read_text().splitlines()[-1], "topology check --json")

@@ -829,9 +829,10 @@ spinner, and shows every saved node by hostname: its topology status and
 issues, available memory (GB10 shares it between the GPU and the host), disk
 headroom after the reserve and the copy allowance left, and the services and
 other GPU work on it. A source that fails is listed as not observed with its
-error, and the others still show. Nothing runs until it is chosen and it
-changes nothing; **Refresh** runs the three again, and **Back** or Esc returns
-home. The storage budget runs last because it takes the shared storage lock.
+error, and the others still show. A long overview opens in the pager. Nothing
+runs until it is chosen and it changes nothing; **Show again** re-reads the
+same results, **Refresh (checks nodes now)** runs the three again, and
+**Back** or Esc returns home. The storage budget runs last because it takes the shared storage lock.
 
 ### Catalog operations and confirmations
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Cluster overview (home menu): runs topology check, inventory and model budget
 # in turn, each under a spinner naming it, then shows one screen built from
-# their JSON (scripts/cluster_overview.py). Nothing runs until the operator
-# chooses it; Refresh runs all three again and Back returns home. The sources
-# are read-only; model budget takes the shared storage lock, so it runs last.
+# their JSON (scripts/cluster_overview.py) through the pager when it is long.
+# Nothing runs until the operator chooses it. Show again re-reads the same
+# results, Refresh runs all three again and Back returns home. The sources are
+# read-only; model budget takes the shared storage lock, so it runs last.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
@@ -26,17 +27,23 @@ source_json() {
   printf '%s\n' "$rc" >"$WORK/$name.rc"
 }
 
+STARTED="" FINISHED=""
 observe() {
-  local started
-  started=$(date +%s)
+  STARTED=$(date +%s)
   source_json 1 topology "Checking nodes and fabric" topology check || return
   source_json 2 inventory "Listing services and memory" inventory || return
   source_json 3 budget "Reading storage budgets" model budget || return
-  echo
+  FINISHED=$(date +%s)
+  show
+}
+
+show() {
   # The sources' failures show in the overview; a failure to render it is a
   # Stack defect, so it is held on screen before home redraws over it.
   local rc=0
-  python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$started" --finished "$(date +%s)" || rc=$?
+  page_output "" python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$STARTED" \
+    --finished "$FINISHED" || rc=$?
+  [ "$rc" -ne 130 ] || return 130
   if [ "$rc" -ne 0 ]; then
     printf '\n✗ The cluster overview could not be displayed; review the error above.\n  exit %s\n' "$rc"
     wait_continue "Cluster overview error" || return
@@ -44,8 +51,13 @@ observe() {
   fi
 }
 
+observe || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit "$rc"; }
 while true; do
-  observe || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit "$rc"; }
-  choice=$(choose_index "Cluster overview" "Refresh" "Back") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
-  [ "$choice" = 0 ] || exit 0
+  choice=$(choose_index "Cluster overview" "Show again" "Refresh (checks nodes now)" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+  case "$choice" in
+    0) show || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit "$rc"; } ;;
+    1) observe || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit "$rc"; } ;;
+    *) exit 0 ;;
+  esac
 done
