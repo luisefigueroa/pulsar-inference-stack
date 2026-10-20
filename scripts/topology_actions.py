@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sys
 
 import topology_manifest as manifest
 from terminal_format import TerminalWriter
@@ -121,9 +123,51 @@ def render_observation(document):
     writer.emit("Model geometry remains the selected recipe's exact configuration.")
 
 
+def saved_age(timestamp, now=None):
+    """How long ago a saved record was written, or that its time is unknown."""
+    try:
+        written = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        seconds = int(((now or datetime.now(timezone.utc)) - written).total_seconds())
+    except (TypeError, ValueError):
+        return "at an unknown time"
+    for size, unit in ((86400, "day"), (3600, "hour"), (60, "minute")):
+        if seconds >= size:
+            count = seconds // size
+            return f"{count} {unit}{'' if count == 1 else 's'} ago"
+    return "less than a minute ago"
+
+
+def render_summary(document, now=None):
+    """The topology menu's frame, from saved membership only: no node is probed."""
+    writer = TerminalWriter()
+
+    def field(label, value):
+        writer.field(label, value, label_width=12)
+
+    writer.emit("Saved membership (no probes)")
+    topology = document.get("topology")
+    if document["status"] == "missing":
+        field("Membership", "not saved; choose Change membership… → First-use setup")
+        return
+    if document["status"] != "saved" or not topology:
+        field("Membership", "saved but invalid; review it with Show saved membership, then choose "
+                            "Change membership… → Configure membership or add a machine")
+        return
+    nodes = sorted(topology["nodes"], key=lambda node: node["rank"])
+    field("Nodes", ", ".join(node["hostname"] for node in nodes))
+    field("Membership", f"saved {saved_age(topology.get('generated_at'), now)}")
+    # Enrollment is required even for one node; topology check blocks without it.
+    if manifest.topology_has_ssh_trust(topology):
+        enrolled = topology.get("ssh_trust_enrolled_at")
+        trust = f"enrolled {saved_age(enrolled, now)}" if enrolled else "enrolled"
+    else:
+        trust = "not enrolled; choose Change membership… → Enroll SSH trust"
+    field("SSH trust", trust)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("show", "check", "discovery", "changes"))
+    parser.add_argument("operation", choices=("show", "check", "discovery", "changes", "summary"))
     parser.add_argument("path")
     parser.add_argument("--observations")
     parser.add_argument("--document")
@@ -142,6 +186,10 @@ def main():
             writer.emit(issue)
         for issue in document.get("discovery_issues", []):
             writer.emit(issue)
+        return 0
+    if args.operation == "summary":
+        # PATH "-": the `topology show --json` document arrives on stdin.
+        render_summary(json.load(sys.stdin) if args.path == "-" else observation(args.path))
         return 0
     if args.operation == "discovery":
         source = ({"schema_version": 1, "result": "incomplete", "topology": None,

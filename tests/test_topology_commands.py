@@ -1,4 +1,5 @@
 """Real command routing with synthetic nodes; never contacts serving hardware."""
+from datetime import datetime, timezone
 import json
 import os
 import pty
@@ -199,7 +200,7 @@ class TopologyCommands(unittest.TestCase):
 
     def test_menu_back_does_not_probe_and_cancel_does_not_save(self):
         f = self.fixture
-        self.use_gum(TOPOLOGY_GUM_CHOICE='7', TOPOLOGY_CONFIRM_RC='1')
+        self.use_gum(TOPOLOGY_GUM_CHOICE='5', TOPOLOGY_CONFIRM_RC='1')
         result, output = self.interactive(['topology', 'menu'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(self.gum_prompts('choose'), ['Cluster topology'])
@@ -211,12 +212,14 @@ class TopologyCommands(unittest.TestCase):
 
     def test_saved_membership_opens_in_the_pager_without_probing(self):
         f = self.fixture
-        self.use_gum(TOPOLOGY_GUM_CHOICE='1,7')
+        self.use_gum(TOPOLOGY_GUM_CHOICE='0,5')
         result, output = self.interactive(['topology', 'menu'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(self.probes(), [])
         self.assertEqual(self.gum_prompts('choose'), ['Cluster topology', 'Cluster topology'])
         self.assertIn('fixture-rank-1', (f.root/'pager.txt').read_text())
+        # The frame is drawn on entry and not again while membership is unchanged.
+        self.assertEqual(output.count('Saved membership (no probes)'), 1)
 
     def test_menus_without_gum_name_commands_and_do_not_probe(self):
         f = self.fixture  # TERM=dumb: Gum cannot draw
@@ -235,10 +238,102 @@ class TopologyCommands(unittest.TestCase):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
         # Cluster topology, Back to the home menu, then Exit.
-        self.use_gum(TOPOLOGY_GUM_HOME='4,6', TOPOLOGY_GUM_CHOICE='7', PULSAR_COLD_ROOT=str(f.root))
+        self.use_gum(TOPOLOGY_GUM_HOME='5,7', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertEqual([tool for tool, _ in f.calls()], ['gum', 'gum', 'gum'])
+        self.assertEqual(self.gum_prompts('choose'),
+                         ['Pulsar Inference Stack', 'Cluster topology', 'Pulsar Inference Stack'])
+        self.assertEqual(self.probes(), [])
+
+    def summary(self, fixture):
+        """The topology menu's frame for FIXTURE's saved membership."""
+        shown = fixture.run('topology', 'show', '--json')
+        result = subprocess.run([sys.executable, str(ROOT/'scripts/topology_actions.py'), 'summary', '-'],
+                                input=shown.stdout, env=fixture.env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines()[0], 'Saved membership (no probes)')
+        self.assertLessEqual(max(map(len, result.stdout.splitlines())), 48)
+        return ' '.join(result.stdout.split())
+
+    def test_menu_frame_summarizes_saved_membership_without_probes(self):
+        f = self.fixture
+        text = self.summary(f)
+        self.assertIn('Nodes fixture-rank-0, fixture-rank-1', text)
+        self.assertIn('Membership saved less than a minute ago', text)
+        self.assertIn('SSH trust enrolled less than a minute ago', text)
+        for nodes in (1, 2):
+            with self.subTest(unenrolled=nodes), tempfile.TemporaryDirectory() as temporary:
+                # One node still needs enrollment: topology check blocks without it.
+                text = self.summary(Fixture(Path(temporary), nodes=nodes, enrolled=False))
+                self.assertIn('SSH trust not enrolled; choose Change membership… → Enroll SSH trust', text)
+        f.path.write_text('{broken')
+        self.assertIn('Membership saved but invalid; review it with Show saved membership', self.summary(f))
+        f.path.unlink()
+        self.assertIn('Membership not saved; choose Change membership… → First-use setup', self.summary(f))
+        self.assertEqual(f.calls(), [])
+
+    def test_saved_age_counts_whole_units_and_admits_unknown_times(self):
+        now = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        for written, expected in (('2026-10-20T11:59:30+00:00', 'less than a minute ago'),
+                                  ('2026-10-20T11:59:00Z', '1 minute ago'),
+                                  ('2026-10-20T09:00:00+00:00', '3 hours ago'),
+                                  ('2026-10-18T12:00:00+00:00', '2 days ago'),
+                                  ('2026-10-20T11:00:00', 'at an unknown time'),
+                                  ('yesterday', 'at an unknown time'), (None, 'at an unknown time')):
+            self.assertEqual(topology_actions.saved_age(written, now), expected)
+
+    def menu_choices(self):
+        """Each Gum menu's choices by header, as last drawn."""
+        menus = (json.loads(line) for line in (self.fixture.root/'menus.jsonl').read_text().splitlines())
+        return {header: [line.split('\t')[0] for line in lines] for header, lines in menus}
+
+    def test_topology_choices_say_what_they_do_and_change_membership_returns(self):
+        for answer in ('3', 'esc'):
+            with self.subTest(change=answer):
+                (self.fixture.root/'calls.jsonl').unlink(missing_ok=True)
+                self.use_gum(TOPOLOGY_GUM_CHOICE='4,5', TOPOLOGY_GUM_CHANGE=answer, COLUMNS='80')
+                result, output = self.interactive(['topology', 'menu'], '', '')
+                self.assertEqual(result, 0, output)
+                self.assertEqual(self.gum_prompts('choose'),
+                                 ['Cluster topology', 'Change membership', 'Cluster topology'])
+                self.assertEqual(self.probes(), [])
+        choices = self.menu_choices()
+        suffixes = ('(saved, no probes)', '(checks nodes now)', '(asks before saving)')
+        self.assertEqual([choice for choice in choices['Cluster topology'] if not choice.endswith(suffixes)],
+                         ['Change membership…', 'Back'])
+        self.assertEqual(choices['Change membership'], ['First-use setup (asks before saving)',
+                         'Configure membership or add a machine (asks before saving)',
+                         'Enroll SSH trust (asks before saving)', 'Back'])
+
+    def test_narrow_topology_choices_keep_only_effects_that_fit(self):
+        # Gum cuts a long choice at the edge; an effect is shown whole or not at all.
+        self.use_gum(TOPOLOGY_GUM_CHOICE='4,5', TOPOLOGY_GUM_CHANGE='3', COLUMNS='44')
+        result, output = self.interactive(['topology', 'menu'], '', '')
+        self.assertEqual(result, 0, output)
+        choices = self.menu_choices()
+        self.assertEqual(choices['Cluster topology'], ['Show saved membership (saved, no probes)',
+                         'Check saved nodes and fabric', 'Check SSH trust (checks nodes now)',
+                         'Detect cluster candidates', 'Change membership…', 'Back'])
+        self.assertEqual(choices['Change membership'], ['First-use setup (asks before saving)',
+                         'Configure membership or add a machine', 'Enroll SSH trust (asks before saving)', 'Back'])
+        self.assertLessEqual(max(map(len, output.replace('\r', '').splitlines())), 44)
+
+    def test_change_membership_routes_setup_and_enrollment(self):
+        f = self.fixture
+        self.use_gum(TOPOLOGY_GUM_CHOICE='4,5', TOPOLOGY_GUM_CHANGE='0')
+        result, output = self.interactive(['topology', 'menu'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), [])  # healthy membership: nothing to save
+        self.assertFalse(any(tool == 'avahi-browse' for tool, _ in f.calls()))
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        before = f.path.read_bytes()
+        f.log.unlink()
+        self.use_gum(TOPOLOGY_GUM_CHOICE='4,5', TOPOLOGY_GUM_CHANGE='2', TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'menu'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertIn('not enrolled; choose Change membership… → Enroll SSH trust', ' '.join(output.split()))
+        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(f.path.read_bytes(), before)
 
     def test_service_started_during_confirmation_blocks_save(self):
         f = self.fixture
@@ -371,7 +466,7 @@ class TopologyCommands(unittest.TestCase):
                 candidates = ' '.join(args)
                 self.assertIn(f"error: setup doesn't add machines to saved membership; {hosts} not added.", text)
                 self.assertIn(f'To add a machine, run ./pulsar topology configure {candidates}', text)
-                self.assertIn('Cluster topology → Configure membership or add a machine', text)
+                self.assertIn('Cluster topology → Change membership… → Configure membership or add a machine', text)
                 self.assertIn(f'To discover without saving, run ./pulsar topology detect {candidates}', text)
                 self.assertNotIn('interactive terminal', text)
         self.assertEqual(f.calls(), [])
@@ -539,18 +634,23 @@ class TopologyCommands(unittest.TestCase):
                 mapping = json.loads((f.root/'map.json').read_text())
                 mapping['alias-2'] = 2
                 (f.root/'map.json').write_text(json.dumps(mapping))
-                self.use_gum(TOPOLOGY_GUM_CHOICE='4,7', TOPOLOGY_GUM_REVIEW='1,0',
+                self.use_gum(TOPOLOGY_GUM_CHOICE='4,5', TOPOLOGY_GUM_CHANGE='1', TOPOLOGY_GUM_REVIEW='1,0',
                              TOPOLOGY_GUM_INPUT='alias-2', TOPOLOGY_CONFIRM_RC=answer)
                 result, output = self.interactive(['topology', 'menu'], '', '')
                 self.assertEqual(result, 0, output)
                 self.assertEqual(self.gum_prompts('confirm'),
                                  ['Save cluster membership with 3 machines?'])
+                frames = output.replace('\r', '').count('Saved membership (no probes)')
                 if answer == '0':
                     saved = json.loads(f.path.read_text())
                     self.assertEqual(len(saved['nodes']), 3)
                     self.assertEqual(saved['schema_version'], 1)
+                    # The frame is drawn again because membership changed.
+                    self.assertEqual(frames, 2)
+                    self.assertIn('fixture-rank-2', output.rsplit('Saved membership (no probes)', 1)[1])
                 else:
                     self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
+                    self.assertEqual(frames, 1)
                 self.assertNotIn('topology-bound SSH identity enrolled', output)
                 self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
 

@@ -82,6 +82,38 @@ SSHHELP
   done
 }
 
+# with_effect LABEL EFFECT: "LABEL (EFFECT)" where the whole choice fits the
+# menu's width, else LABEL, so Gum never cuts the effect in half. The recipe
+# menu follows the same rule.
+with_effect() {
+  local columns text="$1 ($2)"
+  columns=$(_ui_terminal_columns) || columns=84
+  if [ "${#text}" -le "$((columns - 2))" ]; then printf '%s\n' "$text"; else printf '%s\n' "$1"; fi
+}
+
+# Change membership…: every action here asks before it saves anything.
+change_membership() {
+  local choice rc
+  choice=$(choose_index "Change membership" "$(with_effect "First-use setup" "asks before saving")" \
+    "$(with_effect "Configure membership or add a machine" "asks before saving")" \
+    "$(with_effect "Enroll SSH trust" "asks before saving")" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  case "$choice" in
+    0) "$0" setup ;;
+    1)
+      if review_candidates; then
+        # Always use configure here: setup reuses valid saved membership.
+        # Return to the menu even on exit 0; configure may have been
+        # cancelled, and enrollment remains a separate explicit action.
+        "$0" configure "${REVIEW_CANDIDATES[@]}"
+      else
+        rc=$?; [ "$rc" -ne 130 ] || return 130
+      fi ;;
+    2) "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll ;;
+    *) return 0 ;;
+  esac
+}
+
 action="${1:---help}"; [ $# = 0 ] || shift
 case "$action" in
   --help|-h|help) usage; exit 0 ;;
@@ -115,7 +147,7 @@ case "$action" in
           verb=was; [ "${#rejected[@]}" -eq 1 ] || verb=were
           printf "error: setup doesn't add machines to saved membership; %s %s not added.\n" "$hosts" "$verb"
           printf '  To add a machine, run ./pulsar topology configure %s\n' "$candidate_args"
-          printf '  or choose Cluster topology → Configure membership or add a machine.\n'
+          printf '  or choose Cluster topology → Change membership… →\n    Configure membership or add a machine.\n'
           printf '  To discover without saving, run ./pulsar topology detect %s\n' "$candidate_args"
         } >&2
         exit 2
@@ -187,28 +219,36 @@ case "$action" in
     ui_keep_styles
     # Each action runs as a child and returns here; Back leaves this menu.
     # Saved membership and the check's report open in the pager when long.
+    # Each choice says what it does to the nodes: reads saved records, checks
+    # the nodes now, or asks before saving; the saving ones are grouped under
+    # Change membership…. The frame shows saved membership (no probes) on
+    # entry and again only when an action changed it, so it never buries an
+    # action's output. The saved document decides that, not the frame's text,
+    # whose ages change on their own.
+    shown_saved=""
     while true; do
-      choice=$(choose_index "Cluster topology" "First-use setup" "Show saved membership" \
-        "Check saved nodes and fabric" "Detect cluster candidates" \
-        "Configure membership or add a machine" "Check SSH trust" "Enroll SSH trust" "Back") \
+      saved=$("$0" show --json 2>/dev/null) || true
+      if [ -n "$saved" ] && [ "$saved" != "$shown_saved" ]; then
+        columns=$(_ui_terminal_columns) || columns=84
+        frame=$(printf '%s\n' "$saved" | COLUMNS=$((columns > 36 ? columns - 4 : 32)) \
+          python3 "$REPO_DIR/scripts/topology_actions.py" summary - 2>/dev/null) || frame=""
+        if [ -n "$frame" ]; then
+          printf '%s\n' "$frame" | emit_frame
+          shown_saved=$saved
+        fi
+      fi
+      choice=$(choose_index "Cluster topology" "$(with_effect "Show saved membership" "saved, no probes")" \
+        "$(with_effect "Check saved nodes and fabric" "checks nodes now")" \
+        "$(with_effect "Check SSH trust" "checks nodes now")" \
+        "$(with_effect "Detect cluster candidates" "checks nodes now")" "Change membership…" "Back") \
         || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
       set +e
       case "$choice" in
-        0) "$0" setup ;;
-        1) page_output "" "$0" show ;;
-        2) page_output "Checking saved nodes and fabric…" "$0" check ;;
+        0) page_output "" "$0" show ;;
+        1) page_output "Checking saved nodes and fabric…" "$0" check ;;
+        2) "$REPO_DIR/scripts/topology-ssh-trust.sh" check ;;
         3) "$0" detect ;;
-        4)
-          if review_candidates; then
-            # Always use configure here: setup reuses valid saved membership.
-            # Return to the menu even on exit 0; configure may have been
-            # cancelled, and enrollment remains a separate explicit action.
-            "$0" configure "${REVIEW_CANDIDATES[@]}"
-          else
-            rc=$?; [ "$rc" -ne 130 ] || exit 130
-          fi ;;
-        5) "$REPO_DIR/scripts/topology-ssh-trust.sh" check ;;
-        6) "$REPO_DIR/scripts/topology-ssh-trust.sh" enroll ;;
+        4) change_membership ;;
         *) exit 0 ;;
       esac
       rc=$?
