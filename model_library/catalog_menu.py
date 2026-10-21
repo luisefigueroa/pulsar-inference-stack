@@ -606,8 +606,9 @@ def snapshot_label(row: dict, name: str, width: int, names: NodeNames) -> str:
     """NAME — ROLE (MODEL @ COMMIT) · HOME: one required-snapshot choice.
 
     A part shows only where the whole label fits: the identity goes first,
-    since the confirmation question repeats it, then the role. The menu passes
-    the name, not this label, to the operation.
+    since the confirmation question repeats it, then the role. A long name is
+    then shortened, keeping at least 8 characters, before the home is cut. The
+    menu passes the name, not this label, to the operation.
     """
     member = members(row)[name]
     home = member.get("home") or {}
@@ -619,6 +620,9 @@ def snapshot_label(row: dict, name: str, width: int, names: NodeNames) -> str:
     for text in (f"{lead} ({_snapshot_identity(row, name)}) · {where}", f"{lead} · {where}", f"{name} · {where}"):
         if len(text) <= width:
             return text
+    room = width - len(f"... · {where}")
+    if room >= 8:
+        return f"{name[:room]}... · {where}"
     return text[:width - 3] + "..."
 
 

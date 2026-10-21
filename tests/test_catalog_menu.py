@@ -529,10 +529,16 @@ class View(unittest.TestCase):
                                "eagle": two_snapshots(HOME, None)["draft"]})
         self.assertEqual(menu.snapshot_label(state, "eagle", 200, NAMES),
                          "eagle — speculative-decoding checkpoint (org/draft @ cccccccc) · no home recorded")
-        long_name = "n" * 64
-        state = row(snapshots={"target": two_snapshots(HOME, None)["target"], long_name: {
-            "model_id": "org/draft", "model_commit": "c" * 40, "archive": None, "home": None}})
-        self.assertEqual(menu.snapshot_label(state, long_name, 42, NAMES), "n" * 39 + "...")
+
+    def test_a_long_snapshot_name_is_shortened_before_its_home(self):
+        # Spec names can be 64 characters.
+        name = "n" * 64
+        member = {"model_id": "org/draft", "model_commit": "c" * 40, "archive": None, "home": None}
+        state = row(snapshots={"target": two_snapshots(HOME, None)["target"], name: member})
+        self.assertEqual(menu.snapshot_label(state, name, 42, NAMES), "n" * 20 + "... · no home recorded")
+        # With fewer than 8 of its characters left, the name keeps the row.
+        member["home"] = {"node_id": "n9", "path": "/fixture/home"}
+        self.assertEqual(menu.snapshot_label(state, name, 30, NAMES), "n" * 27 + "...")
 
 
 class SuggestedCommand(unittest.TestCase):

@@ -10,7 +10,16 @@ export PYTHONDONTWRITEBYTECODE=1
 export PULSAR_MODEL_LIBRARY_DIR
 
 catalog() { python3 -m model_library.catalog "$@"; }
-catalog_menu() { python3 -m model_library.catalog_menu "$@"; }
+# The menu captures what catalog_menu prints, so Python can't see the
+# terminal; it gets the width ui.sh reads from it.
+catalog_menu() {
+  local columns
+  if columns=$(_ui_terminal_columns); then
+    COLUMNS=$columns python3 -m model_library.catalog_menu "$@"
+  else
+    python3 -m model_library.catalog_menu "$@"
+  fi
+}
 
 # lib.sh has already applied the process value, then .env, for the archive root.
 archive_location() {

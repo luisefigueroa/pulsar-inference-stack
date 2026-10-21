@@ -516,8 +516,9 @@ class Catalog(unittest.TestCase):
 require_gum() { :; }
 ui_keep_styles() { :; }
 emit_frame() { cat; }
-# FIXTURE_ROWS sets the terminal height; unset, the height is unknown.
+# FIXTURE_ROWS and FIXTURE_COLUMNS set the terminal's size; unset, it is unknown.
 _ui_terminal_rows() { [ -n "${FIXTURE_ROWS:-}" ] && echo "$FIXTURE_ROWS"; }
+_ui_terminal_columns() { [ -n "${FIXTURE_COLUMNS:-}" ] && echo "$FIXTURE_COLUMNS"; }
 spin() { shift; "$@"; }
 # The pager and the Continue hold are recorded where menus are; CONTINUE_RC=130
 # answers every hold with Ctrl-C.
@@ -1001,6 +1002,18 @@ raise SystemExit(rc)
         self.assertEqual(actions, [["model-library.sh", "restore", spec, *placement, "--plan", "--json"],
                                    ["model-library.sh", "restore", spec, *placement, "--yes"]])
         self.assertIn("Restore example/model @ eeeeeeee from the archive to ", questions)
+
+    def test_menu_choices_fit_the_terminal_it_draws_on(self):
+        # Python runs with its output captured, so the menu passes the width it
+        # read from the terminal; an inherited COLUMNS does not decide it.
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "#1", "fixture-host", "Back", "Back"], confirms=["no"], speculative=True,
+            env_extra=lambda _: {"FIXTURE_COLUMNS": "44", "COLUMNS": "120"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Select a required snapshot\ntarget — served model · no home recorded\n"
+                      "draft · no home recorded\n\n", choices)
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, "--snapshot", "draft", "--node",
+                                    "fixture-node", "--plan", "--json"]])
 
     def test_recorded_home_does_not_prevent_a_restore_preview(self):
         spec, result, actions, choices, questions = self.run_menu(
