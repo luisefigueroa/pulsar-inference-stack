@@ -1176,7 +1176,10 @@ manifests. After freeze, schema-3 home operations select a named snapshot:
 
 For private specs, add `--spec-file <file>` to the same commands. `move` and
 `remove` also require `--snapshot` for schema 3. The model-storage menu provides
-the same snapshot choice. No command silently selects only the target for these
+the same snapshot choice. Each choice says what the snapshot is for (the served
+model or the speculative-decoding checkpoint) and where its home is recorded,
+with the model ID and commit where the row has room; snapshots without a home
+come first, then the target. No command silently selects only the target for these
 operations. Archive creation, acquisition, and restoration remain individual
 operations; sequence them as required. The menu suggests the next snapshot
 without a home after each successful download or restore. Verification without `--snapshot` covers
