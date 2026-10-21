@@ -127,7 +127,7 @@ checks SSH enrollment, offers missing enrollment with a separate key-confirmatio
 prompt, and finishes with a topology readiness check. Healthy existing setup is
 reused. Cancellation or failed enrollment cannot report success. This applies
 to single-node clusters too. The first-run menu's setup step and the topology
-menu's **First-use setup** run this same command.
+menu's **Change membership… → First-use setup** run this same command.
 
 After discovery, review the machines found. **Add a machine by hostname or IP**
 accepts one management address at a time; add more as needed. **Retry discovery**
@@ -175,7 +175,8 @@ required node block replacement; the check repeats after confirmation. It never
 stops services for you. Saving a discovery establishes membership, not enrolled
 SSH trust; use the menu's separate SSH-trust enrollment action or
 `./pulsar ssh-trust enroll` afterward. For an existing cluster, choose
-**Cluster topology → Configure membership or add a machine** to use the same
+**Cluster topology → Change membership… → Configure membership or add a
+machine** to use the same
 candidate review. It runs `topology configure --candidate HOST` with your added
 addresses, then returns to the menu for separate enrollment after saving.
 `topology setup` reuses valid saved membership and never adds machines to it.
@@ -190,11 +191,21 @@ by the proposed topology. The report is advisory and read-only; saving membershi
 does not silently move, purge, unpin, or rewrite model-library records.
 
 Show, check and detection support `--json`. `./pulsar topology menu` opens just
-this menu; opening either menu performs no probes. Every menu choice runs one of
-the commands above. Low-level manifest utilities remain available under
-`pulsar topology` with their existing arguments. From the private workbench,
-invoke the configured public Stack executable by absolute path; Workbench creates no
-second topology implementation.
+this menu; opening either menu performs no probes. The topology menu opens with
+a summary of saved membership, read from `topology show --json`: the nodes by
+hostname, when the discovery behind it ran and when enrolled host keys were
+read. Both are stamped before the save is confirmed. Setup and configuration
+never replace invalid saved membership, so the summary says to inspect it and
+repair the saved file by hand. The summary is drawn again only after an action
+changes saved membership or SSH trust. Where the terminal is wide enough, each
+choice says what it does to the nodes: *(saved, no probes)* reads saved files,
+*(checks nodes now)* contacts the nodes, and *(asks before saving)* asks before
+changing anything. The changing actions are grouped under **Change
+membership…**. Every menu choice runs one of the commands above or `./pulsar
+ssh-trust check` or `enroll`. Low-level manifest utilities remain available
+under `pulsar topology` with their existing arguments. From the private
+workbench, invoke the configured public Stack executable by absolute path;
+Workbench creates no second topology implementation.
 
 Topology and SSH files stay private in the selected stack checkout. Host and
 fabric diagnostics are also available through `./pulsar doctor`. Catalog

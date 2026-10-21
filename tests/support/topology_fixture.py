@@ -90,7 +90,8 @@ def double_main():
             header = args[args.index('--header')+1]
             # A comma-separated choice list answers successive visits to one menu.
             choice_env = {'Pulsar Inference Stack': 'TOPOLOGY_GUM_HOME',
-                          'Review discovered machines': 'TOPOLOGY_GUM_REVIEW'}.get(header, 'TOPOLOGY_GUM_CHOICE')
+                          'Review discovered machines': 'TOPOLOGY_GUM_REVIEW',
+                          'Change membership': 'TOPOLOGY_GUM_CHANGE'}.get(header, 'TOPOLOGY_GUM_CHOICE')
             choices = os.environ.get(choice_env, '0').split(',')
             with (root/'menus.jsonl').open('a') as stream:
                 stream.write(json.dumps([header, lines])+'\n')
