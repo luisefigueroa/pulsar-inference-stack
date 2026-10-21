@@ -193,17 +193,19 @@ does not silently move, purge, unpin, or rewrite model-library records.
 Show, check and detection support `--json`. `./pulsar topology menu` opens just
 this menu; opening either menu performs no probes. The topology menu opens with
 a summary of saved membership, read from `topology show --json`: the nodes by
-hostname, when membership was saved and whether SSH trust is enrolled. It is
-drawn again only after an action changes saved membership or SSH trust. Where
-the terminal is wide enough, each choice says what it does to the nodes:
-*(saved, no probes)* reads saved files, *(checks nodes now)* contacts the
-nodes, and *(asks before saving)* asks before changing anything. The changing
-actions are grouped under **Change membership…**. Every
-menu choice runs one of the commands above or `./pulsar ssh-trust check` or
-`enroll`. Low-level manifest utilities remain available under
-`pulsar topology` with their existing arguments. From the private workbench,
-invoke the configured public Stack executable by absolute path; Workbench creates no
-second topology implementation.
+hostname, when the discovery behind it ran and when enrolled host keys were
+read. Both are stamped before the save is confirmed. Setup and configuration
+never replace invalid saved membership, so the summary says to inspect it and
+repair the saved file by hand. The summary is drawn again only after an action
+changes saved membership or SSH trust. Where the terminal is wide enough, each
+choice says what it does to the nodes: *(saved, no probes)* reads saved files,
+*(checks nodes now)* contacts the nodes, and *(asks before saving)* asks before
+changing anything. The changing actions are grouped under **Change
+membership…**. Every menu choice runs one of the commands above or `./pulsar
+ssh-trust check` or `enroll`. Low-level manifest utilities remain available
+under `pulsar topology` with their existing arguments. From the private
+workbench, invoke the configured public Stack executable by absolute path;
+Workbench creates no second topology implementation.
 
 Topology and SSH files stay private in the selected stack checkout. Host and
 fabric diagnostics are also available through `./pulsar doctor`. Catalog

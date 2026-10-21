@@ -150,16 +150,19 @@ def render_summary(document, now=None):
         field("Membership", "not saved; choose Change membership… → First-use setup")
         return
     if document["status"] != "saved" or not topology:
-        field("Membership", "saved but invalid; review it with Show saved membership, then choose "
-                            "Change membership… → Configure membership or add a machine")
+        # Setup, detect and configure all refuse to replace invalid saved state.
+        field("Membership", "saved but invalid, and no menu choice replaces it; inspect it with "
+                            "Show saved membership and repair the saved file by hand")
         return
     nodes = sorted(topology["nodes"], key=lambda node: node["rank"])
     field("Nodes", ", ".join(node["hostname"] for node in nodes))
-    field("Membership", f"saved {saved_age(topology.get('generated_at'), now)}")
+    # Both times are stamped when the change is prepared, before its
+    # confirmation, so they date the discovery and the key reading, not the save.
+    field("Membership", f"saved from a discovery {saved_age(topology.get('generated_at'), now)}")
     # Enrollment is required even for one node; topology check blocks without it.
     if manifest.topology_has_ssh_trust(topology):
         enrolled = topology.get("ssh_trust_enrolled_at")
-        trust = f"enrolled {saved_age(enrolled, now)}" if enrolled else "enrolled"
+        trust = f"enrolled from host keys read {saved_age(enrolled, now)}" if enrolled else "enrolled"
     else:
         trust = "not enrolled; choose Change membership… → Enroll SSH trust"
     field("SSH trust", trust)

@@ -259,15 +259,19 @@ class TopologyCommands(unittest.TestCase):
         f = self.fixture
         text = self.summary(f)
         self.assertIn('Nodes fixture-rank-0, fixture-rank-1', text)
-        self.assertIn('Membership saved less than a minute ago', text)
-        self.assertIn('SSH trust enrolled less than a minute ago', text)
+        self.assertIn('Membership saved from a discovery less than a minute ago', text)
+        self.assertIn('SSH trust enrolled from host keys read less than a minute ago', text)
         for nodes in (1, 2):
             with self.subTest(unenrolled=nodes), tempfile.TemporaryDirectory() as temporary:
                 # One node still needs enrollment: topology check blocks without it.
                 text = self.summary(Fixture(Path(temporary), nodes=nodes, enrolled=False))
                 self.assertIn('SSH trust not enrolled; choose Change membership… → Enroll SSH trust', text)
         f.path.write_text('{broken')
-        self.assertIn('Membership saved but invalid; review it with Show saved membership', self.summary(f))
+        # Configure cannot replace invalid saved state, so it is not offered as the fix.
+        text = self.summary(f)
+        self.assertIn('Membership saved but invalid, and no menu choice replaces it; inspect it with '
+                      'Show saved membership and repair the saved file by hand', text)
+        self.assertNotIn('Configure', text)
         f.path.unlink()
         self.assertIn('Membership not saved; choose Change membership… → First-use setup', self.summary(f))
         self.assertEqual(f.calls(), [])
