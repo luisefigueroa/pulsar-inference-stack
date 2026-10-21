@@ -483,6 +483,63 @@ class View(unittest.TestCase):
         with patch("subprocess.run", side_effect=AssertionError("menu must not probe")):
             menu.view_lines(row(), "configured", width=80, names=NAMES)
 
+    # TUI-24: each required-snapshot choice says what it is for and where its home is.
+    @staticmethod
+    def snapshot_choices(state, width):
+        return [line.split("\t")[1:] for line in menu.view_lines(state, "configured", width=width, names=NAMES)
+                if line.startswith("snapshot\t")]
+
+    def test_snapshot_choices_name_role_identity_and_home_with_missing_homes_first(self):
+        draft = "draft — speculative-decoding checkpoint (org/draft @ cccccccc) · no home recorded"
+        target = "target — served model (org/model @ cccccccc) · home on spark-1"
+        self.assertEqual(self.snapshot_choices(row(snapshots=two_snapshots(HOME, None)), 200), [
+            ["acquire", "draft", draft], ["acquire", "target", target],
+            ["restore", "draft", draft], ["restore", "target", target],
+            ["move", "target", target], ["remove", "target", target], ["archive", "target", target]])
+
+    def test_snapshot_choices_keep_one_order_whatever_the_saved_key_order(self):
+        snapshots = two_snapshots(HOME, HOME)
+        for order in (snapshots, dict(reversed(snapshots.items()))):
+            with self.subTest(first=next(iter(order))):
+                choices = self.snapshot_choices(row(snapshots=order), 200)
+                for action in ("acquire", "restore", "move", "remove", "archive"):
+                    self.assertEqual([name for kind, name, _ in choices if kind == action], ["target", "draft"])
+
+    def test_snapshot_choices_drop_identity_then_role_to_fit_the_row(self):
+        snapshots = two_snapshots(HOME, None)
+        for member in snapshots.values():
+            member["model_id"] = "org/" + "long-model-name-" * 4
+        state = row(snapshots=snapshots)
+        self.assertEqual([label for *_, label in self.snapshot_choices(state, 80)][:2],
+                         ["draft — speculative-decoding checkpoint · no home recorded",
+                          "target — served model · home on spark-1"])
+        self.assertEqual([label for *_, label in self.snapshot_choices(state, 44)][:2],
+                         ["draft · no home recorded", "target — served model · home on spark-1"])
+        for width in (44, 60, 80, 120):
+            for _, name, label in self.snapshot_choices(state, width):
+                with self.subTest(width=width, label=label):
+                    self.assertLessEqual(len(label), width - 2)
+                    self.assertTrue(label.startswith((name + " — ", name + " · ")), label)
+                    self.assertTrue(label.endswith(("no home recorded", "home on spark-1")), label)
+                    # The identity shows only with the role.
+                    self.assertTrue("(" not in label or " — " in label, label)
+
+    def test_snapshot_role_follows_the_contract_not_the_name(self):
+        state = row(snapshots={"target": two_snapshots(HOME, None)["target"],
+                               "eagle": two_snapshots(HOME, None)["draft"]})
+        self.assertEqual(menu.snapshot_label(state, "eagle", 200, NAMES),
+                         "eagle — speculative-decoding checkpoint (org/draft @ cccccccc) · no home recorded")
+
+    def test_a_long_snapshot_name_is_shortened_before_its_home(self):
+        # Spec names can be 64 characters.
+        name = "n" * 64
+        member = {"model_id": "org/draft", "model_commit": "c" * 40, "archive": None, "home": None}
+        state = row(snapshots={"target": two_snapshots(HOME, None)["target"], name: member})
+        self.assertEqual(menu.snapshot_label(state, name, 42, NAMES), "n" * 20 + "... · no home recorded")
+        # With fewer than 8 of its characters left, the name keeps the row.
+        member["home"] = {"node_id": "n9", "path": "/fixture/home"}
+        self.assertEqual(menu.snapshot_label(state, name, 30, NAMES), "n" * 27 + "...")
+
 
 class SuggestedCommand(unittest.TestCase):
     def command(self, state, location="configured"):

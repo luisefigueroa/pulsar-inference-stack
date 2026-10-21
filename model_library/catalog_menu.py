@@ -2,8 +2,9 @@
 
 Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
-it), the recipe list labels, the summary that leads each storage preview, the
-wording of confirmation questions, and the home screen's Next line. Input
+it), the recipe list labels, the required-snapshot choices, the summary that
+leads each storage preview, the wording of confirmation questions, and the
+home screen's Next line. Input
 is the catalog projection (``pulsar models show --json``) and the
 archive-location status, plus what this menu session observed about services:
 a service inventory the menu captured on request and its own Live status, Start
@@ -282,7 +283,7 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
             # selectable when their files have gone missing.
             eligible[action] = [str(n) for n in recovery_snapshots(row)]
         for action in ("move", "remove", "archive"):
-            eligible[action] = [str(n) for n in with_home]
+            eligible[action] = [str(n) for n in recovery_snapshots(row) if snapshots[n].get("home")]
     return offered, hidden, eligible
 
 
@@ -601,6 +602,30 @@ def option_label(action: str, suggested: tuple[str, str] | None, width: int) -> 
     return with_effect if len(with_effect) <= width else label
 
 
+def snapshot_label(row: dict, name: str, width: int, names: NodeNames) -> str:
+    """NAME — ROLE (MODEL @ COMMIT) · HOME: one required-snapshot choice.
+
+    A part shows only where the whole label fits: the identity goes first,
+    since the confirmation question repeats it, then the role. A long name is
+    then shortened, keeping at least 8 characters, before the home is cut. The
+    menu passes the name, not this label, to the operation.
+    """
+    member = members(row)[name]
+    home = member.get("home") or {}
+    where = (f"home on {names(home['node_id'])}" if home.get("node_id")
+             else "home recorded" if home else "no home recorded")
+    # A recipe binds a snapshot other than target only as the speculative
+    # configuration's model (release_spec.serving.snapshot_engine_args).
+    lead = f"{name} — " + ("served model" if name == "target" else "speculative-decoding checkpoint")
+    for text in (f"{lead} ({_snapshot_identity(row, name)}) · {where}", f"{lead} · {where}", f"{name} · {where}"):
+        if len(text) <= width:
+            return text
+    room = width - len(f"... · {where}")
+    if room >= 8:
+        return f"{name[:room]}... · {where}"
+    return text[:width - 3] + "..."
+
+
 def lifecycle(row: dict, live: dict | None, *, mark: bool = True) -> str:
     """Where the spec stands in Download → Prepare → Start, from saved records
     and this session's live facts only. Prepared files never mark Start done:
@@ -659,7 +684,8 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
         lines.append(f"suggest\t{suggested[0]}")
     for action, snapshots in eligible.items():
         for name in snapshots:
-            lines.append(f"snapshot\t{action}\t{clean(name)}")
+            label = snapshot_label(row, name, list_width, names or NodeNames())
+            lines.append(f"snapshot\t{action}\t{clean(name)}\t{clean(label)}")
     return lines
 
 

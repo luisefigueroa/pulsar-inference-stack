@@ -10,7 +10,16 @@ export PYTHONDONTWRITEBYTECODE=1
 export PULSAR_MODEL_LIBRARY_DIR
 
 catalog() { python3 -m model_library.catalog "$@"; }
-catalog_menu() { python3 -m model_library.catalog_menu "$@"; }
+# The menu captures what catalog_menu prints, so Python can't see the
+# terminal; it gets the width ui.sh reads from it.
+catalog_menu() {
+  local columns
+  if columns=$(_ui_terminal_columns); then
+    COLUMNS=$columns python3 -m model_library.catalog_menu "$@"
+  else
+    python3 -m model_library.catalog_menu "$@"
+  fi
+}
 
 # lib.sh has already applied the process value, then .env, for the archive root.
 archive_location() {
@@ -413,14 +422,16 @@ perform() {
 # perform_action ACTION LABEL SPEC — gathers snapshot and node, previews, confirms, runs.
 perform_action() {
   local action="$1" label="$2" spec="$3" rc question choice
-  local -a args=() choices=()
+  local -a args=() snapshots=() choices=()
   MENU_SNAPSHOT="" MENU_NODE=""
-  mapfile -t choices < <(printf '%s' "$VIEW" | awk -F'\t' -v a="$action" '$1 == "snapshot" && $2 == a {print $3}')
-  if [ "${#choices[@]}" -eq 1 ]; then
-    MENU_SNAPSHOT="${choices[0]}"
-  elif [ "${#choices[@]}" -gt 1 ]; then
+  # Each snapshot line names the snapshot the operation takes, then its choice label.
+  mapfile -t snapshots < <(printf '%s' "$VIEW" | awk -F'\t' -v a="$action" '$1 == "snapshot" && $2 == a {print $3}')
+  mapfile -t choices < <(printf '%s' "$VIEW" | awk -F'\t' -v a="$action" '$1 == "snapshot" && $2 == a {print $4}')
+  if [ "${#snapshots[@]}" -eq 1 ]; then
+    MENU_SNAPSHOT="${snapshots[0]}"
+  elif [ "${#snapshots[@]}" -gt 1 ]; then
     choice=$(choose_index "Select a required snapshot" "${choices[@]}") || { rc=$?; return "$rc"; }
-    MENU_SNAPSHOT="${choices[$choice]}"
+    MENU_SNAPSHOT="${snapshots[$choice]}"
   fi
   [ -z "$MENU_SNAPSHOT" ] || args+=(--snapshot "$MENU_SNAPSHOT")
   case "$action" in

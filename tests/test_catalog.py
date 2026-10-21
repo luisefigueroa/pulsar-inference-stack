@@ -33,12 +33,16 @@ class Catalog(unittest.TestCase):
         self.store = Store(self.root / "state")
         self.now = datetime(2026, 9, 5, 1, tzinfo=timezone.utc)
 
-    def add_spec(self, guarded=False, historical=False):
+    def add_spec(self, guarded=False, historical=False, speculative=False):
         from release_spec.tests.test_serving_guard import FIXTURES, guarded as with_guard
         if historical:
             # A schema-1 record: readable and stoppable, never started.
             helper = runpy.run_path(str(ROOT / "tests/test_release_contribution.py"))["make_contribution"]
             spec, _, _, _ = helper(self.root / "fixture")
+        elif speculative:
+            # A schema-3 spec requiring the target and a draft snapshot.
+            from tests.test_container_runtime import fixture
+            spec = fixture(speculative=True)[0]
         else:
             # A schema-2 spec; guarded adds a serving guard to recipe.container.
             spec = json.loads((FIXTURES / "spec.json").read_text())
@@ -512,8 +516,9 @@ class Catalog(unittest.TestCase):
 require_gum() { :; }
 ui_keep_styles() { :; }
 emit_frame() { cat; }
-# FIXTURE_ROWS sets the terminal height; unset, the height is unknown.
+# FIXTURE_ROWS and FIXTURE_COLUMNS set the terminal's size; unset, it is unknown.
 _ui_terminal_rows() { [ -n "${FIXTURE_ROWS:-}" ] && echo "$FIXTURE_ROWS"; }
+_ui_terminal_columns() { [ -n "${FIXTURE_COLUMNS:-}" ] && echo "$FIXTURE_COLUMNS"; }
 spin() { shift; "$@"; }
 # The pager and the Continue hold are recorded where menus are; CONTINUE_RC=130
 # answers every hold with Ctrl-C.
@@ -604,8 +609,8 @@ raise SystemExit(rc)
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
                  menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False,
-                 inventory=None, inventory_rc=0, env_extra=None):
-        spec = self.add_spec(guarded=guarded)
+                 inventory=None, inventory_rc=0, env_extra=None, speculative=False):
+        spec = self.add_spec(guarded=guarded, speculative=speculative)
         if review is not None:
             spec["review"] = review
             (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
@@ -982,6 +987,33 @@ raise SystemExit(rc)
         self.assertIn("Copy the snapshot (size not observed) from the archive to fixture-node", result.stdout)
         self.assertNotIn("Restoration preview", result.stdout)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
+
+    # TUI-24: the choice says what each snapshot is for; the operation gets its name.
+    def test_restore_asks_for_a_required_snapshot_by_what_it_is_for(self):
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Restore", "draft", "fixture-host", "Back", "Back"], confirms=["yes"], with_home=True,
+            speculative=True, env_extra=lambda _: {"COLUMNS": "100"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Select a required snapshot\n"
+                      "draft — speculative-decoding checkpoint (example/model @ eeeeeeee) · no home recorded\n"
+                      "target — served model (example/model @ aaaaaaaa) · home on node-a (not in saved topology)\n\n",
+                      choices)
+        placement = ["--snapshot", "draft", "--node", "fixture-node"]
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, *placement, "--plan", "--json"],
+                                   ["model-library.sh", "restore", spec, *placement, "--yes"]])
+        self.assertIn("Restore example/model @ eeeeeeee from the archive to ", questions)
+
+    def test_menu_choices_fit_the_terminal_it_draws_on(self):
+        # Python runs with its output captured, so the menu passes the width it
+        # read from the terminal; an inherited COLUMNS does not decide it.
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "#1", "fixture-host", "Back", "Back"], confirms=["no"], speculative=True,
+            env_extra=lambda _: {"FIXTURE_COLUMNS": "44", "COLUMNS": "120"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Select a required snapshot\ntarget — served model · no home recorded\n"
+                      "draft · no home recorded\n\n", choices)
+        self.assertEqual(actions, [["model-library.sh", "restore", spec, "--snapshot", "draft", "--node",
+                                    "fixture-node", "--plan", "--json"]])
 
     def test_recorded_home_does_not_prevent_a_restore_preview(self):
         spec, result, actions, choices, questions = self.run_menu(
