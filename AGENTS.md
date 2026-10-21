@@ -6,6 +6,13 @@ model experiments, qualification attempts, and contribution export. Do not
 require private workbench code to browse, restore, prepare, serve, or verify a
 public contribution. The operator command is `./pulsar`.
 
+Workbench owns public benchmark harnesses, workload execution, grading,
+benchmark-specific skills and report authoring. Stack retains canonical baseline
+policy/evidence validation and public result views. Do not move benchmark
+orchestration into Stack or make its public operations depend on private tools.
+Preserve published evidence and reports already bound by provenance manifests;
+benchmark reorganization does not relabel their historical results.
+
 ## Implementation boundaries
 
 - Use Bash for operator commands, confirmed topology, SSH, process orchestration,
