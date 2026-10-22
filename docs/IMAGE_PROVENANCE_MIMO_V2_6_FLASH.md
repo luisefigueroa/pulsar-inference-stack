@@ -5,6 +5,8 @@ image. Pulsar's additions adapt model loading, loader memory-budget selection, a
 load configuration. Credit for the underlying runtime, kernels, and loader
 belongs to the upstream projects and contributors listed below.
 
+Return to [all third-party notices and image records](../THIRD_PARTY_NOTICES.md).
+
 ## Published image
 
 - Repository: `ghcr.io/luisefigueroa/mimo-v26-flash-vllm`
@@ -12,6 +14,7 @@ belongs to the upstream projects and contributors listed below.
 - Platform: `linux/arm64`
 - Immutable image manifest: `sha256:4c87d448318a2f887b6b2cfe65e1dcca1d5859f0e8dcc8c3f6923d28c02d4dd8`
 - Image configuration: `sha256:0790aeb54a101305d485564ae88a0f459e5220b4be257c9904738f2afb434fbd`
+- Catalog spec: [1559076fd5af…](../releases/1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435.json)
 
 Use the manifest digest to identify these exact image bytes. The
 [GHCR package](https://github.com/users/luisefigueroa/packages/container/package/mimo-v26-flash-vllm)
@@ -90,3 +93,11 @@ Model checkpoints are supplied separately and retain their own licenses and
 attribution. This page records image provenance and selected upstream notices;
 it is not an exhaustive inventory of every dependency or its redistribution
 requirements.
+
+## Metadata recheck
+
+On 2026-10-21, registry manifest and configuration metadata confirmed the
+published and direct-base identities and matching base layer digests/sizes.
+This recheck did not extract image layers or repeat the earlier packaged-file
+inspection and model validation. The component and license details above
+retain their original evidence scope.
