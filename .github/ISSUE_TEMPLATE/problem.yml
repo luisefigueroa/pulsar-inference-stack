@@ -1,0 +1,59 @@
+name: Problem report
+description: Report a bug, a problem with an existing serving spec, or a documentation error.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        You can report a problem directly, without prior approval or a proposed
+        fix. Describe your observations even if reproduction is uncertain.
+
+        This report will be public. Remove credentials, host identities, network
+        addresses, private paths, and sensitive request content. Do not attach
+        complete configuration files, topology files, or raw log dumps.
+
+        For usage questions, use [Q&A](https://github.com/luisefigueroa/pulsar-inference-stack/discussions/categories/q-a).
+        For suspected vulnerabilities, follow [Security](https://github.com/luisefigueroa/pulsar-inference-stack/blob/main/SECURITY.md).
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: Describe the task, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps or affected documentation
+      description: Give menu actions, redacted commands, or the affected page. Say if reproduction is uncertain.
+    validations:
+      required: true
+  - type: input
+    id: stack_commit
+    attributes:
+      label: Stack commit
+      description: Run git rev-parse HEAD in the affected checkout, or write unknown if unavailable.
+    validations:
+      required: true
+  - type: input
+    id: spec_id
+    attributes:
+      label: Public serving-spec ID, if relevant
+      description: Include the full public ID if known. Note any execution overrides without exposing sensitive values.
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment, if relevant
+      description: Give OS/architecture, GPU type, node count, and parallelism if known. Omit hostnames, addresses, and private paths.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Minimal redacted evidence
+      description: Include only the short error excerpt needed to understand the problem. State when it was observed.
+      render: text
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Public information
+      options:
+        - label: I have checked this report and any attachments for credentials and private information.
+          required: true

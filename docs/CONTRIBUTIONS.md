@@ -1,5 +1,9 @@
 # Review a catalog contribution
 
+Start with [Contributing](../CONTRIBUTING.md) for the participation process and
+the maintainer's acceptance requirements. This guide describes catalog formats
+and technical checks; passing those checks does not replace maintainer review.
+
 The workbench maintainer decides which specs are published to the catalog.
 Publishing places one schema-valid `releases/<spec-id>.json` in this repository;
 the filename must equal the document's complete `spec_id`. The stack does not

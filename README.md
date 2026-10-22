@@ -152,6 +152,9 @@ Stop retains model files, pins, and archives. Storage cleanup is a
 | --- | --- |
 | Set up, serve, inspect, or recover a model | [Operations](docs/OPERATIONS.md) |
 | Resolve a blocked or failed operation | [Troubleshooting](docs/OPERATIONS.md#troubleshooting) |
+| Ask a question or report a problem | [Support](SUPPORT.md) |
+| Propose a change or serving spec | [Contributing](CONTRIBUTING.md) |
+| Report a vulnerability privately | [Security](SECURITY.md) |
 | Understand specs, storage, and ownership | [Architecture](docs/ARCHITECTURE.md) |
 | Integrate with commands, JSON, or spec formats | [Public contract](docs/CONTRACT.md) |
 | Run a bounded trial with enforced limits | [Guarded serving](docs/GUARDED_SERVING.md) |
