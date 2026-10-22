@@ -52,6 +52,11 @@ reporting only validation that actually happened. Preserve applicable licenses
 and upstream attribution; see [LICENSE](LICENSE) and
 [third-party notices](THIRD_PARTY_NOTICES.md).
 
+For a new or changed image or an adapted upstream patch, include its source
+and credits following [Maintaining these records](THIRD_PARTY_NOTICES.md#maintaining-these-records).
+Use exact digests and source commits, describe local changes, and identify
+any provenance you cannot establish.
+
 ## Propose a serving spec
 
 vLLM-based specs generally have the quickest path to merge because they use

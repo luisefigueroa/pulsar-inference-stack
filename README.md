@@ -1,7 +1,8 @@
 # Pulsar Inference Stack
 
-Serve model recipes on NVIDIA DGX Spark GB10 systems with vLLM. Pulsar manages
-the model files, prepares them on the selected machines, checks the exact
+Run exact, inspectable vLLM serving configurations on NVIDIA DGX Spark GB10.
+
+Pulsar manages model files, prepares them on the selected machines, checks the
 serving configuration, and starts or stops the service. Verified archives
 provide a separate recovery path.
 
@@ -11,8 +12,14 @@ Its **recipe** is the execution configuration. You can browse, restore, prepare,
 and serve published specs using this public repository alone. The separate
 private `pulsar-inference-workbench` owns model onboarding and experiments.
 
-**[MiMo V2.6 Flash image provenance and credits](docs/IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md)**
-— upstream base image, contributors, patches, and component licenses.
+[Get started](#before-you-start) ·
+[Browse recipes](docs/README.md#browse-recipes-and-evidence) ·
+[Get help](SUPPORT.md) · [Contribute](CONTRIBUTING.md)
+
+See the [documentation home](docs/README.md) for guides by task.
+
+[Third-party software, images, and credits](THIRD_PARTY_NOTICES.md) documents
+upstream sources, adapted patches, and license notices across the catalog.
 
 ## Before you start
 
@@ -30,14 +37,17 @@ for controller tools, storage requirements, and noninteractive use.
 ```sh
 git clone https://github.com/luisefigueroa/pulsar-inference-stack.git
 cd pulsar-inference-stack
-./pulsar help
-./pulsar models list
+./pulsar
 ```
 
-Catalog browsing needs no configured cluster and reads saved information. It
-does not download files or check whether a model is running. Run `./pulsar` on
-a terminal for the menu; it offers setup and read-only browsing before the
-cluster is configured. Archive storage is optional.
+The interactive menu offers read-only catalog browsing before cluster setup.
+Browsing reads saved information; it does not download files or check whether a
+model is running. When you are ready to operate a recipe, choose **Set up cluster
+membership and SSH trust**, then use **Catalog and storage** after setup.
+Archive storage is optional.
+
+See the [menu reference](docs/OPERATIONS.md#menu-reference) for interactive
+actions. The walkthrough below gives the corresponding direct commands.
 
 ## Serve a catalog recipe
 
@@ -148,20 +158,10 @@ Stop retains model files, pins, and archives. Storage cleanup is a
 
 ## Documentation
 
-| I want to… | Read |
-| --- | --- |
-| Set up, serve, inspect, or recover a model | [Operations](docs/OPERATIONS.md) |
-| Resolve a blocked or failed operation | [Troubleshooting](docs/OPERATIONS.md#troubleshooting) |
-| Ask a question or report a problem | [Support](SUPPORT.md) |
-| Propose a change or serving spec | [Contributing](CONTRIBUTING.md) |
-| Report a vulnerability privately | [Security](SECURITY.md) |
-| Understand specs, storage, and ownership | [Architecture](docs/ARCHITECTURE.md) |
-| Integrate with commands, JSON, or spec formats | [Public contract](docs/CONTRACT.md) |
-| Run a bounded trial with enforced limits | [Guarded serving](docs/GUARDED_SERVING.md) |
-| Supply a reviewed estimate of resident weights | [Memory estimates](docs/MEMORY_ESTIMATES.md) |
-| Review or publish a catalog contribution | [Contribution review](docs/CONTRIBUTIONS.md) |
-| Choose checks for a code or documentation change | [Testing](docs/TESTING.md) |
-| Understand inherited decisions and historical plans | [Decision references](docs/DECISIONS.md) |
+The [documentation home](docs/README.md) groups guides for operators,
+contributors, and integrators, with links to provenance and design history.
+For day-to-day work, start with [Operations](docs/OPERATIONS.md) or
+[Troubleshooting](docs/OPERATIONS.md#troubleshooting).
 
 ## Catalog and evidence
 
