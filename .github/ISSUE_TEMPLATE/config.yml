@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Usage and setup questions
+    url: https://github.com/luisefigueroa/pulsar-inference-stack/discussions/categories/q-a
+    about: Ask for help using or configuring Pulsar.
+  - name: Report a security vulnerability
+    url: https://github.com/luisefigueroa/pulsar-inference-stack/blob/main/SECURITY.md
+    about: Read how to report sensitive problems privately.

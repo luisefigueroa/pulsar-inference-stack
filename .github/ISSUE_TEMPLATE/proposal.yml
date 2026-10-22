@@ -1,0 +1,59 @@
+name: Feature or serving-spec proposal
+description: Propose a focused improvement before substantial implementation.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Explain the problem and desired outcome. Please wait for agreement on
+        scope before substantial implementation; see [Contributing](https://github.com/luisefigueroa/pulsar-inference-stack/blob/main/CONTRIBUTING.md).
+        vLLM-based specs generally have the quickest path to merge. Proposals
+        using SGLang, TensorRT-LLM, or other established engines are also welcome;
+        describe any Stack integration needed before acceptance.
+        Weights published by frontier or other well-known model labs are strongly
+        preferred. Experimental personal quantizations receive additional scrutiny;
+        explain the choice and provide the upstream source, quantization method,
+        and weight provenance.
+        Serving-spec contributions require the proposed spec and evidence of
+        minimal testing on your own DGX environment. Acceptance also requires
+        the maintainer's accuracy, stability, performance, and throughput checks.
+        Keep credentials, host identities, private paths, and raw experiment
+        captures out of this public proposal.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Proposal type
+      options:
+        - Feature or workflow improvement
+        - Serving spec
+        - Documentation
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Problem and desired outcome
+      description: Who would benefit, what are they trying to do, and what is missing today?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Suggested approach, if you have one
+      description: Describe the smallest useful change and any alternatives you considered. A solution is not required.
+  - type: textarea
+    id: recipe
+    attributes:
+      label: Proposed serving spec
+      description: Required for serving-spec contributions. Link the proposed spec in your fork or patch. Identify the weight publisher, source and exact revision, any quantization method, engine and version, image, execution settings, hardware geometry, and required Stack integration. Explain the choice if proposing an experimental personal quantization. Other proposal types may leave this blank.
+  - type: textarea
+    id: spec_evidence
+    attributes:
+      label: Supporting DGX validation evidence
+      description: Required for serving-spec contributions. Describe the exact configuration tested on your own DGX environment, GPU type and node count, checks performed, observed results, and limitations. Link compact redacted evidence. Other proposal types may leave this blank.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Public information
+      options:
+        - label: I have checked this proposal and any attachments for credentials and private information.
+          required: true
