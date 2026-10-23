@@ -1,5 +1,6 @@
 """Configuration is literal data and access observations are not operator policy."""
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -149,12 +150,35 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_readable_human_output_at_narrow_width(self):
         output = io.StringIO()
-        with redirect_stdout(output):
+        with redirect_stdout(output), patch.dict(os.environ, {'COLUMNS': '44'}):
             config.display({'source': 'process', 'path': '/archive', 'persisted_path': '',
                 'status': 'configured', 'health': {'directory_exists': True, 'readable': True, 'writable': False}})
-        self.assertIn('Writable: false', output.getvalue())
-        self.assertIn('overrides', output.getvalue())
-        self.assertLessEqual(max(map(len, output.getvalue().splitlines())), 60)
+        text = ' '.join(output.getvalue().split())
+        self.assertIn('Access readable, not writable (observed now)', text)
+        self.assertIn('Source PULSAR_COLD_ROOT in the process environment', text)
+        self.assertIn('The process environment overrides the setting saved in .env.', text)
+        self.assertLessEqual(max(map(len, output.getvalue().splitlines())), 44)
+
+    # TUI-06: words instead of the JSON values; --json keeps the values.
+    def test_human_output_uses_words_and_json_keeps_values(self):
+        def shown(*args):
+            output = io.StringIO()
+            with redirect_stdout(output), patch.dict(os.environ, {}, clear=False):
+                os.environ.pop('PULSAR_COLD_ROOT', None)
+                self.assertEqual(config.main(['--repo-root', str(self.repo), *args]), 0)
+            return output.getvalue()
+        text = ' '.join(shown('show').split())
+        self.assertIn('Status Not configured (optional)', text)
+        self.assertIn('Source Not set', text)
+        config.set_root(self.repo, str(self.archive))
+        text = ' '.join(shown('show').split())
+        self.assertIn('Status Configured', text)
+        self.assertIn("Source Saved in this checkout's .env file", text)
+        self.assertNotIn('dotenv', text)
+        state = json.loads(shown('show', '--json'))
+        self.assertEqual((state['status'], state['source']), ('configured', 'dotenv'))
+        config.set_root(self.repo, '')
+        self.assertIn('Status Disabled (archives are off)', ' '.join(shown('show').split()))
 
 if __name__ == '__main__':
     unittest.main()

@@ -47,13 +47,17 @@ ui_keep_styles
 # the previous run of this menu passes what it printed.
 status_text=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text)
 # After setup, a Next line from saved catalog records; a catalog that cannot
-# be read leaves it out, and Catalog and storage reports the error.
+# be read leaves it out, and Catalog and storage reports the error. So does an
+# unreadable archive setting, since suggestions depend on it; the status
+# above already says how to fix it.
 if [ "$complete" = 1 ]; then
   archives=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["archives"]["status"])')
-  next_line=$(python3 -m model_library.catalog list --json 2>/dev/null \
-    | python3 -m model_library.catalog_menu next --archive-location "$archives" 2>/dev/null \
-    | python3 -m scripts.terminal_format --text) || next_line=""
-  [ -z "$next_line" ] || status_text+=$'\n\n'"$next_line"
+  if [ "$archives" != unreadable ]; then
+    next_line=$(python3 -m model_library.catalog list --json 2>/dev/null \
+      | python3 -m model_library.catalog_menu next --archive-location "$archives" 2>/dev/null \
+      | python3 -m scripts.terminal_format --text) || next_line=""
+    [ -z "$next_line" ] || status_text+=$'\n\n'"$next_line"
+  fi
 fi
 shown=${PULSAR_HOME_STATUS_SHOWN-}
 unset PULSAR_HOME_STATUS_SHOWN

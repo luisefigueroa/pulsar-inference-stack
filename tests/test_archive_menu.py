@@ -132,6 +132,20 @@ confirm() {
         self.assertIn('PULSAR_COLD_ROOT=', (self.root / ".env").read_text())
         self.assertEqual(sentinel.read_text(), "keep")
         self.assertEqual(len(self.choose_log.read_text().splitlines()), 2)
+        # TUI-51: the consequences come before the question.
+        self.assertEqual(self.confirm_log.read_text(), "Disable archives?\n")
+        self.assertIn("Existing archives stay on disk. Restore, Create archive and Verify archive are left out of "
+                      "the catalog menu until a location is set again.", " ".join(result.stdout.split()))
+
+    # TUI-07: the menu shows why the setting can't be read and stays open.
+    def test_unreadable_setting_is_explained_and_the_menu_stays_open(self):
+        (self.root / "elsewhere.env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\n")
+        (self.root / ".env").symlink_to(self.root / "elsewhere.env")
+        result = self.run_menu(self.root / "archives", choices="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(".env", result.stderr)
+        self.assertEqual(self.choose_log.read_text().splitlines(), ["Archive storage"])
+        self.assertTrue((self.root / ".env").is_symlink())
 
 
 if __name__ == "__main__":

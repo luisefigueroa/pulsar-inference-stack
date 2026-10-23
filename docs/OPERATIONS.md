@@ -232,7 +232,11 @@ variable: process value first, then the repository's `.env`; empty disables
 archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.
 Existing non-Pulsar content stays untouched. Archive storage is never mounted
-into serving containers. Disabling this configuration does not delete archives.
+into serving containers. Disabling this configuration does not delete archives;
+the catalog menu leaves out **Restore**, **Create archive** and **Verify
+archive** until a location is set again. If the setting cannot be read, such
+as a malformed value or an unreadable `.env`, the home screen says so with the
+reason instead of reporting archives as not configured.
 
 ## Browse and check
 

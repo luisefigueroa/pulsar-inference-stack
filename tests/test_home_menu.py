@@ -363,6 +363,22 @@ wait_continue() {
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
         self.assertEqual(self.commands(), [])
 
+    # TUI-07: an unreadable archive setting is named with its fix, and no
+    # catalog suggestion is made without it.
+    def test_unreadable_archive_setting_replaces_the_next_line(self):
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        (self.root / "elsewhere.env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\n")
+        (self.root / ".env").symlink_to(self.root / "elsewhere.env")
+        self.catalog.write_text(self.catalog_entries(never_checked("a")))
+        result = self.run_home(["7"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Archives setting could not be read — ", text)
+        self.assertIn("then open Archive storage configuration to check it", text)
+        self.assertNotIn("Next:", text)
+        self.assertNotIn("not configured", text)
+        self.assertEqual(self.commands(), [])
+
     def test_next_line_prints_again_only_when_saved_records_change(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
         self.catalog.write_text(self.catalog_entries(never_checked("a")))
