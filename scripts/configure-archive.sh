@@ -68,13 +68,16 @@ set_archive_location() {
 # Every completed or declined action returns to this menu. Only Back/Esc
 # leaves it normally; Ctrl-C keeps its interrupt status all the way home.
 while true; do
-  archive_cli show
+  # An unreadable setting prints why and the menu stays open.
+  archive_cli show || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
   choice=$(choose_index "Archive storage" "Set archive location" "Disable archives" "Back") \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   case "$choice" in
     0) set_archive_location || { rc=$?; [ "$rc" -ne 130 ] || exit 130; } ;;
     1)
-      if confirm "Disable the saved archive location?" no; then
+      printf '%s\n' "Existing archives stay on disk. **Restore**, **Create archive** and **Verify archive** are left out of the catalog menu until a location is set again." \
+        | python3 "$STACK_ROOT/scripts/terminal_format.py" --text
+      if confirm "Disable archives?" no; then
         archive_cli disable --yes || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       else
         rc=$?; [ "$rc" -ne 130 ] || exit 130

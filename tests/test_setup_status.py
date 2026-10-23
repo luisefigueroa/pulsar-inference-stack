@@ -145,6 +145,27 @@ class SetupStatus(unittest.TestCase):
         self.assertTrue(document["complete"])
         self.assertEqual(document["archives"]["status"], "disabled")
 
+    # TUI-07: a setting that cannot be read is unknown, never "not configured".
+    def test_unreadable_archive_setting_is_reported_with_its_reason(self):
+        self.write_topology(schema2_enrolled(2))
+        (self.repo / "elsewhere.env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\n")
+        (self.repo / ".env").symlink_to(self.repo / "elsewhere.env")
+        document = build(self.repo, {})
+        self.assertTrue(document["complete"])
+        self.assertEqual(document["archives"]["status"], "unreadable")
+        self.assertIn(".env", document["archives"]["error"])
+        output = io.StringIO()
+        render_text(document, writer=TerminalWriter(width=44, stream=output))
+        text = " ".join(output.getvalue().split())
+        self.assertIn("Archives setting could not be read — ", text)
+        self.assertIn("then open Archive storage configuration to check it", text)
+        self.assertNotIn("not configured", text)
+        self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()), output.getvalue())
+        (self.repo / ".env").unlink()
+        (self.repo / ".env").write_text("PULSAR_COLD_ROOT=relative/archives\n")
+        self.assertEqual(build(self.repo, {})["archives"]["status"], "unreadable")
+        self.assertNotIn("error", build(self.repo, {"PULSAR_COLD_ROOT": ""})["archives"])
+
     def test_complete_status_uses_cluster_and_catalog_sections(self):
         self.write_topology(schema2_enrolled(2))
         output = io.StringIO()
