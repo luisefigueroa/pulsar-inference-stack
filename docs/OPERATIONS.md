@@ -233,6 +233,11 @@ archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.
 Existing non-Pulsar content stays untouched. Archive storage is never mounted
 into serving containers. Disabling this configuration does not delete archives.
+Unless a process value overrides the saved one, the catalog menu then leaves
+out **Restore**, **Create archive** and **Verify archive** until a location is
+set again. If the setting cannot be read, such as a malformed value or an
+unreadable `.env`, the home screen says so with the reason and where to fix it,
+instead of reporting archives as not configured.
 
 ## Browse and check
 

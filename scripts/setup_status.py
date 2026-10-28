@@ -73,15 +73,20 @@ def _topology_view(path: Path) -> dict[str, Any]:
         return {"status": "invalid", "nodes": None, "trust": "not-enrolled"}
 
 
-def _archive_status(repo: Path, environ: Mapping[str, str] | None) -> str:
+# archives.status is "configured", "disabled", "not-configured" or
+# "unreadable". "unreadable" means the setting could not be read or is not a
+# valid location; archives.error then says why, and archives.source says
+# where the setting comes from: "process" (the environment, which takes
+# precedence) or "dotenv". An unknown setting is never reported as not
+# configured.
+def _archive_status(repo: Path, environ: Mapping[str, str] | None) -> dict[str, str]:
+    env = os.environ if environ is None else environ
     try:
-        state = effective(repo, environ)
-    except (StorageError, OSError):
-        return "not-configured"
-    status = state.get("status")
-    if status in {"not-configured", "disabled", "configured"}:
-        return status
-    return "not-configured"
+        state = effective(repo, env)
+    except (StorageError, OSError) as exc:
+        return {"status": "unreadable", "error": " ".join(str(exc).split()),
+                "source": "process" if "PULSAR_COLD_ROOT" in env else "dotenv"}
+    return {"status": state["status"]}
 
 
 def build(repo: str | Path, environ: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -103,7 +108,7 @@ def build(repo: str | Path, environ: Mapping[str, str] | None = None) -> dict[st
         "complete": action is None,
         "topology": {"status": topology["status"], "nodes": topology["nodes"]},
         "ssh_trust": {"status": topology["trust"]},
-        "archives": {"status": archives},
+        "archives": archives,
         "catalog": {"spec_count": specs},
     }
     if action is not None:
@@ -136,6 +141,7 @@ def render_text(
         "configured": "configured",
         "disabled": "disabled",
         "not-configured": "not configured (optional)",
+        "unreadable": f"setting could not be read — {document['archives'].get('error')}",
     }[document["archives"]["status"]]
     specs = document["catalog"]["spec_count"]
     catalog = (
@@ -152,6 +158,11 @@ def render_text(
         if document["archives"]["status"] == "not-configured":
             out.emit("Archive actions need a location; choose **Archive storage configuration** when needed.",
                      markup=True)
+        elif document["archives"]["status"] == "unreadable":
+            where = ("the environment that started Pulsar" if document["archives"].get("source") == "process"
+                     else "this checkout's .env file")
+            out.emit(f"Fix PULSAR_COLD_ROOT in {where}, then open **Archive storage configuration** "
+                     "to check it.", markup=True)
         out.blank()
         out.emit("Catalog", role="heading")
         out.emit(catalog, initial_indent="  ", subsequent_indent="  ")

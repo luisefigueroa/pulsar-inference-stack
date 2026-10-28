@@ -192,20 +192,33 @@ def run_locked(repo, command, *, allow_unconfigured=False):
         return subprocess.run(command, env=env).returncode
 
 
+# Human words for the status and source values; --json keeps the values.
+STATUS_TEXT = {'configured': 'Configured', 'disabled': 'Disabled (archives are off)',
+               'not-configured': 'Not configured (optional)'}
+SOURCE_TEXT = {'process': 'PULSAR_COLD_ROOT in the process environment', 'dotenv': "Saved in this checkout's .env file",
+               'absent': 'Not set'}
+
+
 def display(state):
     from scripts.terminal_format import TerminalWriter
-    print(TerminalWriter().paint('Archive location', ['heading'] * len('Archive location')))
-    print(f"  Status: {state['status']}\n  Source: {state['source']}")
+    out = TerminalWriter()
+
+    def field(label, value):
+        out.field(label, value, indent=2, label_width=11)
+
+    out.emit('Archive location', role='heading')
+    field('Status', STATUS_TEXT[state['status']])
+    field('Source', SOURCE_TEXT[state['source']])
     if state['path']:
-        print(f"  Path:\n    {state['path']}")
+        field('Path', state['path'])
         health = state['health']
-        print('  Directory: ' + ('available' if health['directory_exists'] else 'unavailable'))
-        print('  Access observed:')
-        print(f"    Readable: {str(health['readable']).lower()}\n    Writable: {str(health['writable']).lower()}")
+        field('Directory', 'available' if health['directory_exists'] else 'unavailable')
+        field('Access', f"{'readable' if health['readable'] else 'not readable'}, "
+                        f"{'writable' if health['writable'] else 'not writable'} (observed now)")
     if state.get('persisted_error'):
-        print('  Saved setting could not be read as a literal value.')
+        out.emit("The setting saved in .env could not be read as a literal value.", "  ", "  ")
     if state['source'] == 'process' and state['path'] != state['persisted_path']:
-        print('  Process setting overrides the saved setting.')
+        out.emit("The process environment overrides the setting saved in .env.", "  ", "  ")
 
 
 def main(argv=None):
