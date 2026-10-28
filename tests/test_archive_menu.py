@@ -35,13 +35,14 @@ confirm() {
 }
 ''')
 
-    def run_menu(self, path, confirm_rc=1, *, choices="0,2", input_rc=0):
+    def run_menu(self, path, confirm_rc=1, *, choices="0,2", input_rc=0, **extra):
         self.choose_log.unlink(missing_ok=True)
         self.confirm_log.unlink(missing_ok=True)
+        base = {key: value for key, value in os.environ.items() if key != "PULSAR_COLD_ROOT"}
         return subprocess.run(
             ["bash", str(ROOT / "scripts/configure-archive.sh"), "menu"],
             env={
-                **os.environ,
+                **base, **extra,
                 "PYTHONPATH": str(ROOT),
                 "PULSAR_HOME_UI": str(self.ui),
                 "PULSAR_SETUP_ROOT": str(self.root),
@@ -136,6 +137,17 @@ confirm() {
         self.assertEqual(self.confirm_log.read_text(), "Disable archives?\n")
         self.assertIn("Existing archives stay on disk. Restore, Create archive and Verify archive are left out of "
                       "the catalog menu until a location is set again.", " ".join(result.stdout.split()))
+
+    def test_disabling_under_a_process_value_says_it_changes_only_dotenv(self):
+        archive = self.root / "archives"
+        archive.mkdir()
+        result = self.run_menu(archive, confirm_rc=0, choices="1,2", PULSAR_COLD_ROOT=str(archive))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.confirm_log.read_text(), "Disable the saved archive location?\n")
+        text = " ".join(result.stdout.split())
+        self.assertIn("PULSAR_COLD_ROOT is set in this process and takes precedence", text)
+        self.assertNotIn("left out of the catalog menu", text)
+        self.assertIn("PULSAR_COLD_ROOT=", (self.root / ".env").read_text())
 
     # TUI-07: the menu shows why the setting can't be read and stays open.
     def test_unreadable_setting_is_explained_and_the_menu_stays_open(self):

@@ -158,6 +158,12 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIn('Source PULSAR_COLD_ROOT in the process environment', text)
         self.assertIn('The process environment overrides the setting saved in .env.', text)
         self.assertLessEqual(max(map(len, output.getvalue().splitlines())), 44)
+        # An unavailable directory is reported as observed, without a guessed cause.
+        output = io.StringIO()
+        with redirect_stdout(output):
+            config.display({'source': 'dotenv', 'path': '/archive', 'persisted_path': '/archive',
+                'status': 'configured', 'health': {'directory_exists': False, 'readable': False, 'writable': False}})
+        self.assertIn('Directory  unavailable\n', output.getvalue())
 
     # TUI-06: words instead of the JSON values; --json keeps the values.
     def test_human_output_uses_words_and_json_keeps_values(self):

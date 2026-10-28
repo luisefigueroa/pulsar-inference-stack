@@ -75,9 +75,17 @@ while true; do
   case "$choice" in
     0) set_archive_location || { rc=$?; [ "$rc" -ne 130 ] || exit 130; } ;;
     1)
-      printf '%s\n' "Existing archives stay on disk. **Restore**, **Create archive** and **Verify archive** are left out of the catalog menu until a location is set again." \
-        | python3 "$STACK_ROOT/scripts/terminal_format.py" --text
-      if confirm "Disable archives?" no; then
+      # A process value, including empty, takes precedence over the saved one,
+      # so disabling then changes only .env.
+      if [ -n "${PULSAR_COLD_ROOT+x}" ]; then
+        explanation="PULSAR_COLD_ROOT is set in this process and takes precedence, so this saves an empty location in .env only; archives stay as shown above until it is unset. Existing archives stay on disk."
+        question="Disable the saved archive location?"
+      else
+        explanation="Existing archives stay on disk. **Restore**, **Create archive** and **Verify archive** are left out of the catalog menu until a location is set again."
+        question="Disable archives?"
+      fi
+      printf '%s\n' "$explanation" | python3 "$STACK_ROOT/scripts/terminal_format.py" --text
+      if confirm "$question" no; then
         archive_cli disable --yes || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       else
         rc=$?; [ "$rc" -ne 130 ] || exit 130

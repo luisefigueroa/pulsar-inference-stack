@@ -166,6 +166,19 @@ class SetupStatus(unittest.TestCase):
         self.assertEqual(build(self.repo, {})["archives"]["status"], "unreadable")
         self.assertNotIn("error", build(self.repo, {"PULSAR_COLD_ROOT": ""})["archives"])
 
+    def test_an_invalid_process_setting_is_fixed_in_the_environment_not_dotenv(self):
+        self.write_topology(schema2_enrolled(2))
+        document = build(self.repo, {"PULSAR_COLD_ROOT": "relative/archives"})
+        self.assertEqual(document["archives"]["status"], "unreadable")
+        self.assertEqual(document["archives"]["source"], "process")
+        output = io.StringIO()
+        render_text(document, writer=TerminalWriter(width=80, stream=output))
+        text = " ".join(output.getvalue().split())
+        self.assertIn("Fix PULSAR_COLD_ROOT in the environment that started Pulsar", text)
+        self.assertNotIn(".env", text)
+        (self.repo / ".env").write_text("PULSAR_COLD_ROOT=relative/archives\n")
+        self.assertEqual(build(self.repo, {})["archives"]["source"], "dotenv")
+
     def test_complete_status_uses_cluster_and_catalog_sections(self):
         self.write_topology(schema2_enrolled(2))
         output = io.StringIO()

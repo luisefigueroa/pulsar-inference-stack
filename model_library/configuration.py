@@ -212,7 +212,7 @@ def display(state):
     if state['path']:
         field('Path', state['path'])
         health = state['health']
-        field('Directory', 'available' if health['directory_exists'] else 'unavailable (missing or not mounted)')
+        field('Directory', 'available' if health['directory_exists'] else 'unavailable')
         field('Access', f"{'readable' if health['readable'] else 'not readable'}, "
                         f"{'writable' if health['writable'] else 'not writable'} (observed now)")
     if state.get('persisted_error'):
