@@ -33,6 +33,8 @@ CARRIED_START_FLAGS = ("--dry-run", "--pull-image", "--accept-memory-warn", "--r
                        "--skip-preflight")
 START = "./pulsar start {spec} {start_args}"
 STOP = "./pulsar stop {spec} {candidate}{placement}"
+# Reads every rank's container of the spec; it takes no placement.
+LOGS = "./pulsar logs {spec}"
 # Added to a check-stage note when --replace already removed the previous
 # service; scripts/lib.sh uses the same sentence for launch refusals.
 AFTER_REPLACE_NOTE = "The previous service was already removed, so nothing is running for this spec now."
@@ -87,11 +89,14 @@ BLOCKERS = {
     "container_start_failed": Kind("the service container could not be started", "./pulsar doctor",
                                    note="Docker's error is shown above.", stage="launch", nothing_runs=True),
     "smoke_test_failed": Kind("the service started and passed its health check, but the test completion failed; "
-                              "it is still running", STOP, stage="launch"),
+                              "it is still running", STOP,
+                              note="Its last logs are shown above, and {logs} shows more.", stage="launch"),
     "health_timeout": Kind("the service did not become healthy in time", STOP,
-                           note="It is still running; its logs are shown above.", stage="launch"),
+                           note="It is still running; its last logs are shown above, and {logs} shows more.",
+                           stage="launch"),
     "container_exited": Kind("the service container exited before it became healthy", STOP,
-                             note="Stop clears the exited container; its logs are shown above.", stage="launch"),
+                             note="Stop clears the exited container; its last logs are shown above, and {logs} "
+                                  "shows more.", stage="launch"),
     "service_stopped": Kind("the service was removed before it became healthy, for example by pulsar stop", None,
                             note="Nothing is running for this spec now.", stage="launch"),
     # Ctrl-C or a stop signal after launch. An interrupt never removes what start
@@ -184,6 +189,9 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         replaced = "The previous service was removed before this launch."
         resolved_note = (f"{replaced} Nothing this start launched was removed. To remove it: {{stop}}"
                          if note is None else f"{note} {replaced}")
+    # Reading logs resolves nothing, so it is named in the note, never the fix.
+    if resolved_note and "{logs}" in resolved_note:
+        resolved_note = resolved_note.replace("{logs}", LOGS.format(spec=shown))
     if resolved_note and "{stop}" in resolved_note:
         resolved_note = resolved_note.replace(
             "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))

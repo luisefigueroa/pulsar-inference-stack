@@ -55,6 +55,10 @@ class SpecSelector(unittest.TestCase):
             ("status", (OTHER[:12], "--node", "n1")): (0, None),
             ("status", ("--node", "n1")): (None, None),
             ("status", ("--service-id", "abc")): (None, None),
+            # logs takes its options before or after the spec; option values are never the spec.
+            ("logs", (OTHER[:12],)): (0, None),
+            ("logs", ("--rank", "1", "--tail", "50", OTHER[:12])): (4, None),
+            ("logs", ("--node", "n1", "--follow")): (None, None),
             ("models", ("show", OTHER[:12])): (1, None),
             ("models", ("results", OTHER[:12])): (1, None),
             ("models", ("list",)): (None, None),

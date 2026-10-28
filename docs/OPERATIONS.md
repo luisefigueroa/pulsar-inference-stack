@@ -544,6 +544,7 @@ the client and running service use the same key. See [troubleshooting](#troubles
 
 ```sh
 ./pulsar status <spec-id> --node <node> --json
+./pulsar logs <spec-id>
 ./pulsar inventory
 ./pulsar inventory menu
 ```
@@ -555,10 +556,21 @@ service started before launch records existed, it reports the inventory's view
 and says it is not verified, and why. It tells "no service exists" apart from
 "a node could not be observed".
 
+`logs` prints the recent output of the spec's containers, the last 200 lines
+of each by default (`--tail N`), under a heading such as `spark-2 (rank 1) ·
+exited`. It reads every rank, including containers that have exited, but only
+containers the Stack owns, and it changes nothing. `--node` or `--rank` selects
+one container, even of a multi-node service, and `--follow` keeps printing one
+container's new output until Ctrl-C. It exits 1 when no container of the spec
+exists and 3 when a node could not be observed; the other nodes' logs are still
+printed. It has no `--json` form; `status --json` reports the service's state.
+A failed multi-node start removes its containers, so only the logs that start
+printed remain.
+
 **Live service inventory** in the root menu opens `inventory menu`. Select an
 observed service whose spec is published in the catalog, then choose
-**Detailed status** or **Stop service**. These invoke the existing status and
-stop commands. One-node services use the node ID recorded in the inventory;
+**Detailed status**, **Service logs** or **Stop service**. These invoke the
+existing status, logs and stop commands. One-node services use the node ID recorded in the inventory;
 multi-node services retain the commands' participating-node resolution.
 The inventory timestamp remains visible, and **Refresh inventory** obtains a
 new observation. **Open in catalog** opens the service's recipe in the catalog
@@ -752,7 +764,7 @@ remain explicit decisions.
 | Existing service or port in use | `./pulsar inventory` and `./pulsar status <spec-id>` | Identify the owner; stopping, replacement, and a deployment-port change are separate choices. |
 | `guard_unsupported` | `./pulsar models show <spec-id>` | Use the separately scoped [guarded serving](GUARDED_SERVING.md) procedure. |
 | `historical_spec` | `./pulsar models show <spec-id>` | Read [historical compatibility](#historical-specs-and-current-observations); use a current spec for a new launch. |
-| Launch or test completion failed | `./pulsar status <spec-id>` and `./pulsar inventory` | Inspect the reported remaining containers and logs before retrying; failure does not always mean nothing is running. |
+| Launch or test completion failed | `./pulsar status <spec-id>`, `./pulsar logs <spec-id>` and `./pulsar inventory` | Inspect the reported remaining containers and their logs before retrying; failure does not always mean nothing is running. |
 | API request fails | Reported API URL, served name, authentication, and `./pulsar status <spec-id>` | Follow [the request example](#send-your-first-api-request); distinguish endpoint, authentication, and service failures. |
 | Interrupted operation or `cleanup_incomplete` | Retained command output; live status for serving, model info for files, image check for staging | Establish what remains before a conflicting retry. Unconfirmed cleanup is not proof that remote workers stopped. |
 
@@ -786,7 +798,9 @@ succeeds. A launch failure prints a `FAILED` line (`container_start_failed`,
 `smoke_test_failed`, `health_timeout`, `container_exited` or
 `service_stopped`) that says what remains: a failed test completion leaves the
 service running, a one-node service keeps its container for its logs, and a
-multi-node start that never became healthy removes its containers. It says
+multi-node start that never became healthy removes its containers. Where a
+container remains, the note names `./pulsar logs <spec-id>` for more than the
+last lines printed. It says
 they were removed only after confirming it on every node; otherwise it names
 the nodes left and suggests `./pulsar stop`. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
@@ -857,7 +871,9 @@ until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. Where the terminal is wide enough,
 each choice adds what it does, such as **Prepare — copy files to every serving
-node** or **Pin prepared copies — protect from purge**. An operation is left out only when
+node** or **Pin prepared copies — protect from purge**. **Service logs**, after
+**Live status**, opens `logs` for the spec in the pager; it only reads, so it
+asks nothing. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it and the reason.
 **Download** remains available when a home is recorded, and **Restore** remains
 available when an archive location is configured. A home record can outlive its
@@ -1010,15 +1026,17 @@ lead to it:
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
 | `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
-| `service_exists`, `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Stop |
+| `service_exists` | Live status; Stop |
+| `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Service logs; Stop |
 | A failed launch whose containers may remain (`cleanup` is `unconfirmed`) | Live status; Stop, added to the choices above |
 | `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
 
 Each choice runs the existing operation with its own selections, preview and
 confirmation, and none adds `--replace` or `--pull-image`. A failed
 multi-node launch whose containers were all seen removed offers no Live
-status or Stop. The inventory, Cluster topology, topology check, host
-diagnostics and a declined confirmation return to the same choices. The diagnostics rerun replaces them with its own. Any other
+status, Service logs or Stop. The inventory, Cluster topology, topology check,
+host diagnostics, Service logs and a declined confirmation return to the same
+choices. The diagnostics rerun replaces them with its own. Any other
 choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
 inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
 `historical_spec` and `service_stopped` have no menu choice; their printed

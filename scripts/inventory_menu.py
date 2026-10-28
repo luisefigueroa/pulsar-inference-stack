@@ -120,6 +120,8 @@ def view(inventory, catalog, spec_id=None, *, width=None):
         writer.emit("Detailed status uses the existing service and file checks.")
         node = service["node_id"] or "-"
         commands.append(f"status\t{spec_id}\t{node}")
+        # Logs reads every rank's container, so it needs only the spec.
+        commands.append(f"logs\t{spec_id}")
         if service["stop_reason"]:
             writer.emit(service["stop_reason"])
         else:

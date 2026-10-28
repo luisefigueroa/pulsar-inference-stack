@@ -59,6 +59,7 @@ REFERENCE = [
         ("pulsar guarded template|validate|run|stop|reconcile",
          "Own a bounded trial and reconcile its completed locator."),
         ("pulsar status SPEC", "Observe the live service on all participating nodes."),
+        ("pulsar logs SPEC", "Print the recent output of the service's containers on every rank; read-only."),
         ("pulsar stop SPEC", "Stop the owned service; retain model files and pins."),
         ("pulsar stop --all --yes",
          "Stop every Stack-managed service on all confirmed nodes; retain model files and pins."),

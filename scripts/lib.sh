@@ -2651,9 +2651,9 @@ guarded_trial_node_still() {
   [ "$CLUSTER_TOPOLOGY_ID" = "$3" ] && [ "${CLUSTER_NODE_IDS[$1]:-}" = "$2" ]
 }
 
-# guarded_trial_docker INDEX ARGS... — run one docker command on a confirmed
-# node: locally for index 0, over the node's SSH transport otherwise.
-guarded_trial_docker() {
+# docker_on_node INDEX ARGS... — run one docker command on a confirmed node:
+# locally for index 0, over the node's management SSH otherwise.
+docker_on_node() {
   local index="$1"; shift
   if [ "$index" = 0 ]; then
     "$PULSAR_DOCKER" "$@"
@@ -2661,6 +2661,8 @@ guarded_trial_docker() {
     ssh_node "$index" "$(shell_join_q docker "$@")" </dev/null
   fi
 }
+
+guarded_trial_docker() { docker_on_node "$@"; }
 
 # guarded_trial_container INDEX FILTERS — the IDs of the containers matching
 # every '|'-separated docker filter on one confirmed node.

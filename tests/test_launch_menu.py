@@ -193,12 +193,21 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(len(actions), 1)
         self.assertEqual(choices.count("Start was refused: 1 blocker"), 2)
 
-    def test_launch_failure_is_named_and_offers_status_and_stop(self):
+    def test_launch_failure_is_named_and_offers_status_logs_and_stop(self):
         _, result, _, choices, _ = self.refused(
             [{"blocker": "health_timeout", "stage": "launch"}], "Back", "Back", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.offered(choices, "Start failed after launch: 1 blocker. Choose a next step"),
-                         ["Live status", "Stop", "Back"])
+                         ["Live status", "Service logs", "Stop", "Back"])
+
+    # TUI-41: Service logs reads what the failed start left, then returns to the choices.
+    def test_service_logs_after_a_failed_start_reads_the_containers(self):
+        spec, result, actions, choices, _ = self.refused(
+            [{"blocker": "container_exited", "stage": "launch"}], "Service logs", "Back", "Back", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[1:], [["pulsar", "logs", spec]])
+        self.assertRegex(choices, rf"\[page\] Reading service logs… \| \S+/pulsar logs {spec}\n")
+        self.assertEqual(choices.count("Start failed after launch: 1 blocker. Choose a next step"), 2)
 
     def test_missing_files_offer_the_operation_saved_records_point_to(self):
         _, _, _, choices, _ = self.refused(["model_files_not_ready"], "Back", "Back", "Back")
@@ -227,6 +236,11 @@ class LaunchMenu(unittest.TestCase):
             "Back", "Back", "Back")
         self.assertEqual(self.offered(choices, "Start failed after launch: 1 blocker. Choose a next step"),
                          ["Host diagnostics", "Live status", "Stop", "Back"])
+        # A removal that could not be confirmed may have left containers to read.
+        _, _, _, choices, _ = self.refused(
+            [{"blocker": "health_timeout", "stage": "launch", "cleanup": "unconfirmed"}], "Back", "Back", "Back")
+        self.assertEqual(self.offered(choices, "Start failed after launch: 1 blocker. Choose a next step"),
+                         ["Live status", "Service logs", "Stop", "Back"])
 
     def test_failed_check_reruns_the_dry_run_with_full_diagnostics(self):
         spec, result, actions, choices, _ = self.refused(

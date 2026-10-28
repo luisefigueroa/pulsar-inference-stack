@@ -25,6 +25,7 @@ class IntegrationContract(unittest.TestCase):
                          {'image.check', 'image.stage'})
         self.assertFalse(any(operation.startswith('diagnostic.') for operation in document['operations']))
         self.assertIn('spec.freeze',document['operations'])
+        self.assertIn('logs',document['operations'])
         self.assertFalse(document['catalog']['state_gate'])
         self.assertFalse(document['catalog']['review_gate'])
         self.assertFalse(document['catalog']['evidence_gate'])
