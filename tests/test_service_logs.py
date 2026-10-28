@@ -74,7 +74,10 @@ root = os.environ["LOGS_FIXTURE"]
 args = sys.argv[1:]
 alias = args[args.index("--") + 1]
 node = json.load(open(os.path.join(root, "map.json")))[alias]
-if str(node) in os.environ.get("LOGS_UNREACHABLE", "").split(","):
+# LOGS_UNREACHABLE fails every connection to a node; LOGS_DROP_READ fails only
+# its log read, as when the connection drops after the node was observed.
+dropped = "docker logs" in args[-1] and str(node) in os.environ.get("LOGS_DROP_READ", "").split(",")
+if dropped or str(node) in os.environ.get("LOGS_UNREACHABLE", "").split(","):
     print(f"ssh: connect to host {alias} port 22: Connection timed out", file=sys.stderr)
     sys.exit(255)
 sys.exit(subprocess.call(["bash", "-c", args[-1]], env=dict(os.environ, LOGS_NODE=str(node))))
@@ -197,6 +200,21 @@ class ServiceLogs(unittest.TestCase):
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertNotIn("no container", result.stderr)
 
+    def test_a_read_that_loses_its_connection_is_unknown_never_log_text(self):
+        for node in range(3):
+            self.container(node, node)
+        result = self.run_logs(SPEC, LOGS_DROP_READ="1")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("rank 0 line 3", result.stdout)
+        self.assertIn("rank 2 line 3", result.stdout)
+        self.assertNotIn("Connection timed out", result.stdout)
+        self.assertIn("fixture-rank-1 (rank 1) could not be observed (ssh: connect to host alias-1 port 22: "
+                      "Connection timed out); its logs are unknown", " ".join(result.stderr.split()))
+        result = self.run_logs(SPEC, "--follow", "--rank", "1", LOGS_DROP_READ="1")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertNotIn("Connection timed out", result.stdout)
+        self.assertIn("could not be observed", result.stderr)
+
     def test_follow_reads_exactly_one_container(self):
         for node in range(3):
             self.container(node, node)
@@ -210,6 +228,12 @@ class ServiceLogs(unittest.TestCase):
         logs = [(node, args) for node, args in self.docker_calls() if args[0] == "logs"]
         self.assertEqual(logs, [(1, ["logs", "--tail", "200", "--follow", self.containers[1]["id"]])])
         self.assertIn("rank 1 line 3", result.stdout)
+        # Another node unknown: the one container is not established, so nothing is followed.
+        before = len(self.docker_calls())
+        result = self.run_logs(SPEC, "--follow", "--rank", "1", LOGS_UNREACHABLE="2")
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertIn("fixture-rank-2 could not be observed", " ".join(result.stderr.split()))
+        self.assertFalse([args for _, args in self.docker_calls()[before:] if args[0] == "logs"])
 
     def test_usage_mistakes_exit_2_before_any_probe(self):
         cases = {("--tail", "0"): "--tail needs a positive number of lines",
