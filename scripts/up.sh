@@ -312,7 +312,8 @@ else
     start_check fail image "the image check could not complete: ${img_detail:-exit $img_rc}"
     blocked image_check_failed --detail "${img_detail:-exit $img_rc}"
   else
-    missing_on=$(image_ranks missing | cut -f2 | paste -sd, - | sed 's/,/, /g')
+    # other-name: the pinned content under another repository name still lacks the pinned reference.
+    missing_on=$(image_ranks missing other-name | cut -f2 | paste -sd, - | sed 's/,/, /g')
     case "$img_state" in
       need-topology)
         start_check fail image "the image check found fewer confirmed nodes than the spec needs"
