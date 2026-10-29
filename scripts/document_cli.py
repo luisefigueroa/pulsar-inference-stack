@@ -88,8 +88,11 @@ def failure(exc, *, json_output: bool, code=None, exit_code=None):
     details = getattr(exc, "envelope_details", None) or [
         {"field": getattr(exc, "field", "$"), "message": getattr(exc, "reason", str(exc))}]
     if json_output:
+        # A command may add fields beside details, such as start's checks.
+        extra = getattr(exc, "envelope_extra", None) or {}
         print(json.dumps({"schema_version": 1, "ok": False,
-                          "error": {"code": code, "message": str(exc), "details": details}}, sort_keys=True))
+                          "error": {**extra, "code": code, "message": str(exc), "details": details}},
+                         sort_keys=True))
     else:
         # A command-line mistake names the command itself; its field label adds nothing.
         command_mistake = isinstance(exc, UsageError) and exc.field == "command"

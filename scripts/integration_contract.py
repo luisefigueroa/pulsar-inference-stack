@@ -15,6 +15,7 @@ from release_spec.contribution import APPROVED_POLICY_DIGEST
 from release_spec.baseline_policy import SUPPORTED_POLICY_DIGESTS
 from scripts.document_cli import ERROR_CODES, EXIT_STATUSES
 from scripts.start_blockers import BLOCKERS
+from scripts.start_checks import CHECK_IDS
 from scripts.terminal_format import TerminalWriter
 
 
@@ -59,6 +60,8 @@ def contract() -> dict:
         'exit_statuses': dict(EXIT_STATUSES),
         # start --json failures list these in error.details as "blocker".
         'start_blocker_codes': sorted(BLOCKERS),
+        # start --json lists its checks with these ids, in this order.
+        'start_check_ids': list(CHECK_IDS),
         # Aliases that warn on stderr and are removed in CLI contract 2.
         'deprecated_commands': {
             'gum': {'replacement': 'pulsar', 'removed_in_cli_contract': 2},

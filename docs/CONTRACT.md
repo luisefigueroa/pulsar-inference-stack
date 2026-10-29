@@ -415,6 +415,7 @@ before relying on a command or format.
 | `diagnostics` | Optional assessments; they never change catalog membership. |
 | `error_codes`, `exit_statuses` | The tables above. An `exit_status` is an integer, or the string `128+signal`. |
 | `start_blocker_codes` | The codes `start --json` reports in `error.details`, described below. |
+| `start_check_ids` | The `id` of each check `start --json` reports in `checks`, in the order start runs them, described below. |
 | `deprecated_commands` | Aliases that still work, warn on stderr and are removed in CLI contract 2, each with its `replacement`. |
 | `deprecated_flags` | Flags that still parse, warn on stderr and change nothing; each `note` says what to do instead. They are removed in CLI contract 2. |
 
@@ -445,6 +446,20 @@ Start runs every independent check before it reports, so one refusal can list
 several blockers. Branch on `blocker`, `stage` and `cleanup`; `message`, `fix`
 and `note` are for people.
 
+`start --json` also reports what it checked as `checks`: in `result` when it
+succeeds (including `--dry-run`), and in `error`, beside `details`, when it is
+refused. `details` keeps only blocker records. Each check has `id`, `outcome`,
+`node` (hostname, or null when the check covers every serving node) and
+`message`, which is for people. `id` is `spec-review`, `recipe`, `topology`,
+`fabric`, `image`, `service`, `model-files`, `memory`, `port`, `preflight` or
+`plan`; `fabric` and `preflight` apply only to multi-node specs. `outcome` is
+`pass`, `fail`, `info` (shown but not blocking, such as a skipped check, a
+memory warning accepted for a dry run, or a missing image `--pull-image` will
+stage) or `not_run` (an earlier blocker ended the checks before it). A check
+can appear once per node, such as `port`. Checks are listed in the order they
+ran, then the ones not run. A start refused before the checks began has an
+empty list.
+
 When `start --json` is interrupted after it launched a service, the error is
 `cancelled` (or `cleanup_incomplete`) and `details` holds one
 `start_interrupted` record with `stage` `launch`: its `service_id`, the node
@@ -453,6 +468,9 @@ on an interrupt. `fix` is the status command, and `note` names the stop command
 that removes the service; with `--replace` it also says the previous service
 was removed, or may have been. Interrupted before launch, `details` has no
 record and nothing was started.
+
+Change note, 2026-10-29: `start --json` gained `checks`, in `result` and in
+`error` beside `details`; nothing else changed.
 
 Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `service_id`; `fix` became a runnable command or null (it was prose for

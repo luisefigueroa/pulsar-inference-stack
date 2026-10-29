@@ -201,12 +201,21 @@ run_operation() {
 # A failed Start already reports its checks. Offer one narrowly scoped retry
 # only when the existing structured blocker records contain memory warnings;
 # otherwise offer the menu operations that address the recorded blockers.
+# print_start_checks FILE — Start's checks on one line: what passed, failed
+# or did not run (scripts/start_checks.py); nothing when none were recorded.
+print_start_checks() {
+  python3 -m scripts.start_checks checklist --checks-file "$1" 2>/dev/null || true
+}
+
 start_catalog_spec() {
-  local label="$1" spec="$2" blockers question allow=0 rc
+  local label="$1" spec="$2" blockers checks question allow=0 rc
   shift 2
   blockers=$(mktemp) || return 1
+  checks=$(mktemp) || { rm -f "$blockers"; return 1; }
   run_operation start "$label" "$spec" "$RECIPE_MODEL" env PULSAR_START_BLOCKERS_FILE="$blockers" \
-    "$REPO_DIR/pulsar" start "$spec" "$@"
+    PULSAR_START_CHECKS_FILE="$checks" "$REPO_DIR/pulsar" start "$spec" "$@"
+  [ "$OPERATION_INTERRUPTED" -ne 0 ] || print_start_checks "$checks"
+  rm -f "$checks"
   if [ "$OPERATION_RC" -eq 1 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ] \
       && catalog_menu memory-warning --blockers-file "$blockers"; then
     allow=1
@@ -230,11 +239,14 @@ start_catalog_spec() {
 # check_launch_prerequisites LABEL SPEC START_ARGS... — the existing dry run;
 # when it records blockers, the same choices as a refused Start follow.
 check_launch_prerequisites() {
-  local label="$1" spec="$2" blockers rc=0
+  local label="$1" spec="$2" blockers checks rc=0
   shift 2
   blockers=$(mktemp) || return 1
+  checks=$(mktemp) || { rm -f "$blockers"; return 1; }
   run_operation readiness "$label" "$spec" "$RECIPE_MODEL" env PULSAR_START_BLOCKERS_FILE="$blockers" \
-    "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run
+    PULSAR_START_CHECKS_FILE="$checks" "$REPO_DIR/pulsar" start "$spec" "$@" --dry-run
+  [ "$OPERATION_INTERRUPTED" -ne 0 ] || print_start_checks "$checks"
+  rm -f "$checks"
   if [ "$OPERATION_RC" -ne 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ]; then
     start_choices "$spec" "$blockers" --dry-run "$@" || rc=$?
   fi

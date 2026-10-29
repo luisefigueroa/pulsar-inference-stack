@@ -32,6 +32,25 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(actions, [["pulsar", "start", spec, "--node", "fixture-node", "--dry-run"]])
         self.assertEqual(questions, "")
 
+    # TUI-79: one line names what Start's checks passed, failed or did not reach.
+    def test_readiness_and_start_print_a_checklist(self):
+        checks = {"expected": ["recipe", "topology", "image", "memory", "port", "plan"],
+                  "ran": [["recipe", "pass"], ["topology", "pass"], ["image", "info"], ["memory", "fail"]]}
+        # Wrapped with a hanging indent, never between a mark and its check.
+        line = "  Checks: ✓ recipe  ✓ topology  • image  ✗ memory  – port (not run)\n          – plan (not run)\n"
+        _, result, _, _, _ = self.shortcut("Check launch prerequisites", "Back",
+                                           launch={"dry_rc": 1, "blockers": ["memory_insufficient"], "checks": checks})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(line, result.stdout)
+        _, result, _, _, _ = self.run_menu(["#0", "Start", "fixture-host", "Back", "Back", "Back"], confirms=["yes"],
+                                           launch={"start_rc": 1, "blockers": ["memory_insufficient"],
+                                                   "checks": checks})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(line, result.stdout)
+        # Nothing recorded, nothing printed.
+        _, result, _, _, _ = self.shortcut("Check launch prerequisites")
+        self.assertNotIn("Checks:", result.stdout)
+
     def test_image_check_uses_existing_command(self):
         spec, result, actions, _, questions = self.shortcut("Check serving image")
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -74,10 +74,12 @@ class StatusFailed(RuntimeError):
 
 
 class StartBlocked(RuntimeError):
-    """Start refused; envelope_details holds one record per start blocker."""
-    def __init__(self, message, blockers):
+    """Start refused; envelope_details holds one record per start blocker, and
+    the error's checks what start checked before it stopped."""
+    def __init__(self, message, blockers, checks=None):
         super().__init__(message)
         self.envelope_details = blockers
+        self.envelope_extra = {'checks': checks or []}
 
 
 def redact_diagnostic(value):
@@ -444,11 +446,13 @@ def dispatch(command, args):
         os.execvp('bash',['bash',str(ROOT/'scripts/resources.sh'),*args])
     if command == 'start':
         from scripts.start_blockers import read as read_blockers
+        from scripts.start_checks import read as read_checks
         with tempfile.TemporaryDirectory(prefix='pulsar-start-result.') as temp:
-            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'
+            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'; checks=Path(temp)/'checks.jsonl'
             try:
                 execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path),
-                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers)})
+                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers),
+                                                  'PULSAR_START_CHECKS_FILE':str(checks)})
             except Cancelled as exc:
                 # Interrupted after launch: cancellation reaped this command, not the
                 # service it started. Say so first, and name the service in details.
@@ -463,9 +467,9 @@ def dispatch(command, args):
             except RuntimeError as exc:
                 recorded=read_blockers(blockers)
                 if recorded:
-                    raise StartBlocked(str(exc),recorded) from exc
+                    raise StartBlocked(str(exc),recorded,read_checks(checks)) from exc
                 raise
-            return serving.load_json(path)
+            return {**serving.load_json(path),'checks':read_checks(checks)}
     if command == 'model':
         if not args or args[0].startswith('-'):
             raise UsageError('command', 'pulsar model needs an operation such as acquire, prepare, info or restore; '
