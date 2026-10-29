@@ -128,7 +128,7 @@ elif sys.argv[1:] == ["models", "menu"]:
         "spec": os.environ.get("PULSAR_CATALOG_OPEN_SPEC"),
         "inventory": json.loads(pathlib.Path(captured).read_text()) if captured else None}))
     sys.exit(config.get("catalog_rc", 0))
-elif sys.argv[1] in ("status", "stop"):
+elif sys.argv[1] in ("status", "stop", "logs"):
     rc = config.get(sys.argv[1] + "_rc", 0)
     print("Existing command " + sys.argv[1] + (" refused" if rc else " completed"))
     sys.exit(rc)
@@ -164,6 +164,20 @@ else: sys.exit(99)
         # Its output opens in the pager after a spinner; closing it is the Continue.
         self.assertIn("[page] Checking service status… | ", choices)
         self.assertNotIn("[continue]", choices)
+
+    # TUI-41: Service logs reads every rank of the selected service.
+    def test_service_logs_reads_the_selected_service_without_a_question(self):
+        result, calls, choices, questions = self.run_menu(["#0", "Service logs", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["logs", self.spec["spec_id"]], calls)
+        self.assertIn("Selected catalog service\nDetailed status\nService logs\n", choices)
+        self.assertIn("[page] Reading service logs… | ", choices)
+        self.assertEqual(questions, "")
+        self.assertNotIn("[continue]", choices)
+        self.setUp()
+        result, _, choices, _ = self.run_menu(["#0", "Service logs", "Back", "Back"], logs_rc=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[continue]", choices)
 
     def test_status_outcome_separates_not_running_from_unknown(self):
         for rc, expected in ((0, None), (1, "▲ spec {id} is not running."),

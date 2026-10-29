@@ -28,7 +28,7 @@ VALUE_OPTIONS = {
     "--revision", "--node", "--placement-nodes", "--manifest-out", "--verification-jobs",
     "--override-file", "--memory-estimate-file", "--memory-estimate-id",
     "--backend", "--transport", "--copy-streams", "--repo-root", "--state-root",
-    "--service-id",
+    "--service-id", "--rank", "--tail",
 }
 
 
@@ -86,8 +86,8 @@ def spec_position(command: str, args: list[str]) -> tuple[int | None, str | None
     """Locate the spec argument and whether its operation requires the full ID."""
     if command in ("start", "stop"):
         return (0 if args and not args[0].startswith("-") else None), None
-    if command == "status":
-        # status accepts its options before or after the spec.
+    if command in ("status", "logs"):
+        # status and logs accept their options before or after the spec.
         return _first_positional(args), None
     if command == "models":
         # models check forwards to the model parser, so flags may precede the spec.

@@ -35,7 +35,7 @@ def contract() -> dict:
         'operations': ['contract', 'spec.example', 'spec.freeze', 'spec.verify', 'spec.show', 'spec.compare',
                        'policy.show', 'evidence.measurement', 'evidence.evaluate', 'evidence.verify',
                        'evidence.summary', 'contribution.verify', 'privacy.check', 'privacy.commits',
-                       'selftest', 'start', 'observe', 'resources', 'status', 'stop', 'memory.verify',
+                       'selftest', 'start', 'observe', 'resources', 'status', 'stop', 'logs', 'memory.verify',
                        'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify',
                        'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop', 'guarded.reconcile',
                        'image.check', 'image.stage'],

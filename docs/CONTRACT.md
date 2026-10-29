@@ -240,6 +240,7 @@ Execution operations independently check their live prerequisites.
 | `model acquire/prepare/info/restore/archive` | Existing explicit model-file lifecycle; use `--model-commit` for first acquisition |
 | `model budget` | Read prepared-copy storage usage, reserve and allowance on every confirmed node |
 | `start`, `status`, `stop` | Serve, inspect, or stop an owned service |
+| `logs SPEC [--node NODE \| --rank N] [--tail N] [--follow]` | Print recent output of an owned service's containers, including exited ones; human text only, no `--json`. Exits 1 when none exists and 3 when a node could not be observed |
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
 | `resources --service-id ID --jsonl` | Stream private diagnostics for a recorded service |
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |

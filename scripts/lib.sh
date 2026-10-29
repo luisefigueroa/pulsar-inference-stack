@@ -2651,9 +2651,9 @@ guarded_trial_node_still() {
   [ "$CLUSTER_TOPOLOGY_ID" = "$3" ] && [ "${CLUSTER_NODE_IDS[$1]:-}" = "$2" ]
 }
 
-# guarded_trial_docker INDEX ARGS... — run one docker command on a confirmed
-# node: locally for index 0, over the node's SSH transport otherwise.
-guarded_trial_docker() {
+# docker_on_node INDEX ARGS... — run one docker command on a confirmed node:
+# locally for index 0, over the node's management SSH otherwise.
+docker_on_node() {
   local index="$1"; shift
   if [ "$index" = 0 ]; then
     "$PULSAR_DOCKER" "$@"
@@ -2669,7 +2669,7 @@ guarded_trial_container() {
   local -a parts=() filters=()
   IFS='|' read -r -a parts <<<"$2"
   for part in "${parts[@]}"; do filters+=(--filter "$part"); done
-  guarded_trial_docker "$index" container ls -aq --no-trunc "${filters[@]}"
+  docker_on_node "$index" container ls -aq --no-trunc "${filters[@]}"
 }
 
 # stop_recorded_guarded_service SPEC PLAN_ID — stop a guarded trial whose
@@ -2736,7 +2736,7 @@ for row in plan["ranks"]:
     [ -n "${found[$i]}" ] || continue
     guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
       || { error_line "removed $removed container(s) before $changed"; return 1; }
-    guarded_trial_docker "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
+    docker_on_node "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
       error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
       return 1
     }

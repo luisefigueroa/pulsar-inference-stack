@@ -70,7 +70,7 @@ class Operations(unittest.TestCase):
     def test_recorded_home_keeps_every_operation_available(self):
         offered, hidden, _ = menu.operations(checked(home=HOME), "configured")
         self.assertEqual(hidden, {})
-        self.assertEqual(offered[:7], list(menu.MAIN))
+        self.assertEqual(offered[:len(menu.MAIN)], list(menu.MAIN))
 
     def test_missing_home_hides_home_operations(self):
         offered, hidden, _ = menu.operations(row(), "configured")

@@ -1273,13 +1273,29 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
-                         ["Check now (suggested)", "Download", "Start", "Live status", "Stop",
+                         ["Check now (suggested)", "Download", "Start", "Live status", "Service logs", "Stop",
                           "Launch options…", "Storage and archive…", "Show details", "Published results",
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Next Check now — no saved check", shown)
         self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
         self.assertIn("Not shown: Prepare, Move home, Create archive, Remove home (no home is recorded)", shown)
+
+    # TUI-41: Service logs is read-only, so it opens in the pager with nothing to confirm.
+    def test_service_logs_reads_every_rank_without_a_question(self):
+        spec, result, actions, choices, questions = self.run_menu(["#0", "Service logs", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "logs", spec]])
+        self.assertRegex(choices, rf"\[page\] Reading service logs… \| \S+/pulsar logs {spec}\n")
+        self.assertEqual(questions, "")
+        self.assertNotIn("Select a confirmed physical node", choices)
+        self.assertNotIn("[continue]", choices)
+        # A failed read stays on screen until Continue.
+        self.setUp()
+        _, result, _, choices, _ = self.run_menu(["#0", "Service logs", "Back", "Back"], action_rc=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[continue]", choices)
+        self.assertEqual(choices.count("Choose one operation"), 2)
 
     def test_a_short_terminal_keeps_only_the_first_frame_line_and_next(self):
         for rows, full in (("24", False), ("60", True)):
@@ -1300,7 +1316,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
-                         ["Check now (suggested)", "Download", "Live status", "Stop",
+                         ["Check now (suggested)", "Download", "Live status", "Service logs", "Stop",
                           "Launch options…", "Storage and archive…", "Show details", "Published results",
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())

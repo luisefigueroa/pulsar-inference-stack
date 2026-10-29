@@ -31,12 +31,12 @@ from .node_names import NodeNames
 from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
-MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "stop")
+MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "logs", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
 STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
-    "start": "Start", "stop": "Stop", "status": "Live status",
+    "start": "Start", "stop": "Stop", "status": "Live status", "logs": "Service logs",
     "readiness": "Check launch prerequisites", "image-check": "Check serving image",
     "image-stage": "Stage serving image",
     "budget": "Storage budget (all nodes)",
@@ -49,6 +49,7 @@ EFFECTS = {
     "check": "refresh saved file records", "acquire": "fetch model files to one node",
     "restore": "copy files back from the archive", "prepare": "copy files to every serving node",
     "start": "launch the service; asks first", "status": "check whether it runs now",
+    "logs": "recent output of its containers",
     "stop": "remove the service; files are kept",
     "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
     "image-stage": "pull or copy the exact digest",
@@ -708,8 +709,8 @@ START_CHOICES = {
     "model_files_not_ready": ("files",),
     "memory_insufficient": ("inventory",), "port_in_use": ("inventory",),
     "service_exists": ("status", "stop"),
-    "smoke_test_failed": ("status", "stop"), "health_timeout": ("status", "stop"),
-    "container_exited": ("status", "stop"),
+    "smoke_test_failed": ("status", "logs", "stop"), "health_timeout": ("status", "logs", "stop"),
+    "container_exited": ("status", "logs", "stop"),
     "image_check_failed": ("verbose",), "model_files_check_failed": ("verbose",),
     "memory_check_failed": ("verbose",), "preflight_failed": ("verbose",),
 }
@@ -741,10 +742,10 @@ def start_choices(records: list[dict], row: dict, archive_location: str) -> list
             continue
         kinds = START_CHOICES.get(record.get("blocker"), ())
         # A failed launch's record says whether its containers remain: none
-        # to stop once every rank's was seen removed, and Stop clears what an
-        # unconfirmed removal may have left.
+        # to inspect, read or stop once every rank's was seen removed, and
+        # Stop clears what an unconfirmed removal may have left.
         if record.get("stage") == "launch" and record.get("cleanup") == "removed":
-            kinds = tuple(kind for kind in kinds if kind not in ("status", "stop"))
+            kinds = tuple(kind for kind in kinds if kind not in ("status", "logs", "stop"))
         elif record.get("stage") == "launch" and record.get("cleanup") == "unconfirmed":
             kinds = (*kinds, "status", "stop")
         for kind in kinds:

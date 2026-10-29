@@ -249,11 +249,30 @@ class Catalog(unittest.TestCase):
         # A launch-stage record describes the new service, which is still running,
         # unless the container never started.
         timeout = start_blockers.blocker("health_timeout", spec=SPEC, after_replace=True)
-        self.assertEqual(timeout["note"], "It is still running; its logs are shown above.")
+        self.assertEqual(timeout["note"], "It is still running; its last logs are shown above, and "
+                                          "./pulsar logs abababababab shows more.")
         failed = start_blockers.blocker("container_start_failed", spec=SPEC, after_replace=True)
         self.assertEqual(failed["note"], "Docker's error is shown above. " + start_blockers.AFTER_REPLACE_NOTE)
         self.assertIn(f'AFTER_REPLACE_NOTE="{start_blockers.AFTER_REPLACE_NOTE}"',
                       (ROOT / "scripts/lib.sh").read_text())
+
+    # TUI-41: where a failed launch leaves a container, the note names the
+    # logs command; the fix stays the command that resolves the blocker.
+    def test_launch_failures_that_leave_a_container_point_to_its_logs(self):
+        for code in ("smoke_test_failed", "health_timeout", "container_exited"):
+            with self.subTest(code=code):
+                record = start_blockers.blocker(code, spec=SPEC, placement="--node spark-1")
+                self.assertIn("its last logs are shown above, and ./pulsar logs abababababab shows more.",
+                              record["note"].replace("Its", "its"))
+                self.assertEqual(record["fix"], "./pulsar stop abababababab --node spark-1")
+                self.assert_runnable(record["note"].split(", and ", 1)[1].removesuffix(" shows more."))
+        # A candidate spec file has no catalog prefix, so the complete ID is named.
+        record = start_blockers.blocker("health_timeout", spec=SPEC, spec_file="/fixture/spec.json")
+        self.assertIn(f"./pulsar logs {SPEC} shows more.", record["note"])
+        # A caller's own note (containers removed, state unknown) names no logs.
+        record = start_blockers.blocker("container_exited", spec=SPEC, no_command=True,
+                                        note="The cluster's containers were removed; the logs are shown above.")
+        self.assertNotIn("./pulsar logs", record["note"])
 
     def test_unconfirmed_cleanup_suggests_stop(self):
         record = start_blockers.blocker("health_timeout", spec=SPEC, service_id=SERVICE_ID, no_command=True,

@@ -26,7 +26,7 @@ refuse_json_for_menu() {
 command="${1:-}"
 [ $# -eq 0 ] || shift
 case "$command" in
-  start|stop|status|model|models)
+  start|stop|status|model|models|logs)
     # Human mode accepts a unique shortened catalog spec ID and prints the
     # complete ID it selected. --json and --spec-file keep the exact contract.
     selection=$(python3 "$REPO_DIR/scripts/spec_selector.py" --repo-root "$REPO_DIR" "$command" "$@") || exit $?
@@ -61,6 +61,7 @@ case "$command" in
     exec "$REPO_DIR/scripts/model-storage.sh" list "$@" ;;
   models) exec "$REPO_DIR/scripts/model-storage.sh" "$@" ;;
   inventory) exec "$REPO_DIR/scripts/inventory.sh" "$@" ;;
+  logs) exec "$REPO_DIR/scripts/logs.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
   contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
   spec) exec python3 "$REPO_DIR/scripts/document_cli.py" "$@" ;;

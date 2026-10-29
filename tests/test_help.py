@@ -25,7 +25,7 @@ from scripts.terminal_format import (TerminalWriter, colors_enabled, emit_checks
 COMMANDS = [
     ("help",), ("help", "terms"), ("help", "workflow"),
     ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
-    ("status", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
+    ("status", "--help"), ("logs", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
     ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
     ("image", "--help"), ("guarded", "--help"),
     ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),

@@ -250,6 +250,8 @@ start_choices() {
       topology-menu) "$REPO_DIR/pulsar" topology menu || rc=$? ;;
       topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
       doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
+      # Read-only like the diagnostics: whatever it finds, the choices return.
+      logs) page_output "Reading service logs…" "$REPO_DIR/pulsar" logs "$spec" || rc=$? ;;
       verbose)
         # A fresh dry run replaces the recorded blockers, and the choices follow it.
         : >"$blockers"
@@ -448,6 +450,10 @@ perform_action() {
     readiness) check_launch_prerequisites "$label" "$spec" "${args[@]}" ;;
     image-check) run_operation image-check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/pulsar" image check "$spec" "${args[@]}" ;;
     image-stage) stage_catalog_image "$label" "$spec" "${args[@]}" ;;
+    # Read-only, so nothing to confirm; a failure is held on screen to read.
+    logs)
+      page_output "Reading service logs…" "$REPO_DIR/pulsar" logs "$spec" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; HOLD_SCREEN=1; } ;;
     start|stop)
       question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
       confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
