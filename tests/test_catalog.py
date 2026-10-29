@@ -559,11 +559,12 @@ if os.path.basename(sys.argv[0]) == "pulsar":
                 for code in fixture.get("blockers", []):
                     record = code if isinstance(code, dict) else {"blocker": code}
                     stream.write(json.dumps({"field": "blocker", "stage": "check", **record}) + "\\n")
-        if os.environ.get("PULSAR_START_CHECKS_FILE") and "checks" in fixture:
+        checks = fixture.get(mode + "_checks", fixture.get("checks"))
+        if os.environ.get("PULSAR_START_CHECKS_FILE") and checks:
             # Recorded as start does: the expected checks, then one record per check run.
             with open(os.environ["PULSAR_START_CHECKS_FILE"], "w") as stream:
-                stream.write(json.dumps({"expected": fixture["checks"]["expected"]}) + "\\n")
-                for check, outcome in fixture["checks"]["ran"]:
+                stream.write(json.dumps({"expected": checks["expected"]}) + "\\n")
+                for check, outcome in checks["ran"]:
                     stream.write(json.dumps({"id": check, "outcome": outcome, "node": None, "message": ""}) + "\\n")
     elif sys.argv[1:3] == ["image", "stage"] and "--plan" in sys.argv:
         state = fixture.get("image_state", "missing")

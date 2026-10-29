@@ -47,6 +47,15 @@ class LaunchMenu(unittest.TestCase):
                                                    "checks": checks})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(line, result.stdout)
+        # An accepted memory-warning retry shows its own checks after the refused attempt's.
+        retried = {"expected": ["recipe", "memory", "plan"], "ran": [["recipe", "pass"], ["memory", "info"],
+                                                                     ["plan", "pass"]]}
+        _, result, _, _, _ = self.run_menu(["#0", "Start", "fixture-host", "Back", "Back"], confirms=["yes", "yes"],
+                                           launch={"start_rc": 1, "blockers": ["memory_warning"], "checks": checks,
+                                                   "accept_checks": retried})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(line, result.stdout)
+        self.assertIn("  Checks: ✓ recipe  • memory  ✓ plan\n", result.stdout.split(line, 1)[1])
         # Nothing recorded, nothing printed.
         _, result, _, _, _ = self.shortcut("Check launch prerequisites")
         self.assertNotIn("Checks:", result.stdout)

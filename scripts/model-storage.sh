@@ -232,8 +232,12 @@ start_catalog_spec() {
   # The question keeps the first outcome on screen; no Continue before it.
   HOLD_SCREEN=0
   confirm "$question" no || { rc=$?; echo 'Start was not retried.'; [ "$rc" -ne 130 ] || return 130; return 0; }
+  # The retry's own checks replace the refused attempt's.
+  checks=$(mktemp) || return 1
   run_operation start 'Start accepting memory warning' "$spec" "$RECIPE_MODEL" \
-    "$REPO_DIR/pulsar" start "$spec" "$@" --accept-memory-warn
+    env PULSAR_START_CHECKS_FILE="$checks" "$REPO_DIR/pulsar" start "$spec" "$@" --accept-memory-warn
+  [ "$OPERATION_INTERRUPTED" -ne 0 ] || print_start_checks "$checks"
+  rm -f "$checks"
 }
 
 # check_launch_prerequisites LABEL SPEC START_ARGS... — the existing dry run;
