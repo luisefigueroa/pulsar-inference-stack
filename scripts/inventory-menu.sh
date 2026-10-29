@@ -8,7 +8,7 @@ export PYTHONDONTWRITEBYTECODE=1
 . "$REPO_DIR/scripts/ui.sh"
 require_gum "the inventory menu" "./pulsar inventory" "see what runs on each node" \
   "./pulsar status SPEC" "check one service now" "./pulsar logs SPEC" "read its containers' output" \
-  "./pulsar stop SPEC" "stop it; files are kept"
+  "./pulsar stop SPEC" "stop it; files are kept" "./pulsar stop --all --yes" "stop every Pulsar service; files are kept"
 ui_keep_styles
 work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-inventory-menu.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
@@ -106,17 +106,41 @@ service_actions() {
   return 0
 }
 
+# stop --all with --yes, after a fresh inventory names what it would remove.
+stop_every_service() {
+  local result kind first second question="" rc started
+  refresh_inventory || return 0
+  result=$(inventory_view) || return 0
+  while IFS=$'\t' read -r kind first second; do
+    [ "$kind" != stopall ] || question="$first"
+  done <<<"$result"
+  if [ -z "$question" ]; then
+    printf 'No Pulsar service was observed just now; nothing was stopped.\n'
+    return 0
+  fi
+  confirm "$question" no || { rc=$?; echo 'Nothing was stopped.'; [ "$rc" -ne 130 ] || return 130; return 0; }
+  rc=0 started=$SECONDS
+  "$REPO_DIR/pulsar" stop --all --yes || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  report_outcome stop Stop "every Pulsar service" "$rc" \
+    "$(elapsed_text $((SECONDS - started)))" --command "$REPO_DIR/pulsar" stop --all --yes
+  wait_continue
+}
+
 while true; do
-  ids=() labels=()
+  ids=() labels=() stop_all=0
   if refresh_inventory && result=$(inventory_view); then
     while IFS=$'\t' read -r kind first second; do
       case "$kind" in
         header) printf '%s\n' "$first" ;;
         service) ids+=("$first"); labels+=("$second") ;;
+        stopall) stop_all=1 ;;
       esac
     done <<<"$result"
   fi
-  labels+=("Refresh inventory" "Show full inventory" "Back")
+  labels+=("Refresh inventory" "Show full inventory")
+  [ "$stop_all" -eq 0 ] || labels+=("Stop every Pulsar service…")
+  labels+=("Back")
   index=$(choose_index "Select a catalog service" "${labels[@]}") \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   if [ "$index" -lt "${#ids[@]}" ]; then
@@ -128,6 +152,11 @@ while true; do
     "Show full inventory")
       rc=0
       page_output "Checking service inventory…" "$REPO_DIR/pulsar" inventory || rc=$?
+      [ "$rc" -ne 130 ] || exit 130
+      ;;
+    "Stop every Pulsar service…")
+      rc=0
+      stop_every_service || rc=$?
       [ "$rc" -ne 130 ] || exit 130
       ;;
     *) exit 0 ;;
