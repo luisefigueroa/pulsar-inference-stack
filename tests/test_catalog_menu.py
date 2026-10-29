@@ -505,11 +505,13 @@ class View(unittest.TestCase):
         lines = menu.view_lines(checked(home=HOME, local_state="ready", **GUARDED), "configured",
                                 width=60, names=NAMES)
         text = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
-        # No menu operation lifts a serving guard, so no fix is named.
-        self.assertIn(f"Not shown Start ({GUARD_REASON}).", " ".join(text.split()))
+        # TUI-35: a serving guard points to the guarded trial procedure.
+        self.assertIn(f"Not shown Start ({GUARD_REASON}). Use a guarded trial: ./pulsar guarded --help; "
+                      "see docs/GUARDED_SERVING.md.", " ".join(text.split()))
         self.assertFalse([line for line in lines if line.startswith(("next\t", "suggest\t", "option\tmain\tstart\t"))])
-        self.assertIn("option\tmain\tstop\tStop — remove the service; files are kept", lines)
-        self.assertIn("option\tmain\tstatus\tLive status — check whether it runs now", lines)
+        # TUI-43: Live status says it checks the nodes, and Stop that it applies if running.
+        self.assertIn("option\tmain\tstop\tStop — remove it if running; files are kept", lines)
+        self.assertIn("option\tmain\tstatus\tLive status — check every node for it now", lines)
 
     def test_view_performs_no_probes(self):
         with patch("subprocess.run", side_effect=AssertionError("menu must not probe")):
@@ -714,8 +716,19 @@ class Labels(unittest.TestCase):
                 patch.dict("os.environ", {"COLUMNS": "80"}):
             self.assertEqual(menu.main(["labels"]), 0)
         self.assertEqual(output.getvalue().splitlines(),
-                         ["ab" * 32 + "\torg/model [abababababab] never checked",
-                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] files prepared"])
+                         ["ab" * 32 + "\torg/model [abababababab] 3 nodes · never checked",
+                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] 3 nodes · files prepared"])
+
+    # TUI-23: at 60 columns or wider, the label also names the node count and
+    # the spec's state, where the whole label fits; state is metadata only.
+    def test_wide_labels_name_the_node_count_and_state(self):
+        state = checked(home=HOME, local_state="ready", state="candidate", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        self.assertEqual(menu.menu_label(state, 80), "org/model [abababababab] 1 node · files prepared · candidate")
+        self.assertEqual(menu.menu_label(state, 44), "org/model [abababababab] files prepared")
+        long_model = dict(state, model_id="org/" + "m" * 40)
+        self.assertNotIn("candidate", menu.menu_label(long_model, 60))
+        offered, hidden, _ = menu.operations(state, "configured")
+        self.assertIn("start", offered)
 
 
 LIVE_NOW = datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)
@@ -951,7 +964,21 @@ class Question(unittest.TestCase):
         one = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
         self.assertIn("Start org/model on spark-2?", menu.question("start", one, node="n1", names=ordered))
         self.assertEqual(menu.question("stop", state, node="n1", names=NAMES),
-                         "Stop org/model on spark-2? Model files and pins are kept.")
+                         "Stop and remove the service containers of org/model [abababababab] on spark-2? "
+                         "Model files, pins and archives are kept.")
+        # TUI-43: a fresh inventory names where it runs, or that nothing ran.
+        running = {"kind": "service", "state": "running", "hosts": ["spark-1", "spark-3"], "modified": False,
+                   "age": 5, "source": "inventory"}
+        self.assertEqual(menu.question("stop", state, names=NAMES, live=running),
+                         "Stop and remove the service containers of org/model [abababababab] on spark-1, spark-3? "
+                         "Model files, pins and archives are kept.")
+        absent = {"kind": "absent", "age": 5, "source": "inventory"}
+        self.assertEqual(menu.question("stop", state, names=NAMES, live=absent),
+                         "Stop org/model [abababababab]? No container of it was seen running just now; Stop "
+                         "removes any that remain. Model files, pins and archives are kept.")
+        self.assertEqual(menu.question("stop", state, names=NAMES),
+                         "Stop and remove the service containers of org/model [abababababab] on its nodes? "
+                         "Model files, pins and archives are kept.")
         self.assertIn("Download org/model @ 01234567 to spark-2",
                       menu.question("acquire", state, plan={"selected_node": "n1"}, names=NAMES))
 

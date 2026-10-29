@@ -962,7 +962,16 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Live status (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
         self.assertIn("Use Live status", " ".join(result.stdout.split()))
-        self.assertEqual(len(actions), 1)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "inventory"], ["down.sh", actions[1][1]]])
+
+    # TUI-43: Stop refreshes what runs before asking, and the question names those nodes.
+    def test_stop_names_the_nodes_a_fresh_inventory_found(self):
+        spec, result, actions, _, questions = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["no"], inventory=self.live_inventory())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
+                                    "fixture-remote? Model files, pins and archives are kept.\n")
 
     def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
         _, result, actions, choices, _ = self.run_menu(
@@ -1084,9 +1093,9 @@ raise SystemExit(rc)
     def test_operations_run_under_their_name_without_the_effect(self):
         _, result, _, choices, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Live status — check whether it runs now", choices)
+        self.assertIn("Live status — check every node for it now", choices)
         self.assertIn("→ Live status example/model", " ".join(result.stdout.split()))
-        self.assertNotIn("check whether it runs now", result.stdout)
+        self.assertNotIn("check every node for it now", result.stdout)
 
     def test_a_successful_restore_moves_on_to_prepare(self):
         def record(spec_id):
@@ -1207,9 +1216,12 @@ raise SystemExit(rc)
         self.assertIn("Prepared-copy removal preview", result.stdout)
         # Stop asks first, then stops only the catalog spec's service; nothing
         # removes the other container.
-        self.assertEqual(questions, f"Stop {model}? Model files and pins are kept.\n")
+        # TUI-43: Stop first refreshes the service inventory (unreadable here, so
+        # the question names no nodes), then asks the same question as the inventory menu.
+        self.assertEqual(questions, f"Stop and remove the service containers of {model} [{spec_id[:12]}] "
+                                    "on its nodes? Model files, pins and archives are kept.\n")
         self.assertEqual([action for action in actions if action[-2:] != ["--plan", "--json"]],
-                         [["down.sh", spec_id]])
+                         [["pulsar", "inventory", "--json"], ["down.sh", spec_id]])
         self.assertNotIn("someone-else", json.dumps(actions))
 
     def test_blocked_plan_never_offers_to_remove_a_container_pulsar_did_not_start(self):

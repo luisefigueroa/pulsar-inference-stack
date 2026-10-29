@@ -363,8 +363,13 @@ blocked_plan() {
     [ "$choice" -lt "${#kinds[@]}" ] || return 1
     case "${kinds[$choice]}" in
       stop)
-        question=$(catalog show "${specs[$choice]}" --json \
-          | catalog_menu confirm --spec-id "${specs[$choice]}" --action stop) || continue
+        # As every catalog Stop does, refresh what runs before asking.
+        local stop_row
+        stop_row=$(catalog show "${specs[$choice]}" --json) || continue
+        check_running_services "$stop_row" || return $?
+        live_args
+        question=$(printf '%s' "$stop_row" \
+          | catalog_menu confirm --spec-id "${specs[$choice]}" --action stop "${LIVE_ARGS[@]}") || continue
         confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; continue; }
         run_operation stop Stop "${specs[$choice]}" "${models[$choice]}" "$REPO_DIR/scripts/down.sh" "${specs[$choice]}"
         return 1 ;;
@@ -475,7 +480,16 @@ perform_action() {
       page_output "Reading service logs…" "$REPO_DIR/pulsar" logs "$spec" \
         || { rc=$?; [ "$rc" -ne 130 ] || return 130; HOLD_SCREEN=1; } ;;
     start|stop)
-      question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
+      local -a scope=()
+      if [ "$action" = stop ]; then
+        # As the inventory menu does, refresh what runs before asking, so the
+        # question names the nodes the service runs on now.
+        check_running_services "$ROW_JSON" || return $?
+        live_args
+        scope=("${LIVE_ARGS[@]}")
+      fi
+      question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" \
+        ${MENU_NODE:+--node "$MENU_NODE"} "${scope[@]}") || return 0
       confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
       if [ "$action" = start ]; then
         start_catalog_spec "$label" "$spec" "${args[@]}"

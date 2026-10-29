@@ -48,9 +48,9 @@ LABELS = {
 EFFECTS = {
     "check": "refresh saved file records", "acquire": "fetch model files to one node",
     "restore": "copy files back from the archive", "prepare": "copy files to every serving node",
-    "start": "launch the service; asks first", "status": "check whether it runs now",
+    "start": "launch the service; asks first", "status": "check every node for it now",
     "logs": "recent output of its containers",
-    "stop": "remove the service; files are kept",
+    "stop": "remove it if running; files are kept",
     "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
     "image-stage": "pull or copy the exact digest",
     "budget": "disk headroom on every node", "move": "move the home to another node",
@@ -239,15 +239,18 @@ def _location_reason(archive_location: str) -> str:
 
 def hidden_fix(reason: str, hidden: dict[str, str]) -> str | None:
     """What makes operations left out for REASON available again, or None when
-    no menu operation does (a serving guard, a historical spec). Check now
-    records file observations only, so it is never the fix: homes are recorded
-    by Download and Restore, and the archive location is a setting."""
+    nothing does (a historical spec). A serving guard points to the guarded
+    trial procedure, outside ordinary start. Check now records file
+    observations only, so it is never the fix: homes are recorded by Download
+    and Restore, and the archive location is a setting."""
     if reason == _location_reason("not-configured"):
         return "Set one in Archive storage configuration on the home menu."
     if reason == _location_reason("disabled"):
         return "Set a location in Archive storage configuration on the home menu."
     if reason.startswith("no home is recorded"):
         return "Download or Restore records a home." if "restore" not in hidden else "Download records a home."
+    if reason == START_UNSUPPORTED["guard_unsupported"]:
+        return "Use a guarded trial: ./pulsar guarded --help; see docs/GUARDED_SERVING.md."
     return None
 
 
@@ -523,8 +526,18 @@ def menu_label(row: dict, width: int, live: dict | None = None) -> str:
     parts = state_parts(row)
     if seen:
         parts.insert(0, seen)
-        if len(model) + len(f" [{row['spec_id'][:12]}] " + " · ".join(parts)) > budget:
-            parts.pop(1)
+    # Where the whole label fits (60 columns or wider), it also names the node
+    # count (unless a seen service already does) and the spec's state, as
+    # models list does. State is metadata only.
+    nodes = row["geometry"]["nodes"]
+    wider = ([] if seen else [f"{nodes} node{'' if nodes == 1 else 's'}"]) + parts
+    if row.get("state") and row["state"] not in parts:
+        wider.append(str(row["state"]))
+    text = model + f" [{row['spec_id'][:12]}] " + " · ".join(wider)
+    if width >= 60 and len(text) <= budget:
+        return text
+    if seen and len(model) + len(f" [{row['spec_id'][:12]}] " + " · ".join(parts)) > budget:
+        parts.pop(1)
     suffix = f" [{row['spec_id'][:12]}] " + " · ".join(parts)
     if len(model) + len(suffix) > budget and len(model) > 11:
         model = model[:max(8, budget - len(suffix) - 3)] + "..."
@@ -1103,7 +1116,7 @@ def _start_place(nodes: int, place: str | None, names: NodeNames) -> str:
 
 
 def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str | None = None,
-             node: str | None = None, names: NodeNames | None = None) -> str:
+             node: str | None = None, names: NodeNames | None = None, live: dict | None = None) -> str:
     """Confirmation question naming the action, model, placement and consequence."""
     names = names or NodeNames()
     plan = plan or {}
@@ -1169,9 +1182,21 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
                 f"{_start_place(nodes, place, names)}? Insufficient memory and all other blockers still prevent "
                 "start. Loading can take several minutes.")
     if action == "stop":
-        where = f" on {place}" if place else ""
-        return f"Stop {model}{where}? Model files and pins are kept."
+        hosts = live["hosts"] if live and live["kind"] == "service" and live_current(live) else []
+        if live and live["kind"] == "absent" and live_current(live):
+            return (f"Stop {model} [{row['spec_id'][:12]}]? No container of it was seen running just now; "
+                    f"Stop removes any that remain. {STOP_KEEPS}")
+        return stop_question(model, row["spec_id"], ", ".join(hosts) or place)
     raise ValueError(f"no confirmation for {action}")
+
+
+STOP_KEEPS = "Model files, pins and archives are kept."
+
+
+def stop_question(model: str, spec_id: str, where: str | None) -> str:
+    """The Stop question, the same in the catalog and the inventory menus."""
+    scope = f"on {where}" if where else "on its nodes"
+    return f"Stop and remove the service containers of {model} [{spec_id[:12]}] {scope}? {STOP_KEEPS}"
 
 
 def load_live(path: str | None, rows: list[dict]) -> dict | None:
@@ -1292,6 +1317,8 @@ def main(argv: list[str] | None = None) -> int:
     confirm.add_argument("--plan-file")
     confirm.add_argument("--snapshot")
     confirm.add_argument("--node")
+    confirm.add_argument("--live", help=live_help)
+    confirm.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
     args = parser.parse_args(argv)
     try:
         if args.command == "memory-warning":
@@ -1396,7 +1423,10 @@ def main(argv: list[str] | None = None) -> int:
                 out.blank()
                 for line in notice:
                     out.emit(line)
-        print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names)))
+        fact = live_fact(row, load_live(args.live, [row]),
+                         service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
+        print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names,
+                             live=fact)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
         from scripts.terminal_format import error_line
