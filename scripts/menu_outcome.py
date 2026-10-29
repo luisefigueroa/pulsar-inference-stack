@@ -187,9 +187,16 @@ def main(argv: list[str] | None = None) -> int:
         from model_library.node_names import NodeNames
         same = operator_command(args.command, NodeNames.saved().hostnames)
         if same:
-            # Every menu action is also a command: name it so it can be repeated or scripted.
-            writer.emit(f"Same as: `{same}`" if "`" not in same else f"Same as: {same}",
-                        initial_indent="  ", subsequent_indent="    ", markup="`" not in same)
+            # Every menu action is also a command: name it so it can be repeated or
+            # scripted. It is never hard-wrapped, since an inserted break would paste
+            # into it (a 64-character spec ID cannot fit a narrow line): it moves whole
+            # to its own line, which the terminal wraps on its own if it must.
+            command = writer.paint(same, ["literal"] * len(same))
+            if len(f"  Same as: {same}") <= writer.width:
+                print(f"  Same as: {command}", file=writer.stream)
+            else:
+                print("  Same as:", file=writer.stream)
+                print(f"    {command}", file=writer.stream)
     return 0
 
 
