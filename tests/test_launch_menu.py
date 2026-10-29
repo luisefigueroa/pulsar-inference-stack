@@ -400,6 +400,22 @@ class LaunchPresentation(unittest.TestCase):
             self.assertIn(name, text)
         self.assertIn(row["image"]["digest"], "".join(text.split()))
 
+    # TUI-81: a rank holding the content under another name is staged too.
+    def test_preview_says_a_pull_adds_the_pinned_name_to_content_already_there(self):
+        row, response = self.image_plan()
+        response["result"]["ranks"][1].update(state="other-name", present_as="pulsar-local/model:latest")
+        response["result"]["ranks"][0]["state"] = response["result"]["ranks"][2]["state"] = "ok"
+        names = {0: "node-a", 1: "node-b", 2: "node-c"}
+        for mode, expected in (("pull-exact-digest", "will add the pinned name; the content is already here"),
+                               ("stream-from-controller", "will stage; it holds the same content under another name")):
+            with self.subTest(mode=mode):
+                response["result"]["mode"] = mode
+                output = io.StringIO()
+                with patch("sys.stdout", output):
+                    self.assertTrue(menu.render_image_plan(row, response, names, mode=mode, width=100))
+                self.assertIn(f"Rank 1    node-b: {expected}", output.getvalue())
+                self.assertIn("Rank 0    node-a: already present", output.getvalue())
+
     def test_preview_refuses_a_different_spec_image_or_unknown_rank(self):
         row, response = self.image_plan()
         for changes in ({"model": "f" * 64}, {"image": "another/image"}, {"mode": "stream-from-controller"},

@@ -64,7 +64,9 @@ def rank_image_aggregate_state(rank_states: list[str]) -> str:
         return "rank-unreachable"
     if any(state in {"docker-error", "rank-docker-error", "target-docker-error"} for state in normalized):
         return "rank-docker-error"
-    if any(state in {"missing", "missing-on-rank", "missing-on-target"} for state in normalized):
+    # other-name: the pinned content under another repository name, still
+    # lacking the pinned reference that start requires.
+    if any(state in {"missing", "other-name", "missing-on-rank", "missing-on-target"} for state in normalized):
         return "missing-on-rank"
     fail(f"image ranks: unsupported state {normalized!r}")
 
