@@ -135,5 +135,48 @@ class OutcomeCommand(unittest.TestCase):
         self.assertEqual(output.getvalue(), "✓ Stop finished for spec 0123456789ab in 0s\n")
 
 
+# TUI-75: every outcome names the ./pulsar command equivalent to what the menu ran.
+class SameAs(unittest.TestCase):
+    SPEC = "ab" * 32
+
+    def test_internal_commands_become_the_operator_command(self):
+        spec, names = self.SPEC, {"n1": "spark-2"}
+        cases = [
+            (["/repo/scripts/model-library.sh", "restore", spec, "--node", "n1", "--yes"],
+             "./pulsar model restore abababababab --node spark-2 --yes"),
+            (["/repo/scripts/model-library.sh", "check", spec, "--node", "n1"],
+             "./pulsar models check abababababab --node spark-2"),
+            (["/repo/scripts/model-library.sh", "archive", "create", spec, "--snapshot", "draft", "--yes"],
+             "./pulsar model archive create abababababab --snapshot draft --yes"),
+            # The menu's own plumbing is left out; the permission it granted is not.
+            (["env", "PULSAR_START_BLOCKERS_FILE=/tmp/blockers", "/repo/pulsar", "start", spec, "--node", "n1",
+              "--accept-memory-warn"], "./pulsar start abababababab --node spark-2 --accept-memory-warn"),
+            (["/repo/scripts/with-connect-card.sh", "/repo/scripts/status.sh", spec], "./pulsar status abababababab"),
+            (["/repo/scripts/model-library.sh", "restore", spec, "--plan", "--json"],
+             "./pulsar model restore abababababab --plan"),
+            # A node outside the saved topology keeps its node_id.
+            (["/repo/scripts/down.sh", spec, "--node", "n9"], "./pulsar stop abababababab --node n9"),
+            (["/repo/pulsar", "model", "budget"], "./pulsar model budget"),
+            # Where the command takes no prefix, the complete ID stays.
+            (["/repo/scripts/model-library.sh", "purge", spec, "--yes"], f"./pulsar model purge {spec} --yes"),
+            (["/repo/pulsar", "image", "stage", spec, "--pull-image", "--yes"],
+             f"./pulsar image stage {spec} --pull-image --yes"),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                self.assertEqual(menu_outcome.operator_command(argv, names), expected)
+        self.assertIsNone(menu_outcome.operator_command(["/repo/scripts/unknown.sh", spec]))
+
+    def test_the_card_ends_with_the_command(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            menu_outcome.main(["--action", "restore", "--label", "Restore", "--subject", "Fixture-Model",
+                               "--status", "1", "--elapsed", "3s", "--command", "/repo/scripts/model-library.sh",
+                               "restore", self.SPEC, "--yes"])
+        lines = output.getvalue().splitlines()
+        self.assertTrue(lines[0].startswith("✗ Restore was refused or failed"), lines)
+        self.assertEqual(lines[-1], "  Same as: ./pulsar model restore abababababab --yes")
+
+
 if __name__ == "__main__":
     unittest.main()

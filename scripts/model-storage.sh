@@ -123,6 +123,8 @@ check_running_services() {
 run_operation() {
   local action="$1" label="$2" spec="$3" model="$4" started=$SECONDS rc interrupted=0 result="" outcome
   shift 4
+  # The outcome names the ./pulsar command equivalent to what ran.
+  local -a command=("$@")
   [ "$action" != check ] || result=$(mktemp)
   case "$action" in start|status) set -- "$REPO_DIR/scripts/with-connect-card.sh" "$@" ;; esac
   printf '\n→ %s %s. Ctrl-C requests interruption; this menu returns when the command exits.\n' "$label" "$model" \
@@ -161,9 +163,9 @@ run_operation() {
       image-stage) LAST_RESULT[$spec]=image-interrupted ;;
       check) LAST_RESULT[$spec]=check-interrupted ;;
     esac
-    report_outcome "$action" "$label" "$model" "$rc" "$took" --interrupted
+    report_outcome "$action" "$label" "$model" "$rc" "$took" --interrupted --command "${command[@]}"
   elif [ "$rc" -ne 0 ] && [ "$action" = check ] && [ "${LAST_RESULT[$spec]:-}" = check ]; then
-    report_outcome check "$label" "$model" "$rc" "$took" --recorded
+    report_outcome check "$label" "$model" "$rc" "$took" --recorded --command "${command[@]}"
   else
     if [ "$rc" -eq 0 ]; then
       case "$action" in
@@ -177,7 +179,7 @@ run_operation() {
         acquire|restore|prepare|move|archive|pin|unpin|purge|remove) LAST_RESULT[$spec]=storage-failed ;;
       esac
     fi
-    report_outcome "$action" "$label" "$model" "$rc" "$took"
+    report_outcome "$action" "$label" "$model" "$rc" "$took" --command "${command[@]}"
   fi
   if [ -n "$spec" ]; then
     case "$action" in
@@ -307,7 +309,8 @@ stage_catalog_image() {
     if [ "$rc" -eq 130 ]; then
       printf 'Image preview interrupted; staging was not requested. Review command output for cleanup status.\n'
     else
-      report_outcome image-stage "$label" "$RECIPE_MODEL" "$rc" "" --preview
+      report_outcome image-stage "$label" "$RECIPE_MODEL" "$rc" "" --preview \
+        --command "$REPO_DIR/pulsar" image stage "$spec" "$@" "${mode[@]}" --plan
     fi
     HOLD_SCREEN=1
     return 0
@@ -390,7 +393,8 @@ plan_and_confirm() {
     if [ "$rc" -eq 130 ]; then
       printf 'Preview interrupted; %s was not requested. Review command output for cleanup status.\n' "${label,,}"
     else
-      report_outcome "$action" "$label" "$RECIPE_MODEL" "$rc" "" --preview
+      report_outcome "$action" "$label" "$RECIPE_MODEL" "$rc" "" --preview \
+        --command "$REPO_DIR/scripts/model-library.sh" "$@" --plan
     fi
     HOLD_SCREEN=1
     return 1

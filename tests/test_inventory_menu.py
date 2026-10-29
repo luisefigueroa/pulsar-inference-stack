@@ -209,6 +209,8 @@ else: sys.exit(99)
         self.assertNotIn("error:", result.stderr)
         # The same outcome line as the catalog menu's operations.
         self.assertRegex(result.stdout, rf"(?m)^✓ Stop finished for spec {self.spec['spec_id'][:12]} in \d+s$")
+        # TUI-75: and the command it ran; at 44 columns it moves whole to its own line.
+        self.assertIn(f"  Same as:\n    ./pulsar stop {self.spec['spec_id'][:12]} --node node-0\n", result.stdout)
 
     def test_declined_stop_never_calls_stop(self):
         result, calls, _, questions = self.run_menu(["#0", "Stop service", "Back", "Back"], confirms=["no"])
