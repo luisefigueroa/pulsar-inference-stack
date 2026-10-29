@@ -1,6 +1,6 @@
 # Pulsar Inference Stack
 
-Run exact, inspectable vLLM serving configurations on NVIDIA DGX Spark GB10.
+Run exact, inspectable vLLM serving configurations on NVIDIA DGX Spark GB10 clusters.
 
 Pulsar manages model files, prepares them on the selected machines, checks the
 serving configuration, and starts or stops the service. Verified archives
