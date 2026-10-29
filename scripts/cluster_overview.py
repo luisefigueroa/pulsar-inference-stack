@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from model_library.render import _headroom, size_text  # noqa: E402
+from model_library.render import can_still_copy, short_size  # noqa: E402
 from scripts.terminal_format import TerminalWriter  # noqa: E402
 
 SOURCES = {"topology": "topology check", "inventory": "inventory", "budget": "model budget"}
@@ -144,15 +144,14 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
 
         node_budget = budgets.get(node_id)
         if node_budget:
-            disk, allowance = _headroom([node_budget])
-
-            def headroom(value):
-                if value is None:
-                    return "not observed"
-                return f"deficit {size_text(-value)}" if value < 0 else size_text(value)
-            low = any(value is not None and value < 0 for value in (disk, allowance))
-            field("Disk", f"{headroom(disk)} free after reserve · {headroom(allowance)} copy allowance left",
-                  "warn" if low else None)
+            # The storage budget table's terms, for one node.
+            left = can_still_copy(node_budget)
+            text = (f"can still copy {'unknown' if left is None else short_size(max(left, 0))} · "
+                    f"{short_size(node_budget.get('available'))} free · {short_size(node_budget.get('used'))} Pulsar files")
+            low = left is not None and left < 0
+            if low:
+                text += f" · {short_size(-left)} past its reserve or copy budget"
+            field("Disk", text, "warn" if low else None)
         else:
             field("Disk", "not observed")
 

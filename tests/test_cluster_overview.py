@@ -85,7 +85,8 @@ class Overview(unittest.TestCase):
         self.assertIn("; the checks took 19 s\n", text)
         local = self.section(text, "rank-0 (this node)")
         self.assertIn("  Status    ready\n  Memory    6.50 GiB available of 121.69 GiB\n", local)
-        self.assertIn("  Disk      200.00 GiB free after reserve · 150.00 GiB copy allowance left\n", local)
+        # TUI-80: the storage budget table's terms; the tighter of reserve and copy budget.
+        self.assertIn("  Disk      can still copy 150 GiB · 300 GiB free · 50.0 GiB Pulsar files\n", local)
         self.assertIn("  Services  org/example-model · running · spec 5e5e5e5e5e5e · 100.00 GiB GPU\n"
                       "            memory in use\n", local)
         self.assertIn("  Unmanaged container legacy-vllm · running; Pulsar does not manage it", local)

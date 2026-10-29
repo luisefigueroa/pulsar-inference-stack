@@ -579,6 +579,9 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     elif sys.argv[1] == "inventory":
         print(os.environ.get("INVENTORY_FIXTURE", ""))
         rc = int(os.environ.get("INVENTORY_RC", "0"))
+    elif sys.argv[1:3] == ["model", "budget"] and "--json" in sys.argv:
+        print(os.environ.get("BUDGET_FIXTURE", ""))
+        rc = int(os.environ.get("BUDGET_RC", "0"))
 elif os.environ.get("ACTION_RC_SEQUENCE") and "--yes" in sys.argv:
     # Successive confirmed storage operations exit with these statuses in turn.
     counter = os.environ["ACTION_LOG"] + ".n"
@@ -730,14 +733,85 @@ raise SystemExit(rc)
         self.assertEqual(choices.count("[continue]"), 1)
         self.assertLess(choices.index("[continue]"), choices.rindex("Choose one operation"))
 
-    def test_empty_catalog_still_offers_storage_budget_inspection(self):
+    @staticmethod
+    def budget(rc=0):
+        """A model budget --json double: one node with 150 GiB left to copy."""
+        G = 1024**3
+        node = {"node_id": "fixture-node", "available": 300 * G, "used": 50 * G, "total": 1000 * G,
+                "reserve": 100 * G, "limit": 200 * G, "path": "/fixture/views"}
+        envelope = ({"schema_version": 1, "ok": True, "result": {"kind": "pulsar-storage-budget", "nodes": [node]}}
+                    if rc == 0 else {"schema_version": 1, "ok": False,
+                                     "error": {"code": "prerequisite_failed", "message": "node storage is unobservable"}})
+        return lambda _: {"BUDGET_FIXTURE": json.dumps(envelope), "BUDGET_RC": str(rc)}
+
+    # TUI-50: the budget on every node, then each spec holding files; nothing to reclaim says so.
+    def test_empty_catalog_still_offers_free_disk_space(self):
         _, result, actions, choices, questions = self.run_menu(
-            ["Storage budget (all nodes)", "Back"], empty_catalog=True)
+            ["Free disk space (checks nodes now)", "Back", "Back"], empty_catalog=True,
+            inventory=self.live_inventory(), env_extra=self.budget())
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "budget"]])
+        self.assertEqual(actions, [["pulsar", "model", "budget", "--json"], ["pulsar", "inventory", "--json"]])
         self.assertEqual(questions, "")
         self.assertIn('The catalog is empty.', result.stdout)
-        self.assertLess(choices.index("[continue]"), choices.rindex("Select a catalog spec"))
+        text = " ".join(result.stdout.split())
+        self.assertIn("150 GiB", text)
+        self.assertIn("nothing to reclaim", text)
+        self.assertIn("Free disk space\nRefresh\nBack\n", choices)
+
+    def test_free_disk_space_opens_each_specs_reclaim_steps_with_their_previews(self):
+        plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
+                         "actions": [{"rank": 0, "node_id": "fixture-node", "action": "remove-copy",
+                                      "retained_bindings": 0}]}, "incomplete_preparations": []}
+        spec, result, actions, choices, questions = self.run_menu(
+            ["Free disk space (checks nodes now)", "#0", "Purge prepared copies", "Back", "Back", "Back"],
+            with_home=True, plan=plan, confirms=["no"], inventory=self.live_inventory(),
+            env_extra=self.budget())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        budget, inventory = ["pulsar", "model", "budget", "--json"], ["pulsar", "inventory", "--json"]
+        self.assertEqual(actions, [budget, inventory, ["model-library.sh", "purge", spec, "--plan", "--json"],
+                                   budget, inventory])
+        # What holds the files, including the running service.
+        listed = choices.split("Free disk space\n", 1)[1].split("\n", 1)[0]
+        self.assertTrue(listed.startswith(f"[{spec[:12]}] example/model · home only · in use: running on 1 node"),
+                        listed)
+        # Stop, Unpin, Purge and Remove home, in the order that unblocks the next.
+        block = choices.split("Free disk space from this spec\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertEqual([label.split(" — ")[0] for label in block],
+                         ["Stop", "Unpin prepared copies", "Purge prepared copies", "Remove home", "Back"])
+        self.assertIn("Purge", questions)
+        self.assertIn("Nothing changed.", result.stdout)
+
+    # TUI-42: both run read-only in the pager, with no question.
+    def test_verify_running_service_and_full_file_audit_ask_nothing(self):
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Verify running service", "fixture-host", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "observe", spec, "--node", "fixture-node"]])
+        self.assertEqual(questions, "")
+        self.assertIn("[page] Verifying the running service on every rank… | ", choices)
+        self.assertIn("Which machine runs the service?", choices)
+        self.setUp()
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Full file audit (slow; hashes every file)", "fixture-host", "Back",
+             "Back"], with_home=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "info", spec, "--full", "--node", "fixture-node"]])
+        self.assertEqual(questions, "")
+        self.assertIn("[page] Hashing every prepared file; this can take many minutes… | ", choices)
+        # A failure is held on screen to read.
+        self.setUp()
+        _, result, _, choices, _ = self.run_menu(["#0", "Verify running service", "fixture-host", "Back", "Back"],
+                                                 action_rc=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("[continue]", choices)
+
+    def test_a_failed_budget_still_lists_what_holds_files(self):
+        _, result, _, choices, _ = self.run_menu(
+            ["Free disk space (checks nodes now)", "Back", "Back"], with_home=True,
+            inventory=self.live_inventory(), env_extra=self.budget(rc=3))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Storage budget not observed: node storage is unobservable", " ".join(result.stdout.split()))
+        self.assertIn("· home only", choices)
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -1324,7 +1398,7 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
-                         ["Check now (suggested)", "Download", "Start", "Live status", "Service logs", "Stop",
+                         ["Check now (suggested)", "Download", "Start", "Live status", "Verify running service", "Service logs", "Stop",
                           "Launch options…", "Storage and archive…", "Show details", "Published results",
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
@@ -1370,7 +1444,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         block = choices.split("Choose one operation\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
-                         ["Check now (suggested)", "Download", "Live status", "Service logs", "Stop",
+                         ["Check now (suggested)", "Download", "Live status", "Verify running service", "Service logs", "Stop",
                           "Launch options…", "Storage and archive…", "Show details", "Published results",
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())

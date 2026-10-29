@@ -745,7 +745,18 @@ counts. The plan names each such container, its node, whether it is running,
 and the mount, with a fix: Stop for a service Pulsar started, otherwise remove
 the container or its mount. Pulsar never removes a container it did not start.
 In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
-(asked first) and **Open Live service inventory**. Before
+(asked first) and **Open Live service inventory**.
+
+**Free disk space (checks nodes now)** in the catalog's top-level menu runs
+`./pulsar model budget --json` and a service inventory, shows the storage
+budget table, then lists each catalog spec with a recorded home or prepared
+copies: how many copies, how many are pinned, and whether this inventory saw
+its service running. Choosing a spec offers that recipe's own **Stop**,
+**Unpin prepared copies**, **Purge prepared copies** and **Remove home**, in the
+order that unblocks the next. Each runs with its usual plan preview and
+question, so pins and container references still block, and no archive is ever
+deleted. **Refresh** checks the nodes again. A budget that cannot be observed
+says why, and the specs are still listed. Before
 removing a catalog model's home, clear its dependent prepared copies and verify
 its archive.
 An unpromoted model may be explicitly discarded without an archive after
@@ -888,7 +899,8 @@ After setup, **Cluster overview (checks nodes now)** runs `./pulsar topology
 check`, `./pulsar inventory` and `./pulsar model budget` in turn, each under a
 spinner, and shows every saved node by hostname: its topology status and
 issues, available memory (GB10 shares it between the GPU and the host), disk
-headroom after the reserve and the copy allowance left, and the services and
+space in the storage budget's terms (what it can still copy, disk free and
+Pulsar files), and the services and
 other GPU work on it. A source that fails is listed as not observed with its
 error, and the others still show. A long overview opens in the pager. Nothing
 runs until it is chosen and it changes nothing; **Show again** re-reads the
@@ -902,9 +914,13 @@ until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. Where the terminal is wide enough,
 each choice adds what it does, such as **Prepare — copy files to every serving
-node** or **Pin prepared copies — protect from purge**. **Service logs**, after
-**Live status**, opens `logs` for the spec in the pager; it only reads, so it
-asks nothing. An operation is left out only when
+node** or **Pin prepared copies — protect from purge**. **Verify running
+service**, after **Live status**, opens `observe` for the spec in the pager: it
+rechecks the running service's recipe, container configuration and prepared
+files on every rank. **Service logs** opens `logs` for the spec. **Storage and
+archive → Full file audit (slow; hashes every file)** opens `model info --full`,
+which hashes every prepared file and can take many minutes. All three only read,
+so they ask nothing; a one-node recipe first asks which machine. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it, the reason and
 what makes it available: a location set in **Archive storage configuration** on
 the home menu, or a home that **Download** or **Restore** records. A serving
@@ -1132,11 +1148,15 @@ Copy amounts cover full snapshot payloads; already written partial staging is
 not deducted from this conservative estimate.
 
 **Storage and archive → Storage budget (all nodes)** runs the existing
-`./pulsar model budget` inspection for every confirmed node. It shows the same
-reserve and allowance settings used by preparation, requires no confirmation,
-and does not change the selected recipe's saved file-check state. This budget
-describes prepared-copy storage; home and archive locations may use other filesystems.
-The same choice is available in the catalog's top-level menu, even when no
+`./pulsar model budget` inspection for every confirmed node. It shows one row
+per node in human units: disk free, the reserve, Pulsar files, and what the
+node can still copy, which is the smaller of disk free after the reserve and the
+copy budget left. A node past either limit is named with the amount. Narrow
+terminals drop the reserve column first. The command uses the same reserve and
+allowance settings as preparation, requires no confirmation, and does not
+change the selected recipe's saved file-check state. This budget describes
+prepared-copy storage; home and archive locations may use other filesystems.
+The catalog's top-level **Free disk space** shows the same table, even when no
 specs are published.
 
 ### Verification reuse and full audits
