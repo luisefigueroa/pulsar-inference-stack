@@ -28,22 +28,36 @@ PYHELP
 # strict SSH policy. A successful preview is not permission to save membership.
 review_candidates() {
   REVIEW_CANDIDATES=("$@")
-  local detected choice rc candidate
-  local -a labels actions
+  local detected choice rc candidate i joined
+  local -a labels actions added kept
   while true; do
-    if "$0" detect "${REVIEW_CANDIDATES[@]}"; then
+    # Detect names this review's choices instead of the CLI's next steps.
+    if _PULSAR_SETUP_REVIEW=1 "$0" detect "${REVIEW_CANDIDATES[@]}"; then
       detected=1
     else
       rc=$?; [ "$rc" -ne 130 ] || return 130
       detected=0
     fi
     while true; do
+      # REVIEW_CANDIDATES holds --candidate ADDRESS pairs.
+      added=()
+      for ((i = 1; i < ${#REVIEW_CANDIDATES[@]}; i += 2)); do added+=("${REVIEW_CANDIDATES[$i]}"); done
       echo
-      python3 "$REPO_DIR/scripts/terminal_format.py" <<'REVIEW'
-Check that every machine you intend to use is listed. Added addresses are kept for retries until you leave this review.
-REVIEW
-      labels=("Add a machine by hostname or IP" "Retry discovery" "Machine still missing? SSH help" "Back")
-      actions=(add retry help back)
+      {
+        echo "Check that every machine you intend to use is listed. Added addresses are kept for retries until you leave this review."
+        if [ "${#added[@]}" -gt 0 ]; then
+          joined=$(printf '%s, ' "${added[@]}")
+          printf '\nAdded: %s\n' "${joined%, }"
+        fi
+      } | python3 "$REPO_DIR/scripts/terminal_format.py"
+      labels=("Add a machine by hostname or IP")
+      actions=(add)
+      if [ "${#added[@]}" -gt 0 ]; then
+        labels+=("Remove an added address")
+        actions+=(remove)
+      fi
+      labels+=("Retry discovery" "Machine still missing? SSH help" "Back")
+      actions+=(retry help back)
       if [ "$detected" = 1 ]; then
         labels=("Continue to membership review" "${labels[@]}")
         actions=(continue "${actions[@]}")
@@ -59,11 +73,25 @@ REVIEW
                 echo 'Enter one hostname or IP, without spaces or SSH options.'
                 continue ;;
             esac
+            for i in "${added[@]}"; do
+              [ "$i" != "$candidate" ] || { echo "$candidate is already added."; continue 2; }
+            done
             REVIEW_CANDIDATES+=(--candidate "$candidate")
             break
           else
             rc=$?; [ "$rc" -ne 130 ] || return 130
           fi ;;
+        remove)
+          # Discovery reruns without the chosen address; the others stay.
+          choice=$(choose_index "Remove which added address?" "${added[@]}" "Back") \
+            || { rc=$?; [ "$rc" -ne 130 ] || return 130; continue; }
+          [ "$choice" -lt "${#added[@]}" ] || continue
+          kept=()
+          for i in "${!added[@]}"; do
+            [ "$i" = "$choice" ] || kept+=(--candidate "${added[$i]}")
+          done
+          REVIEW_CANDIDATES=("${kept[@]+"${kept[@]}"}")
+          break ;;
         retry) break ;;
         help)
           python3 "$REPO_DIR/scripts/terminal_format.py" <<'SSHHELP'
