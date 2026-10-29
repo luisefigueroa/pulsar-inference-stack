@@ -847,7 +847,7 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
             or any(not isinstance(rank, dict) or type(rank.get("rank")) is not int or rank["rank"] != index
                    or type(rank.get("topology_index")) is not int or rank["topology_index"] < 0
                    or rank["topology_index"] not in node_names
-                   or rank.get("state") not in ("ok", "missing") for index, rank in enumerate(ranks))):
+                   or rank.get("state") not in ("ok", "missing", "other-name") for index, rank in enumerate(ranks))):
         raise ValueError("image preview does not establish every selected rank")
     if len({rank["topology_index"] for rank in ranks}) != len(ranks):
         raise ValueError("image preview repeats a selected node")
@@ -857,11 +857,14 @@ def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, 
     out.field("Spec", row["spec_id"])
     out.field("Image", plan["image"])
     out.field("Source", modes[plan["mode"]])
+    # A pull records the pinned name over content already there; a copy stages it again.
+    renamed = ("will add the pinned name; the content is already here" if plan["mode"] == "pull-exact-digest"
+               else "will stage; it holds the same content under another name")
+    actions = {"missing": "will stage", "ok": "already present", "other-name": renamed}
     for rank in ranks:
         node = node_names[rank["topology_index"]]
-        action = "will stage" if rank["state"] == "missing" else "already present"
-        out.field(f"Rank {rank['rank']}", f"{node}: {action}")
-    missing = any(rank["state"] == "missing" for rank in ranks)
+        out.field(f"Rank {rank['rank']}", f"{node}: {actions[rank['state']]}")
+    missing = any(rank["state"] != "ok" for rank in ranks)
     out.emit("No service is started or replaced." if missing else "The serving image is already present; nothing to stage.")
     return missing
 

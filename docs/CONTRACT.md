@@ -340,6 +340,13 @@ exits 0, so `image check --json` and `model check --json` return their report
 as the result whatever they found (`result.state`, `result.observation`).
 Without `--json`, `model check` exits 1 for missing or changed files and 3 when
 it could not observe them; `image check` exits 1 for any state other than `ok`.
+Its report's `state` is `ok`, `missing-on-head`, `missing-on-rank`,
+`missing-both`, `rank-unreachable`, `rank-docker-error` or `need-topology`, and
+each entry of `ranks` has a `state` of `ok`, `missing`, `other-name`,
+`unreachable`, `docker-error` or `need-topology`. `other-name` means the node
+holds the pinned content, found by its digest, under another repository name
+given in `present_as`, but not the pinned reference; it counts as missing, so
+the overall state and start's `image_missing` blocker are unchanged.
 When either check cannot run at all, such as for an unreadable spec or a busy
 model library, it exits 3: without `--json`, and under `--json` as
 `check_incomplete`. `observe` that cannot reach a rank's node over SSH is
