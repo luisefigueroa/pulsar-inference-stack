@@ -388,8 +388,6 @@ class View(unittest.TestCase):
                     self.assertIn(field, fields)
                 # Values start in one column; wrapped values hang under them.
                 for line in body[1:]:
-                    if line.startswith(("Not shown", "These are")):
-                        continue
                     self.assertTrue(line[10:11].strip() and not line[9:10].strip(), line)
                 self.assertTrue(all(len(line) <= width - 4 for line in body))
                 nexts = [line.split("\t", 1)[1] for line in lines if line.startswith("next\t")]
@@ -465,16 +463,50 @@ class View(unittest.TestCase):
         self.assertIn("no archive location is configured", " ".join(text.split()))
         self.assertIn("option\tmain\tacquire\tDownload — fetch model files to one node", lines)
         self.assertFalse(any(line.startswith("option\tmain\trestore\t") for line in lines))
-        self.assertIn("Check now refreshes them", text)
+        self.assertNotIn("Check now refreshes", text)
         self.assertIn("option\tmain\tstart\tStart (suggested) — launch the service; asks first", lines)
         self.assertIn("suggest\tstart", lines)
         self.assertTrue(all(len(line.split("\t", 1)[1]) <= 56 for line in lines if line.startswith("header\t")))
+
+    # TUI-60: each hidden operation says what makes it available; Check now
+    # records file observations only, so it is never named as the fix.
+    def test_hidden_operations_name_their_fix(self):
+        def shown(state, location):
+            # Each "Not shown" field with its wrapped lines, whitespace collapsed.
+            entries, current = [], None
+            for line in menu.view_lines(state, location, width=200, names=NAMES):
+                kind, _, text = line.partition("\t")
+                if kind == "header" and text.startswith("Not shown"):
+                    current = [text]
+                    entries.append(current)
+                elif kind == "header" and current is not None and text.startswith(" "):
+                    current.append(text)
+                else:
+                    current = None
+            return [" ".join(" ".join(entry).split()) for entry in entries]
+        self.assertEqual(shown(row(), "configured"), [
+            "Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
+            "Download or Restore records a home."])
+        self.assertEqual(shown(row(), "not-configured"), [
+            "Not shown Restore, Verify archive (no archive location is configured). "
+            "Set one in Archive storage configuration on the home menu.",
+            "Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
+            "Download records a home."])
+        self.assertEqual(shown(checked(home=HOME), "disabled"), [
+            "Not shown Restore, Create archive, Verify archive (archives are disabled). "
+            "Set a location in Archive storage configuration on the home menu."])
+        self.assertEqual(shown(row(snapshots=two_snapshots(HOME, None)), "configured"), [
+            "Not shown Prepare (no home is recorded for snapshot draft). Download or Restore records a home."])
+        for state, location in ((row(), "not-configured"), (checked(home=HOME, **GUARDED), "configured")):
+            lines = menu.view_lines(state, location, width=80, names=NAMES)
+            self.assertNotIn("Check now refreshes", frame_text(lines))
 
     def test_guarded_view_explains_missing_start_without_a_suggestion(self):
         lines = menu.view_lines(checked(home=HOME, local_state="ready", **GUARDED), "configured",
                                 width=60, names=NAMES)
         text = " ".join(line.split("\t", 1)[1] for line in lines if line.startswith("header\t"))
-        self.assertIn(f"Not shown: Start ({GUARD_REASON})", text)
+        # No menu operation lifts a serving guard, so no fix is named.
+        self.assertIn(f"Not shown Start ({GUARD_REASON}).", " ".join(text.split()))
         self.assertFalse([line for line in lines if line.startswith(("next\t", "suggest\t", "option\tmain\tstart\t"))])
         self.assertIn("option\tmain\tstop\tStop — remove the service; files are kept", lines)
         self.assertIn("option\tmain\tstatus\tLive status — check whether it runs now", lines)

@@ -874,7 +874,11 @@ each choice adds what it does, such as **Prepare — copy files to every serving
 node** or **Pin prepared copies — protect from purge**. **Service logs**, after
 **Live status**, opens `logs` for the spec in the pager; it only reads, so it
 asks nothing. An operation is left out only when
-saved records rule it out, and a **Not shown** line names it and the reason.
+saved records rule it out, and a **Not shown** line names it, the reason and
+what makes it available: a location set in **Archive storage configuration** on
+the home menu, or a home that **Download** or **Restore** records. A serving
+guard or a historical spec has no such fix. **Check now** records file
+observations only, so it never changes what is shown.
 **Download** remains available when a home is recorded, and **Restore** remains
 available when an archive location is configured. A home record can outlive its
 files; these operations' live previews decide whether recovery or reuse is

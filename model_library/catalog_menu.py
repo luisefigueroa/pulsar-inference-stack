@@ -237,6 +237,20 @@ def _location_reason(archive_location: str) -> str:
     return "archives are disabled" if archive_location == "disabled" else "no archive location is configured"
 
 
+def hidden_fix(reason: str, hidden: dict[str, str]) -> str | None:
+    """What makes operations left out for REASON available again, or None when
+    no menu operation does (a serving guard, a historical spec). Check now
+    records file observations only, so it is never the fix: homes are recorded
+    by Download and Restore, and the archive location is a setting."""
+    if reason == _location_reason("not-configured"):
+        return "Set one in Archive storage configuration on the home menu."
+    if reason == _location_reason("disabled"):
+        return "Set a location in Archive storage configuration on the home menu."
+    if reason.startswith("no home is recorded"):
+        return "Download or Restore records a home." if "restore" not in hidden else "Download records a home."
+    return None
+
+
 def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, str], dict[str, list[str]]]:
     """Return offered actions, left-out actions with reasons, and eligible snapshots.
 
@@ -577,9 +591,8 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
         if action in hidden:
             by_reason.setdefault(hidden[action], []).append(LABELS[action])
     for reason, labels in by_reason.items():
-        out.emit(f"Not shown: {', '.join(labels)} ({reason})")
-    if by_reason:
-        out.emit("These are saved records; Check now refreshes them.")
+        fix = hidden_fix(reason, hidden)
+        field("Not shown", f"{', '.join(labels)} ({reason})." + (f" {fix}" if fix else ""))
     body = buffer.getvalue().splitlines()
     if not suggested:
         return body, []
