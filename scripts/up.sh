@@ -185,8 +185,27 @@ echo "│  spec-review=$SPEC_REVIEW_CELL (display-only)"
 [ "$DRY" = 1 ] && echo "│  mode=DRY-RUN (checks only)"
 echo "├─ checks"
 
+# start_check OUTCOME ID MESSAGE [--node NODE] — records one check for start
+# --json and the menu's checklist (scripts/start_checks.py), beside the human
+# line printed as before. Recording never changes what start does.
+start_check() {
+  [ -n "${PULSAR_START_CHECKS_FILE:-}" ] || return 0
+  python3 "$REPO_DIR/scripts/start_checks.py" record "$@" || warn "the $2 check could not be recorded for start --json"
+}
+# The checks this start expects; any a blocker keeps it from running are not_run.
+if [ -n "${PULSAR_START_CHECKS_FILE:-}" ]; then
+  expected_checks=(spec-review recipe topology)
+  [ "$NODES" -le 1 ] || expected_checks+=(fabric)
+  expected_checks+=(image service model-files memory port)
+  [ "$NODES" -le 1 ] || expected_checks+=(preflight)
+  python3 "$REPO_DIR/scripts/start_checks.py" expect "${expected_checks[@]}" plan \
+    || warn "the start checks could not be recorded for start --json"
+fi
+
 echo "INFO  spec-review $SPEC_REVIEW_CELL (display-only)"
+start_check info spec-review "$SPEC_REVIEW_CELL (display-only)"
 echo "PASS  recipe    exact spec contract parsed"
+start_check pass recipe "exact spec contract parsed"
 
 # Every independent check runs before start reports. Each failure is one
 # recorded blocker; blockers that leave nodes unobservable end the checks.
@@ -231,19 +250,24 @@ for row in (json.load(sys.stdin).get("ranks") or []):
 # --- topology: every spec; the later checks need the confirmed nodes ---
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then
   status_line "FAIL  topology  spec needs $NODES confirmed node(s); confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
+  start_check fail topology "spec needs $NODES confirmed node(s); confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   stop_if_blocked
 fi
+# Recorded before the fabric check, in check order, so a fabric blocker leaves it passed.
+start_check pass topology "spec needs $NODES node(s); confirmed $CLUSTER_TOPOLOGY_COUNT"
 if [ "$NODES" -gt 1 ]; then
   fabric_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-fabric.XXXXXX")
   if ! require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$fabric_err"; then
     fabric_reason=$(sed -n 's/^topology: //p' "$fabric_err" | tail -n1)
     rm -f "$fabric_err"
     status_line "FAIL  fabric    ${fabric_reason:-the confirmed fabric does not meet this spec}"
+    start_check fail fabric "${fabric_reason:-the confirmed fabric does not meet this spec}"
     blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
     stop_if_blocked
   fi
   rm -f "$fabric_err"
+  start_check pass fabric "the confirmed fabric meets this spec"
 fi
 echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 # A new home goes on the start placement (one node) or on rank 0.
@@ -274,21 +298,31 @@ cat "$img_err" >&2
 img_json=$(QUIET=0 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --json 2>/dev/null)
 set -e
 img_state=$(printf '%s' "$img_json" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)
-if [ "$img_rc" != 0 ]; then
+# The check's own line, without its styling or PASS/FAIL tag, is the recorded message.
+img_message=$(printf '%s' "${img_line:-}" | python3 -c '
+import re,sys
+text=re.sub(r"\x1b\[[0-9;]*[A-Za-z]","",sys.stdin.read())
+print(" ".join(re.sub(r"^(PASS|FAIL|INFO|WARN) +image +","",text).split()))')
+if [ "$img_rc" = 0 ]; then
+  start_check pass image "${img_message:-pinned image verified on every serving rank}"
+else
   if [ -z "$img_state" ]; then
     # No report: the check itself failed, which says nothing about the image.
     img_detail=$(check_error "$img_err")
+    start_check fail image "the image check could not complete: ${img_detail:-exit $img_rc}"
     blocked image_check_failed --detail "${img_detail:-exit $img_rc}"
   else
     # other-name: the pinned content under another repository name still lacks the pinned reference.
     missing_on=$(image_ranks missing other-name | cut -f2 | paste -sd, - | sed 's/,/, /g')
     case "$img_state" in
       need-topology)
+        start_check fail image "the image check found fewer confirmed nodes than the spec needs"
         blocked topology_incomplete --detail "the image check found fewer confirmed nodes than the spec needs"
         stop_if_blocked
         ;;
       worker-unreachable|rank-unreachable|target-unreachable|worker-docker-error|rank-docker-error|head-docker-error|target-docker-error)
         # Name every affected node; later checks need every node observable.
+        start_check fail image "${img_message:-image check state $img_state}"
         while IFS=$'\t' read -r rank host node_id; do
           blocked node_unreachable --node "$host" --node-id "$node_id" --rank "$rank"
         done < <(image_ranks unreachable)
@@ -306,14 +340,18 @@ if [ "$img_rc" != 0 ]; then
         ;;
       missing-on-worker|missing-on-rank|missing-on-head|missing-on-target|missing-both)
         if [ "$PULL_IMG" != 1 ]; then
+          start_check fail image "${img_message:-the pinned image is missing${missing_on:+ on $missing_on}}"
           blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}"
         elif [ "$DRY" = 1 ]; then
           echo "INFO  image     missing${missing_on:+ on $missing_on}; --pull-image would stage it"
+          start_check info image "missing${missing_on:+ on $missing_on}; --pull-image would stage it"
         else
+          start_check info image "missing${missing_on:+ on $missing_on}; --pull-image stages it after the other checks"
           IMAGE_SYNC="$img_state"
         fi
         ;;
       *)
+        start_check fail image "image check state $img_state"
         blocked image_check_failed --detail "image check state $img_state"
         ;;
     esac
@@ -352,6 +390,7 @@ done
 # would misread a service that may be running there.
 if [ "${#uninspectable[@]}" -gt 0 ]; then
   for index in "${uninspectable[@]}"; do
+    start_check fail service "could not inspect existing containers" --node "$(human_node_name "$index")"
     blocked docker_unavailable --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
       --detail "could not inspect existing containers"
   done
@@ -362,13 +401,18 @@ if [ "${#existing_hosts[@]}" -gt 0 ]; then
   if [ "$REPLACE" = 1 ]; then
     REPLACING=1
     echo "INFO  service   $CONTAINER exists on $where; --replace removes it after the image recheck"
+    start_check info service "$CONTAINER exists on $where; --replace removes it after the image recheck"
   elif [ "$NODES" -eq 1 ]; then
+    start_check fail service "container $CONTAINER exists on $where"
     blocked service_exists --node "${existing_hosts[0]}" --node-id "${existing_ids[0]}" --detail "container $CONTAINER"
     stop_if_blocked
   else
+    start_check fail service "container $CONTAINER exists on $where"
     blocked service_exists --detail "container $CONTAINER on $where"
     stop_if_blocked
   fi
+else
+  start_check pass service "no container of this spec exists on its serving nodes"
 fi
 
 # --- model files ---
@@ -385,13 +429,19 @@ if [ "$SKIP_W" != 1 ]; then
   set -e
   cat "$w_err" >&2
   case "$w_rc" in
-    0) ;;
-    1) blocked model_files_not_ready --detail "see the model-files check above" ;;
-    *) w_detail=$(check_error "$w_err"); blocked model_files_check_failed --detail "${w_detail:-exit $w_rc}" ;;
+    0) start_check pass model-files "prepared files verified on every serving rank" ;;
+    1)
+      start_check fail model-files "prepared files are not ready on every serving rank"
+      blocked model_files_not_ready --detail "see the model-files check above" ;;
+    *)
+      w_detail=$(check_error "$w_err")
+      start_check fail model-files "the model-files check could not complete: ${w_detail:-exit $w_rc}"
+      blocked model_files_check_failed --detail "${w_detail:-exit $w_rc}" ;;
   esac
   rm -f "$w_err"
 else
   echo "SKIP  model files"
+  start_check info model-files "skipped"
 fi
 
 # --- memory ---
@@ -407,6 +457,7 @@ memory_reason() {
 }
 if [ "$REPLACING" = 1 ]; then
   echo "SKIP  memory    rechecked after the previous service is removed"
+  start_check info memory "rechecked after the previous service is removed"
 else
   m_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-memory.XXXXXX")
   set +e
@@ -420,21 +471,28 @@ else
   set -e
   cat "$m_err" >&2
   case "$mem_rc" in
-    0) ;;
+    0) start_check pass memory "enough available memory on every serving node" ;;
     1)
-      blocked memory_insufficient --detail "$(memory_reason)"
+      mem_reason=$(memory_reason)
+      start_check fail memory "${mem_reason:-not enough available memory}"
+      blocked memory_insufficient --detail "$mem_reason"
       ;;
     2)
       if [ "$DRY" = 1 ]; then
         echo "      (WARN accepted for dry-run)"
+        start_check info memory "below the recommended headroom; accepted for the dry run"
       elif [ "$ACCEPT_MEM" = 1 ]; then
         echo "      (WARN accepted via --accept-memory-warn)"
+        start_check info memory "below the recommended headroom; accepted via --accept-memory-warn"
       else
-        blocked memory_warning --detail "$(memory_reason)"
+        mem_reason=$(memory_reason)
+        start_check fail memory "${mem_reason:-below the recommended headroom}"
+        blocked memory_warning --detail "$mem_reason"
       fi
       ;;
     *)
       m_detail=$(check_error "$m_err")
+      start_check fail memory "the memory check could not complete: ${m_detail:-exit $mem_rc}"
       blocked memory_check_failed --detail "${m_detail:-exit $mem_rc}"
       ;;
   esac
@@ -444,8 +502,9 @@ fi
 # --- port: after the existence check; a service being replaced frees its port ---
 if [ "$REPLACING" = 1 ]; then
   echo "SKIP  port      rechecked after the previous service is removed"
+  start_check info port "rechecked after the previous service is removed"
 else
-  port_rows=()
+  port_rows=() ports_busy=0
   if [ "$NODES" -eq 1 ]; then
     port_rows=("${SINGLE_NODE_INDEX:-0}:$PORT")
   else
@@ -459,9 +518,15 @@ else
       continue
     fi
     status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
+    start_check fail port "$checked_port is in use" --node "$(human_node_name "$index")"
+    ports_busy=1
     blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
       --detail "port $checked_port"
   done
+  if [ "$ports_busy" = 0 ]; then
+    ports=$(printf '%s, ' "${port_rows[@]##*:}")
+    start_check pass port "${ports%, } free on $(human_node_name "${port_rows[0]%%:*}")"
+  fi
 fi
 stop_if_blocked
 
@@ -487,10 +552,14 @@ if [ "$NODES" -gt 1 ]; then
   if [ "$SKIP_PF" != 1 ]; then
     if [ "$DRY" = 1 ]; then
       echo "PASS  preflight would run before launch"
+      start_check info preflight "would run before launch"
     else
       echo "│  running cluster preflight…"
       if [ "$VERBOSE" = 1 ]; then
-        if ! "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+          start_check pass preflight "cluster OK"
+        else
+          start_check fail preflight "see the preflight output above"
           blocked preflight_failed --detail "see the preflight output above"
           stop_if_blocked
         fi
@@ -501,9 +570,11 @@ if [ "$NODES" -gt 1 ]; then
         if "$REPO_DIR/cluster/preflight.sh" "$NAME" \
             >"$_pf_log" 2>&1; then
           echo "PASS  preflight cluster OK"
+          start_check pass preflight "cluster OK"
           rm -f "$_pf_log"
         else
           status_line "FAIL  preflight — see $_pf_log"
+          start_check fail preflight "see $_pf_log"
           tail -20 "$_pf_log" >&2 || true
           blocked preflight_failed --detail "log: $_pf_log"
           stop_if_blocked
@@ -512,6 +583,7 @@ if [ "$NODES" -gt 1 ]; then
     fi
   else
     echo "SKIP  preflight"
+    start_check info preflight "skipped with --skip-preflight"
   fi
 fi
 
@@ -545,6 +617,7 @@ LAUNCH_ACTION=start
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
 plan_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["schema_version"])' "$PLAN_FILE")
 echo "PASS  plan      schema=$plan_schema ranks=$NODES; prerequisites checked separately"
+start_check pass plan "schema $plan_schema, $NODES rank(s)"
 
 # Suggested follow-up commands name the node by hostname and a catalog spec by
 # its 12-character prefix when that prefix is unique; a candidate keeps its full ID.

@@ -20,7 +20,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts")]
 import integration_contract
-from scripts import public_cli, start_blockers
+from scripts import public_cli, start_blockers, start_checks
 
 SPEC = "ab" * 32
 SERVICE_ID = "5e" * 32
@@ -327,6 +327,7 @@ class Catalog(unittest.TestCase):
 
     def test_contract_publishes_the_codes(self):
         self.assertEqual(integration_contract.contract()["start_blocker_codes"], sorted(start_blockers.BLOCKERS))
+        self.assertEqual(integration_contract.contract()["start_check_ids"], list(start_checks.CHECK_IDS))
         self.assertIn("guard_unsupported", integration_contract.contract()["start_blocker_codes"])
 
 
@@ -338,6 +339,7 @@ class StartScenarios(unittest.TestCase):
             (self.root / directory).mkdir()
         shutil.copyfile(ROOT / "scripts/up.sh", self.root / "scripts/up.sh")
         shutil.copyfile(ROOT / "scripts/start_blockers.py", self.root / "scripts/start_blockers.py")
+        shutil.copyfile(ROOT / "scripts/start_checks.py", self.root / "scripts/start_checks.py")
         (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
                                                    + lib_function("launch_plan_service_id"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
@@ -349,10 +351,12 @@ class StartScenarios(unittest.TestCase):
             path = self.root / name
             path.write_text(body); path.chmod(0o700)
         self.blockers = self.root / "blockers.jsonl"
+        self.checks = self.root / "checks.jsonl"
 
     def start(self, *flags, image="missing-on-head", weights=0, memory=0, extra_env=None, stderr=None, **fixture):
         env = {**os.environ, "PATH": f"{self.root / 'bin'}:{os.environ['PATH']}", "PYTHONPATH": str(ROOT),
                "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_START_BLOCKERS_FILE": str(self.blockers),
+               "PULSAR_START_CHECKS_FILE": str(self.checks),
                "PULSAR_MODEL_LIBRARY_DIR": str(self.root / "library"), "PULSAR_DOCKER": str(self.root / "bin/docker"),
                "FIXTURE_DIR": str(self.root), "FIXTURE_IMAGE": image, "FIXTURE_WEIGHTS_RC": str(weights),
                "FIXTURE_MEMORY_RC": str(memory), "FIXTURE_SERVICE_ID": SERVICE_ID,
@@ -365,14 +369,73 @@ class StartScenarios(unittest.TestCase):
         result = subprocess.run(["bash", str(self.root / "scripts/up.sh"), SPEC, *flags],
                                 env=env, text=True, timeout=60, **streams)
         self.records = start_blockers.read(self.blockers)
+        self.checked = start_checks.read(self.checks)
         return result, [row["blocker"] for row in self.records]
+
+    def outcomes(self):
+        return [(check["id"], check["outcome"]) for check in self.checked]
 
     def ran(self, marker):
         return (self.root / marker).exists()
 
     def reset(self):
-        for marker in ("blockers.jsonl", "docker-calls", "launched", "locks-released"):
+        for marker in ("blockers.jsonl", "checks.jsonl", "docker-calls", "launched", "locks-released"):
             (self.root / marker).unlink(missing_ok=True)
+
+    # TUI-79: every check start ran, with its outcome, and the ones a blocker kept it from.
+    def test_checks_name_what_passed_failed_and_did_not_run(self):
+        result, _ = self.start(weights=1, memory=1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.outcomes(), [
+            ("spec-review", "info"), ("recipe", "pass"), ("topology", "pass"), ("image", "fail"),
+            ("service", "pass"), ("model-files", "fail"), ("memory", "fail"), ("port", "pass"), ("plan", "not_run")])
+        image = self.checked[3]
+        self.assertEqual(image["message"], "IMAGE missing-on-head")
+        self.assertEqual(self.checked[6]["message"], "fixture-host: available 10 GiB << footprint 80 GiB (cannot fit)")
+        self.assertEqual(self.checked[-1]["message"], start_checks.NOT_RUN)
+        self.assertEqual(start_checks.checklist(self.checked),
+                         "• spec review  ✓ recipe  ✓ topology  ✗ image  ✓ service  ✗ model files  ✗ memory  "
+                         "✓ port  – plan (not run)")
+        # A blocker that ends the checks leaves the rest not_run.
+        self.reset()
+        self.start(topology=0)
+        self.assertEqual(self.outcomes(), [("spec-review", "info"), ("recipe", "pass"), ("topology", "fail")]
+                         + [(check, "not_run") for check in ("image", "service", "model-files", "memory", "port",
+                                                             "plan")])
+        # A dry run that passes records every check; --pull-image turns a missing image into info.
+        self.reset()
+        result, codes = self.start("--dry-run", "--pull-image")
+        self.assertEqual((result.returncode, codes), (0, []), result.stderr + result.stdout)
+        self.assertEqual([outcome for _, outcome in self.outcomes()],
+                         ["info", "pass", "pass", "info", "pass", "pass", "pass", "pass", "pass"])
+        self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would stage it")
+
+    def test_multi_node_checks_keep_their_order_and_record_preflight(self):
+        # A fabric blocker leaves the topology check passed, not not_run.
+        self.start(nodes=2, fabric="needs 2 rails per pair; found 1")
+        self.assertEqual(self.outcomes()[:4], [("spec-review", "info"), ("recipe", "pass"), ("topology", "pass"),
+                                               ("fabric", "fail")])
+        self.assertEqual({outcome for _, outcome in self.outcomes()[4:]}, {"not_run"})
+        # Preflight passes are recorded whether or not --verbose shows its output.
+        for flags in ((), ("--verbose",)):
+            with self.subTest(flags=flags):
+                self.reset()
+                result, codes = self.start(*flags, "--dry-run", image="ok", nodes=2)
+                self.assertEqual(codes, [], result.stdout + result.stderr)
+                self.reset()
+                result, codes = self.start(*flags, image="ok", nodes=2)
+                ids = [check for check, _ in self.outcomes()]
+                self.assertEqual(ids, [check for check in start_checks.CHECK_IDS], result.stdout + result.stderr)
+                self.assertEqual(dict(self.outcomes())["preflight"], "pass")
+                self.assertNotIn("not_run", dict(self.outcomes()).values())
+
+    def test_recorded_messages_carry_no_terminal_styling(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "checks.jsonl"
+            with patch.dict(os.environ, {"PULSAR_START_CHECKS_FILE": str(target)}):
+                start_checks.main(["expect", "image"])
+                start_checks.main(["record", "fail", "image", "\x1b[1;31mFAIL\x1b[0m  the pinned image is missing"])
+            self.assertEqual(start_checks.read(target)[0]["message"], "FAIL the pinned image is missing")
 
     def test_independent_blockers_are_reported_together(self):
         result, codes = self.start(weights=1, memory=1)
@@ -950,6 +1013,61 @@ class JsonEnvelope(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(error["code"], "prerequisite_failed")
         self.assertEqual(error["details"], records)
+        self.assertEqual(error["checks"], [])
+
+    # TUI-79: checks sit in the result, or beside the blocker records in the error.
+    def test_start_json_returns_its_checks(self):
+        recorded = [{"id": "recipe", "outcome": "pass", "node": None, "message": "exact spec contract parsed"},
+                    {"id": "memory", "outcome": "fail", "node": None, "message": "not enough"}]
+        lines = [json.dumps({"expected": ["recipe", "memory", "port"]})] + [json.dumps(r) for r in recorded]
+
+        def run(blocked):
+            def command(command, env, cwd):
+                Path(env["PULSAR_START_CHECKS_FILE"]).write_text("\n".join(lines) + "\n")
+                if blocked:
+                    Path(env["PULSAR_START_BLOCKERS_FILE"]).write_text(
+                        json.dumps(start_blockers.blocker("memory_insufficient", spec=SPEC)) + "\n")
+                else:
+                    Path(env["PULSAR_LAUNCH_RESULT_FILE"]).write_text(json.dumps({"service_id": SERVICE_ID}))
+                return type("Completed", (), {"returncode": int(blocked), "stdout": "", "stderr": ""})()
+            output = io.StringIO()
+            with patch.object(public_cli, "run_command", side_effect=command), \
+                    contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+                status = public_cli.main(["start", SPEC, "--dry-run", "--json"])
+            return status, json.loads(output.getvalue())
+        expected = recorded + [{"id": "port", "outcome": "not_run", "node": None, "message": start_checks.NOT_RUN}]
+        status, document = run(blocked=False)
+        self.assertEqual((status, document["result"]["service_id"]), (0, SERVICE_ID))
+        self.assertEqual(document["result"]["checks"], expected)
+        status, document = run(blocked=True)
+        self.assertEqual(status, 1)
+        self.assertEqual(document["error"]["checks"], expected)
+        self.assertEqual([record["blocker"] for record in document["error"]["details"]], ["memory_insufficient"])
+
+    def test_every_start_failure_carries_its_checks(self):
+        # A failure without blocker records, such as image staging, keeps its code and adds its checks.
+        def staging_failed(command, env, cwd):
+            Path(env["PULSAR_START_CHECKS_FILE"]).write_text(
+                json.dumps({"expected": ["recipe"]}) + "\n"
+                + json.dumps({"id": "recipe", "outcome": "pass", "node": None, "message": "parsed"}) + "\n")
+            return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "error: pulling failed\n"})()
+        output = io.StringIO()
+        with patch.object(public_cli, "run_command", side_effect=staging_failed), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            status = public_cli.main(["start", SPEC, "--json"])
+        error = json.loads(output.getvalue())["error"]
+        self.assertEqual((status, error["code"]), (1, "prerequisite_failed"))
+        self.assertEqual(error["checks"], [{"id": "recipe", "outcome": "pass", "node": None, "message": "parsed"}])
+        self.assertEqual(error["details"][0]["field"], "$")
+
+        # Stopped before the checks began: an empty list.
+        def refused(command, env, cwd):
+            return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "error: no spec\n"})()
+        output = io.StringIO()
+        with patch.object(public_cli, "run_command", side_effect=refused), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            public_cli.main(["start", SPEC, "--json"])
+        self.assertEqual(json.loads(output.getvalue())["error"]["checks"], [])
 
 
 if __name__ == "__main__":

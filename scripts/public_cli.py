@@ -74,10 +74,12 @@ class StatusFailed(RuntimeError):
 
 
 class StartBlocked(RuntimeError):
-    """Start refused; envelope_details holds one record per start blocker."""
-    def __init__(self, message, blockers):
+    """Start refused; envelope_details holds one record per start blocker, and
+    the error's checks what start checked before it stopped."""
+    def __init__(self, message, blockers, checks=None):
         super().__init__(message)
         self.envelope_details = blockers
+        self.envelope_extra = {'checks': checks or []}
 
 
 def redact_diagnostic(value):
@@ -444,28 +446,35 @@ def dispatch(command, args):
         os.execvp('bash',['bash',str(ROOT/'scripts/resources.sh'),*args])
     if command == 'start':
         from scripts.start_blockers import read as read_blockers
+        from scripts.start_checks import read as read_checks
         with tempfile.TemporaryDirectory(prefix='pulsar-start-result.') as temp:
-            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'
+            path=Path(temp)/'result.json'; blockers=Path(temp)/'blockers.jsonl'; checks=Path(temp)/'checks.jsonl'
             try:
                 execute('scripts/up.sh',args,env={**os.environ,'PULSAR_LAUNCH_RESULT_FILE':str(path),
-                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers)})
+                                                  'PULSAR_START_BLOCKERS_FILE':str(blockers),
+                                                  'PULSAR_START_CHECKS_FILE':str(checks)})
             except Cancelled as exc:
                 # Interrupted after launch: cancellation reaped this command, not the
                 # service it started. Say so first, and name the service in details.
                 # Check blockers recorded before an interrupt do not mean a launch.
                 recorded=[r for r in read_blockers(blockers) if r.get('blocker')=='start_interrupted']
+                # Every start error carries what start checked, empty before the checks.
+                exc.envelope_extra={'checks':read_checks(checks)}
                 if not recorded:
                     raise
                 lines=[f"{r['message']}. Next: {r['fix']}" if r.get('fix') else r['message'] for r in recorded]
                 interrupted=Cancelled('\n'.join([*lines,str(exc)]),signum=exc.exit_code-128,confirmed=exc.confirmed)
                 interrupted.envelope_details=recorded
+                interrupted.envelope_extra=exc.envelope_extra
                 raise interrupted from exc
             except RuntimeError as exc:
                 recorded=read_blockers(blockers)
                 if recorded:
-                    raise StartBlocked(str(exc),recorded) from exc
+                    raise StartBlocked(str(exc),recorded,read_checks(checks)) from exc
+                # A failure without blocker records, such as image staging, keeps its code.
+                exc.envelope_extra={'checks':read_checks(checks)}
                 raise
-            return serving.load_json(path)
+            return {**serving.load_json(path),'checks':read_checks(checks)}
     if command == 'model':
         if not args or args[0].startswith('-'):
             raise UsageError('command', 'pulsar model needs an operation such as acquire, prepare, info or restore; '

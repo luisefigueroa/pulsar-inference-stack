@@ -1063,7 +1063,10 @@ operation keeps its own preview and confirmation.
 
 - **Check launch prerequisites** runs the existing `start --dry-run` checks.
   It does not launch or stage images. Its output identifies checks, such as the
-  multi-node preflight, that will run only during an actual Start.
+  multi-node preflight, that will run only during an actual Start. After it,
+  and after **Start**, one line sums up the checks: `✓` passed, `✗` failed,
+  `•` shown but not blocking, and `–` not run because an earlier blocker ended
+  the checks. `start --json` reports the same list as `checks`.
 - **Check serving image** runs `image check` on the selected serving nodes.
 - **Stage serving image** previews `image stage` before confirmation. Choose
   between pulling the exact catalog digest from its registry and copying the
