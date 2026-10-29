@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT))
 from scripts.release_consumer import list_releases
 from scripts.service_status import StatusError, check_inventory
 from scripts.terminal_format import TerminalWriter
+from model_library.catalog_menu import stop_question
 
 
 class ServiceNotObserved(LookupError):
@@ -119,15 +120,16 @@ def view(inventory, catalog, spec_id=None, *, width=None):
             writer.emit("The observed recipe differs from the selected catalog spec.")
         writer.emit("Detailed status uses the existing service and file checks.")
         node = service["node_id"] or "-"
+        # Outcomes name the model as well as the spec.
+        commands.append(f"model\t{clean(service['model_id'])}")
         commands.append(f"status\t{spec_id}\t{node}")
         # Logs reads every rank's container, so it needs only the spec.
         commands.append(f"logs\t{spec_id}")
         if service["stop_reason"]:
             writer.emit(service["stop_reason"])
         else:
-            scope = (f"on {service['where']}" if service["nodes"] == 1 else "across its participating nodes")
-            question = (f"Stop and remove the owned service containers for {service['model_id']} "
-                        f"[{spec_id[:12]}] {scope}? Model files, pins and archives are kept.")
+            # The same question as the catalog menu's Stop, naming the observed nodes.
+            question = stop_question(service["model_id"], spec_id, service["where"])
             commands.extend((f"stop\t{spec_id}\t{node}", f"confirm\t{clean(question)}"))
     return ["header\t" + line for line in output.getvalue().splitlines()] + commands
 
