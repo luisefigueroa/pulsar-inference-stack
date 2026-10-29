@@ -159,7 +159,7 @@ else: sys.exit(99)
         result, calls, choices, questions = self.run_menu(["#0", "Detailed status", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(["status", self.spec["spec_id"], "--node", "node-1"], calls)
-        self.assertNotIn("Select a confirmed physical node", choices)
+        self.assertNotIn("Which machine", choices)
         self.assertEqual(questions, "")
         # Its output opens in the pager after a spinner; closing it is the Continue.
         self.assertIn("[page] Checking service status… | ", choices)

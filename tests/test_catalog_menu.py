@@ -541,6 +541,61 @@ class View(unittest.TestCase):
         self.assertEqual(menu.snapshot_label(state, name, 30, NAMES), "n" * 27 + "...")
 
 
+class NodeChoices(unittest.TestCase):
+    """TUI-25: the node question names what the machine is for; each choice
+    names what saved records place on it. Nothing is probed."""
+
+    def test_each_machine_names_the_home_and_prepared_copies_recorded_there(self):
+        state = checked(home=HOME, prepared_copies=[{"rank": 0, "node_id": "n1"}, {"rank": 0, "node_id": "n0"}])
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78),
+                         "spark-1 — home recorded here, prepared copy recorded here")
+        self.assertEqual(menu.node_label(state, "n1", "spark-2", 78), "spark-2 — prepared copy recorded here")
+        self.assertEqual(menu.node_label(state, "n2", "spark-3", 78), "spark-3")
+        # Where the whole label doesn't fit, the home stays before the copy.
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 30), "spark-1 — home recorded here")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 20), "spark-1")
+
+    def test_the_selected_snapshots_home_is_the_one_named(self):
+        state = row(snapshots=two_snapshots(HOME, None))
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, "target"), "spark-1 — home recorded here")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, "draft"), "spark-1")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78), "spark-1 — home recorded here")
+
+    def choices(self, state, action, *nodes, snapshot=None):
+        out = io.StringIO()
+        args = ["node-choices", "--spec-id", state["spec_id"], "--action", action]
+        args += ["--snapshot", snapshot] if snapshot else []
+        for node in nodes:
+            args += ["--node-name", node]
+        with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
+                patch.dict("os.environ", {"COLUMNS": "80"}), \
+                patch("subprocess.run", side_effect=AssertionError("node choices must not probe")):
+            rc = menu.main(args)
+        return rc, [line.split("\t") for line in out.getvalue().splitlines()]
+
+    def test_the_question_follows_the_operation(self):
+        state = checked(home=HOME)
+        cases = {"acquire": "Which machine should hold the model files?",
+                 "restore": "Which machine should hold the model files?",
+                 "move": "Which machine should the home move to?",
+                 "check": "Which machine's files should be checked?",
+                 "status": "Which machine runs the service?", "stop": "Which machine runs the service?",
+                 "start": "Which machine should serve the model?", "prepare": "Which machine should serve the model?"}
+        for action, question in cases.items():
+            with self.subTest(action=action):
+                rc, lines = self.choices(state, action, "n0=spark-1", "n1=spark-2")
+                self.assertEqual(rc, 0)
+                self.assertEqual(lines, [["title", question], ["node", "n0", "spark-1 — home recorded here"],
+                                         ["node", "n1", "spark-2"]])
+
+    def test_a_malformed_node_name_is_refused(self):
+        err = io.StringIO()
+        with patch("sys.stderr", err):
+            rc, _ = self.choices(checked(home=HOME), "acquire", "spark-1")
+        self.assertEqual(rc, 2)
+        self.assertIn("NODE_ID=HOSTNAME", err.getvalue())
+
+
 class SuggestedCommand(unittest.TestCase):
     def command(self, state, location="configured"):
         return menu.suggested_command(state, location, NAMES)

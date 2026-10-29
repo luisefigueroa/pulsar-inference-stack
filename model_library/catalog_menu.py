@@ -627,6 +627,37 @@ def snapshot_label(row: dict, name: str, width: int, names: NodeNames) -> str:
     return text[:width - 3] + "..."
 
 
+# The question above the node choices, by operation. One-node recipes also ask
+# where to serve; NODE_QUESTION covers the operations not listed.
+NODE_QUESTIONS = {
+    "acquire": "Which machine should hold the model files?",
+    "restore": "Which machine should hold the model files?",
+    "move": "Which machine should the home move to?",
+    "check": "Which machine's files should be checked?",
+    "status": "Which machine runs the service?", "stop": "Which machine runs the service?",
+}
+NODE_QUESTION = "Which machine should serve the model?"
+
+
+def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None) -> str:
+    """HOSTNAME — what saved records place there: the home, a prepared copy.
+
+    The home is the selected snapshot's, or any required snapshot's. The
+    records are shown only where the whole label fits, the home first.
+    """
+    snapshots = members(row)
+    holders = [snapshots[snapshot]] if snapshot in snapshots else list(snapshots.values())
+    parts = []
+    if any((member.get("home") or {}).get("node_id") == node_id for member in holders):
+        parts.append("home recorded here")
+    if any(copy.get("node_id") == node_id for copy in row.get("prepared_copies") or []):
+        parts.append("prepared copy recorded here")
+    for text in ([f"{hostname} — {', '.join(parts)}", f"{hostname} — {parts[0]}"] if parts else []):
+        if len(text) <= width:
+            return text
+    return hostname
+
+
 def lifecycle(row: dict, live: dict | None, *, mark: bool = True) -> str:
     """Where the spec stands in Download → Prepare → Start, from saved records
     and this session's live facts only. Prepared files never mark Start done:
@@ -1213,6 +1244,12 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     choices.add_argument("--blockers-file", required=True)
     choices.add_argument("--dry-run", action="store_true", help="the blockers come from Check launch prerequisites")
+    nodes = sub.add_parser("node-choices", help="a title, then one choice per confirmed node from saved "
+                           "records; catalog JSON on stdin")
+    nodes.add_argument("--spec-id", required=True)
+    nodes.add_argument("--action", required=True)
+    nodes.add_argument("--snapshot")
+    nodes.add_argument("--node-name", action="append", default=[], help="NODE_ID=HOSTNAME, in topology order")
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1288,6 +1325,16 @@ def main(argv: list[str] | None = None) -> int:
             print(f"title\t{clean(start_choices_title(records, dry_run=args.dry_run))}")
             for action, label in found:
                 print(f"{action}\t{clean(label)}")
+            return 0
+        if args.command == "node-choices":
+            # Each line is "title" and the question, or "node", a node_id and its label.
+            print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
+            width = terminal_width() - 2
+            for value in args.node_name:
+                node_id, separator, hostname = value.partition("=")
+                if not separator or not node_id or not hostname:
+                    raise ValueError("node names must use NODE_ID=HOSTNAME")
+                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot))}")
             return 0
         names = NodeNames.saved()
         if args.command == "image-plan":
