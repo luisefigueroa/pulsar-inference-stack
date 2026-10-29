@@ -103,12 +103,14 @@ def render_observation(document):
     writer.emit(f"Cluster topology: {document['status']}", role="heading")
     topology = document.get("topology")
     if topology and not document["nodes"]:
+        # Nodes are named by hostname; the saved order (ordinary start's rank
+        # order) is a position, never a rank.
         for node in topology["nodes"]:
-            writer.emit(f"Node {node['rank']}: {node['hostname']}", initial_indent="  ")
+            writer.emit(f"{node['hostname']} (position {node['rank']})", initial_indent="  ")
             writer.emit(f"Control: {node['control']['ip']}", initial_indent="    ")
         writer.emit("Saved membership only; run `pulsar topology check` for current readiness.", markup=True)
     for node in document["nodes"]:
-        line = f"  Node {node['rank']}: {node['hostname']} — {node['status']}"
+        line = f"  {node['hostname']} (position {node['rank']}) — {node['status']}"
         if len(line) <= writer.width:
             # A node that is not ready takes the fail style.
             role = None if node["status"] == "ready" else "fail"
@@ -184,7 +186,7 @@ def main():
             if names:
                 writer.emit(f"Membership {change}: {', '.join(names)}")
         for node in document.get("saved_membership", {}).get("missing", []):
-            writer.emit(f"Missing confirmed node {node['rank']}: {node['hostname']}")
+            writer.emit(f"Missing confirmed node: {node['hostname']} (position {node['rank']})")
         for issue in document.get("saved_membership", {}).get("issues", []):
             writer.emit(issue)
         for issue in document.get("discovery_issues", []):

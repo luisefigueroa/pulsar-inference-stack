@@ -122,6 +122,9 @@ same actions are available directly:
 ./pulsar topology configure
 ```
 
+`show` and `check` name each node by hostname with its position, the saved
+order that start uses for ranks; JSON keeps the stable `node_id` and `rank`.
+
 Start with `setup` on a fresh checkout. It guides membership configuration,
 checks SSH enrollment, offers missing enrollment with a separate key-confirmation
 prompt, and finishes with a topology readiness check. Healthy existing setup is
@@ -130,8 +133,12 @@ to single-node clusters too. The first-run menu's setup step and the topology
 menu's **Change membership… → First-use setup** run this same command.
 
 After discovery, review the machines found. **Add a machine by hostname or IP**
-accepts one management address at a time; add more as needed. **Retry discovery**
-keeps those candidates for this interaction. **Back** leaves setup without
+accepts one management address at a time; add more as needed. The review lists
+them ("Added: …"), an address already listed is not added twice, and **Remove an
+added address** drops one and reruns discovery without it. **Retry discovery**
+keeps those candidates for this interaction. Inside the review, discovery's own
+hints name these choices instead of `topology configure` or `--candidate`.
+**Back** leaves setup without
 saving and exits with status 1; Escape from address entry returns to the review,
 and Ctrl-C exits setup.
 A failed discovery still offers Add, Retry, SSH help and Back, but cannot continue

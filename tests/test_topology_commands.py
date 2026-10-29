@@ -31,6 +31,12 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout)['status'], 'saved')
         self.assertEqual(f.calls(), [])
         self.assertEqual(f.path.read_bytes(), before)
+        # TUI-12: nodes by hostname; the saved order is a position, never a rank.
+        human = f.run('topology', 'show')
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertIn('fixture-rank-0 (position 0)', human.stdout)
+        self.assertIn('fixture-rank-1 (position 1)', human.stdout)
+        self.assertNotIn('Node 0', human.stdout)
         help_result = f.run('gum')  # non-TTY root menu prints help only
         self.assertEqual(help_result.returncode, 0, help_result.stderr)
         self.assertIn('pulsar topology', help_result.stdout)
@@ -120,7 +126,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(document['saved_membership']['missing'][0]['node_id'], 'fixture-node-1')
         result = f.run('topology', 'configure', '--yes')
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn('Missing confirmed node 1', result.stdout)
+        self.assertIn('Missing confirmed node: fixture-rank-1 (position 1)', ' '.join(result.stdout.split()))
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_invalid_saved_state_allows_diagnostic_discovery_but_not_overwrite(self):
@@ -509,7 +515,8 @@ class TopologyCommands(unittest.TestCase):
         mapping = json.loads((f.root/'map.json').read_text())
         mapping['192.0.2.12'] = 2
         (f.root/'map.json').write_text(json.dumps(mapping))
-        self.use_gum(TOPOLOGY_GUM_REVIEW='1,1,2,0',
+        # With an address added, Remove an added address follows Add.
+        self.use_gum(TOPOLOGY_GUM_REVIEW='1,1,3,0',
                      TOPOLOGY_GUM_INPUT='alias-1,192.0.2.12', TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertEqual(result, 0, output)
@@ -550,7 +557,7 @@ class TopologyCommands(unittest.TestCase):
 
     def test_declined_save_keeps_candidates_for_review_and_retry(self):
         f = self.fresh_fixture()
-        self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='1,0,2,4',
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1', TOPOLOGY_GUM_REVIEW='1,0,3,5',
                      TOPOLOGY_GUM_INPUT='alias-1')
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertEqual(result, 1, output)
@@ -567,8 +574,9 @@ class TopologyCommands(unittest.TestCase):
         f = self.fresh_fixture(enrolled=False)
         concurrent = json.dumps(f.topology)
         (f.root/'concurrent-topology.json').write_text(concurrent)
+        # The --candidate address is listed as added, so Back follows Remove.
         self.use_gum(TOPOLOGY_CONCURRENT_SAVE='1', TOPOLOGY_CONFIRM_RC='1',
-                     TOPOLOGY_GUM_REVIEW='0,4')
+                     TOPOLOGY_GUM_REVIEW='0,5')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 1, output)
         self.assertEqual(f.path.read_text(), concurrent)
@@ -596,7 +604,7 @@ class TopologyCommands(unittest.TestCase):
 
     def test_failed_configuration_returns_to_review_with_candidates(self):
         f = self.fresh_fixture()
-        self.use_gum(TOPOLOGY_ACTIVE='1', TOPOLOGY_GUM_REVIEW='0,4')
+        self.use_gum(TOPOLOGY_ACTIVE='1', TOPOLOGY_GUM_REVIEW='0,5')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 1, output)
         self.assertIn('Configuration did not complete', output)
@@ -609,9 +617,52 @@ class TopologyCommands(unittest.TestCase):
                  if tool == 'ssh' and args[args.index('--')+1] == 'alias-1']
         self.assertGreaterEqual(len(peers), 3)
 
+    # TUI-82: inside the review, detect names the review's own choices; standalone
+    # detect keeps its CLI next steps.
+    def test_detect_inside_the_review_names_the_review_choices(self):
+        f = self.fresh_fixture()
+        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_GUM_REVIEW='5')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 1, output)
+        flattened = ' '.join(output.split())
+        self.assertIn('If a GB10 is missing, choose Add a machine by hostname or IP below.', flattened)
+        self.assertNotIn('pulsar topology configure', flattened)
+        self.assertNotIn('--candidate HOST', flattened)
+        standalone = f.run('topology', 'detect', '--candidate', 'alias-1')
+        text = ' '.join(standalone.stdout.split())
+        self.assertIn('rerun with --candidate HOST', text)
+        self.assertIn('Save this membership later with pulsar topology configure.', text)
+
+    # TUI-83: the review lists added addresses, removes one on request, and
+    # never adds one twice.
+    def test_review_lists_removes_and_deduplicates_added_addresses(self):
+        f = self.fresh_fixture(nodes=3)
+        mapping = json.loads((f.root/'map.json').read_text())
+        mapping['192.0.2.12'] = 2
+        (f.root/'map.json').write_text(json.dumps(mapping))
+        self.use_gum(TOPOLOGY_GUM_REVIEW='1,1,1,2,5', TOPOLOGY_GUM_CHOICE='0',
+                     TOPOLOGY_GUM_INPUT='alias-1,alias-1,192.0.2.12')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 1, output)
+        flattened = ' '.join(output.split())
+        self.assertIn('alias-1 is already added.', flattened)
+        self.assertIn('Added: alias-1, 192.0.2.12', flattened)
+        # After the removal only the other address is listed.
+        self.assertIn('Added: 192.0.2.12 ', flattened.rsplit('Added: alias-1, 192.0.2.12', 1)[1] + ' ')
+        # Gum receives LABEL<tab>VALUE; compare the labels.
+        menus = [(header, [option.split('\t')[0] for option in options]) for header, options in
+                 (json.loads(line) for line in (f.root/'menus.jsonl').read_text().splitlines())]
+        self.assertIn(('Remove which added address?', ['alias-1', '192.0.2.12', 'Back']), menus)
+        review = [options for header, options in menus if header == 'Review discovered machines']
+        self.assertNotIn('Remove an added address', review[0])
+        self.assertIn('Remove an added address', review[1])
+        # The duplicate reran nothing: setup, two adds and one removal discover.
+        self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in f.calls()), 4)
+        self.assertFalse(f.path.exists())
+
     def test_missing_peer_help_preserves_strict_ssh_and_does_not_guess_cause(self):
         f = self.fresh_fixture()
-        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_GUM_REVIEW='3,2,4')
+        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_GUM_REVIEW='4,3,5')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 1, output)
         flattened = ' '.join(output.split())

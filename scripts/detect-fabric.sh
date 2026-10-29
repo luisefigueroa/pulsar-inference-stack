@@ -211,7 +211,11 @@ report_skipped_candidates() {
   [ "$skipped_probe_count" -ne 1 ] || noun=address
   echo "DISCOVERY NOTES"
   print_hanging "  SSH       " "$skipped_probe_count advertised SSH $noun could not be checked with saved keys."
-  print_hanging "  Help      " "These are usually unrelated devices. If a GB10 is missing, set up key-based SSH and rerun with --candidate HOST."
+  if [ "${_PULSAR_SETUP_REVIEW:-0}" = 1 ]; then
+    print_hanging "  Help      " "These are usually unrelated devices. If a GB10 is missing, choose Add a machine by hostname or IP below."
+  else
+    print_hanging "  Help      " "These are usually unrelated devices. If a GB10 is missing, set up key-based SSH and rerun with --candidate HOST."
+  fi
 }
 
 
@@ -279,7 +283,11 @@ if [ "$JSON" = 1 ]; then
 fi
 
 echo
-"$MANIFEST_TOOL" render "$verified" --skipped-ssh "$skipped_probe_count"
+# Inside the setup review (private marker), the review's menu offers the next
+# steps, so detect names them instead of the CLI's.
+review_flag=()
+[ "${_PULSAR_SETUP_REVIEW:-0}" != 1 ] || review_flag=(--in-review)
+"$MANIFEST_TOOL" render "$verified" --skipped-ssh "$skipped_probe_count" "${review_flag[@]}"
 if [ "$membership_ok" != 1 ]; then
   warn "discovery is incomplete; confirmed membership was not changed"
   exit 1
@@ -289,7 +297,8 @@ if [ "$WRITE" != 1 ]; then
   echo
   echo "REVIEW ONLY"
   print_hanging "  Result    " "No files changed."
-  print_hanging "  Next      " "Save this membership later with pulsar topology configure."
+  [ "${_PULSAR_SETUP_REVIEW:-0}" = 1 ] \
+    || print_hanging "  Next      " "Save this membership later with pulsar topology configure."
   exit 0
 fi
 

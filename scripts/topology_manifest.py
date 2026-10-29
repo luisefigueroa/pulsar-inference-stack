@@ -619,7 +619,7 @@ def extract_topology(document: dict[str, Any]) -> dict[str, Any]:
     return topology
 
 
-def render(document: dict[str, Any], skipped_ssh: int = 0) -> None:
+def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = False) -> None:
     topology = extract_topology(document)
     validate_manifest(topology)
     if skipped_ssh < 0:
@@ -720,8 +720,9 @@ def render(document: dict[str, Any], skipped_ssh: int = 0) -> None:
         )
         field(
             "Help",
-            "These are usually unrelated devices. If a GB10 is missing, set "
-            "up key-based SSH and rerun with --candidate HOST.",
+            "These are usually unrelated devices. If a GB10 is missing, "
+            + ("choose Add a machine by hostname or IP below." if in_review
+               else "set up key-based SSH and rerun with --candidate HOST."),
         )
 
 
@@ -1222,6 +1223,8 @@ def parse_args() -> argparse.Namespace:
     render_parser = sub.add_parser("render")
     render_parser.add_argument("document")
     render_parser.add_argument("--skipped-ssh", type=int, default=0)
+    render_parser.add_argument("--in-review", action="store_true",
+                               help="detect runs inside the setup review, whose menu offers the next steps")
 
     render_save_parser = sub.add_parser("render-save")
     render_save_parser.add_argument("document")
@@ -1275,7 +1278,7 @@ def main() -> int:
             document = assemble(args.probes, args.existing)
             print(json.dumps(document, indent=2, sort_keys=True))
         elif args.command == "render":
-            render(load_json(args.document), args.skipped_ssh)
+            render(load_json(args.document), args.skipped_ssh, args.in_review)
         elif args.command == "render-save":
             render_save(load_json(args.document), args.destination)
         elif args.command == "rows":
