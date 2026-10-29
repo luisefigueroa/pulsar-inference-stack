@@ -10,7 +10,10 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
-require_gum "the cluster overview" "pulsar topology check | inventory | model budget"
+require_gum "the cluster overview" \
+  "./pulsar topology check" "check saved nodes and fabric" \
+  "./pulsar inventory" "see what runs on each node" \
+  "./pulsar model budget" "disk headroom on every node"
 ui_keep_styles
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-overview.XXXXXX")

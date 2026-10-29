@@ -36,7 +36,10 @@ if [ "$#" -gt 1 ]; then
 fi
 # shellcheck source=ui.sh
 . "${PULSAR_HOME_UI:-$STACK_ROOT/scripts/ui.sh}"
-require_gum "the archive storage menu" "pulsar configure archive-root show | set PATH --yes | disable --yes"
+require_gum "the archive storage menu" \
+  "./pulsar configure archive-root show" "show the archive location" \
+  "./pulsar configure archive-root set PATH --yes" "save an existing directory as the location" \
+  "./pulsar configure archive-root disable --yes" "turn archives off; no archive is deleted"
 ui_keep_styles
 
 archive_cli() {

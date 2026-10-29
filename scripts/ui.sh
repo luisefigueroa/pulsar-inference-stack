@@ -108,12 +108,22 @@ report_outcome() {
     --action "$1" --label "$2" --subject "$3" --status "$4" --elapsed "$5" "${@:6}"
 }
 
-# require_gum WHAT COMMANDS
-# A menu or guided flow opens only with Gum. Otherwise print one line naming
-# the equivalent commands and exit 2 instead of opening a degraded copy.
+# require_gum WHAT [COMMAND WHAT_IT_DOES]...
+# A menu or guided flow opens only with Gum. Otherwise print the equivalent
+# commands, one complete ./pulsar command per line with what it does as a
+# shell comment, so any line can be pasted as it is, and exit 2 instead of
+# opening a degraded copy.
 require_gum() {
   ! gum_available || return 0
-  printf 'error: %s needs an interactive terminal with Gum; use: %s\n' "$1" "$2" >&2
+  local what="$1" width=0 i
+  shift
+  local -a steps=("$@")
+  printf 'error: %s needs an interactive terminal with Gum. Run the same steps as commands:\n' "$what" >&2
+  for ((i = 0; i < ${#steps[@]}; i += 2)); do [ "${#steps[$i]}" -le "$width" ] || width=${#steps[$i]}; done
+  while [ $# -ge 2 ]; do
+    printf '  %-*s  # %s\n' "$width" "$1" "$2" >&2
+    shift 2
+  done
   exit 2
 }
 
@@ -304,11 +314,14 @@ choose_index() {
     entries+=("$candidate"$'\t'"$index")
     index=$((index + 1))
   done
+  # Gum's own key hint names neither Esc nor what it does, so it is replaced by
+  # Pulsar's under the title. PULSAR_CHOOSE_ESC says what Esc does (default back).
+  local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}"
   if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
     # Gum splits --selected at commas; a backslash keeps one in the label.
     initial=(--selected="${labels[$default]//,/\\,}")
   fi
-  # Gum adds 5 rows around the list: padding, the header and its help line.
+  # Gum adds 5 rows around the list: padding and the two-line header.
   if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
     height=$((rows - 5))
   fi
@@ -318,7 +331,7 @@ choose_index() {
   # interactive TUI is drawn on stderr; silencing it makes the menu invisible.
   out=$(printf '%s\n' "${entries[@]}" | _ui_gum choose \
     "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" \
-    --label-delimiter=$'\t' --height="$height" --header "$header")
+    --label-delimiter=$'\t' --height="$height" --no-show-help --header "$header"$'\n'"$hint")
   rc=$?
   set -e
   if [ "$rc" -eq 130 ]; then
