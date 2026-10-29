@@ -888,8 +888,11 @@ session; it is a starting point, not a readiness check. `models list` and
 `models show` print the same step as a command. A download or restore names
 the node the saved records already use; without one it leaves `--node` out and
 goes to the default destination (the deployment overlay's placement, or this
-node), while the menu asks for a node. The recipe
-list labels show the same short saved state. Storage mutations run the
+node), while the menu asks for a node. Its question says what the machine is
+for, such as "Which machine should hold the model files?", and each machine
+is named by hostname with what saved records place there: "home recorded
+here" or "prepared copy recorded here". Nothing is probed to build the list.
+The recipe list labels show the same short saved state. Storage mutations run the
 operation's own `--plan` preview and show a one-to-three-line summary of it:
 what changes, where, how much, and the headroom left, or that nothing would be
 copied, deleted or changed. A question then names the model, nodes and

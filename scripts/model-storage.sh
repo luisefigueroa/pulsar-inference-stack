@@ -28,14 +28,30 @@ archive_location() {
   else echo configured; fi
 }
 
+# select_node ACTION SPEC — asks which confirmed machine to use and prints its
+# node_id. Each choice names the machine by hostname and what saved records
+# place there (the home, a prepared copy); nothing is probed.
 select_node() {
+  local action="$1" spec="$2" index rc kind first second title="Which machine?"
+  local -a names=() args=() ids=() labels=()
   require_cluster_nodes 1 >/dev/null || return 2
-  local index rc
-  local -a names=()
-  for index in "${!CLUSTER_NODE_IDS[@]}"; do names+=("$(human_node_name "$index")"); done
-  # Show hostnames; operations receive the stable node_id.
-  index=$(choose_index "Select a confirmed physical node" "${names[@]}") || { rc=$?; return "$rc"; }
-  printf '%s\n' "${CLUSTER_NODE_IDS[$index]}"
+  for index in "${!CLUSTER_NODE_IDS[@]}"; do
+    names+=("$(human_node_name "$index")")
+    args+=(--node-name "${CLUSTER_NODE_IDS[$index]}=${names[$index]}")
+  done
+  while IFS=$'\t' read -r kind first second; do
+    case "$kind" in
+      title) title="$first" ;;
+      node) ids+=("$first"); labels+=("$second") ;;
+    esac
+  done < <(printf '%s' "$ROW_JSON" | catalog_menu node-choices --spec-id "$spec" --action "$action" \
+    ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} "${args[@]}" 2>/dev/null || true)
+  # Without saved records the choices are the hostnames alone.
+  if [ "${#ids[@]}" -ne "${#CLUSTER_NODE_IDS[@]}" ]; then
+    ids=("${CLUSTER_NODE_IDS[@]}") labels=("${names[@]}")
+  fi
+  index=$(choose_index "$title" "${labels[@]}") || { rc=$?; return "$rc"; }
+  printf '%s\n' "${ids[$index]}"
 }
 
 # The last relevant outcome for each recipe in this menu session. A recorded
@@ -437,9 +453,9 @@ perform_action() {
   fi
   [ -z "$MENU_SNAPSHOT" ] || args+=(--snapshot "$MENU_SNAPSHOT")
   case "$action" in
-    acquire|restore|move) MENU_NODE=$(select_node) || { rc=$?; return "$rc"; } ;;
+    acquire|restore|move) MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; } ;;
     prepare|start|stop|status|check|readiness|image-check|image-stage)
-      if [ "$RECIPE_NODES" -eq 1 ]; then MENU_NODE=$(select_node) || { rc=$?; return "$rc"; }; fi ;;
+      if [ "$RECIPE_NODES" -eq 1 ]; then MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; }; fi ;;
   esac
   [ -z "$MENU_NODE" ] || args+=(--node "$MENU_NODE")
   case "$action" in

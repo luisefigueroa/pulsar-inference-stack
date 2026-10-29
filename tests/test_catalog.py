@@ -609,13 +609,13 @@ raise SystemExit(rc)
     def run_menu(self, answers, confirms=(), plan=None, action_rc=0, archive_root="/fixture/archive", guarded=False,
                  with_home=False, observation=None, check_observation=None, check_rc=None, launch=None, review=None,
                  menu_args=(), additional_specs=(), empty_catalog=False, plan_rc=None, interrupt_parent=False,
-                 inventory=None, inventory_rc=0, env_extra=None, speculative=False):
+                 inventory=None, inventory_rc=0, env_extra=None, speculative=False, home_node="node-a"):
         spec = self.add_spec(guarded=guarded, speculative=speculative)
         if review is not None:
             spec["review"] = review
             (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
         if with_home:
-            self.put_home(spec)
+            self.put_home(spec, node=home_node)
         if observation is not None:
             self.observe(spec, **{"checked_at": datetime.now(timezone.utc).isoformat(), **observation})
         for extra in additional_specs:
@@ -718,7 +718,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [["pulsar", "model", "budget"]])
         self.assertEqual(questions, "")
         self.assertEqual(choices.count("Check now (suggested) — "), 2)
-        self.assertNotIn('Select a confirmed physical node', choices)
+        self.assertNotIn('Which machine', choices)
         self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
         self.assertEqual(choices.count("[continue]"), 1)
         self.assertLess(choices.index("[continue]"), choices.rindex("Choose one operation"))
@@ -758,7 +758,7 @@ raise SystemExit(rc)
         self.assertEqual(choices.count("Choose one operation\n"), 2)
         self.assertEqual(choices.count("Select a catalog spec\n"), 2)
         # The node picker names machines by hostname and passes the stable node_id.
-        self.assertIn("Select a confirmed physical node\nfixture-host\n", choices)
+        self.assertIn("Which machine's files should be checked?\nfixture-host\n", choices)
         self.assertNotIn("fixture-node", choices)
 
     def test_failed_action_keeps_the_session(self):
@@ -930,7 +930,7 @@ raise SystemExit(rc)
         self.assertIn("✓ Check now finished", result.stdout)
         # The outcome stays on screen until Continue; only then do the frame and menu return.
         blocks = [block.splitlines()[0].strip() for block in choices.strip().split("\n\n")]
-        self.assertEqual(blocks, ["Select a catalog spec", "Choose one operation", "Select a confirmed physical node",
+        self.assertEqual(blocks, ["Select a catalog spec", "Choose one operation", "Which machine's files should be checked?",
                                   "[continue]", "Choose one operation", "Select a catalog spec"])
         self.setUp()
         _, result, actions, choices, _ = self.run_menu(
@@ -1014,6 +1014,17 @@ raise SystemExit(rc)
                       "draft · no home recorded\n\n", choices)
         self.assertEqual(actions, [["model-library.sh", "restore", spec, "--snapshot", "draft", "--node",
                                     "fixture-node", "--plan", "--json"]])
+
+    # TUI-25: the node question says what the operation does with the machine,
+    # and each machine what saved records place there.
+    def test_node_choices_name_what_saved_records_place_on_each_machine(self):
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True, home_node="fixture-node",
+            confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Which machine should hold the model files?\nfixture-host — home recorded here\n\n", choices)
+        # The operation still receives the stable node_id.
+        self.assertEqual(actions[0][-4:], ["--node", "fixture-node", "--plan", "--json"])
 
     def test_recorded_home_does_not_prevent_a_restore_preview(self):
         spec, result, actions, choices, questions = self.run_menu(
@@ -1288,7 +1299,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [["pulsar", "logs", spec]])
         self.assertRegex(choices, rf"\[page\] Reading service logs… \| \S+/pulsar logs {spec}\n")
         self.assertEqual(questions, "")
-        self.assertNotIn("Select a confirmed physical node", choices)
+        self.assertNotIn("Which machine", choices)
         self.assertNotIn("[continue]", choices)
         # A failed read stays on screen until Continue.
         self.setUp()
