@@ -458,16 +458,21 @@ def dispatch(command, args):
                 # service it started. Say so first, and name the service in details.
                 # Check blockers recorded before an interrupt do not mean a launch.
                 recorded=[r for r in read_blockers(blockers) if r.get('blocker')=='start_interrupted']
+                # Every start error carries what start checked, empty before the checks.
+                exc.envelope_extra={'checks':read_checks(checks)}
                 if not recorded:
                     raise
                 lines=[f"{r['message']}. Next: {r['fix']}" if r.get('fix') else r['message'] for r in recorded]
                 interrupted=Cancelled('\n'.join([*lines,str(exc)]),signum=exc.exit_code-128,confirmed=exc.confirmed)
                 interrupted.envelope_details=recorded
+                interrupted.envelope_extra=exc.envelope_extra
                 raise interrupted from exc
             except RuntimeError as exc:
                 recorded=read_blockers(blockers)
                 if recorded:
                     raise StartBlocked(str(exc),recorded,read_checks(checks)) from exc
+                # A failure without blocker records, such as image staging, keeps its code.
+                exc.envelope_extra={'checks':read_checks(checks)}
                 raise
             return {**serving.load_json(path),'checks':read_checks(checks)}
     if command == 'model':

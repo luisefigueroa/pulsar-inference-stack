@@ -254,6 +254,8 @@ if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then
   blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   stop_if_blocked
 fi
+# Recorded before the fabric check, in check order, so a fabric blocker leaves it passed.
+start_check pass topology "spec needs $NODES node(s); confirmed $CLUSTER_TOPOLOGY_COUNT"
 if [ "$NODES" -gt 1 ]; then
   fabric_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-fabric.XXXXXX")
   if ! require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$fabric_err"; then
@@ -268,7 +270,6 @@ if [ "$NODES" -gt 1 ]; then
   start_check pass fabric "the confirmed fabric meets this spec"
 fi
 echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
-start_check pass topology "spec needs $NODES node(s); confirmed $CLUSTER_TOPOLOGY_COUNT"
 # A new home goes on the start placement (one node) or on rank 0.
 if [ "$NODES" -eq 1 ]; then
   START_BLOCKER_HOME_NODE="${SINGLE_NODE_HOSTNAME:-}"
@@ -297,9 +298,11 @@ cat "$img_err" >&2
 img_json=$(QUIET=0 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --json 2>/dev/null)
 set -e
 img_state=$(printf '%s' "$img_json" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("state",""))' 2>/dev/null || true)
-# The check's own line, without its PASS/FAIL tag, is the recorded message.
-img_message=$(printf '%s\n' "${img_line:-}" | sed -E '1s/^(PASS|FAIL|INFO|WARN) +image +//' | tr -s ' \n' ' ')
-img_message="${img_message% }"
+# The check's own line, without its styling or PASS/FAIL tag, is the recorded message.
+img_message=$(printf '%s' "${img_line:-}" | python3 -c '
+import re,sys
+text=re.sub(r"\x1b\[[0-9;]*[A-Za-z]","",sys.stdin.read())
+print(" ".join(re.sub(r"^(PASS|FAIL|INFO|WARN) +image +","",text).split()))')
 if [ "$img_rc" = 0 ]; then
   start_check pass image "${img_message:-pinned image verified on every serving rank}"
 else
@@ -552,7 +555,9 @@ if [ "$NODES" -gt 1 ]; then
     else
       echo "│  running cluster preflight…"
       if [ "$VERBOSE" = 1 ]; then
-        if ! "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+          start_check pass preflight "cluster OK"
+        else
           start_check fail preflight "see the preflight output above"
           blocked preflight_failed --detail "see the preflight output above"
           stop_if_blocked

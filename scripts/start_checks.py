@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,8 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "expect":
         Path(target).write_text(json.dumps({"expected": args.ids}) + "\n", encoding="utf-8")
         return 0
-    value = {"id": args.id, "outcome": args.outcome, "node": args.node or None,
-             "message": " ".join(args.message.split())}
+    # Terminal styling never reaches JSON.
+    message = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", args.message)
+    value = {"id": args.id, "outcome": args.outcome, "node": args.node or None, "message": " ".join(message.split())}
     with open(target, "a", encoding="utf-8") as stream:
         stream.write(json.dumps(value, sort_keys=True) + "\n")
     return 0

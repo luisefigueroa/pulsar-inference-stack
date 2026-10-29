@@ -410,6 +410,33 @@ class StartScenarios(unittest.TestCase):
                          ["info", "pass", "pass", "info", "pass", "pass", "pass", "pass", "pass"])
         self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would stage it")
 
+    def test_multi_node_checks_keep_their_order_and_record_preflight(self):
+        # A fabric blocker leaves the topology check passed, not not_run.
+        self.start(nodes=2, fabric="needs 2 rails per pair; found 1")
+        self.assertEqual(self.outcomes()[:4], [("spec-review", "info"), ("recipe", "pass"), ("topology", "pass"),
+                                               ("fabric", "fail")])
+        self.assertEqual({outcome for _, outcome in self.outcomes()[4:]}, {"not_run"})
+        # Preflight passes are recorded whether or not --verbose shows its output.
+        for flags in ((), ("--verbose",)):
+            with self.subTest(flags=flags):
+                self.reset()
+                result, codes = self.start(*flags, "--dry-run", image="ok", nodes=2)
+                self.assertEqual(codes, [], result.stdout + result.stderr)
+                self.reset()
+                result, codes = self.start(*flags, image="ok", nodes=2)
+                ids = [check for check, _ in self.outcomes()]
+                self.assertEqual(ids, [check for check in start_checks.CHECK_IDS], result.stdout + result.stderr)
+                self.assertEqual(dict(self.outcomes())["preflight"], "pass")
+                self.assertNotIn("not_run", dict(self.outcomes()).values())
+
+    def test_recorded_messages_carry_no_terminal_styling(self):
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / "checks.jsonl"
+            with patch.dict(os.environ, {"PULSAR_START_CHECKS_FILE": str(target)}):
+                start_checks.main(["expect", "image"])
+                start_checks.main(["record", "fail", "image", "\x1b[1;31mFAIL\x1b[0m  the pinned image is missing"])
+            self.assertEqual(start_checks.read(target)[0]["message"], "FAIL the pinned image is missing")
+
     def test_independent_blockers_are_reported_together(self):
         result, codes = self.start(weights=1, memory=1)
         self.assertNotEqual(result.returncode, 0)
@@ -1016,6 +1043,31 @@ class JsonEnvelope(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(document["error"]["checks"], expected)
         self.assertEqual([record["blocker"] for record in document["error"]["details"]], ["memory_insufficient"])
+
+    def test_every_start_failure_carries_its_checks(self):
+        # A failure without blocker records, such as image staging, keeps its code and adds its checks.
+        def staging_failed(command, env, cwd):
+            Path(env["PULSAR_START_CHECKS_FILE"]).write_text(
+                json.dumps({"expected": ["recipe"]}) + "\n"
+                + json.dumps({"id": "recipe", "outcome": "pass", "node": None, "message": "parsed"}) + "\n")
+            return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "error: pulling failed\n"})()
+        output = io.StringIO()
+        with patch.object(public_cli, "run_command", side_effect=staging_failed), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            status = public_cli.main(["start", SPEC, "--json"])
+        error = json.loads(output.getvalue())["error"]
+        self.assertEqual((status, error["code"]), (1, "prerequisite_failed"))
+        self.assertEqual(error["checks"], [{"id": "recipe", "outcome": "pass", "node": None, "message": "parsed"}])
+        self.assertEqual(error["details"][0]["field"], "$")
+
+        # Stopped before the checks began: an empty list.
+        def refused(command, env, cwd):
+            return type("Completed", (), {"returncode": 1, "stdout": "", "stderr": "error: no spec\n"})()
+        output = io.StringIO()
+        with patch.object(public_cli, "run_command", side_effect=refused), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
+            public_cli.main(["start", SPEC, "--json"])
+        self.assertEqual(json.loads(output.getvalue())["error"]["checks"], [])
 
 
 if __name__ == "__main__":

@@ -447,8 +447,9 @@ several blockers. Branch on `blocker`, `stage` and `cleanup`; `message`, `fix`
 and `note` are for people.
 
 `start --json` also reports what it checked as `checks`: in `result` when it
-succeeds (including `--dry-run`), and in `error`, beside `details`, when it is
-refused. `details` keeps only blocker records. Each check has `id`, `outcome`,
+succeeds (including `--dry-run`), and in `error`, beside `details`, whenever it
+fails or is interrupted, with the same error code as before. `details` keeps
+only blocker records. Each check has `id`, `outcome`,
 `node` (hostname, or null when the check covers every serving node) and
 `message`, which is for people. `id` is `spec-review`, `recipe`, `topology`,
 `fabric`, `image`, `service`, `model-files`, `memory`, `port`, `preflight` or
