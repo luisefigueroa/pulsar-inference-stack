@@ -244,7 +244,7 @@ Execution operations independently check their live prerequisites.
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
 | `resources --service-id ID --jsonl` | Stream private diagnostics for a recorded service |
 | `resources --spec-file FILE [--node NODE] [--override-file FILE] --jsonl` | Start node sampling before launch; attach only to the matching owned recipe |
-| `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest |
+| `policy show baseline-v1` / `policy show baseline-v2` | Read the selected fixed policy and digest; the human form explains each gate |
 | `evidence measurement/evaluate/verify/summary` | Construct and assess compact evidence, independently of catalog membership |
 | `contribution verify --package DIR` | Validate the exact package, identities, hashes, required catalog engine arguments, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |

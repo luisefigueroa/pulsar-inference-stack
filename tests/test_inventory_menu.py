@@ -56,7 +56,10 @@ class Projection(unittest.TestCase):
         data["services"][0]["ranks"].pop()
         lines = inventory_menu.view(data, catalog, SPEC)
         self.assertIn(f"stop\t{SPEC}\t-", lines)
-        self.assertTrue(any("across its participating nodes" in line for line in lines))
+        # TUI-43: the question names the observed nodes, as the catalog's Stop does.
+        question = next(line for line in lines if line.startswith("confirm\t"))
+        self.assertIn("Stop and remove the service containers of", question)
+        self.assertIn("Model files, pins and archives are kept.", question)
 
     def test_unsafe_or_ambiguous_services_do_not_offer_stop(self):
         unsafe = snapshot(safe=False)
@@ -180,8 +183,8 @@ else: sys.exit(99)
         self.assertIn("[continue]", choices)
 
     def test_status_outcome_separates_not_running_from_unknown(self):
-        for rc, expected in ((0, None), (1, "▲ spec {id} is not running."),
-                             (3, "? Whether spec {id} is running is unknown")):
+        for rc, expected in ((0, None), (1, "▲ example/model [{id}] is not running."),
+                             (3, "? Whether example/model [{id}] is running is unknown")):
             with self.subTest(rc=rc):
                 for used in ("counter", "answers.n", "confirms.n"):  # Each run starts afresh.
                     (self.root / used).unlink(missing_ok=True)
@@ -208,7 +211,9 @@ else: sys.exit(99)
         self.assertNotIn("fixture-remote", questions)
         self.assertNotIn("error:", result.stderr)
         # The same outcome line as the catalog menu's operations.
-        self.assertRegex(result.stdout, rf"(?m)^✓ Stop finished for spec {self.spec['spec_id'][:12]} in \d+s$")
+        # TUI-43: the outcome names the model as well as the spec.
+        self.assertRegex(" ".join(result.stdout.split()),
+                         rf"✓ Stop finished for example/model \[{self.spec['spec_id'][:12]}\] in \d+s ")
         # TUI-75: and the command it ran; at 44 columns it moves whole to its own line.
         self.assertIn(f"  Same as:\n    ./pulsar stop {self.spec['spec_id'][:12]} --node node-0\n", result.stdout)
 
@@ -227,7 +232,11 @@ else: sys.exit(99)
             snapshots=[active, active, empty], confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([call for call in calls if call[0] == "stop"], [["stop", self.spec["spec_id"]]])
-        self.assertIn("across its participating nodes", questions)
+        # TUI-43: the question names the observed nodes and says archives are kept.
+        self.assertIn(f"Stop and remove the service containers of example/model [{self.spec['spec_id'][:12]}] on ",
+                      questions)
+        self.assertIn("fixture-local", questions)
+        self.assertIn("Model files, pins and archives are kept.", questions)
 
     def test_lost_observability_prevents_confirmation(self):
         before = snapshot(self.spec["spec_id"])
@@ -258,7 +267,7 @@ else: sys.exit(99)
         self.assertEqual(sum(call[0] == "stop" for call in calls), 1)
         self.assertIn("Existing command stop refused", result.stdout)
         outcome = " ".join(result.stdout.split())
-        self.assertIn(f"✗ Stop was refused or failed for spec {self.spec['spec_id'][:12]}.", outcome)
+        self.assertIn(f"✗ Stop was refused or failed for example/model [{self.spec['spec_id'][:12]}].", outcome)
         self.assertRegex(outcome, r"exit 1 after \d+s · the reasons are above")
 
     def test_other_workloads_remain_in_the_existing_full_inventory(self):

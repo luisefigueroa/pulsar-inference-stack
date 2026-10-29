@@ -962,7 +962,34 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Live status (suggested)", choices.rsplit("Choose one operation\n", 1)[1])
         self.assertIn("Use Live status", " ".join(result.stdout.split()))
-        self.assertEqual(len(actions), 1)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "inventory"], ["down.sh", actions[1][1]]])
+
+    # TUI-43: Stop refreshes what runs before asking, and the question names those nodes.
+    def test_stop_names_the_selected_node_and_where_a_fresh_inventory_found_it(self):
+        spec, result, actions, _, questions = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["no"], inventory=self.live_inventory())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        # Stop runs with --node for the selected machine, so the question names it.
+        self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
+                                    "fixture-node (not in saved topology)? Model files, pins and archives are kept. "
+                                    "The service inventory saw it running on fixture-remote just now, not on "
+                                    "fixture-node (not in saved topology).\n")
+
+    def test_stop_after_a_failed_refresh_does_not_present_the_earlier_inventory_as_current(self):
+        captured = self.root / "captured-inventory.json"
+        def opened(spec_id):
+            captured.write_text(self.live_inventory(age_minutes=5)(spec_id))
+            return {"PULSAR_CATALOG_OPEN_SPEC": spec_id, "PULSAR_CATALOG_INVENTORY": str(captured)}
+        spec, result, actions, _, questions = self.run_menu(
+            ["Stop", "fixture-host", "Back"], confirms=["no"], inventory="", inventory_rc=3, env_extra=opened)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        self.assertIn("✗ Running services could not be checked", " ".join(result.stdout.split()))
+        # Only where Stop acts; the five-minute-old placement is not "just now".
+        self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
+                                    "fixture-node (not in saved topology)? Model files, pins and archives are "
+                                    "kept.\n")
 
     def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
         _, result, actions, choices, _ = self.run_menu(
@@ -1084,9 +1111,9 @@ raise SystemExit(rc)
     def test_operations_run_under_their_name_without_the_effect(self):
         _, result, _, choices, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Live status — check whether it runs now", choices)
+        self.assertIn("Live status — check every node for it now", choices)
         self.assertIn("→ Live status example/model", " ".join(result.stdout.split()))
-        self.assertNotIn("check whether it runs now", result.stdout)
+        self.assertNotIn("check every node for it now", result.stdout)
 
     def test_a_successful_restore_moves_on_to_prepare(self):
         def record(spec_id):
@@ -1207,9 +1234,12 @@ raise SystemExit(rc)
         self.assertIn("Prepared-copy removal preview", result.stdout)
         # Stop asks first, then stops only the catalog spec's service; nothing
         # removes the other container.
-        self.assertEqual(questions, f"Stop {model}? Model files and pins are kept.\n")
+        # TUI-43: Stop first refreshes the service inventory (unreadable here, so
+        # the question names no nodes), then asks the same question as the inventory menu.
+        self.assertEqual(questions, f"Stop and remove the service containers of {model} [{spec_id[:12]}] "
+                                    "on its nodes? Model files, pins and archives are kept.\n")
         self.assertEqual([action for action in actions if action[-2:] != ["--plan", "--json"]],
-                         [["down.sh", spec_id]])
+                         [["pulsar", "inventory", "--json"], ["down.sh", spec_id]])
         self.assertNotIn("someone-else", json.dumps(actions))
 
     def test_blocked_plan_never_offers_to_remove_a_container_pulsar_did_not_start(self):

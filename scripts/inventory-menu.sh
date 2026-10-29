@@ -32,12 +32,13 @@ inventory_view() {
 load_service() {
   local spec="$1" result kind first second
   result=$(inventory_view --spec-id "$spec") || return 1
-  STATUS_ARGS=() LOGS_ARGS=() STOP_ARGS=() STOP_QUESTION=""
+  STATUS_ARGS=() LOGS_ARGS=() STOP_ARGS=() STOP_QUESTION="" SERVICE_MODEL=""
   while IFS=$'\t' read -r kind first second; do
     case "$kind" in
       header) printf '%s\n' "$first" ;;
       status) STATUS_ARGS=("$first"); [ "$second" = - ] || STATUS_ARGS+=(--node "$second") ;;
       logs) LOGS_ARGS=("$first") ;;
+      model) SERVICE_MODEL="$first" ;;
       stop) STOP_ARGS=("$first"); [ "$second" = - ] || STOP_ARGS+=(--node "$second") ;;
       confirm) STOP_QUESTION="$first" ;;
     esac
@@ -47,8 +48,9 @@ load_service() {
 service_actions() {
   local spec="$1" index choice rc
   local -a options=() STATUS_ARGS=() LOGS_ARGS=() STOP_ARGS=()
-  local STOP_QUESTION="" started
+  local STOP_QUESTION="" SERVICE_MODEL="" started subject
   while load_service "$spec"; do
+    subject="${SERVICE_MODEL:+$SERVICE_MODEL }[${spec:0:12}]"
     options=("Detailed status")
     [ "${#LOGS_ARGS[@]}" -eq 0 ] || options+=("Service logs")
     [ "${#STOP_ARGS[@]}" -eq 0 ] || options+=("Stop service")
@@ -62,7 +64,7 @@ service_actions() {
         page_output "Checking service status…" "$REPO_DIR/scripts/with-connect-card.sh" "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}" || rc=$?
         [ "$rc" -ne 130 ] || return 130
         # Not running (1) and not observable (3) need different next steps.
-        [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "spec ${spec:0:12}" "$rc" \
+        [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "$subject" "$rc" \
           "$(elapsed_text $((SECONDS - started)))" --command "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}"
         ;;
       "Service logs")
@@ -84,7 +86,7 @@ service_actions() {
         [ "$rc" -ne 130 ] || return 130
         # The same outcome line as the catalog menu's operations, held on
         # screen until Continue.
-        report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))" \
+        report_outcome stop Stop "$subject" "$rc" "$(elapsed_text $((SECONDS - started)))" \
           --command "$REPO_DIR/pulsar" stop "${STOP_ARGS[@]}"
         wait_continue || return $?
         ;;
