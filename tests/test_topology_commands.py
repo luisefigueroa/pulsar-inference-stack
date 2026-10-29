@@ -198,7 +198,7 @@ class TopologyCommands(unittest.TestCase):
 
     def gum_prompts(self, kind):
         """Headers of Gum menus or questions of Gum confirmations, in order."""
-        return [args[args.index('--header')+1] if kind == 'choose' else args[-1]
+        return [args[args.index('--header')+1].split('\n')[0] if kind == 'choose' else args[-1]
                 for tool, args in self.fixture.calls() if tool == 'gum' and args[:1] == [kind]]
 
     def probes(self):
@@ -232,7 +232,9 @@ class TopologyCommands(unittest.TestCase):
         for args, expected in ((['topology', 'menu'], 'the topology menu'), (['topology', 'setup'], 'guided setup')):
             result, output = self.interactive(args, '', '')
             self.assertEqual(result, 2, output)
-            self.assertIn(f'error: {expected} needs an interactive terminal with Gum; use: pulsar topology', output)
+            self.assertIn(f'error: {expected} needs an interactive terminal with Gum. Run the same steps as '
+                          'commands:', ' '.join(output.split()))
+            self.assertIn('./pulsar topology ', output)
         before = f.path.read_bytes()
         result, output = self.interactive(['topology', 'configure'], '', '')
         self.assertNotEqual(result, 0, output)

@@ -625,7 +625,8 @@ recipe_menu() {
 browse() {
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
-  require_gum "the catalog menu" "pulsar models list | show SPEC | check SPEC"
+  require_gum "the catalog menu" "./pulsar models list" "browse the catalog" \
+    "./pulsar models show SPEC" "one spec's saved details" "./pulsar models check SPEC" "refresh its saved file records"
   ui_keep_styles
   local read_only="${1:-0}" result index rc entry observed title="Select a catalog spec"
   [ "$read_only" = 0 ] || title+=" (read-only)"
@@ -674,7 +675,7 @@ open_recipe() {
   unset PULSAR_CATALOG_OPEN_SPEC PULSAR_CATALOG_INVENTORY
   # shellcheck source=ui.sh
   . "$REPO_DIR/scripts/ui.sh"
-  require_gum "the catalog menu" "pulsar models show SPEC"
+  require_gum "the catalog menu" "./pulsar models show SPEC" "one spec's saved details"
   ui_keep_styles
   if [ -n "$inventory" ] && [ -s "$inventory" ] && catalog_work; then
     cp -- "$inventory" "$CATALOG_WORK/inventory.json" && LIVE_FILE="$CATALOG_WORK/inventory.json"
