@@ -467,7 +467,7 @@ perform_action() {
   [ -z "$MENU_SNAPSHOT" ] || args+=(--snapshot "$MENU_SNAPSHOT")
   case "$action" in
     acquire|restore|move) MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; } ;;
-    prepare|start|stop|status|check|readiness|image-check|image-stage)
+    prepare|start|stop|status|observe|audit|check|readiness|image-check|image-stage)
       if [ "$RECIPE_NODES" -eq 1 ]; then MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; }; fi ;;
   esac
   [ -z "$MENU_NODE" ] || args+=(--node "$MENU_NODE")
@@ -482,6 +482,13 @@ perform_action() {
     # Read-only, so nothing to confirm; a failure is held on screen to read.
     logs)
       page_output "Reading service logs…" "$REPO_DIR/pulsar" logs "$spec" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; HOLD_SCREEN=1; } ;;
+    observe)
+      page_output "Verifying the running service on every rank…" "$REPO_DIR/pulsar" observe "$spec" "${args[@]}" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; HOLD_SCREEN=1; } ;;
+    audit)
+      page_output "Hashing every prepared file; this can take many minutes…" \
+        "$REPO_DIR/pulsar" model info "$spec" --full "${args[@]}" \
         || { rc=$?; [ "$rc" -ne 130 ] || return 130; HOLD_SCREEN=1; } ;;
     start|stop)
       local -a scope=()
@@ -648,7 +655,7 @@ browse() {
       [ "$read_only" = 0 ] || return 0
     fi
     # Before setup the catalog stays saved records only: nothing probes nodes.
-    [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Storage budget (all nodes)")
+    [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Free disk space (checks nodes now)")
     [ -z "$observed" ] || printf '\n%s\n' "$observed" | python3 -m scripts.terminal_format
     index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
@@ -660,11 +667,80 @@ browse() {
       "Check running services (service inventory)")
         check_running_services "$result" || return $?
         hold_screen || return $? ;;
-      "Storage budget (all nodes)")
-        run_operation budget 'Inspect storage budget' '' 'all confirmed nodes' "$REPO_DIR/pulsar" model budget
-        hold_screen || return $? ;;
+      "Free disk space (checks nodes now)")
+        free_disk_space || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       *) return 0 ;;
     esac
+  done
+}
+
+# reclaim_menu SPEC — the recipe's own Stop, Unpin, Purge and Remove home, in
+# that order and only where the recipe offers them; each runs with its usual
+# preview and confirmation, so pins and container references still hold.
+reclaim_menu() {
+  local spec="$1" kind a b c index rc action
+  local -a header=() actions=() action_labels=()
+  while true; do
+    ROW_JSON=$(catalog show "$spec" --json) || return 0
+    live_args
+    VIEW=$(printf '%s' "$ROW_JSON" | catalog_menu view --spec-id "$spec" \
+      --repo-root "$REPO_DIR" --archive-location "$(archive_location)" "${LIVE_ARGS[@]}" \
+      ${LAST_RESULT[$spec]:+--after "${LAST_RESULT[$spec]}"} ${LAST_AT[$spec]:+--after-at "${LAST_AT[$spec]}"}) || return 0
+    header=(); actions=(); action_labels=()
+    for action in stop unpin purge remove; do
+      while IFS=$'\t' read -r kind a b c; do
+        case "$kind" in
+          recipe) RECIPE_NODES="$a"; RECIPE_MODEL="$b" ;;
+          header) [ "$action" != stop ] || header+=("$a") ;;
+          option) [ "$b" != "$action" ] || { actions+=("$b"); action_labels+=("$c"); } ;;
+        esac
+      done <<<"$VIEW"
+    done
+    echo
+    printf '%s\n' "${header[@]}" | emit_frame
+    index=$(choose_index "Free disk space from this spec" "${action_labels[@]}" "Back") \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    [ "$index" -lt "${#actions[@]}" ] || return 0
+    perform "${actions[$index]}" "$(operation_label "${action_labels[$index]}")" "$spec" \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+  done
+}
+
+# Free disk space: the storage budget on every node, then each catalog spec
+# holding a home or prepared copies, with what holds them. Checks nodes now.
+free_disk_space() {
+  local result rc index view kind a b
+  local -a ids=() labels=() budget_args=()
+  catalog_work || return 0
+  while true; do
+    result=$(catalog list --json) || return $?
+    rc=0
+    spin "Checking storage on every node…" "$REPO_DIR/pulsar" model budget --json >"$CATALOG_WORK/budget.json" || rc=$?
+    [ "$rc" -ne 130 ] || return 130
+    if [ -s "$CATALOG_WORK/budget.json" ]; then budget_args=(--budget "$CATALOG_WORK/budget.json")
+    else budget_args=(--budget-error "model budget exit $rc; the reason is above"); fi
+    # "In use" needs a fresh service inventory.
+    check_running_services "$result" || return $?
+    live_args
+    [ "$LIVE_REFRESHED" = 1 ] || LIVE_ARGS=()
+    view=$(printf '%s' "$result" | catalog_menu free-space "${budget_args[@]}" "${LIVE_ARGS[@]}") || return 0
+    ids=(); labels=()
+    echo
+    while IFS=$'\t' read -r kind a b; do
+      case "$kind" in
+        header) printf '%s\n' "$a" ;;
+        spec) ids+=("$a"); labels+=("$b") ;;
+      esac
+    done <<<"$view"
+    hold_screen || return $?
+    index=$(choose_index "Free disk space" "${labels[@]}" "Refresh" "Back") \
+      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+    if [ "$index" -lt "${#ids[@]}" ]; then
+      reclaim_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+      continue
+    fi
+    # Refresh follows the specs; anything after it is Back.
+    [ "$index" -eq "${#ids[@]}" ] || return 0
   done
 }
 

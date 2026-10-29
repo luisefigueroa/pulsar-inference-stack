@@ -420,6 +420,35 @@ class View(unittest.TestCase):
         self.assertEqual(menu.option_label("pin", None, 80), "Pin prepared copies — protect from purge")
         self.assertEqual(set(menu.EFFECTS), set(menu.LABELS))
 
+    # TUI-50: the budget table, then each spec holding files with what holds them.
+    def test_free_space_lists_specs_holding_files_and_what_holds_them(self):
+        copies = [{"node_id": "n1", "rank": 0, "pinned": True}, {"node_id": "n2", "rank": 1, "pinned": False}]
+        held = checked(home=HOME, prepared_copies=copies)
+        bare = row(spec_id="cd" * 32)
+        running = {"services": {held["spec_id"]: {"state": "running", "hosts": ["spark-2", "spark-3"],
+                                                   "node_id": None, "modified": False}},
+                   "age": 5, "unobserved": [], "incomplete": False}
+        budget = {"nodes": [{"node_id": "n0", "available": 300 * 1024**3, "used": 50 * 1024**3,
+                             "reserve": 100 * 1024**3, "limit": 200 * 1024**3, "path": "/fixture/views"}]}
+        lines = menu.free_space_lines([held, bare], budget, None, width=100, names=NAMES, live=running)
+        headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
+        self.assertEqual(headers[0], "Node     Disk free  Reserve  Pulsar files  Can still copy")
+        self.assertTrue(headers[1].startswith("spark-1"), headers)
+        specs = [line.split("\t") for line in lines if line.startswith("spec\t")]
+        self.assertEqual(specs, [["spec", held["spec_id"], f"[{held['spec_id'][:12]}] org/model · 2 prepared copies "
+                                  "(1 pinned) · home · in use: running on 2 nodes"]])
+        self.assertIn("Archives are never deleted.", " ".join(headers))
+        # Unknown is not absent: a failed budget names why, and nothing holding files says so.
+        lines = menu.free_space_lines([bare], None, "node storage is unobservable", width=44, names=NAMES)
+        self.assertEqual(lines, ["header\tStorage budget not observed: node storage is unobservable",
+                                 "header\tNo catalog spec has a home or prepared copies recorded here; nothing to "
+                                 "reclaim."])
+        # Long model names are cut so the label fits the menu.
+        long = checked(home=HOME, model_id="org/" + "long-model-" * 10)
+        label = menu.free_space_lines([long], budget, None, width=44, names=NAMES)[-1].split("\t")[2]
+        self.assertLessEqual(len(label), 42)
+        self.assertTrue(label.endswith("... · home only"), label)
+
     def test_live_status_comes_before_stop(self):
         self.assertLess(menu.MAIN.index("status"), menu.MAIN.index("stop"))
         offered, _, _ = menu.operations(checked(home=HOME), "configured")

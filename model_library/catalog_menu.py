@@ -31,15 +31,16 @@ from .node_names import NodeNames
 from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
 from scripts.terminal_format import TerminalWriter, terminal_width
 
-MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "logs", "stop")
+MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
-STORAGE = ("budget", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
+STORAGE = ("budget", "audit", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
-    "start": "Start", "stop": "Stop", "status": "Live status", "logs": "Service logs",
+    "start": "Start", "stop": "Stop", "status": "Live status", "observe": "Verify running service",
+    "logs": "Service logs",
     "readiness": "Check launch prerequisites", "image-check": "Check serving image",
     "image-stage": "Stage serving image",
-    "budget": "Storage budget (all nodes)",
+    "budget": "Storage budget (all nodes)", "audit": "Full file audit (slow; hashes every file)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -49,11 +50,12 @@ EFFECTS = {
     "check": "refresh saved file records", "acquire": "fetch model files to one node",
     "restore": "copy files back from the archive", "prepare": "copy files to every serving node",
     "start": "launch the service; asks first", "status": "check every node for it now",
-    "logs": "recent output of its containers",
+    "observe": "recheck its recipe, containers and files", "logs": "recent output of its containers",
     "stop": "remove it if running; files are kept",
     "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
     "image-stage": "pull or copy the exact digest",
-    "budget": "disk headroom on every node", "move": "move the home to another node",
+    "budget": "disk headroom on every node", "audit": "read-only; can take many minutes",
+    "move": "move the home to another node",
     "archive": "save a verified recovery copy", "verify": "recheck the archive's contents",
     "pin": "protect from purge", "unpin": "allow purge again",
     "purge": "delete prepared copies; the home is kept", "remove": "delete the home; the archive is kept",
@@ -486,6 +488,49 @@ def withdrawal_notice(row: dict) -> list[str]:
     return lines
 
 
+# Reclaiming space, in the order that unblocks the next step: a running
+# container holds its copies, a pin keeps them from purge, and a home goes last.
+RECLAIM = ("stop", "unpin", "purge", "remove")
+
+
+def free_space_lines(entries: list[dict], budget: dict | None, budget_error: str | None, *, width: int,
+                     names: NodeNames, live: dict | None = None, outcomes: dict | None = None) -> list[str]:
+    """The Free disk space screen: the budget table, then each spec holding files.
+
+    Lines are "header" and text, or "spec", a spec ID and its label. Specs come
+    from saved records; "in use" comes only from this session's observation.
+    """
+    from .render import budget_table
+    lines = []
+    if budget is not None:
+        lines += [f"header\t{line}" for line in budget_table(budget["nodes"], names, width)]
+    else:
+        lines.append(f"header\tStorage budget not observed: {budget_error or 'no result'}")
+    holding = [entry for entry in entries if entry.get("prepared_copies") or entry.get("home")]
+    if not holding:
+        lines.append("header\tNo catalog spec has a home or prepared copies recorded here; nothing to reclaim.")
+        return lines
+    lines.append("header\tChoose a spec to stop, unpin, purge or remove its files. Archives are never deleted.")
+    for entry in holding:
+        copies = entry.get("prepared_copies") or []
+        pinned = sum(1 for copy in copies if copy.get("pinned"))
+        parts = [_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else "")
+                 if copies else "home only"]
+        if copies and entry.get("home"):
+            parts.append("home")
+        fact = live_fact(entry, live, (outcomes or {}).get(entry["spec_id"]))
+        if fact and fact["kind"] == "service" and live_current(fact):
+            parts.append(f"in use: {_service_words(fact, hosts=False)}")
+        suffix = " · " + " · ".join(parts)
+        prefix = f"[{entry['spec_id'][:12]}] "
+        model = entry["model_id"]
+        room = width - 2 - len(prefix) - len(suffix)
+        if len(model) > room:
+            model = model[:max(room - 3, 0)] + "..." if room >= 4 else ""
+        lines.append(f"spec\t{entry['spec_id']}\t{clean(prefix + model + suffix)}")
+    return lines
+
+
 def menu_label(row: dict, width: int, live: dict | None = None) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
@@ -662,6 +707,7 @@ NODE_QUESTIONS = {
     "move": "Which machine should the home move to?",
     "check": "Which machine's files should be checked?",
     "status": "Which machine runs the service?", "stop": "Which machine runs the service?",
+    "observe": "Which machine runs the service?", "audit": "Which machine's prepared files should be hashed?",
 }
 NODE_QUESTION = "Which machine should serve the model?"
 
@@ -1278,6 +1324,11 @@ def read_row(stream, spec_id: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+    space = sub.add_parser("free-space", help="the budget table and specs holding files; catalog JSON on stdin")
+    space.add_argument("--budget", help="model budget --json output")
+    space.add_argument("--budget-error", help="why the budget is not observed")
+    space.add_argument("--live", help="service inventory JSON this menu session captured")
+    space.add_argument("--service-outcome", action="append", default=[])
     labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
     labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
     live_help = "service inventory JSON this menu session captured"
@@ -1334,6 +1385,28 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "memory-warning":
             from scripts.start_blockers import read
             return 0 if memory_warning_only(read(args.blockers_file)) else 1
+        if args.command == "free-space":
+            entries = json.load(sys.stdin).get("entries") or []
+            budget, budget_error = None, args.budget_error
+            if args.budget:
+                try:
+                    with open(args.budget, encoding="utf-8") as handle:
+                        document = json.load(handle)
+                except ValueError:
+                    document = None
+                result = document.get("result") if isinstance(document, dict) and document.get("ok") is True else None
+                if isinstance(result, dict) and isinstance(result.get("nodes"), list):
+                    budget = result
+                else:
+                    # A failed budget names its reason; the specs are still listed.
+                    error = document.get("error") if isinstance(document, dict) else None
+                    budget_error = clean((error or {}).get("message") or "model budget returned no result")
+            names = NodeNames.saved()
+            for line in free_space_lines(entries, budget, budget_error, width=terminal_width(), names=names,
+                                         live=load_live(args.live, entries),
+                                         outcomes=service_outcomes(args.service_outcome, names=names)):
+                print(line)
+            return 0
         if args.command == "labels":
             width = terminal_width()
             entries = json.load(sys.stdin).get("entries") or []
