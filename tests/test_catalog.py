@@ -965,13 +965,16 @@ raise SystemExit(rc)
         self.assertEqual([action[:2] for action in actions], [["pulsar", "inventory"], ["down.sh", actions[1][1]]])
 
     # TUI-43: Stop refreshes what runs before asking, and the question names those nodes.
-    def test_stop_names_the_nodes_a_fresh_inventory_found(self):
+    def test_stop_names_the_selected_node_and_where_a_fresh_inventory_found_it(self):
         spec, result, actions, _, questions = self.run_menu(
             ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["no"], inventory=self.live_inventory())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        # Stop runs with --node for the selected machine, so the question names it.
         self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
-                                    "fixture-remote? Model files, pins and archives are kept.\n")
+                                    "fixture-node (not in saved topology)? Model files, pins and archives are kept. "
+                                    "The service inventory saw it running on fixture-remote just now, not on "
+                                    "fixture-node (not in saved topology).\n")
 
     def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
         _, result, actions, choices, _ = self.run_menu(

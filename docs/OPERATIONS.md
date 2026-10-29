@@ -588,7 +588,9 @@ of all detected workloads, including those outside the catalog.
 Stop refreshes the inventory and shows the current scope before confirmation.
 The catalog menu's **Stop** does the same, and both ask one question that names
 the nodes the service was seen on and says model files, pins and archives are
-kept. Outcomes name the model and its spec.
+kept. For a one-node recipe the catalog menu stops on the machine chosen
+first, so its question names that machine, and adds where the inventory saw
+the service when that is elsewhere. Outcomes name the model and its spec.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.

@@ -145,7 +145,8 @@ def live_fact(row: dict, live: dict | None, outcome: tuple | None) -> dict | Non
         service = live["services"].get(row["spec_id"])
         if service:
             fact = {"kind": "service", "state": service["state"], "hosts": service["hosts"],
-                    "modified": service["modified"], "age": live["age"], "source": "inventory"}
+                    "node_id": service.get("node_id"), "modified": service["modified"],
+                    "age": live["age"], "source": "inventory"}
         elif live["incomplete"]:
             fact = {"kind": "unknown", "unobserved": live["unobserved"], "age": live["age"], "source": "inventory"}
         else:
@@ -1182,11 +1183,20 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
                 f"{_start_place(nodes, place, names)}? Insufficient memory and all other blockers still prevent "
                 "start. Loading can take several minutes.")
     if action == "stop":
-        hosts = live["hosts"] if live and live["kind"] == "service" and live_current(live) else []
-        if live and live["kind"] == "absent" and live_current(live):
-            return (f"Stop {model} [{row['spec_id'][:12]}]? No container of it was seen running just now; "
+        current = bool(live) and live_current(live)
+        if current and live["kind"] == "absent":
+            scope = f" on {place}" if place else ""
+            return (f"Stop {model} [{row['spec_id'][:12]}]{scope}? No container of it was seen running just now; "
                     f"Stop removes any that remain. {STOP_KEEPS}")
-        return stop_question(model, row["spec_id"], ", ".join(hosts) or place)
+        hosts = live["hosts"] if current and live["kind"] == "service" else []
+        if not place:
+            return stop_question(model, row["spec_id"], ", ".join(hosts) or None)
+        # Stop with a selected node removes containers there only. A one-node
+        # service's inventory names its node ID; otherwise compare hostnames.
+        here = live.get("node_id") == node if hosts and live.get("node_id") else place in hosts
+        elsewhere = "" if not hosts or here else (
+            f" The service inventory saw it running on {', '.join(hosts)} just now, not on {place}.")
+        return stop_question(model, row["spec_id"], place) + elsewhere
     raise ValueError(f"no confirmation for {action}")
 
 

@@ -972,7 +972,23 @@ class Question(unittest.TestCase):
         self.assertEqual(menu.question("stop", state, names=NAMES, live=running),
                          "Stop and remove the service containers of org/model [abababababab] on spark-1, spark-3? "
                          "Model files, pins and archives are kept.")
+        # A selected node is where Stop acts, so the question names it, and
+        # says so when the inventory saw the service only elsewhere.
+        self.assertEqual(menu.question("stop", state, node="n0", names=NAMES, live=running),
+                         "Stop and remove the service containers of org/model [abababababab] on spark-1? "
+                         "Model files, pins and archives are kept.")
+        self.assertEqual(menu.question("stop", state, node="n1", names=NAMES, live=running),
+                         "Stop and remove the service containers of org/model [abababababab] on spark-2? "
+                         "Model files, pins and archives are kept. The service inventory saw it running on "
+                         "spark-1, spark-3 just now, not on spark-2.")
+        # The node ID decides when the inventory has one, whatever the hostname says.
+        observed = {**running, "hosts": ["spark-2.local"], "node_id": "n1"}
+        self.assertTrue(menu.question("stop", state, node="n1", names=NAMES, live=observed).endswith(" are kept."))
+        self.assertIn("running on spark-2.local just now, not on spark-1.",
+                      menu.question("stop", state, node="n0", names=NAMES, live=observed))
         absent = {"kind": "absent", "age": 5, "source": "inventory"}
+        self.assertTrue(menu.question("stop", state, node="n1", names=NAMES, live=absent).startswith(
+            "Stop org/model [abababababab] on spark-2? No container of it was seen running just now;"))
         self.assertEqual(menu.question("stop", state, names=NAMES, live=absent),
                          "Stop org/model [abababababab]? No container of it was seen running just now; Stop "
                          "removes any that remain. Model files, pins and archives are kept.")
