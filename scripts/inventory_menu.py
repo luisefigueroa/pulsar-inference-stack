@@ -75,8 +75,11 @@ def stop_all_question(inventory, published):
     """
     names = []
     for service in inventory["services"]:
-        ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)), key=rank_order)
-        if not any((rank.get("labels") or {}).get(MANAGED_LABEL) == "true" for rank in ranks):
+        # Only labelled containers are removed, so only their nodes are named.
+        ranks = sorted((rank for rank in service.get("ranks") or []
+                        if isinstance(rank, dict) and (rank.get("labels") or {}).get(MANAGED_LABEL) == "true"),
+                       key=rank_order)
+        if not ranks:
             continue
         spec_id = service.get("conf") or service.get("spec_id")
         model = (published.get(spec_id) or {}).get("model_id") or service.get("served_name") or "service"

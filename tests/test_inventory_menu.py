@@ -169,6 +169,13 @@ class Projection(unittest.TestCase):
         question = next(line for line in inventory_menu.view(data, CATALOG) if line.startswith("stopall\t"))
         self.assertIn("fixture-local could not be observed, and Stop refuses until every confirmed node answers.",
                       question)
+        # A mixed service names only the nodes whose containers carry the label.
+        mixed = managed(snapshot(count=2))
+        mixed["services"][0]["ranks"][1]["labels"] = {}
+        question = next(line for line in inventory_menu.view(mixed, [{**CATALOG[0], "nodes": 2}])
+                        if line.startswith("stopall\t"))
+        self.assertIn(f"example/model [{SPEC[:12]}] on fixture-local.", question)
+        self.assertNotIn("fixture-remote", question)
         # Nothing carries the label: no stop --all choice.
         unlabelled = snapshot(); unlabelled["services"].append(other("vllm-port80"))
         self.assertFalse(any(line.startswith("stopall\t") for line in inventory_menu.view(unlabelled, CATALOG)))
