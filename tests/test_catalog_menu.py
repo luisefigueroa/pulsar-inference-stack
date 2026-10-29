@@ -443,6 +443,26 @@ class View(unittest.TestCase):
         self.assertEqual(lines, ["header\tStorage budget not observed: node storage is unobservable",
                                  "header\tNo catalog spec has a home or prepared copies recorded here; nothing to "
                                  "reclaim."])
+        # A schema-3 recipe's other required snapshots keep their homes under snapshots.
+        draft_only = row(spec_id="ef" * 32, snapshots={
+            "target": {"home": None, "model_id": "org/model", "model_commit": "0" * 40},
+            "draft": {"home": HOME, "model_id": "org/draft", "model_commit": "1" * 40}})
+        listed = [line.split("\t") for line in menu.free_space_lines([draft_only], budget, None, width=100, names=NAMES)
+                  if line.startswith("spec\t")]
+        self.assertEqual(listed, [["spec", "ef" * 32, f"[{'ef' * 6}] org/model · home only"]])
+        # A long status shortens itself before the label would overflow the menu.
+        busy = checked(home=HOME, prepared_copies=copies * 3, model_id="org/" + "long-model-" * 4)
+        many = {**running, "services": {busy["spec_id"]: {"state": "running", "hosts": ["spark-1", "spark-2"],
+                                                        "node_id": None, "modified": False}}}
+        for width in (100, 80, 60, 44, 30):
+            with self.subTest(width=width):
+                label = menu.free_space_lines([busy], budget, None, width=width, names=NAMES, live=many)[-1]
+                label = label.split("\t")[2]
+                self.assertLessEqual(len(label), width - 2, label)
+                self.assertTrue(label.startswith(f"[{busy['spec_id'][:12]}]"), label)
+                if width >= 60:
+                    self.assertIn("pinned", label)
+                    self.assertIn("in use", label)
         # Long model names are cut so the label fits the menu.
         long = checked(home=HOME, model_id="org/" + "long-model-" * 10)
         label = menu.free_space_lines([long], budget, None, width=44, names=NAMES)[-1].split("\t")[2]

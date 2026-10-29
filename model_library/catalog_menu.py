@@ -506,28 +506,44 @@ def free_space_lines(entries: list[dict], budget: dict | None, budget_error: str
         lines += [f"header\t{line}" for line in budget_table(budget["nodes"], names, width)]
     else:
         lines.append(f"header\tStorage budget not observed: {budget_error or 'no result'}")
-    holding = [entry for entry in entries if entry.get("prepared_copies") or entry.get("home")]
+    def homes(entry: dict) -> int:
+        # A schema-3 recipe keeps each required snapshot's home under snapshots.
+        return sum(1 for member in members(entry).values() if member.get("home"))
+    holding = [entry for entry in entries if entry.get("prepared_copies") or homes(entry)]
     if not holding:
         lines.append("header\tNo catalog spec has a home or prepared copies recorded here; nothing to reclaim.")
         return lines
     lines.append("header\tChoose a spec to stop, unpin, purge or remove its files. Archives are never deleted.")
+    budget_width = width - 2  # Gum draws its cursor before each label.
     for entry in holding:
         copies = entry.get("prepared_copies") or []
         pinned = sum(1 for copy in copies if copy.get("pinned"))
-        parts = [_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else "")
-                 if copies else "home only"]
-        if copies and entry.get("home"):
-            parts.append("home")
+        home = (_count(homes(entry), "home") if homes(entry) > 1 else "home") if homes(entry) else ""
         fact = live_fact(entry, live, (outcomes or {}).get(entry["spec_id"]))
-        if fact and fact["kind"] == "service" and live_current(fact):
-            parts.append(f"in use: {_service_words(fact, hosts=False)}")
-        suffix = " · " + " · ".join(parts)
+        in_use = fact is not None and fact["kind"] == "service" and live_current(fact)
+        # Longest first; each later form is shorter, so the label fits the menu.
+        forms = []
+        for copies_text, use_text in (
+                (_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else ""),
+                 f"in use: {_service_words(fact, hosts=False)}" if in_use else ""),
+                (_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else ""),
+                 "in use" if in_use else ""),
+                (_count(len(copies), "copy", "copies") + (f", {pinned} pinned" if pinned else ""),
+                 "in use" if in_use else "")):
+            parts = [copies_text, home] if copies else [f"{home} only"]
+            forms.append(" · " + " · ".join(part for part in (*parts, use_text) if part))
         prefix = f"[{entry['spec_id'][:12]}] "
         model = entry["model_id"]
-        room = width - 2 - len(prefix) - len(suffix)
+        # The whole model name first, then at least 12 of its characters.
+        suffix = next((form for need in (len(model), min(len(model), 12)) for form in forms
+                       if budget_width - len(prefix) - len(form) >= need), forms[-1])
+        room = budget_width - len(prefix) - len(suffix)
         if len(model) > room:
-            model = model[:max(room - 3, 0)] + "..." if room >= 4 else ""
-        lines.append(f"spec\t{entry['spec_id']}\t{clean(prefix + model + suffix)}")
+            model = model[:room - 3] + "..." if room >= 4 else ""
+        label = clean(prefix + model + suffix)
+        if len(label) > budget_width:
+            label = label[:budget_width - 1] + "…"
+        lines.append(f"spec\t{entry['spec_id']}\t{label}")
     return lines
 
 
