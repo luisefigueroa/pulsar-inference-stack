@@ -66,6 +66,59 @@ def projected_headroom(budgets: list[dict], new_copy: int | None) -> int | None:
     return min(disk, allowance) - new_copy
 
 
+def can_still_copy(budget: dict) -> int | None:
+    """What one node can still take: the tighter of disk free after the
+    reserve and the copy budget left. Negative when past either; None when
+    either side was not observed."""
+    disk, allowance = _headroom([budget])
+    return None if disk is None or allowance is None else min(disk, allowance)
+
+
+BUDGET_HEADINGS = (("Node", "Node"), ("Disk free", "Free"), ("Reserve", "Reserve"),
+                   ("Pulsar files", "Pulsar"), ("Can still copy", "Can copy"))
+# Narrower terminals drop the Reserve column, then shorten the headings, then
+# drop Pulsar files. Each is (columns, heading style).
+BUDGET_LAYOUTS = (((0, 1, 2, 3, 4), 0), ((0, 1, 3, 4), 0), ((0, 1, 2, 3, 4), 1), ((0, 1, 3, 4), 1), ((0, 1, 4), 1))
+
+
+def short_size(value: Any) -> str:
+    """Three significant digits, for a table cell."""
+    if type(value) is not int or value < 0:
+        return 'unknown'
+    if value == 0:
+        return 'none'
+    for divisor, unit in ((1024**4, 'TiB'), (1024**3, 'GiB'), (1024**2, 'MiB'), (1024, 'KiB')):
+        if value >= divisor:
+            amount = value / divisor
+            return f"{amount:.{0 if amount >= 100 else 1 if amount >= 10 else 2}f} {unit}"
+    return f'{value} bytes'
+
+
+def budget_table(budgets: list[dict], names: NodeNames, width: int) -> list[str]:
+    """One aligned row per node in human units, then the lines that explain it."""
+    rows, short = [], []
+    for budget in budgets:
+        node = names(budget['node_id']) if budget.get('node_id') else 'not recorded'
+        left = can_still_copy(budget)
+        if left is not None and left < 0:
+            short.append(f"{node} is {short_size(-left)} past its reserve or copy budget.")
+        rows.append([node, short_size(budget.get('available')), short_size(budget.get('reserve')),
+                     short_size(budget.get('used')), 'unknown' if left is None else short_size(max(left, 0))])
+    for columns, heading in BUDGET_LAYOUTS:
+        table = [[BUDGET_HEADINGS[column][heading] for column in columns]] + [[row[c] for c in columns] for row in rows]
+        widths = [max(len(line[index]) for line in table) for index in range(len(columns))]
+        if sum(widths) + 2 * (len(widths) - 1) <= width:
+            break
+    lines = ["  ".join(cell.ljust(widths[0]) if index == 0 else cell.rjust(widths[index])
+                       for index, cell in enumerate(line)).rstrip() for line in table]
+    label = BUDGET_HEADINGS[4][heading]
+    paths = list(dict.fromkeys(budget.get('path') or 'not observed' for budget in budgets))
+    roots = ([f"Copy root: {paths[0]}"] if len(paths) == 1 else
+             [f"Copy root on {names(budget['node_id'])}: {budget.get('path') or 'not observed'}"
+              for budget in budgets if budget.get('node_id')])
+    return lines + short + [f"{label}: the smaller of disk free after the reserve and the copy budget left."] + roots
+
+
 def _budget_context(out: TerminalWriter, budgets: list[dict], *, new_copy: int | None = None,
                     project: bool = False) -> None:
     distinct = []
@@ -465,11 +518,12 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         return
     if operation == 'budget' and isinstance(document.get('nodes'), list):
         out.emit('Managed storage usage', role='heading')
-        for index, node in enumerate(document['nodes']):
-            if index:
-                out.blank()
-            out.field('Node', names(node['node_id']) if node.get('node_id') else 'not recorded')
-            _budget_context(out, [node])
+        lines = budget_table(document['nodes'], names, out.width)
+        # The table rows stay aligned; the notes after them wrap.
+        for line in lines[:len(document['nodes']) + 1]:
+            print(line, file=out.stream)
+        for line in lines[len(document['nodes']) + 1:]:
+            out.emit(line, subsequent_indent='  ')
         out.emit('Observed prepared-copy storage only; space is not reserved.')
         return
     raise ValueError('unrecognized storage result; inspect the machine-readable output with --json')

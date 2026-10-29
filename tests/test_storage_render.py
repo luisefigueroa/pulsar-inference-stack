@@ -130,8 +130,26 @@ class StorageRendering(unittest.TestCase):
 
     def test_budget_labels_do_not_treat_missing_observation_as_zero(self):
         _,flat=self.display(dict(kind='pulsar-storage-budget',nodes=[dict(node_id='node-0',used=1073741824,available=20*1024**3,total=30*1024**3),dict(node_id='node-1',available=None)]),'budget')
-        self.assertIn('Managed files',flat);self.assertIn('20.00 GiB',flat)
-        self.assertIn('not observed',flat)
+        # TUI-80: one row per node in human units; what was not observed is unknown, never none.
+        self.assertIn('Node Free Pulsar Can copy node-0 20.0 GiB 1.00 GiB unknown node-1 unknown unknown unknown',flat)
+        self.assertNotIn('none',flat);self.assertNotIn('bytes',flat)
+
+    def test_budget_table_names_what_each_node_can_still_copy(self):
+        G=1024**3
+        nodes=[dict(node_id='node-0',available=1900*G,used=450*G,total=4000*G,reserve=100*G,limit=2250*G,path='/fixture/views'),
+               dict(node_id='node-1',available=200*G,used=300*G,total=4000*G,reserve=205*G,limit=400*G,path='/fixture/views')]
+        names=NodeNames({'node-0':'spark-1','node-1':'spark-2'})
+        stream=io.StringIO()
+        render(dict(kind='pulsar-storage-budget',nodes=nodes),operation='budget',names=names,
+               writer=TerminalWriter(width=80,stream=stream))
+        lines=stream.getvalue().splitlines()
+        self.assertEqual(lines[1:4],['Node     Disk free  Reserve  Pulsar files  Can still copy',
+                                     'spark-1   1.86 TiB  100 GiB       450 GiB        1.76 TiB',
+                                     'spark-2    200 GiB  205 GiB       300 GiB            none'])
+        self.assertIn('spark-2 is 5.00 GiB past its reserve or copy budget.',lines)
+        self.assertIn('Copy root: /fixture/views',lines)
+        output,flat=self.display(dict(kind='pulsar-storage-budget',nodes=nodes),'budget',names)
+        self.assertIn('Node Free Pulsar Can copy spark-1 1.86 TiB 450 GiB 1.76 TiB',flat)
 
     def test_restore_preview_distinguishes_payload_capacity_and_unknown_space(self):
         plan = dict(kind='pulsar-restore-plan', snapshot_manifest_id=SNAPSHOT,
