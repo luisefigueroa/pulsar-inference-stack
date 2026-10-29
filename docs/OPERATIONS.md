@@ -307,7 +307,11 @@ gives that age, so an old record can be weighed against the check.
 `results/` records for the selected spec and uses the existing evidence verifier.
 It shows recorded run times, run and policy outcomes, benchmark token counts and
 concurrency, accuracy sample scope, soak results, and the command for the full
-public evidence summary. The compact view shows the most recent dated verified
+public evidence summary. Each gate's outcome is followed by one sentence saying
+what it checked, rendered from the thresholds the run recorded, and benchmark
+levels form a rounded table: concurrency, requests, total and median decode
+tok/s, and p95 time to first token in ms. `policy show NAME` explains the same
+gates for a fixed policy; its `--json` form is unchanged. The compact view shows the most recent dated verified
 run regardless of outcome and counts undated or unverified records separately.
 Missing, inconsistent or unsupported evidence is explicit and never removes a
 spec or blocks its operations. Historical schema-1 evidence retains its format;

@@ -107,6 +107,53 @@ class PublishedResults(unittest.TestCase):
                         self.assertLessEqual(len(line), 44, line)
                 self.assertEqual(original, {path: path.read_bytes() for path in directory.iterdir()})
 
+    # TUI-76: each gate says what it checked, and the performance rows are a rounded table.
+    def test_each_gate_says_what_it_checked_and_performance_is_a_rounded_table(self):
+        spec, _ = publish(self.repo, suite="baseline-v2", speculative=True)
+        report = results.collect(self.repo, spec["spec_id"])
+        for width in (80, 44):
+            with self.subTest(width=width):
+                output = io.StringIO()
+                results.render(report, spec["spec_id"], writer=TerminalWriter(width=width, stream=output))
+                text, lines = " ".join(output.getvalue().split()), output.getvalue().splitlines()
+                self.assertIn("They do not establish current service health", text)
+                self.assertIn("soak-60 pass At least 60 minutes of load; no request errors; at least one "
+                              "completed request.", text)
+                self.assertIn("perf-snapshot pass Every required concurrency level completed (concurrency 1, 2, "
+                              "4, 8); speed is recorded, not judged.", text)
+                self.assertIn("identity-snapshot-manifest pass No model files differ from the snapshot manifest.",
+                              text)
+                header = lines.index("  Conc  Requests  Total  Decode  p95 TTFT")
+                rows = lines[header + 1:header + 5]
+                for row in rows:
+                    self.assertRegex(row, r"^ +\d+ +\d+/\d+ +(\d+\.\d|—) +(\d+\.\d|—) +(\d+ ms|—)$")
+                    self.assertLessEqual(len(row), 44)
+        output = io.StringIO()
+        results.render(report, spec["spec_id"], writer=TerminalWriter(width=36, stream=output))
+        self.assertIn("  Conc  Total  Decode  p95 TTFT", output.getvalue().splitlines())
+
+    def test_gate_explanations_come_from_the_recorded_thresholds(self):
+        floor = [{"metric": "accuracy", "operator": ">=", "value": "0.25", "unit": "ratio"}]
+        self.assertEqual(results.gate_explanation(floor), "At least 25% of answers correct.")
+        # An unfamiliar metric keeps its own terms rather than an invented meaning.
+        odd = [{"metric": "queue_depth", "operator": "<=", "value": "3", "unit": "count"}]
+        self.assertEqual(results.gate_explanation(odd), "Queue_depth <= 3 count.")
+        captures = [{"metric": "exact_match_rate", "operator": "==", "value": "1", "unit": "ratio"}]
+        self.assertEqual(results.gate_explanation(captures), "100% of repeated same-boot captures match exactly.")
+
+    def test_policy_show_has_a_human_form_and_unchanged_json(self):
+        command = [str(ROOT / "pulsar"), "policy", "show", "baseline-v2"]
+        human = subprocess.run(command, text=True, capture_output=True, env={**os.environ, "COLUMNS": "80"})
+        self.assertEqual(human.returncode, 0, human.stderr)
+        self.assertTrue(human.stdout.startswith("Baseline policy baseline-v2\nDigest    "), human.stdout)
+        self.assertIn("  soak-60\n    At least 60 minutes of load; no request errors; at least one completed\n",
+                      human.stdout)
+        self.assertIn("./pulsar policy show baseline-v2 --json", human.stdout)
+        self.assertNotIn("{", human.stdout)
+        document = json.loads(subprocess.run([*command, "--json"], text=True, capture_output=True).stdout)
+        self.assertEqual(sorted(document["result"]), ["policy", "policy_digest"])
+        self.assertEqual(document["result"]["policy"]["suite"], "baseline-v2")
+
     def test_newer_failed_run_is_not_hidden_by_an_older_pass(self):
         spec, _ = publish(self.repo, name="older-pass")
         publish(self.repo, name="newer-fail", fail=True, shift=1)
