@@ -1289,8 +1289,11 @@ raise SystemExit(rc)
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
         self.assertIn("Next Check now — no saved check", shown)
-        self.assertIn("Not shown: Restore, Verify archive (no archive location is configured)", shown)
-        self.assertIn("Not shown: Prepare, Move home, Create archive, Remove home (no home is recorded)", shown)
+        self.assertIn("Not shown Restore, Verify archive (no archive location is configured). Set one in "
+                      "Archive storage configuration on the home menu.", shown)
+        self.assertIn("Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
+                      "Download records a home.", shown)
+        self.assertNotIn("Check now refreshes", shown)
 
     # TUI-41: Service logs is read-only, so it opens in the pager with nothing to confirm.
     def test_service_logs_reads_every_rank_without_a_question(self):
@@ -1319,7 +1322,7 @@ raise SystemExit(rc)
                 self.assertIn("example/model [", shown)
                 self.assertIn("Next Check now — no saved check", shown)
                 self.assertEqual("Files unknown" in shown, full)
-                self.assertEqual("Not shown:" in shown, full)
+                self.assertEqual("Not shown " in shown, full)
 
     def test_guarded_spec_menu_leaves_out_start_and_explains_why(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None, guarded=True)
@@ -1331,7 +1334,7 @@ raise SystemExit(rc)
                           "Launch options…", "Storage and archive…", "Show details", "Published results",
                           "Compare catalog specs", "Back"])
         shown = " ".join(result.stdout.split())
-        self.assertIn("Not shown: Start (ordinary start cannot enforce the spec's serving guard)", shown)
+        self.assertIn("Not shown Start (ordinary start cannot enforce the spec's serving guard).", shown)
 
 
 if __name__ == "__main__": unittest.main()
