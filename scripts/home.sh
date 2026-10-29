@@ -38,9 +38,19 @@ complete=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print("1" i
 next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_action") or "")')
 # Without Gum the menu does not open; name the commands behind its choices.
 case "$complete:$next_action" in
-  1:*) require_gum "the Pulsar menu" "pulsar models list | inventory | topology check | model budget | doctor | configure archive-root | topology show | help [terms|workflow]" ;;
-  *:enroll-ssh-trust) require_gum "the Pulsar menu" "pulsar ssh-trust enroll | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
-  *) require_gum "the Pulsar menu" "pulsar topology setup | models list | models show SPEC | doctor | topology show | help [terms|workflow]" ;;
+  1:*) require_gum "the Pulsar menu" "./pulsar models list" "browse the catalog" \
+    "./pulsar inventory" "see what runs on each node" "./pulsar topology check" "check saved nodes and fabric" \
+    "./pulsar model budget" "disk headroom on every node" "./pulsar doctor" "host diagnostics" \
+    "./pulsar configure archive-root" "archive storage setting" "./pulsar topology show" "saved cluster membership" \
+    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
+  *:enroll-ssh-trust) require_gum "the Pulsar menu" "./pulsar ssh-trust enroll" "enroll SSH trust (next setup step)" \
+    "./pulsar models list" "browse the catalog" "./pulsar models show SPEC" "one spec's saved details" \
+    "./pulsar doctor" "host diagnostics" "./pulsar topology show" "saved cluster membership" \
+    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
+  *) require_gum "the Pulsar menu" "./pulsar topology setup" "set up cluster membership (next setup step)" \
+    "./pulsar models list" "browse the catalog" "./pulsar models show SPEC" "one spec's saved details" \
+    "./pulsar doctor" "host diagnostics" "./pulsar topology show" "saved cluster membership" \
+    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
 esac
 ui_keep_styles
 # The setup status prints on entry, then again only when a choice changed it;
@@ -64,7 +74,7 @@ unset PULSAR_HOME_STATUS_SHOWN
 [ "$status_text" = "$shown" ] || printf '\n%s\n\n' "$status_text"
 
 if [ "$complete" = 1 ]; then
-  choice=$(choose_index "Pulsar Inference Stack" "Catalog and storage" "Live service inventory" \
+  choice=$(PULSAR_CHOOSE_ESC=exit choose_index "Pulsar Inference Stack" "Catalog and storage" "Live service inventory" \
     "Cluster overview (checks nodes now)" "Host diagnostics" "Archive storage configuration" \
     "Cluster topology" "Help" "Exit") \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
@@ -95,7 +105,7 @@ fi
 # First run: the next setup step and existing read-only inspection paths.
 # Each choice returns here with the setup status read again.
 next_label=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("next_label") or "")')
-choice=$(choose_index "Pulsar Inference Stack" "$next_label" "Browse the catalog (read-only)" \
+choice=$(PULSAR_CHOOSE_ESC=exit choose_index "Pulsar Inference Stack" "$next_label" "Browse the catalog (read-only)" \
   "Host diagnostics" "Cluster topology (read-only)" "Help" "Exit") \
   || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
 set +e

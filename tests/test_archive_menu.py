@@ -82,8 +82,15 @@ confirm() {
         )
         self.assertEqual(result.returncode, 2, result.stderr)
         self.assertEqual(result.stdout, "")
-        self.assertEqual(result.stderr, "error: the archive storage menu needs an interactive terminal with Gum; "
-                                        "use: pulsar configure archive-root show | set PATH --yes | disable --yes\n")
+        # TUI-08: one complete command per line, with what it does as a shell comment.
+        self.assertEqual(result.stderr,
+                         "error: the archive storage menu needs an interactive terminal with Gum. "
+                         "Run the same steps as commands:\n"
+                         "  ./pulsar configure archive-root show            # show the archive location\n"
+                         "  ./pulsar configure archive-root set PATH --yes  # save an existing directory as the "
+                         "location\n"
+                         "  ./pulsar configure archive-root disable --yes   # turn archives off; no archive is "
+                         "deleted\n")
         self.assertFalse((self.root / ".env").exists())
 
     def test_existing_directory_can_be_saved(self):

@@ -50,10 +50,13 @@ package manager or point `GUM_BIN` at it. `NO_COLOR` or
 `PULSAR_COLOR=never` draws them without color; see
 [output and messages](#output-and-messages) for text styles. A menu lists every option on one
 page when the terminal has room for it, and its labels use the whole row after
-the cursor; a repeated label gets a numbered suffix such as `(2)`. Without Gum
-or an interactive terminal, a menu opens nothing: it names the equivalent commands and exits
-with status 2, and a command that would ask for confirmation names its `--yes`
-form. `pulsar models` without a subcommand shows the catalog list instead, with
+the cursor; a repeated label gets a numbered suffix such as `(2)`. A key line
+under the menu title reads `↑/↓ move · enter choose · esc back`; on the home
+menu Esc exits. Without Gum
+or an interactive terminal, a menu opens nothing: it lists the equivalent
+commands, one `./pulsar …` command per line with a `#` comment saying what it
+does, and exits with status 2. A command that would ask for confirmation names
+its `--yes` form. `pulsar models` without a subcommand shows the catalog list instead, with
 a warning when the terminal lacks Gum. Diagnostic output reports missing prerequisites instead of silently
 choosing other tools or transport.
 

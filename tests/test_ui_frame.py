@@ -21,7 +21,8 @@ class UiFrame(unittest.TestCase):
         gum = self.root / "gum"
         gum.write_text(
             "#!/usr/bin/env bash\n"
-            f"printf '%s NO_COLOR=%s\\n' \"$*\" \"${{NO_COLOR:-}}\" >> '{self.gum_log}'\n"
+            # One line per call: a menu header's second line (the key hint) joins the first.
+            f"all=\"$*\"; printf '%s NO_COLOR=%s\\n' \"${{all//$'\\n'/ }}\" \"${{NO_COLOR:-}}\" >> '{self.gum_log}'\n"
             "if [ \"$1\" = style ]; then cat; exit 0; fi\n"
             "if [ \"$1\" = input ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
             # choose prints the line GUM_CHOICE names (default: the first) or exits GUM_RC;
@@ -151,6 +152,17 @@ class UiFrame(unittest.TestCase):
                 self.assertIn("--label-delimiter=\t", choose)
                 self.assertIn(f"--height={height} ", choose)
 
+    # TUI-04: Gum's hint names neither Esc nor what it does; Pulsar's own line does.
+    def test_choose_names_esc_in_its_own_key_hint(self):
+        for prefix, esc in (("", "back"), ("PULSAR_CHOOSE_ESC=exit ", "exit")):
+            with self.subTest(esc=esc):
+                self.gum_log.unlink(missing_ok=True)
+                result = self.run_ui(f'{prefix}choose_index "Pick" one two', GUM_CHOICE="0")
+                self.assertEqual(result.stdout, "0\n", result.stderr)
+                choose = self.gum_calls()[0]
+                self.assertIn("--no-show-help", choose)
+                self.assertIn(f"--header Pick ↑/↓ move · enter choose · esc {esc}", choose)
+
     def test_repeated_labels_get_a_suffix_and_a_default_keeps_its_comma(self):
         given = self.root / "choose.in"
         result = self.run_ui("PULSAR_CHOOSE_DEFAULT=1 choose_index Pick 'a, b' 'a, b' $'c\\td'",
@@ -246,12 +258,16 @@ class UiFrame(unittest.TestCase):
         }
         for name, (extra, forced) in cases.items():
             with self.subTest(name):
-                result = self.run_ui('require_gum "the topology menu" "pulsar topology show | check"; echo opened',
+                result = self.run_ui('require_gum "the topology menu" "./pulsar topology show" "saved membership" '
+                                     '"./pulsar topology check" "check nodes now"; echo opened',
                                      gum=forced, **extra)
                 self.assertEqual(result.returncode, 2, result.stderr)
                 self.assertEqual(result.stdout, "")
+                # TUI-08: one aligned, pasteable command per line; what it does is a shell comment.
                 self.assertEqual(result.stderr, "error: the topology menu needs an interactive terminal "
-                                                "with Gum; use: pulsar topology show | check\n")
+                                                "with Gum. Run the same steps as commands:\n"
+                                                "  ./pulsar topology show   # saved membership\n"
+                                                "  ./pulsar topology check  # check nodes now\n")
                 self.assertEqual(self.gum_calls(), [])
 
     def test_without_gum_prompts_refuse_instead_of_waiting(self):
@@ -309,17 +325,20 @@ class MenuEntries(unittest.TestCase):
         return process.returncode, output.decode(errors="replace").replace("\r\n", "\n")
 
     def test_menus_on_a_terminal_without_gum_name_their_commands(self):
+        # TUI-08: each command is complete and pasteable, its purpose a shell comment.
+        steps = "needs an interactive terminal with Gum. Run the same steps as commands:"
         entries = {
-            (): "error: the Pulsar menu needs an interactive terminal with Gum; use: pulsar",
-            ("models", "menu"): "error: the catalog menu needs an interactive terminal with Gum; "
-                                "use: pulsar models list | show SPEC | check SPEC",
-            ("inventory", "menu"): "error: the inventory menu needs an interactive terminal with Gum",
+            # Before setup, the first step is setup itself.
+            (): f"error: the Pulsar menu {steps} ./pulsar topology setup # set up cluster membership "
+                "(next setup step) ./pulsar models list # browse the catalog",
+            ("models", "menu"): f"error: the catalog menu {steps} ./pulsar models list # browse the catalog "
+                                "./pulsar models show SPEC # one spec's saved details",
+            ("inventory", "menu"): f"error: the inventory menu {steps} ./pulsar inventory",
             ("wizard",): "error: the catalog menu needs",
-            ("topology", "menu"): "error: the topology menu needs an interactive terminal with Gum; "
-                                  "use: pulsar topology show | check | setup | detect | configure",
-            ("topology", "setup"): "error: guided setup needs an interactive terminal with Gum; use: ",
-            ("configure", "archive-root", "menu"): "error: the archive storage menu needs an interactive "
-                                                  "terminal with Gum; use: pulsar configure archive-root show",
+            ("topology", "menu"): f"error: the topology menu {steps} ./pulsar topology show # saved cluster membership",
+            ("topology", "setup"): f"error: guided setup {steps} ./pulsar topology detect #",
+            ("configure", "archive-root", "menu"): f"error: the archive storage menu {steps} "
+                                                  "./pulsar configure archive-root show #",
         }
         for args, expected in entries.items():
             for term in ("xterm-256color", "dumb"):
@@ -329,7 +348,12 @@ class MenuEntries(unittest.TestCase):
                     self.assertIn(expected, " ".join(output.split()))
                     if not args:
                         # Help's pages are commands too.
-                        self.assertIn("| help [terms|workflow]", " ".join(output.split()))
+                        self.assertIn("./pulsar help # commands and guides (help terms, help workflow)",
+                                      " ".join(output.split()))
+                    # Every listed command line is a complete ./pulsar command.
+                    for line in output.splitlines():
+                        if line.startswith("  ") and "#" in line:
+                            self.assertTrue(line.strip().startswith("./pulsar "), line)
                     self.assertFalse((self.root / "model-library").exists())
                     self.assertFalse((self.root / "topology.json").exists())
         # pulsar models, which names no menu, shows the catalog list instead.

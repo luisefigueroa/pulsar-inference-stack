@@ -186,6 +186,12 @@ if index=$(choose_index "Pick fixture option" "$@"); then printf '\\nPICKED=%s\\
                 code, output = self.choose([label, "Back"], b"\x1b", ready=label, columns=columns)
                 self.assertEqual(code, 1, output)
 
+    def test_the_key_hint_names_esc(self):
+        code, output = self.choose(["one", "two"], b"\x1b", ready="esc back")
+        self.assertEqual(code, 1, output)
+        self.assertIn("↑/↓ move · enter choose · esc back", output)
+        self.assertNotIn("enter submit", output)
+
     def test_default_label_with_a_comma_is_selected(self):
         code, output = self.choose(["C", "A, B", "A"], b"\r", default=1)
         self.assertEqual(code, 0, output)
