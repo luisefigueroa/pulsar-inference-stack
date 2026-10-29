@@ -1,5 +1,6 @@
 """Inventory navigation with synthetic snapshots and public-command doubles."""
 import copy
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -16,6 +17,20 @@ from tests.test_container_runtime import fixture
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = "a" * 64
 CATALOG = [{"spec_id": SPEC, "model_id": "example/model", "nodes": 1}]
+
+
+def managed(data):
+    """Give every rank the Pulsar-managed label that stop --all selects by."""
+    for service in data["services"]:
+        for rank in service["ranks"]:
+            rank["labels"] = {"io.pulsar.gb10.managed": "true"}
+    return data
+
+
+def other(name, ownership="unknown"):
+    """A running container outside the catalog."""
+    return {"service_id": name, "conf": None, "container_name": name, "state": "running",
+            "ownership": ownership, "safe_to_stop": False, "ranks": [{"rank": None, "node": "head"}]}
 
 
 def snapshot(spec=SPEC, *, count=1, safe=True, state="running", node="worker"):
@@ -95,6 +110,68 @@ class Projection(unittest.TestCase):
                     if fields[0] == "service":
                         self.assertLessEqual(len(fields[2]), width - 2)
                         self.assertIn(SPEC[:12], fields[2])
+
+
+    # TUI-77: the age, the nodes in rank order, and what each row runs on.
+    def test_observed_age_and_nodes_in_rank_order(self):
+        catalog = [{**CATALOG[0], "nodes": 2}]
+        data = snapshot(count=2)
+        data["services"][0]["ranks"] = [{"rank": "1", "node": "head"}, {"rank": "0", "node": "worker"}]
+        now = datetime(2026, 9, 5, 0, 5, 30, tzinfo=timezone.utc)
+        text = "\n".join(inventory_menu.view(data, catalog, SPEC, width=80, now=now))
+        self.assertIn("Observed  5 minutes ago (00:00 UTC)", text)
+        self.assertIn("Nodes observed fixture-remote, fixture-local", text)
+        data["generated_at"] = "not a time"
+        self.assertIn("Observed  not a time", "\n".join(inventory_menu.view(data, catalog, SPEC)))
+
+    def test_service_rows_name_the_node_count_and_api_port(self):
+        data = snapshot()
+        data["services"][0]["api_port"] = 8001
+        data["services"][0]["ranks"][0]["observed_api_port"] = 8000
+        labels = lambda data, catalog, width: [line.split("\t")[2] for line in
+                                               inventory_menu.view(data, catalog, width=width)
+                                               if line.startswith("service\t")]
+        # The port the container runs with, not today's configuration.
+        self.assertEqual(labels(data, CATALOG, 80), [f"RUNNING [{SPEC[:12]}] example/model · 1 node · port 8000"])
+        del data["services"][0]["ranks"][0]["observed_api_port"]
+        self.assertEqual(labels(data, CATALOG, 80), [f"RUNNING [{SPEC[:12]}] example/model · 1 node · port 8001"])
+        partial = snapshot(count=2, state="partial"); partial["services"][0]["ranks"].pop()
+        self.assertEqual(labels(partial, [{**CATALOG[0], "nodes": 2}], 80),
+                         [f"PARTIAL [{SPEC[:12]}] example/model · 1 of 2 nodes"])
+        # Narrow terminals keep the model's name before the details.
+        self.assertEqual(labels(data, CATALOG, 50), [f"RUNNING [{SPEC[:12]}] example/model · 1 node"])
+        self.assertEqual(labels(data, CATALOG, 44), [f"RUNNING [{SPEC[:12]}] example/model"])
+
+    def test_other_services_each_get_a_read_only_line(self):
+        data = snapshot()
+        data["services"] += [other("vllm-port80"), other("old-pulsar", "legacy")]
+        text = "\n".join(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG, width=80))
+        self.assertIn("Other services 2\n  vllm-port80 · unknown owner · read-only\n"
+                      "  old-pulsar · older Pulsar labels · read-only\n", text)
+        data["services"] += [other(f"extra-{index}") for index in range(3)]
+        text = "\n".join(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG, width=80))
+        self.assertIn("  extra-0 · unknown owner · read-only\n  and 2 more in Show full inventory\n", text)
+        self.assertNotIn("extra-1", text)
+
+    # TUI-78: stop --all names every service with the Pulsar-managed label.
+    def test_stop_all_question_names_every_managed_service(self):
+        data = managed(snapshot())
+        private = managed(snapshot("f" * 64, node="head"))["services"][0]
+        private["served_name"] = "private-model"
+        data["services"] += [private, other("vllm-port80")]
+        question = next(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG)
+                        if line.startswith("stopall\t"))
+        self.assertEqual(question, f"Stop every Pulsar service on all confirmed nodes? It removes the containers "
+                                   f"of example/model [{SPEC[:12]}] on fixture-remote; private-model "
+                                   f"[{'f' * 12}] on fixture-local. Containers Pulsar does not manage are "
+                                   "untouched. Model files, pins and archives are kept.")
+        data["nodes"]["head"]["probe_status"] = "unreachable"
+        question = next(line for line in inventory_menu.view(data, CATALOG) if line.startswith("stopall\t"))
+        self.assertIn("fixture-local could not be observed, and Stop refuses until every confirmed node answers.",
+                      question)
+        # Nothing carries the label: no stop --all choice.
+        unlabelled = snapshot(); unlabelled["services"].append(other("vllm-port80"))
+        self.assertFalse(any(line.startswith("stopall\t") for line in inventory_menu.view(unlabelled, CATALOG)))
 
 
 class Navigation(unittest.TestCase):
@@ -314,6 +391,40 @@ else: sys.exit(99)
         result, calls, _, _ = self.run_menu(["#0", "Open in catalog"], catalog_rc=130)
         self.assertEqual(result.returncode, 130, result.stderr)
         self.assertEqual(calls.count(["inventory", "--json"]), 1)
+
+    def test_stop_every_service_refreshes_then_confirms_stop_all(self):
+        spec = self.spec["spec_id"]
+        result, calls, choices, questions = self.run_menu(
+            ["Stop every Pulsar service…", "Back"], confirms=["yes"],
+            snapshots=[managed(snapshot(spec)), managed(snapshot(spec, node="head")), snapshot(spec)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call for call in calls if call[0] != "inventory"], [["stop", "--all", "--yes"]])
+        # The question comes from the refreshed inventory and defaults to No.
+        self.assertIn(f"containers of example/model [{spec[:12]}] on fixture-local.", questions)
+        self.assertNotIn("fixture-remote", questions)
+        self.assertIn("Containers Pulsar does not manage are untouched", questions)
+        self.assertIn("Refresh inventory\nShow full inventory\nStop every Pulsar service…\nBack\n", choices)
+        text = " ".join(result.stdout.split())
+        self.assertIn("✓ Stop finished for every Pulsar service", text)
+        self.assertIn("Same as: ./pulsar stop --all --yes", text)
+        self.assertIn("[continue]", choices)
+        # The menu after the stop offers no stop --all, since nothing carries the label.
+        self.assertTrue(choices.endswith("Refresh inventory\nShow full inventory\nBack\n\n"), choices)
+
+    def test_declined_or_vanished_stop_all_stops_nothing(self):
+        spec = self.spec["spec_id"]
+        result, calls, _, _ = self.run_menu(["Stop every Pulsar service…", "Back"], confirms=["no"],
+                                            snapshots=[managed(snapshot(spec))])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call[0] == "stop" for call in calls))
+        self.assertIn("Nothing was stopped.", result.stdout)
+        self.setUp()
+        result, calls, _, questions = self.run_menu(["Stop every Pulsar service…", "Back"],
+                                                    snapshots=[managed(snapshot(spec)), snapshot(spec)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(any(call[0] == "stop" for call in calls))
+        self.assertEqual(questions, "")
+        self.assertIn("No Pulsar service was observed just now; nothing was stopped.", result.stdout)
 
     def test_interrupted_inventory_exits_without_service_actions(self):
         result, calls, _, questions = self.run_menu([], snapshots=[{"failure": 130}])

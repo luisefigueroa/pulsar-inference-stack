@@ -582,8 +582,14 @@ observed service whose spec is published in the catalog, then choose
 **Detailed status**, **Service logs** or **Stop service**. These invoke the
 existing status, logs and stop commands. One-node services use the node ID recorded in the inventory;
 multi-node services retain the commands' participating-node resolution.
-The inventory timestamp remains visible, and **Refresh inventory** obtains a
-new observation. **Open in catalog** opens the service's recipe in the catalog
+The frame shows how long ago the inventory was taken and its UTC time, and
+**Refresh inventory** obtains a new observation. Each service row names its
+observed node count and the API port its rank 0 container runs with; nodes are
+listed in rank order. Services outside the catalog each get a read-only line
+with their container name and owner. **Stop every Pulsar service…** runs
+`stop --all --yes` after a fresh inventory: its question lists each service
+with the Pulsar-managed label and its nodes, says containers Pulsar does not
+manage are untouched and files are kept, and defaults to No. **Open in catalog** opens the service's recipe in the catalog
 menu with that inventory, so its frame and suggestion already know the
 service; **Back** returns to the service with a refreshed inventory. **Show full inventory** retains the existing read-only view
 of all detected workloads, including those outside the catalog.

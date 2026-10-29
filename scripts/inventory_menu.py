@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import io
 import json
 from pathlib import Path
@@ -14,7 +15,8 @@ sys.path.insert(0, str(ROOT))
 from scripts.release_consumer import list_releases
 from scripts.service_status import StatusError, check_inventory
 from scripts.terminal_format import TerminalWriter
-from model_library.catalog_menu import stop_question
+from model_library.catalog import age_seconds, age_text
+from model_library.catalog_menu import STOP_KEEPS, stop_question
 
 
 class ServiceNotObserved(LookupError):
@@ -23,6 +25,71 @@ class ServiceNotObserved(LookupError):
 
 def clean(value):
     return " ".join(str(value).split())
+
+
+def rank_order(rank):
+    """Rank 0 first; a one-node service's "single" rank is rank 0."""
+    value = rank.get("rank")
+    if value == "single":
+        return (0, 0, "")
+    try:
+        return (0, int(value), "")
+    except (TypeError, ValueError):
+        return (1, 0, str(value))
+
+
+def observed_text(generated_at, now=None):
+    """How long ago the inventory was taken, and its UTC time of day."""
+    try:
+        age = age_seconds(generated_at, now)
+        stamp = datetime.fromisoformat(generated_at.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except (ValueError, AttributeError):
+        return clean(generated_at or "time unknown")
+    return f"{age_text(age)} ({stamp:%H:%M} UTC)"
+
+
+def api_port(service, ranks):
+    """The port rank 0 runs with, or today's configured port."""
+    for rank in ranks[:1]:
+        if isinstance(rank.get("observed_api_port"), int):
+            return rank["observed_api_port"]
+    return service.get("api_port") if isinstance(service.get("api_port"), int) else None
+
+
+# How a service outside the catalog is owned, for its read-only hint.
+OWNERS = {"managed": "Pulsar-managed, not in this catalog", "legacy": "older Pulsar labels",
+          "mismatch": "Pulsar labels do not match", "mixed": "mixed ownership", "unknown": "unknown owner"}
+MANAGED_LABEL = "io.pulsar.gb10.managed"
+
+
+def unobserved_hosts(inventory):
+    return [clean(node.get("hostname") or name) for name, node in inventory["nodes"].items()
+            if isinstance(node, dict) and node.get("confirmed") and node.get("probe_status") != "ok"]
+
+
+def stop_all_question(inventory, published):
+    """The question before stop --all, naming each service it would remove.
+
+    stop --all removes every container with the Pulsar-managed label, catalog
+    spec or not, so the list comes from those labels. None when there is none.
+    """
+    names = []
+    for service in inventory["services"]:
+        ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)), key=rank_order)
+        if not any((rank.get("labels") or {}).get(MANAGED_LABEL) == "true" for rank in ranks):
+            continue
+        spec_id = service.get("conf") or service.get("spec_id")
+        model = (published.get(spec_id) or {}).get("model_id") or service.get("served_name") or "service"
+        hosts = list(dict.fromkeys(clean((inventory["nodes"].get(rank.get("node")) or {}).get("hostname")
+                                         or rank.get("node") or "unknown node") for rank in ranks))
+        names.append(f"{clean(model)}{f' [{spec_id[:12]}]' if spec_id else ''} on {', '.join(hosts)}")
+    if not names:
+        return None
+    unobserved = unobserved_hosts(inventory)
+    blind = (f" {', '.join(unobserved)} could not be observed, and Stop refuses until every confirmed node "
+             "answers.") if unobserved else ""
+    return (f"Stop every Pulsar service on all confirmed nodes? It removes the containers of "
+            f"{'; '.join(names)}.{blind} Containers Pulsar does not manage are untouched. {STOP_KEEPS}")
 
 
 def project(inventory, catalog):
@@ -48,6 +115,7 @@ def project(inventory, catalog):
         ranks = service.get("ranks")
         if not isinstance(ranks, list) or any(not isinstance(rank, dict) for rank in ranks):
             raise ValueError("inventory service has invalid rank information")
+        ranks = sorted(ranks, key=rank_order)
         nodes = [inventory["nodes"].get(rank.get("node"), {}) for rank in ranks]
         if any(not isinstance(node, dict) for node in nodes):
             raise ValueError("inventory service has invalid node information")
@@ -72,24 +140,35 @@ def project(inventory, catalog):
             "state": clean(service.get("state") or "unknown"),
             "ownership": clean(service.get("ownership") or "unknown"),
             "where": ", ".join(where) or "unknown", "hosts": where, "node_id": node_id,
+            "port": api_port(service, ranks),
             "stop_reason": reason, "modified": service.get("matches_selected_spec") is False,
         }
     return result
 
 
-def view(inventory, catalog, spec_id=None, *, width=None):
+def view(inventory, catalog, spec_id=None, *, width=None, now=None):
     services = project(inventory, catalog)
     output = io.StringIO()
     writer = TerminalWriter(width=width, stream=output)
     writer.emit("Live service inventory")
-    writer.field("Observed", clean(inventory.get("generated_at") or "time unknown"))
+    writer.field("Observed", observed_text(inventory.get("generated_at"), now))
     commands = []
     if spec_id is None:
         writer.field("Catalog services", len(services))
-        writer.field("Other services", len(inventory["services"]) - len(services))
+        others = [service for service in inventory["services"] if service.get("conf") not in services]
+        writer.field("Other services", len(others))
+        # One read-only line per other service, so the count names something.
+        for service in others[:3]:
+            ranks = [rank for rank in service.get("ranks") or [] if isinstance(rank, dict)]
+            name = service.get("container_name") or next(
+                (rank.get("container_name") for rank in ranks if rank.get("container_name")), None)
+            owner = OWNERS.get(service.get("ownership"), "unknown owner")
+            writer.emit(f"{clean(name or service.get('service_id') or 'unnamed')} · {owner} · read-only",
+                        "  ", "    ")
+        if len(others) > 3:
+            writer.emit(f"and {len(others) - 3} more in Show full inventory", "  ", "    ")
         writer.field("Unmanaged GPU processes", len(inventory.get("unmanaged_gpu_processes") or []))
-        unavailable = [clean(node.get("hostname") or name) for name, node in inventory["nodes"].items()
-                       if isinstance(node, dict) and node.get("confirmed") and node.get("probe_status") != "ok"]
+        unavailable = unobserved_hosts(inventory)
         if unavailable:
             writer.field("Not observed", ", ".join(unavailable))
         if not services:
@@ -101,12 +180,23 @@ def view(inventory, catalog, spec_id=None, *, width=None):
         budget = writer.width - 2
         for key, service in services.items():
             prefix = f"{service['state'].upper()} [{key[:12]}] "
-            remaining = budget - len(prefix)
+            seen = len(service["hosts"])
+            count = f"{seen} of {service['nodes']} nodes" if seen != service["nodes"] else (
+                f"{seen} node{'' if seen == 1 else 's'}")
+            port = f" · port {service['port']}" if service["port"] else ""
             model = service["model_id"]
+            # Narrow terminals drop the port, then the count, before the model's room.
+            for suffix in (f" · {count}{port}", f" · {count}", ""):
+                remaining = budget - len(prefix) - len(suffix)
+                if remaining >= min(len(model), 12):
+                    break
             if len(model) > remaining:
                 model = model[:remaining - 3] + "..." if remaining >= 4 else ""
-            label = (prefix + model).rstrip()
+            label = (prefix + model + suffix).rstrip()
             commands.append(f"service\t{key}\t{clean(label)}")
+        question = stop_all_question(inventory, {row["spec_id"]: row for row in catalog})
+        if question:
+            commands.append(f"stopall\t{clean(question)}")
     else:
         if spec_id not in services:
             raise ServiceNotObserved("The selected catalog service is no longer observed; returning to the service list.")
@@ -116,6 +206,8 @@ def view(inventory, catalog, spec_id=None, *, width=None):
         writer.field("State", {"stale": "exited containers remain"}.get(service["state"], service["state"]))
         writer.field("Ownership", service["ownership"])
         writer.field("Nodes observed", service["where"])
+        if service["port"]:
+            writer.field("API port", service["port"])
         if service["modified"]:
             writer.emit("The observed recipe differs from the selected catalog spec.")
         writer.emit("Detailed status uses the existing service and file checks.")
