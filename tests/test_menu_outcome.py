@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -176,6 +177,16 @@ class SameAs(unittest.TestCase):
         lines = output.getvalue().splitlines()
         self.assertTrue(lines[0].startswith("✗ Restore was refused or failed"), lines)
         self.assertEqual(lines[-1], "  Same as: ./pulsar model restore abababababab --yes")
+
+    def test_a_command_too_long_for_the_line_is_never_broken(self):
+        # A purge keeps the complete spec ID, longer than a 44-column line.
+        output = io.StringIO()
+        with redirect_stdout(output), unittest.mock.patch.dict(os.environ, {"COLUMNS": "44"}):
+            menu_outcome.main(["--action", "purge", "--label", "Purge prepared copies", "--subject", "M",
+                               "--status", "0", "--elapsed", "1s", "--command", "/repo/scripts/model-library.sh",
+                               "purge", self.SPEC, "--yes"])
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[-2:], ["  Same as:", f"    ./pulsar model purge {self.SPEC} --yes"])
 
 
 if __name__ == "__main__":
