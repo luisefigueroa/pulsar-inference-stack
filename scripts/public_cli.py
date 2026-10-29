@@ -284,7 +284,7 @@ Verify a recorded service on every rank: its effective recipe, container configu
     'policy': """\
 usage: pulsar policy show baseline-v1|baseline-v2 [--json]
 
-Print a supported baseline policy and its digest.
+Print a supported baseline policy: its digest, and what each gate requires.
 
   show NAME  The fixed policy, baseline-v1 or baseline-v2
   --json     Print the result as JSON
@@ -643,6 +643,10 @@ def main(argv=None):
             action = 'Retired service locator' if result['service_locator_retired'] else 'Service locator already absent'
             out.emit(f"{action} {result['service_id'][:12]} after verified rank absence.")
             out.field('Receipt', result['receipt_file'])
+            return 0
+        if argv[:2] == ['policy', 'show'] and not json_output:
+            from model_library.published_results import render_policy
+            render_policy(result['policy'], result['policy_digest'])
             return 0
         emit(result,json_output=json_output)
         return 0
