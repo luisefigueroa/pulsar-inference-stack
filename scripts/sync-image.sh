@@ -105,21 +105,32 @@ fi
 if [ "$YES" != 1 ]; then
   # Not a usage mistake: like every approval gate, this refuses after looking,
   # and says what staging would change.
-  missing_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
-  missing_nodes=$(while read -r rank physical; do printf '%s (rank %s), ' "$(human_node_name "$physical")" "$rank"; done <<<"$missing_rows")
+  lacking_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"], r["state"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
+  missing_nodes="" renamed_nodes="" renamed=0 controller=""
+  while read -r rank physical lacking; do
+    if [ "$lacking" = missing ]; then missing_nodes+="$(human_node_name "$physical") (rank $rank), "
+    else renamed_nodes+="$(human_node_name "$physical") (rank $rank), "; renamed=$((renamed + 1)); fi
+    [ "$physical" != 0 ] || controller="$lacking"
+  done <<<"$lacking_rows"
   why="" suggested=(${selection_flags[@]+"${selection_flags[@]}"})
-  # Without --pull, staging copies from this node; when this node lacks the image too, only a pull works.
-  if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s\n' "$missing_rows" | grep -q ' 0$'; then
-    why=" This node lacks it too, so staging must pull the exact digest from its registry."
-    suggested+=(--pull)
-  elif [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s' "$report" \
-      | python3 -c 'import json,sys; sys.exit(not any(r["state"]=="other-name" for r in json.load(sys.stdin)["ranks"]))'; then
-    # A copy can drop registry references; a pull records the pinned name.
-    why=" A node holds the pinned content under another name; a pull adds the pinned name and reuses it."
-    suggested+=(--pull)
+  if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && [ -n "$lacking_rows" ]; then
+    # Without --pull, staging copies from this node; when this node lacks the
+    # image too, only a pull works. A copy can also drop registry references,
+    # while a pull records the pinned name over content already there.
+    if [ "$controller" = missing ]; then
+      why=" This node lacks it too, so staging must pull the exact digest from its registry."
+      suggested+=(--pull)
+    elif [ -n "$renamed_nodes" ]; then
+      why=" A pull adds the pinned name and reuses the content already there."
+      suggested+=(--pull)
+    fi
   fi
+  found=""
+  [ -z "$missing_nodes" ] || found="the pinned image is missing on ${missing_nodes%, }"
+  verb=holds; [ "$renamed" -le 1 ] || verb=hold
+  [ -z "$renamed_nodes" ] || found+="${found:+; }${renamed_nodes%, } $verb the pinned content only under another name"
   suggestion=$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${suggested[@]+"${suggested[@]}"})
-  die "the pinned image is missing on ${missing_nodes%, }; nothing was staged.$why Next: ./pulsar image stage $suggestion --plan, then rerun it with --yes"
+  die "$found; nothing was staged.$why Next: ./pulsar image stage $suggestion --plan, then rerun it with --yes"
 fi
 if [ "$PULL" = 0 ]; then
   # Docker save/load can omit registry references. A stream never falls back to

@@ -30,7 +30,7 @@ if args[:2]==['image','inspect']:
  if mode in ('named-success','export-tag-collision','export-tag-unobservable','export-tag-drift','export-ref-missing') and rank>0 and not (root/('loaded-'+str(rank))).exists():sys.exit(1)
  image=json.loads((root/'image.json').read_text())
  # other-name: rank 1 holds the pinned content only under a local name, found by its digest.
- if mode=='other-name' and rank==1 and not (root/'pulled').exists():
+ if mode in ('other-name','other-name-controller') and rank==(1 if mode=='other-name' else 0) and not (root/'pulled').exists():
   if not args[-1].startswith('sha256:'):sys.exit(1)
   image.update(Id=args[-1],RepoTags=['pulsar-local/model:latest'],RepoDigests=[])
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
@@ -416,8 +416,16 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         self.assertFalse((self.root/'mutations').exists())
         # Staging without --pull suggests it; with --pull it pulls on that node only, and the check passes.
         result=self.run_tool('sync-image.sh',[spec_id],'other-name')
-        self.assertIn('a pull adds the pinned name and reuses it. Next: ./pulsar image stage '
+        self.assertIn('rank-1 (rank 1) holds the pinned content only under another name; nothing was staged. A '
+                      'pull adds the pinned name and reuses the content already there. Next: ./pulsar image stage '
                       f'{spec_id} --pull --plan',' '.join(result.stderr.split()))
+        self.assertNotIn('missing on',result.stderr)
+        # On this node too: a pull, not "this node lacks it".
+        result=self.run_tool('sync-image.sh',[spec_id],'other-name-controller')
+        self.assertIn('rank-0 (rank 0) holds the pinned content only under another name; nothing was staged. A '
+                      f'pull adds the pinned name',' '.join(result.stderr.split()))
+        self.assertIn(f'Next: ./pulsar image stage {spec_id} --pull --plan',' '.join(result.stderr.split()))
+        self.assertNotIn('lacks it too',result.stderr)
         self.assertFalse((self.root/'mutations').exists())
         result=self.run_tool('sync-image.sh',[spec_id,'--pull','--yes'],'other-name')
         self.assertEqual(result.returncode,0,result.stderr)
