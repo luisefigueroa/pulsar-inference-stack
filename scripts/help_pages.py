@@ -74,7 +74,7 @@ REFERENCE = [
          "Verify every rank; reuse file verification unless `--full` requests hashing."),
         ("pulsar resources --service-id ID|--spec-file FILE --jsonl",
          "Sample confirmed nodes before launch; wait for the matching owned container."),
-        ("pulsar policy show baseline-v1|baseline-v2", "Print a supported baseline policy and its digest."),
+        ("pulsar policy show baseline-v1|baseline-v2", "Print a supported baseline policy: its digest, and what each gate requires."),
         ("pulsar evidence measurement|evaluate|verify|summary",
          "Build and assess compact evidence for a spec; never a catalog gate."),
         ("pulsar contribution verify --package DIR",
