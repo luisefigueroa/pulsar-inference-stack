@@ -90,16 +90,19 @@ catalog_work() {
 }
 
 # check_running_services CATALOG_JSON — one service inventory, kept for this
-# session. A failed or unreadable capture keeps the earlier one.
+# session. A failed or unreadable capture keeps the earlier one for the frame,
+# and LIVE_REFRESHED stays 0 so a Stop question does not present it as current.
+LIVE_REFRESHED=0
 check_running_services() {
   local catalog_json="$1" captured rc=0
+  LIVE_REFRESHED=0
   catalog_work || return 0
   captured="$CATALOG_WORK/inventory.next.json"
   spin "Checking running services on every node…" "$REPO_DIR/pulsar" inventory --json >"$captured" || rc=$?
   [ "$rc" -ne 130 ] || { rm -f -- "$captured"; return 130; }
   if [ "$rc" -eq 0 ] && printf '%s' "$catalog_json" | catalog_menu labels --live "$captured" >/dev/null; then
     mv -f -- "$captured" "$CATALOG_WORK/inventory.json"
-    LIVE_FILE="$CATALOG_WORK/inventory.json"
+    LIVE_FILE="$CATALOG_WORK/inventory.json" LIVE_REFRESHED=1
     return 0
   fi
   rm -f -- "$captured"
@@ -368,6 +371,7 @@ blocked_plan() {
         stop_row=$(catalog show "${specs[$choice]}" --json) || continue
         check_running_services "$stop_row" || return $?
         live_args
+        [ "$LIVE_REFRESHED" = 1 ] || LIVE_ARGS=()
         question=$(printf '%s' "$stop_row" \
           | catalog_menu confirm --spec-id "${specs[$choice]}" --action stop "${LIVE_ARGS[@]}") || continue
         confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; continue; }
@@ -483,10 +487,11 @@ perform_action() {
       local -a scope=()
       if [ "$action" = stop ]; then
         # As the inventory menu does, refresh what runs before asking, so the
-        # question names the nodes the service runs on now.
+        # question names the nodes the service runs on now. After a failed
+        # refresh it names only where Stop acts.
         check_running_services "$ROW_JSON" || return $?
         live_args
-        scope=("${LIVE_ARGS[@]}")
+        [ "$LIVE_REFRESHED" = 0 ] || scope=("${LIVE_ARGS[@]}")
       fi
       question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" \
         ${MENU_NODE:+--node "$MENU_NODE"} "${scope[@]}") || return 0

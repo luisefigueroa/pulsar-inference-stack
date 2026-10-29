@@ -976,6 +976,21 @@ raise SystemExit(rc)
                                     "The service inventory saw it running on fixture-remote just now, not on "
                                     "fixture-node (not in saved topology).\n")
 
+    def test_stop_after_a_failed_refresh_does_not_present_the_earlier_inventory_as_current(self):
+        captured = self.root / "captured-inventory.json"
+        def opened(spec_id):
+            captured.write_text(self.live_inventory(age_minutes=5)(spec_id))
+            return {"PULSAR_CATALOG_OPEN_SPEC": spec_id, "PULSAR_CATALOG_INVENTORY": str(captured)}
+        spec, result, actions, _, questions = self.run_menu(
+            ["Stop", "fixture-host", "Back"], confirms=["no"], inventory="", inventory_rc=3, env_extra=opened)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        self.assertIn("✗ Running services could not be checked", " ".join(result.stdout.split()))
+        # Only where Stop acts; the five-minute-old placement is not "just now".
+        self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
+                                    "fixture-node (not in saved topology)? Model files, pins and archives are "
+                                    "kept.\n")
+
     def test_interruption_arriving_with_zero_exit_does_not_claim_completion(self):
         _, result, actions, choices, _ = self.run_menu(
             ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], interrupt_parent=True,
