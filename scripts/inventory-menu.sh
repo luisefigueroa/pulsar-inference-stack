@@ -61,7 +61,7 @@ service_actions() {
         [ "$rc" -ne 130 ] || return 130
         # Not running (1) and not observable (3) need different next steps.
         [ "$rc" -eq 0 ] || report_outcome status "Detailed status" "spec ${spec:0:12}" "$rc" \
-          "$(elapsed_text $((SECONDS - started)))"
+          "$(elapsed_text $((SECONDS - started)))" --command "$REPO_DIR/pulsar" status "${STATUS_ARGS[@]}"
         ;;
       "Service logs")
         # Read-only; a failed read is held on screen until Continue.
@@ -82,7 +82,8 @@ service_actions() {
         [ "$rc" -ne 130 ] || return 130
         # The same outcome line as the catalog menu's operations, held on
         # screen until Continue.
-        report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))"
+        report_outcome stop Stop "spec ${spec:0:12}" "$rc" "$(elapsed_text $((SECONDS - started)))" \
+          --command "$REPO_DIR/pulsar" stop "${STOP_ARGS[@]}"
         wait_continue || return $?
         ;;
       "Open in catalog")

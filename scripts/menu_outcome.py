@@ -13,6 +13,9 @@ a concurrent completion returned exit 0.
 from __future__ import annotations
 
 import argparse
+import os
+import re
+import shlex
 import sys
 
 from scripts.terminal_format import TerminalWriter
@@ -96,6 +99,49 @@ def interruption(action: str, label: str, subject: str, status: int,
              INTERRUPTED_NEXT.get(action, INTERRUPTED_INSPECTION)])
 
 
+# The operator command behind each internal script the menu runs.
+SCRIPT_COMMANDS = {"pulsar": [], "status.sh": ["status"], "down.sh": ["stop"]}
+SPEC_ID = re.compile(r"^[0-9a-f]{64}$")
+
+
+def operator_command(argv: list[str], hostnames: dict[str, str] | None = None) -> str | None:
+    """The ./pulsar command equivalent to ARGV, as the menu ran it, or None.
+
+    Environment assignments, the Connect card wrapper and --json are the
+    menu's own plumbing and are left out; every other flag, including --yes
+    and --accept-memory-warn, appears only because the menu passed it. A spec
+    ID is shortened to the 12 characters a person can type wherever the
+    command accepts a prefix, and a --node value is named by its hostname.
+    """
+    from scripts.spec_selector import MIN_PREFIX, spec_position
+    words = list(argv)
+    if words[:1] == ["env"]:
+        words = words[1:]
+    while words and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]):
+        words = words[1:]
+    if words and os.path.basename(words[0]) == "with-connect-card.sh":
+        words = words[1:]
+    if not words:
+        return None
+    script, rest = os.path.basename(words[0]), words[1:]
+    if script == "model-library.sh":
+        sub = ["models"] if rest[:1] == ["check"] else ["model"]
+    elif script in SCRIPT_COMMANDS:
+        sub = SCRIPT_COMMANDS[script]
+    else:
+        return None
+    command = sub + [word for word in rest if word != "--json"]
+    if not command:
+        return None
+    index, required = spec_position(command[0], command[1:])
+    if index is not None and not required and SPEC_ID.match(command[index + 1]):
+        command[index + 1] = command[index + 1][:MIN_PREFIX]
+    for position, word in enumerate(command[:-1]):
+        if word == "--node":
+            command[position + 1] = (hostnames or {}).get(command[position + 1], command[position + 1])
+    return shlex.join(["./pulsar", *command])
+
+
 def _preview(label: str, subject: str, status: int) -> tuple[str, str]:
     """A --plan preview changes nothing, whatever its status."""
     if status == 1:
@@ -119,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preview", action="store_true", help="the operation's --plan preview failed")
     parser.add_argument("--recorded", action="store_true", help="a check saved an observation")
     parser.add_argument("--interrupted", action="store_true", help="the operation was interrupted")
+    parser.add_argument("--command", nargs=argparse.REMAINDER, default=[],
+                        help="the command the menu ran, last; the card names its ./pulsar equivalent")
     args = parser.parse_args(argv)
     if args.interrupted:
         headline, details = interruption(args.action, args.label, args.subject, args.status, args.elapsed)
@@ -135,6 +183,13 @@ def main(argv: list[str] | None = None) -> int:
         writer.emit(headline, subsequent_indent="  ")
     for detail in details:
         writer.emit(detail, initial_indent="  ")
+    if args.command:
+        from model_library.node_names import NodeNames
+        same = operator_command(args.command, NodeNames.saved().hostnames)
+        if same:
+            # Every menu action is also a command: name it so it can be repeated or scripted.
+            writer.emit(f"Same as: `{same}`" if "`" not in same else f"Same as: {same}",
+                        initial_indent="  ", subsequent_indent="    ", markup="`" not in same)
     return 0
 
 

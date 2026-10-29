@@ -965,6 +965,13 @@ it ran (exit 2) changed nothing. A refused `--plan` preview says the operation
 is not possible now. In the catalog menu, a command ended by a signal
 (128+signal) is reported as an interruption, as described next.
 
+Every outcome ends with the command that does the same, such as `Same as:
+./pulsar model restore 139908cf23bb --node spark-1 --yes`, so it can be
+repeated or scripted. It is the command the menu ran, in its operator form:
+the spec as a 12-character prefix where the command accepts one, and nodes by
+hostname. `--yes` and `--accept-memory-warn` appear only when the menu passed
+them; a failed preview names its `--plan` command.
+
 ### Interruptions and recorded checks
 
 During a catalog operation, Ctrl-C requests interruption from the existing

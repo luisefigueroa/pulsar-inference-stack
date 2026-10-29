@@ -987,6 +987,9 @@ raise SystemExit(rc)
         self.assertIn("Copy the snapshot (size not observed) from the archive to fixture-node", result.stdout)
         self.assertNotIn("Restoration preview", result.stdout)
         self.assertRegex(questions, r"Restore \S+ @ \w{8} from the archive to ")
+        # TUI-75: the outcome names the command that did the same, with the --yes the menu passed.
+        self.assertIn(f"✓ Restore finished for", result.stdout)
+        self.assertIn(f"  Same as: ./pulsar model restore {spec[:12]} --node fixture-node --yes\n", result.stdout)
 
     # TUI-24: the choice says what each snapshot is for; the operation gets its name.
     def test_restore_asks_for_a_required_snapshot_by_what_it_is_for(self):
