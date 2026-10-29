@@ -162,6 +162,20 @@ class ServiceLogs(unittest.TestCase):
         self.assertEqual([line for line in by_rank.stdout.splitlines() if "(rank" in line],
                          ["fixture-rank-2 (rank 2) · running"])
 
+    def test_a_guarded_placement_off_the_default_node_order_is_read(self):
+        # Rank 0 on the third node and rank 1 on the second, as a guarded trial
+        # may place them; the node-id labels prove each container's node.
+        self.container(2, 0, nodes=2)
+        self.container(1, 1, nodes=2)
+        result = self.run_logs(SPEC)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("not reading", result.stderr)
+        self.assertEqual([line for line in result.stdout.splitlines() if "(rank" in line],
+                         ["fixture-rank-2 (rank 0) · running", "fixture-rank-1 (rank 1) · running"])
+        result = self.run_logs(SPEC, "--rank", "0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("fixture-rank-2 (rank 0) · running\n"), result.stdout)
+
     def test_containers_the_stack_does_not_own_are_never_read(self):
         self.container(0, 0)
         self.container(0, 1, spec=OTHER)

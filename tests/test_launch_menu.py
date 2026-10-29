@@ -208,6 +208,17 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(actions[1:], [["pulsar", "logs", spec]])
         self.assertRegex(choices, rf"\[page\] Reading service logs… \| \S+/pulsar logs {spec}\n")
         self.assertEqual(choices.count("Start failed after launch: 1 blocker. Choose a next step"), 2)
+        # A read that finds nothing (exit 1) or not everything (exit 3) also
+        # returns to the choices, so Live status and Stop stay available.
+        for rc in (1, 3):
+            with self.subTest(rc=rc):
+                self.setUp()
+                _, result, actions, choices, _ = self.refused(
+                    [{"blocker": "container_exited", "stage": "launch"}], "Service logs", "Back", "Back", "Back",
+                    action_rc=rc)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(choices.count("Start failed after launch: 1 blocker. Choose a next step"), 2)
+                self.assertNotIn("[continue]", choices)
 
     def test_missing_files_offer_the_operation_saved_records_point_to(self):
         _, _, _, choices, _ = self.refused(["model_files_not_ready"], "Back", "Back", "Back")

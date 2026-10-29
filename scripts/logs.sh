@@ -60,8 +60,12 @@ heading() {
   python3 -c 'import sys; from scripts.terminal_format import TerminalWriter; TerminalWriter().emit(sys.argv[1], role="heading")' "$1"
 }
 
-# Find the spec's containers with the ownership checks stop uses. Unlike stop,
-# a node that cannot be observed is recorded and the others are still read.
+# Find the spec's containers. Reading needs proof of ownership, not stop's
+# default-placement geometry: the labels must show a Stack-managed container
+# of this spec with a rank, and its node-id label must be this confirmed node.
+# A guarded trial may place its ranks off the default node order, and its
+# containers are still read. Unlike stop, a node that cannot be observed is
+# recorded and the others are still read.
 count="$CLUSTER_TOPOLOGY_COUNT"
 [ "$count" -gt 0 ] || count=1
 found=() unobserved=()
@@ -84,8 +88,16 @@ for ((index = 0; index < count; index++)); do
     fi
     IFS=$'\t' read -r _ _ _ have_conf rank < <(container_ownership_fields "$meta")
     [ "$have_conf" = "$SPEC" ] || continue
-    if ! container_all_candidate_is_safe "$meta" "$placement"; then
-      warn "not reading container ${id:0:12} on $(human_node_name "$index"): $(container_all_refuse_reason "$meta" "$placement")"
+    reason=""
+    if ! container_ownership_is_proven "$meta" "$SPEC"; then
+      reason=$(container_ownership_refuse_reason "$meta" "$SPEC")
+    elif [ "$rank" != single ] && ! [[ "$rank" =~ ^(0|[1-9][0-9]*)$ ]]; then
+      reason="its rank label '$rank' is not a rank"
+    elif ! container_single_node_identity_is_proven "$meta" "$placement"; then
+      reason=$(container_single_node_identity_refuse_reason "$meta" "$placement")
+    fi
+    if [ -n "$reason" ]; then
+      warn "not reading container ${id:0:12} on $(human_node_name "$index"): $reason"
       refused=$((refused + 1))
       continue
     fi

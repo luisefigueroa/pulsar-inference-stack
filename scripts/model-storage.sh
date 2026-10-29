@@ -250,6 +250,8 @@ start_choices() {
       topology-menu) "$REPO_DIR/pulsar" topology menu || rc=$? ;;
       topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
       doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
+      # Read-only like the diagnostics: whatever it finds, the choices return.
+      logs) page_output "Reading service logs…" "$REPO_DIR/pulsar" logs "$spec" || rc=$? ;;
       verbose)
         # A fresh dry run replaces the recorded blockers, and the choices follow it.
         : >"$blockers"
