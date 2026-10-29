@@ -85,7 +85,7 @@ mode=stream-from-controller
 [ "$PULL" = 0 ] || mode=pull-exact-digest
 if [ -n "$EXPORT_TAG" ]; then
   # Loading a named archive must never replace a different existing tag.
-  mapfile -t destinations < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+  mapfile -t destinations < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
   for physical in "${destinations[@]}"; do
     [ "$physical" != 0 ] || die "export tag requires the controller pinned image"
     ids=$(ssh_node "$physical" "$(shell_join_q docker image ls --all --quiet --no-trunc "$EXPORT_TAG")") || die "destination export tag observation failed"
@@ -105,12 +105,17 @@ fi
 if [ "$YES" != 1 ]; then
   # Not a usage mistake: like every approval gate, this refuses after looking,
   # and says what staging would change.
-  missing_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+  missing_rows=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
   missing_nodes=$(while read -r rank physical; do printf '%s (rank %s), ' "$(human_node_name "$physical")" "$rank"; done <<<"$missing_rows")
   why="" suggested=(${selection_flags[@]+"${selection_flags[@]}"})
   # Without --pull, staging copies from this node; when this node lacks the image too, only a pull works.
   if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s\n' "$missing_rows" | grep -q ' 0$'; then
     why=" This node lacks it too, so staging must pull the exact digest from its registry."
+    suggested+=(--pull)
+  elif [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ] && printf '%s' "$report" \
+      | python3 -c 'import json,sys; sys.exit(not any(r["state"]=="other-name" for r in json.load(sys.stdin)["ranks"]))'; then
+    # A copy can drop registry references; a pull records the pinned name.
+    why=" A node holds the pinned content under another name; a pull adds the pinned name and reuses it."
     suggested+=(--pull)
   fi
   suggestion=$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${suggested[@]+"${suggested[@]}"})
@@ -121,7 +126,7 @@ if [ "$PULL" = 0 ]; then
   # a registry pull unless the caller passed --pull-if-stream-incomplete.
   "$PULSAR_DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 || die "controller lacks pinned image; choose --pull --yes or acquire it explicitly"
 fi
-mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]')
+mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
 for physical in "${missing[@]}"; do
   if [ "$PULL" = 1 ]; then
     if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi
@@ -145,7 +150,7 @@ if ! "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/n
     die "staging did not establish the pinned digest on every node; rerun with --pull to pull the exact digest"
   fi
   report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json || true)
-  mapfile -t still < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"]=="missing"]' 2>/dev/null)
+  mapfile -t still < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]' 2>/dev/null)
   for physical in "${still[@]}"; do
     log "pulling the pinned image on $(human_node_name "$physical"); streaming did not keep its digest"
     if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi \

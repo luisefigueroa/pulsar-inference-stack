@@ -447,8 +447,14 @@ image on the selected serving nodes:
 ./pulsar image check <spec-id> --node <node>
 ```
 
-If it is missing, select a registry pull explicitly, review its preview, and
-then apply the same selection:
+A node can hold the pinned content under another repository name, such as a
+local tag, without the pinned name; the check then names that tag and still
+fails, since start needs the pinned reference. Where the image store makes the
+image ID the manifest digest, as Docker's containerd store does, the check
+finds it by digest. A pull adds the pinned name and reuses the content already
+there. If the image is missing, or present only under another name, select a
+registry pull explicitly, review its preview, and then apply the same
+selection:
 
 ```sh
 ./pulsar image stage <spec-id> --node <node> --pull --plan

@@ -25,7 +25,7 @@ done
 check_exit_convention keep-usage
 load_conf "$NAME"
 [ "$NODES" != 1 ] || [ -z "$PLACEMENT_NODES" ] || usage_die "--placement-nodes requires a multi-node spec; use --node"
-node_indices=() states=()
+node_indices=() states=() present=()
 topology_ready=1
 if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then topology_ready=0; fi
 if [ "$NODES" = 1 ] && [ "$topology_ready" = 1 ]; then
@@ -49,44 +49,78 @@ except (ValueError,TypeError,AttributeError) as exc:
  print(str(exc),file=sys.stderr);raise SystemExit(1)
 ' "$IMAGE"
 }
+# The pinned content under another repository name: where the image store
+# makes the image ID the manifest digest (the containerd store), the digest
+# finds it. Prints the name it is present as.
+verify_digest_json() {
+  python3 -c '
+import json,sys
+try:
+ d=json.load(sys.stdin)
+ if isinstance(d,list) and len(d)==1:d=d[0]
+ if not isinstance(d,dict) or d.get("Id")!=sys.argv[1]:raise ValueError("image identity differs")
+ if d.get("Architecture")!="arm64":raise ValueError("image architecture is not arm64")
+ names=[n for n in (d.get("RepoTags") or [])+(d.get("RepoDigests") or []) if isinstance(n,str) and n and not n.startswith("<none>")]
+ print(names[0] if names else "an untagged image")
+except (ValueError,TypeError,AttributeError) as exc:
+ print(str(exc),file=sys.stderr);raise SystemExit(1)
+' "$DIGEST"
+}
+DIGEST=""
+[[ "$IMAGE" != *@sha256:* ]] || DIGEST="${IMAGE##*@}"
+# image_on PHYSICAL ARGS... — docker on this node or over management SSH.
+image_on() {
+  local physical="$1"
+  shift
+  if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" "$@"; else ssh_node "$physical" "$(shell_join_q docker "$@")"; fi
+}
 for ((rank=0;rank<NODES;rank++)); do
+  present+=("")
   if [ "$topology_ready" != 1 ]; then states+=(need-topology); continue; fi
   physical="${node_indices[$rank]}"
   if [ "$physical" = 0 ]; then
     if ! "$PULSAR_DOCKER" info >/dev/null 2>&1; then states+=(docker-error); continue; fi
-    if raw=$("$PULSAR_DOCKER" image inspect --format '{{json .}}' "$IMAGE" 2>/dev/null); then
-      if printf '%s' "$raw" | verify_image_json 2>/dev/null; then states+=(ok); else states+=(docker-error); fi
-    else states+=(missing); fi
   else
     if ! ssh_node "$physical" true >/dev/null 2>&1; then states+=(unreachable); continue; fi
     if ! ssh_node "$physical" 'docker info >/dev/null 2>&1'; then states+=(docker-error); continue; fi
-    if raw=$(ssh_node "$physical" "$(shell_join_q docker image inspect --format '{{json .}}' "$IMAGE")" 2>/dev/null); then
-      if printf '%s' "$raw" | verify_image_json 2>/dev/null; then states+=(ok); else states+=(docker-error); fi
-    else states+=(missing); fi
   fi
+  if raw=$(image_on "$physical" image inspect --format '{{json .}}' "$IMAGE" 2>/dev/null); then
+    if printf '%s' "$raw" | verify_image_json 2>/dev/null; then states+=(ok); else states+=(docker-error); fi
+  elif [ -n "$DIGEST" ] && raw=$(image_on "$physical" image inspect --format '{{json .}}' "$DIGEST" 2>/dev/null) \
+      && name=$(printf '%s' "$raw" | verify_digest_json 2>/dev/null); then
+    states+=(other-name); present[rank]="$name"
+  else states+=(missing); fi
 done
-report=$(python3 - "$REPO_DIR" "$NAME" "$IMAGE" "$NODES" "${node_indices[*]}" "${states[@]}" <<'PY'
+report=$(python3 - "$REPO_DIR" "$NAME" "$IMAGE" "$NODES" "${node_indices[*]}" "${states[@]}" -- "${present[@]}" <<'PY'
 import json,sys
 sys.path.insert(0,sys.argv[1])
 from scripts.launch_plan import rank_image_aggregate_state
-name,image,nodes,indices=sys.argv[2:6];states=sys.argv[6:];indices=indices.split()
+name,image,nodes,indices=sys.argv[2:6];rest=sys.argv[6:];indices=indices.split()
+states,present=rest[:rest.index('--')],rest[rest.index('--')+1:]
 state=rank_image_aggregate_state(states)
-if state=='missing-on-rank' and states[0]=='missing':
- state='missing-both' if 'missing' in states[1:] else 'missing-on-head'
-print(json.dumps(dict(schema_version=1,kind='pulsar-image-check',model=name,image=image,nodes=int(nodes),state=state,head_ok=states[0]=='ok',worker_ok=len(states)>1 and states[1]=='ok',ranks=[dict(rank=i,topology_index=int(indices[i]),state=value,ok=value=='ok') for i,value in enumerate(states)])))
+# A rank holding the content under another name lacks the pinned reference.
+lacking=('missing','other-name')
+if state=='missing-on-rank' and states[0] in lacking:
+ state='missing-both' if any(value in lacking for value in states[1:]) else 'missing-on-head'
+def rank(i,value):
+ row=dict(rank=i,topology_index=int(indices[i]),state=value,ok=value=='ok')
+ if value=='other-name':row['present_as']=present[i]
+ return row
+print(json.dumps(dict(schema_version=1,kind='pulsar-image-check',model=name,image=image,nodes=int(nodes),state=state,head_ok=states[0]=='ok',worker_ok=len(states)>1 and states[1]=='ok',ranks=[rank(i,value) for i,value in enumerate(states)])))
 PY
 )
 state=$(printf '%s' "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])')
 # image_failure — what the check found, by node, and one next step. Start runs
 # this check too and gives its own next step in its blocker lines.
 image_failure() {
-  local rank where missing="" unreachable="" docker="" topology=0 controller=0 next="" message="" problem
+  local rank where missing="" other="" unreachable="" docker="" topology=0 controller=0 next="" message="" problem
   local -a problems=() stage=(${selection_flags[@]+"${selection_flags[@]}"})
   for ((rank = 0; rank < NODES; rank++)); do
     [ "${states[$rank]}" != need-topology ] || { topology=1; continue; }
     where="$(human_node_name "${node_indices[$rank]}") (rank $rank)"
     case "${states[$rank]}" in
       missing) missing+="${missing:+, }$where"; [ "${node_indices[$rank]}" != 0 ] || controller=1 ;;
+      other-name) other+="${other:+; }$where as ${present[$rank]}" ;;
       unreachable) unreachable+="${unreachable:+, }$where" ;;
       docker-error) docker+="${docker:+, }$where" ;;
     esac
@@ -101,10 +135,13 @@ image_failure() {
     problems+=("on $docker, Docker is unavailable or holds an image other than the pinned arm64 digest")
     next="${next:-./pulsar doctor}"
   fi
-  if [ -n "$missing" ]; then
-    problems+=("the pinned image is missing on $missing")
+  [ -z "$missing" ] || problems+=("the pinned image is missing on $missing")
+  # A copy from this node can drop registry references; a pull records the
+  # pinned name and reuses the layers already there.
+  [ -z "$other" ] || problems+=("the pinned content is present on $other, but the pinned name is not recorded; staging with --pull adds the pinned name, and the content is already here")
+  if [ -n "$missing$other" ]; then
     # Staging copies from this node, so when it lacks the image only a pull works.
-    [ "$controller" = 0 ] || stage+=(--pull)
+    [ "$controller" = 0 ] && [ -z "$other" ] || stage+=(--pull)
     next="${next:-./pulsar image stage $(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${stage[@]+"${stage[@]}"}) --plan}"
   fi
   for problem in "${problems[@]}"; do message+="${message:+; }$problem"; done

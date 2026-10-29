@@ -29,6 +29,10 @@ if args[:2]==['image','inspect']:
  if (mode in ('missing-pull','missing-ref-after-load') and rank==1 and not (root/'pulled').exists()) or (mode=='lost-and-missing' and rank==2) or (mode=='missing-controller' and rank==0):sys.exit(1)
  if mode in ('named-success','export-tag-collision','export-tag-unobservable','export-tag-drift','export-ref-missing') and rank>0 and not (root/('loaded-'+str(rank))).exists():sys.exit(1)
  image=json.loads((root/'image.json').read_text())
+ # other-name: rank 1 holds the pinned content only under a local name, found by its digest.
+ if mode=='other-name' and rank==1 and not (root/'pulled').exists():
+  if not args[-1].startswith('sha256:'):sys.exit(1)
+  image.update(Id=args[-1],RepoTags=['pulsar-local/model:latest'],RepoDigests=[])
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
  if mode=='legacy-image-id-only':image['RepoDigests']=[]
  if mode=='wrong-repository':image['RepoDigests']=['other/repository@'+image['RepoDigests'][0].split('@')[1]]
@@ -83,7 +87,8 @@ ssh_node() {{
  [ "$cmd" != true ] || return 0
  case "$cmd" in
   'docker info'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" info >/dev/null ;;
-  'docker image inspect'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" image inspect ;;
+  # The command is shell-quoted; eval passes the inspected reference through.
+  'docker image inspect'*) eval "DIAG_RANK=$rank $PULSAR_DOCKER ${{cmd#docker }}" ;;
   'docker image ls'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" image ls ;;
   'docker pull'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" pull ;;
   'docker load'*) DIAG_RANK="$rank" "$PULSAR_DOCKER" load ;;
@@ -388,6 +393,35 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
                 self.assertNotEqual(report['state'], 'ok')
                 self.assertFalse(any(rank['ok'] for rank in report['ranks']))
                 self.assertFalse((self.root/'mutations').exists())
+
+    # TUI-81: the pinned content under another name is named, and still fails until the pinned name exists.
+    def test_pinned_content_under_another_name_is_named_and_still_fails(self):
+        spec_id=self.spec['spec_id']
+        result=subprocess.run([str(ROOT/'pulsar'),'image','check',spec_id,'--json'],
+                              env={**self.env,'DIAG_MODE':'other-name'},cwd=ROOT,text=True,capture_output=True)
+        self.assertEqual(result.returncode,0,result.stderr)
+        report=json.loads(result.stdout)['result']
+        self.assertEqual(report['state'],'missing-on-rank')
+        self.assertEqual([rank['state'] for rank in report['ranks']],['ok','other-name','ok'])
+        self.assertEqual((report['ranks'][1]['ok'],report['ranks'][1]['present_as']),(False,'pulsar-local/model:latest'))
+        self.assertNotIn('present_as',report['ranks'][0])
+        result=self.run_tool('check-image.sh',[spec_id],'other-name')
+        self.assertEqual(result.returncode,1,result.stderr)
+        *problem,last=result.stdout.splitlines()
+        self.assertEqual(' '.join(' '.join(problem).split()),
+                         'FAIL image the pinned content is present on rank-1 (rank 1) as pulsar-local/model:latest, '
+                         'but the pinned name is not recorded; staging with --pull adds the pinned name, and the '
+                         'content is already here')
+        self.assertEqual(last.strip(),f'Next: ./pulsar image stage {spec_id} --pull --plan')
+        self.assertFalse((self.root/'mutations').exists())
+        # Staging without --pull suggests it; with --pull it pulls on that node only, and the check passes.
+        result=self.run_tool('sync-image.sh',[spec_id],'other-name')
+        self.assertIn('a pull adds the pinned name and reuses it. Next: ./pulsar image stage '
+                      f'{spec_id} --pull --plan',' '.join(result.stderr.split()))
+        self.assertFalse((self.root/'mutations').exists())
+        result=self.run_tool('sync-image.sh',[spec_id,'--pull','--yes'],'other-name')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
 
     def test_image_check_json_returns_its_report_whatever_it_found(self):
         spec_id=self.spec['spec_id']

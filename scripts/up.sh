@@ -280,7 +280,8 @@ if [ "$img_rc" != 0 ]; then
     img_detail=$(check_error "$img_err")
     blocked image_check_failed --detail "${img_detail:-exit $img_rc}"
   else
-    missing_on=$(image_ranks missing | cut -f2 | paste -sd, - | sed 's/,/, /g')
+    # other-name: the pinned content under another repository name still lacks the pinned reference.
+    missing_on=$(image_ranks missing other-name | cut -f2 | paste -sd, - | sed 's/,/, /g')
     case "$img_state" in
       need-topology)
         blocked topology_incomplete --detail "the image check found fewer confirmed nodes than the spec needs"
