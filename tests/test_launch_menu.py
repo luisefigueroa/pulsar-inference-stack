@@ -182,7 +182,8 @@ class LaunchMenu(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
                          ["Live status", "Stop", "Back"])
-        self.assertEqual(actions[1:], [["down.sh", spec, "--node", "fixture-node"]])
+        # Stop refreshes the service inventory before its question (TUI-43).
+        self.assertEqual(actions[1:], [["pulsar", "inventory", "--json"], ["down.sh", spec, "--node", "fixture-node"]])
         self.assertEqual(len(questions.splitlines()), 2)
         self.assertEqual(choices.count("[continue]"), 1)
 
@@ -190,7 +191,8 @@ class LaunchMenu(unittest.TestCase):
         _, result, actions, choices, _ = self.refused(
             ["service_exists"], "Stop", "fixture-host", "Back", "Back", "Back", confirms=["yes", "no"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(actions), 1)
+        # Only Start and the read-only inventory refresh ran; nothing was stopped.
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["pulsar", "inventory"]])
         self.assertEqual(choices.count("Start was refused: 1 blocker"), 2)
 
     def test_launch_failure_is_named_and_offers_status_logs_and_stop(self):

@@ -589,6 +589,11 @@ service; **Back** returns to the service with a refreshed inventory. **Show full
 of all detected workloads, including those outside the catalog.
 
 Stop refreshes the inventory and shows the current scope before confirmation.
+The catalog menu's **Stop** does the same, and both ask one question that names
+the nodes the service was seen on and says model files, pins and archives are
+kept. For a one-node recipe the catalog menu stops on the machine chosen
+first, so its question names that machine, and adds where the inventory saw
+the service when that is elsewhere. Outcomes name the model and its spec.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
@@ -887,7 +892,8 @@ asks nothing. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it, the reason and
 what makes it available: a location set in **Archive storage configuration** on
 the home menu, or a home that **Download** or **Restore** records. A serving
-guard or a historical spec has no such fix. **Check now** records file
+guard points to a guarded trial (`./pulsar guarded --help` and
+[guarded serving](GUARDED_SERVING.md)); a historical spec has no such fix. **Check now** records file
 observations only, so it never changes what is shown.
 **Download** remains available when a home is recorded, and **Restore** remains
 available when an archive location is configured. A home record can outlive its
@@ -906,7 +912,9 @@ node), while the menu asks for a node. Its question says what the machine is
 for, such as "Which machine should hold the model files?", and each machine
 is named by hostname with what saved records place there: "home recorded
 here" or "prepared copy recorded here". Nothing is probed to build the list.
-The recipe list labels show the same short saved state. Storage mutations run the
+The recipe list labels show the same short saved state; where the whole label
+fits (60 columns or wider), they also name the node count and the spec's state,
+as `models list` does. State is metadata, never a gate. Storage mutations run the
 operation's own `--plan` preview and show a one-to-three-line summary of it:
 what changes, where, how much, and the headroom left, or that nothing would be
 copied, deleted or changed. A question then names the model, nodes and
