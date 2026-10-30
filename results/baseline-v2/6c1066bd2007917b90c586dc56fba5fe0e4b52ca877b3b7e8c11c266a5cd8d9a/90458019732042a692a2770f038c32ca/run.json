@@ -1,0 +1,156 @@
+{
+  "error_codes": [],
+  "gates": [
+    {
+      "ended_at": "2026-10-29T18:45:29.319966Z",
+      "name": "verify-snapshot-manifest",
+      "rc": 0,
+      "started_at": "2026-10-29T18:45:27.014680Z"
+    },
+    {
+      "ended_at": "2026-10-29T18:45:39.541120Z",
+      "name": "serve-smoke",
+      "rc": 0,
+      "started_at": "2026-10-29T18:45:29.320060Z"
+    },
+    {
+      "ended_at": "2026-10-29T18:48:37.392941Z",
+      "name": "run-gates",
+      "rc": 0,
+      "started_at": "2026-10-29T18:45:39.541138Z"
+    },
+    {
+      "ended_at": "2026-10-29T19:09:47.797967Z",
+      "name": "evaluate-gsm8k",
+      "rc": 0,
+      "started_at": "2026-10-29T18:48:37.392956Z"
+    },
+    {
+      "ended_at": "2026-10-29T20:10:00.872021Z",
+      "name": "validate-soak",
+      "rc": 0,
+      "started_at": "2026-10-29T19:09:47.797984Z"
+    }
+  ],
+  "input_sha256": {
+    "dataset": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+    "policy": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0"
+  },
+  "kind": "pulsar-baseline-run",
+  "measurement_sha256": {
+    "benchmark-serving": "02b0b56a17df63a84518d5666f54c79fb6699e92d201645b9d09623edde42423",
+    "compare-captures": "04e677c07c0d0e07d612e639197ecba6989c3153e4d0faca06f9f6d4a2458f1a",
+    "evaluate-gsm8k": "290bb7c42f78bfcbeed4eee38ec0b9b1835d2130d433c9eb3b09526bfcc0c9a4",
+    "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
+    "validate-soak": "104996a5d43963bd1cb3f23e29d30641305db814d6564c5f6d8abf2a3f5af660",
+    "verify-snapshot-manifest": "f00746e953a7d3289d44e7b2f437feeb943a791eb4aae39112085161f7fbf8cd"
+  },
+  "observation_complete": true,
+  "outcome": "pass",
+  "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+  "ranks_after": [
+    {
+      "boot_witness": "9956ab509c4337e81af71cbcb6ab16949bb975c63ffd4906764f998d98be408e",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "bridge",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshots": {
+        "target": {
+          "files_verified": true,
+          "snapshot_manifest_id": "db3d107c470d1e43135312f794bf25f2c084df4e84a6cdef75973fd01933ef4e"
+        }
+      },
+      "spec_id": "6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a"
+    }
+  ],
+  "ranks_before": [
+    {
+      "boot_witness": "9956ab509c4337e81af71cbcb6ab16949bb975c63ffd4906764f998d98be408e",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "bridge",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshots": {
+        "target": {
+          "files_verified": true,
+          "snapshot_manifest_id": "db3d107c470d1e43135312f794bf25f2c084df4e84a6cdef75973fd01933ef4e"
+        }
+      },
+      "spec_id": "6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a"
+    }
+  ],
+  "run_id": "90458019732042a692a2770f038c32ca",
+  "same_boot": true,
+  "schema_version": 4,
+  "spec_id": "6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a",
+  "stack_observers": [
+    {
+      "stack_commit": "45ff6826f343a1c9298038bbf8131cca91ef5236",
+      "working_tree_dirty": true
+    },
+    {
+      "stack_commit": "45ff6826f343a1c9298038bbf8131cca91ef5236",
+      "working_tree_dirty": true
+    }
+  ],
+  "workbench_commit": "aae171e4c029f8f4b0b604304d680ad3cb99fdf4"
+}
