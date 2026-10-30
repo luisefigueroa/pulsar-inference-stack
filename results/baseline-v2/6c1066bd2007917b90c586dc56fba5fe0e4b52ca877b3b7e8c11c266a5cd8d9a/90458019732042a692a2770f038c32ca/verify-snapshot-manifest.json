@@ -1,0 +1,21 @@
+{
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "verify-snapshot-manifest",
+  "program": "validate/verify_snapshot_manifest.py",
+  "reason": "completed",
+  "schema_version": 2,
+  "verify-snapshot-manifest": {
+    "snapshots": {
+      "target": {
+        "expected_file_count": 113,
+        "extra_file_count": 0,
+        "manifest_id": "db3d107c470d1e43135312f794bf25f2c084df4e84a6cdef75973fd01933ef4e",
+        "matched_file_count": 113,
+        "mismatched_file_count": 0,
+        "missing_file_count": 0
+      }
+    },
+    "spec_id": "6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a"
+  }
+}

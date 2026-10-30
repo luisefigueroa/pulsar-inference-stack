@@ -1,0 +1,16 @@
+{
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "validate-soak",
+  "program": "validate/soak.py",
+  "reason": "completed",
+  "schema_version": 1,
+  "validate-soak": {
+    "completed_requests": 1195,
+    "concurrency": 8,
+    "duration_seconds": "3607.81133",
+    "ended_at": "2026-10-29T20:09:55.641080Z",
+    "request_error_count": 0,
+    "started_at": "2026-10-29T19:09:47.829750Z"
+  }
+}
