@@ -239,6 +239,7 @@ Execution operations independently check their live prerequisites.
 | `spec example/freeze/verify/show/compare` | Author, validate, read, and compare serving specs |
 | `model acquire/prepare/info/restore/archive` | Existing explicit model-file lifecycle; use `--model-commit` for first acquisition |
 | `model budget` | Read prepared-copy storage usage, reserve and allowance on every confirmed node |
+| `model files [--json]` | Read managed model-file placement across confirmed nodes; preserve partial observations and inspect uncataloged downloads |
 | `start`, `status`, `stop` | Serve, inspect, or stop an owned service |
 | `logs SPEC [--node NODE \| --rank N] [--tail N] [--follow]` | Print recent output of an owned service's containers, including exited ones; human text only, no `--json`. Exits 1 when none exists and 3 when a node could not be observed |
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
@@ -249,6 +250,22 @@ Execution operations independently check their live prerequisites.
 | `contribution verify --package DIR` | Validate the exact package, identities, hashes, required catalog engine arguments, and publication privacy |
 | `privacy check`, `privacy commits` | Check publication files or commit metadata |
 | `selftest` | Run deterministic repository checks |
+
+`model files --json` returns `kind: "pulsar-model-file-inventory"` and
+`schema_version: 1` inside the standard result envelope. It is read-only and
+does not create model-library records or register discovered files. `nodes`
+retains every confirmed node (plus saved locations outside current membership)
+with observation times, scan scopes, disk readings, and independent file and
+container errors. `snapshots` groups physical locations by manifest identity,
+with model identity, manifest payload estimates, bindings, pins, saved archive
+records and existing catalog cleanup routes. Shared paths are not duplicated
+for each binding. Locations with `bindings_observed: false` retain saved binding
+context only; their pin/shared fields are not current observations. A successful
+partial result may contain unknown nodes or
+scopes; callers must inspect those fields rather than interpret success as
+complete visibility. Missing within an observed managed root is distinct from
+an unobservable node. These are metadata observations, not content-hash
+verification, allocated disk usage, or a reclaimable-byte guarantee.
 
 Storage previews retain additive capacity context without changing recipe identity
 or operation eligibility. Single-snapshot preparation plans for both current spec
@@ -266,8 +283,11 @@ people. A `container-reference` record also has `container` (`id`, `name`,
 `state` of `running`, `stopped` or `unknown`, and `spec_id`, the selected catalog
 spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
-`dependent-copies`, `incomplete-preparations`, `archive-required`,
-`discard-required` and `catalog-snapshot`. A preparation set plan repeats its
+`dependent-copies` and `incomplete-preparations`. Older plans may contain
+`archive-required`, `discard-required` and `catalog-snapshot`; current home
+removal no longer requires an archive or distinguishes catalog and lab homes.
+The CLI still accepts `--discard-unpromoted` for compatibility, with `--yes`
+required to execute removal. A preparation set plan repeats its
 snapshots' records with a `snapshot` field. Branch on `code`; the other text is
 for people.
 

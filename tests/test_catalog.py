@@ -579,6 +579,9 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     elif sys.argv[1] == "inventory":
         print(os.environ.get("INVENTORY_FIXTURE", ""))
         rc = int(os.environ.get("INVENTORY_RC", "0"))
+    elif sys.argv[1:3] == ["model", "files"] and "--json" in sys.argv:
+        print(os.environ["FILES_FIXTURE"])
+        rc = int(os.environ.get("FILES_RC", "0"))
     elif sys.argv[1:3] == ["model", "budget"] and "--json" in sys.argv:
         print(os.environ.get("BUDGET_FIXTURE", ""))
         rc = int(os.environ.get("BUDGET_RC", "0"))
@@ -744,42 +747,68 @@ raise SystemExit(rc)
                                      "error": {"code": "prerequisite_failed", "message": "node storage is unobservable"}})
         return lambda _: {"BUDGET_FIXTURE": json.dumps(envelope), "BUDGET_RC": str(rc)}
 
-    # TUI-50: the budget on every node, then each spec holding files; nothing to reclaim says so.
-    def test_empty_catalog_still_offers_free_disk_space(self):
+    @staticmethod
+    def file_inventory(with_model=True, unregistered=False, unavailable=False):
+        def environment(spec):
+            node = {"node_id": "fixture-node", "hostname": "fixture-host",
+                    "observed_at": None if unavailable else "2026-09-05T00:00:00Z",
+                    "status": "unknown" if unavailable else "observed",
+                    "error": "node unavailable" if unavailable else "",
+                    "scopes": [{"path": "/fixture/homes", "kind": "home", "status": "observed"}],
+                    "disks": [] if unavailable else [{"path": "/fixture/homes", "available": 150 * 1024**3}],
+                    "issues": [], "unidentified": [], "container_error": ""}
+            location = {"node_id": "fixture-node", "kind": "home", "hub_path": "/fixture/home",
+                        "state": "unknown" if unavailable else "present", "registered_home": not unregistered,
+                        "bindings": [], "bindings_observed": not unavailable, "pinned": False, "shared": False,
+                        "container_references": None if unavailable else []}
+            entry = {"snapshot_manifest_id": "c" * 64, "model_id": "example/model", "model_commit": "a" * 40,
+                     "payload_bytes": 1024, "locations": [location], "archive": None,
+                     "catalog_specs": [] if unregistered else [{"spec_id": spec, "snapshot": "target",
+                                                                "model_id": "example/model"}],
+                     "cleanup_spec_ids": [] if unregistered else [spec]}
+            document = {"schema_version": 1, "kind": "pulsar-model-file-inventory",
+                        "observed_at": "2026-09-05T00:00:00Z", "nodes": [node],
+                        "snapshots": [entry] if with_model else [], "issues": []}
+            return {"FILES_FIXTURE": json.dumps({"ok": True, "result": document})}
+        return environment
+
+    def test_empty_catalog_still_offers_model_file_discovery(self):
         _, result, actions, choices, questions = self.run_menu(
             ["Free disk space (checks nodes now)", "Back", "Back"], empty_catalog=True,
-            inventory=self.live_inventory(), env_extra=self.budget())
+            env_extra=self.file_inventory(with_model=False))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "budget", "--json"], ["pulsar", "inventory", "--json"]])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
         self.assertEqual(questions, "")
-        self.assertIn('The catalog is empty.', result.stdout)
-        text = " ".join(result.stdout.split())
-        self.assertIn("150 GiB", text)
-        self.assertIn("nothing to reclaim", text)
-        self.assertIn("Free disk space\nRefresh\nBack\n", choices)
+        self.assertIn("150 GiB", " ".join(result.stdout.split()))
+        self.assertIn("No model snapshots were identified", " ".join(result.stdout.split()))
+        self.assertIn("Model files and disk space\nRefresh (checks nodes now)\nBack\n", choices)
 
-    def test_free_disk_space_opens_each_specs_reclaim_steps_with_their_previews(self):
+    def test_model_files_opens_registered_recipes_existing_cleanup_previews(self):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
                          "actions": [{"rank": 0, "node_id": "fixture-node", "action": "remove-copy",
                                       "retained_bindings": 0}]}, "incomplete_preparations": []}
         spec, result, actions, choices, questions = self.run_menu(
             ["Free disk space (checks nodes now)", "#0", "Purge prepared copies", "Back", "Back", "Back"],
-            with_home=True, plan=plan, confirms=["no"], inventory=self.live_inventory(),
-            env_extra=self.budget())
+            with_home=True, plan=plan, confirms=["no"], env_extra=self.file_inventory())
         self.assertEqual(result.returncode, 0, result.stderr)
-        budget, inventory = ["pulsar", "model", "budget", "--json"], ["pulsar", "inventory", "--json"]
-        self.assertEqual(actions, [budget, inventory, ["model-library.sh", "purge", spec, "--plan", "--json"],
-                                   budget, inventory])
-        # What holds the files, including the running service.
-        listed = choices.split("Free disk space\n", 1)[1].split("\n", 1)[0]
-        self.assertTrue(listed.startswith(f"[{spec[:12]}] example/model · home only · in use: running on 1 node"),
-                        listed)
-        # Stop, Unpin, Purge and Remove home, in the order that unblocks the next.
+        files = ["pulsar", "model", "files", "--json"]
+        self.assertEqual(actions, [files, ["model-library.sh", "purge", spec, "--plan", "--json"], files])
         block = choices.split("Free disk space from this spec\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
                          ["Stop", "Unpin prepared copies", "Purge prepared copies", "Remove home", "Back"])
         self.assertIn("Purge", questions)
         self.assertIn("Nothing changed.", result.stdout)
+
+    def test_uncataloged_discovery_is_visible_but_offers_no_cleanup(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["Free disk space (checks nodes now)", "#0", "Back", "Back", "Back"],
+            empty_catalog=True, env_extra=self.file_inventory(unregistered=True))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(questions, "")
+        self.assertIn("inspect only", choices)
+        self.assertIn("Model snapshot\nBack\n", choices)
+        self.assertIn("no registered catalog cleanup route", " ".join(result.stdout.split()))
 
     # TUI-42: both run read-only in the pager, with no question.
     def test_verify_running_service_and_full_file_audit_ask_nothing(self):
@@ -805,13 +834,14 @@ raise SystemExit(rc)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("[continue]", choices)
 
-    def test_a_failed_budget_still_lists_what_holds_files(self):
-        _, result, _, choices, _ = self.run_menu(
+    def test_unreachable_node_keeps_saved_model_visible_as_unknown(self):
+        _, result, actions, choices, _ = self.run_menu(
             ["Free disk space (checks nodes now)", "Back", "Back"], with_home=True,
-            inventory=self.live_inventory(), env_extra=self.budget(rc=3))
+            env_extra=self.file_inventory(unavailable=True))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Storage budget not observed: node storage is unobservable", " ".join(result.stdout.split()))
-        self.assertIn("· home only", choices)
+        self.assertIn("node unavailable", " ".join(result.stdout.split()))
+        self.assertIn("example/model", choices)
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(
@@ -1260,6 +1290,27 @@ raise SystemExit(rc)
         self.assertEqual([a[-1] for a in actions], ["--json"])
         self.assertIn("Nothing changed.", result.stdout)
         self.assertIn("Restore", questions)
+
+    def check_remove_without_archive(self, confirmation, archive_root):
+        plan = {"kind": "pulsar-home-removal-plan", "eligible": True, "blockers": [],
+                "home": {"node_id": "fixture-node"}}
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Storage and archive…", "Remove home", "Back", "Back", "Back"],
+            with_home=True, plan=plan, archive_root=archive_root, confirms=[confirmation])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = [["model-library.sh", "remove", spec, "--plan", "--json"]]
+        if confirmation == "yes":
+            expected.append(["model-library.sh", "remove", spec, "--yes"])
+        self.assertEqual(actions, expected)
+        self.assertIn("Remove the home model files", questions)
+        self.assertIn("Recovery requires a usable archive or an available download source.", questions)
+        self.assertIn("No archive is required or checked.", " ".join(result.stdout.split()))
+
+    def test_remove_home_without_archive_configuration_still_requires_confirmation(self):
+        self.check_remove_without_archive("no", None)
+
+    def test_remove_home_with_archive_disabled_executes_only_after_confirmation(self):
+        self.check_remove_without_archive("yes", "")
 
     def test_blocked_plan_is_shown_without_a_confirmation(self):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": False, "blockers": ["prepared copy is pinned"],

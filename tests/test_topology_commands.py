@@ -246,7 +246,7 @@ class TopologyCommands(unittest.TestCase):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
         # Cluster topology, Back to the home menu, then Exit.
-        self.use_gum(TOPOLOGY_GUM_HOME='5,7', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
+        self.use_gum(TOPOLOGY_GUM_HOME='6,8', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(self.gum_prompts('choose'),

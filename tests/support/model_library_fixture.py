@@ -281,6 +281,7 @@ def tool(kind, argv):
         return subprocess.run(["bash", "-c", command], env={**os.environ, "FIXTURE_RANK": str(target_rank)}).returncode
     if kind == "docker":
         if not current["available"]: return 255
+        if rank() in cfg.get("docker_unavailable_ranks", []): return 2
         containers = current["containers"]
         for container in containers:
             for mount in container["Mounts"]: contained(mount["Source"])

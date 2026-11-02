@@ -722,41 +722,75 @@ reclaim_menu() {
   done
 }
 
-# Free disk space: the storage budget on every node, then each catalog spec
-# holding a home or prepared copies, with what holds them. Checks nodes now.
+# The same overview opens directly from Home or from the catalog's Free disk
+# space choice. Files are discovered only after entering this explicit action.
+file_inventory() {
+  local columns
+  if columns=$(_ui_terminal_columns); then
+    COLUMNS=$columns python3 -m model_library.file_inventory "$@"
+  else
+    python3 -m model_library.file_inventory "$@"
+  fi
+}
+
+FILES_REFRESH=0
+files_snapshot_menu() {
+  local snapshot="$1" index rc spec label
+  local -a specs=() labels=()
+  page_output "" python3 -m model_library.file_inventory render --file "$CATALOG_WORK/files.json" --snapshot "$snapshot" \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  while IFS=$'\t' read -r spec label; do
+    [ -n "$spec" ] || continue
+    specs+=("$spec"); labels+=("$label")
+  done < <(file_inventory recipes --file "$CATALOG_WORK/files.json" --snapshot "$snapshot")
+  if [ "${#specs[@]}" -eq 1 ]; then
+    reclaim_menu "${specs[0]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    FILES_REFRESH=1
+    return 0
+  fi
+  index=$(choose_index "Model snapshot" "${labels[@]}" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  [ "$index" -lt "${#specs[@]}" ] || return 0
+  reclaim_menu "${specs[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+  FILES_REFRESH=1
+}
+
 free_disk_space() {
-  local result rc index view kind a b
-  local -a ids=() labels=() budget_args=()
+  local rc index snapshot label
+  local -a ids=() labels=()
   catalog_work || return 0
   while true; do
-    result=$(catalog list --json) || return $?
     rc=0
-    spin "Checking storage on every node…" "$REPO_DIR/pulsar" model budget --json >"$CATALOG_WORK/budget.json" || rc=$?
+    spin "Checking model files on every node…" "$REPO_DIR/pulsar" model files --json \
+      >"$CATALOG_WORK/files.json" || rc=$?
     [ "$rc" -ne 130 ] || return 130
-    if [ -s "$CATALOG_WORK/budget.json" ]; then budget_args=(--budget "$CATALOG_WORK/budget.json")
-    else budget_args=(--budget-error "model budget exit $rc; the reason is above"); fi
-    # "In use" needs a fresh service inventory.
-    check_running_services "$result" || return $?
-    live_args
-    [ "$LIVE_REFRESHED" = 1 ] || LIVE_ARGS=()
-    view=$(printf '%s' "$result" | catalog_menu free-space "${budget_args[@]}" "${LIVE_ARGS[@]}") || return 0
-    ids=(); labels=()
-    echo
-    while IFS=$'\t' read -r kind a b; do
-      case "$kind" in
-        header) printf '%s\n' "$a" ;;
-        spec) ids+=("$a"); labels+=("$b") ;;
-      esac
-    done <<<"$view"
-    hold_screen || return $?
-    index=$(choose_index "Free disk space" "${labels[@]}" "Refresh" "Back") \
-      || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
-    if [ "$index" -lt "${#ids[@]}" ]; then
-      reclaim_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
-      continue
+    if [ "$rc" -ne 0 ]; then
+      file_inventory render --file "$CATALOG_WORK/files.json" || :
+      python3 -m scripts.terminal_format --status fail "Not observed" \
+        "Model files could not be listed; see the reason above."
+      wait_continue "Model files error" || return $?
+      return 0
     fi
-    # Refresh follows the specs; anything after it is Back.
-    [ "$index" -eq "${#ids[@]}" ] || return 0
+    while true; do
+      page_output "" python3 -m model_library.file_inventory render --file "$CATALOG_WORK/files.json" \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+      ids=(); labels=()
+      while IFS=$'\t' read -r snapshot label; do
+        [ -n "$snapshot" ] || continue
+        ids+=("$snapshot"); labels+=("$label")
+      done < <(file_inventory choices --file "$CATALOG_WORK/files.json")
+      index=$(choose_index "Model files and disk space" "${labels[@]}" "Refresh (checks nodes now)" "Back") \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+      if [ "$index" -lt "${#ids[@]}" ]; then
+        FILES_REFRESH=0
+        files_snapshot_menu "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+        [ "$FILES_REFRESH" -eq 0 ] || break
+      elif [ "$index" -eq "${#ids[@]}" ]; then
+        break
+      else
+        return 0
+      fi
+    done
   done
 }
 
@@ -796,9 +830,15 @@ case "$command" in
     if [ "${1:-}" = --read-only ]; then read_only=1; shift; fi
     [ $# -eq 0 ] || { echo "error: use ./pulsar models menu [--read-only], or ./pulsar models list --json" >&2; exit 2; }
     if [ -n "${PULSAR_CATALOG_OPEN_SPEC:-}" ] && [ "$read_only" = 0 ]; then open_recipe; else browse "$read_only"; fi ;;
+  files)
+    [ $# -eq 0 ] || { echo "error: use ./pulsar models files for the menu or ./pulsar model files --json" >&2; exit 2; }
+    . "$REPO_DIR/scripts/ui.sh"
+    require_gum "model files and disk space" "./pulsar model files" "model placement across all confirmed nodes"
+    ui_keep_styles
+    free_disk_space ;;
   list|show|results) catalog "$command" "$@" ;;
   check) exec "$REPO_DIR/scripts/model-library.sh" check "$@" ;;
   --json) catalog list --json "$@" ;;
   --help|-h|help) catalog --help ;;
-  *) echo 'usage: pulsar models list|show SPEC|results SPEC|check SPEC|menu [--read-only]' >&2; exit 2 ;;
+  *) echo 'usage: pulsar models list|show SPEC|results SPEC|check SPEC|files|menu [--read-only]' >&2; exit 2 ;;
 esac

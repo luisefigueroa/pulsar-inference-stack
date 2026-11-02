@@ -153,10 +153,9 @@ class Purge(Details):
 
 
 class Removal(Details):
-    def plan(self, views=(), containers=(), **flags):
-        flags = {"published": True, "archive_verified": True, **flags}
+    def plan(self, views=(), containers=()):
         return removal_plan(home=home(), views=list(views), node_ids=["n0"],
-                            observations=observed("n0", containers=containers), **flags)
+                            observations=observed("n0", containers=containers))
 
     def codes(self, plan):
         self.assert_paired(plan)
@@ -167,12 +166,6 @@ class Removal(Details):
         self.assertEqual(self.codes(self.plan(views=[view()])), ["dependent-copies"])
         self.assertEqual(self.codes(self.plan(containers=[container(home()["hub_path"], running=False)])),
                          ["container-reference"])
-        self.assertEqual(self.codes(self.plan(archive_verified=False)), ["archive-required"])
-        self.assertEqual(self.codes(self.plan(published=False, archive_verified=False)), ["discard-required"])
-        self.assertEqual(self.plan(published=False, archive_verified=False, discard_unpromoted=True)["blocker_details"], [])
-        self.assertEqual(self.codes(self.plan(discard_unpromoted=True)), ["catalog-snapshot"])
-        self.assertEqual(self.codes(self.plan(views=[view()], archive_verified=False)),
-                         ["dependent-copies", "archive-required"])
 
     def test_a_container_on_the_home_names_the_home_files(self):
         record = home()
@@ -192,7 +185,7 @@ class Removal(Details):
             store.put("homes", record["snapshot_manifest_id"], record)
             plan = controller.run(store, repo, {
                 "operation": "plan-remove", "snapshot_manifest_id": record["snapshot_manifest_id"], "node_ids": ["n0"],
-                "observations": observed("n0"), "views": [], "archive_verified": True,
+                "observations": observed("n0"), "views": [],
                 "transactions": [{"spec_id": SPEC}]})
         self.assertEqual(self.codes(plan), ["incomplete-preparations"])
         self.assertEqual(plan["blocker_details"][-1]["fix"], "purge the prepared copies of each dependent spec first")
