@@ -45,6 +45,11 @@ Browsing reads saved information; it does not download files or check whether a
 model is running. When you are ready to operate a recipe, choose **Set up cluster
 membership and SSH trust**, then use **Catalog and storage** after setup.
 Archive storage is optional.
+**Model files and disk space (checks nodes now)** on the home menu lists managed
+downloads and prepared copies across all confirmed nodes, including uncataloged
+downloads. Use `./pulsar model files` for the read-only report; cleanup keeps its
+existing previews and confirmations.
+
 
 See the [menu reference](docs/OPERATIONS.md#menu-reference) for interactive
 actions. The walkthrough below gives the corresponding direct commands.

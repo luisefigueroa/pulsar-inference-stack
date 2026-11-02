@@ -41,15 +41,6 @@ def resolve(repo: Path, query: dict) -> dict:
     raise StorageError('select a spec id, --spec-file, or an explicit source --manifest')
 
 
-def published(repo: Path, manifest_id: str) -> bool:
-    # Invalid release files abort rather than making deletion look unpromoted.
-    for path in sorted((repo/'releases').glob('*.json')):
-        spec=load_spec(path)
-        if any(v['snapshot_manifest']['manifest_id']==manifest_id for v in required_snapshots(spec).values()):
-            return True
-    return False
-
-
 def run(store: Store, repo: Path, request: dict) -> dict | list:
     op=request['operation']
     if op=='resolve':
@@ -164,7 +155,7 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         home=store.home(request['snapshot_manifest_id'])
         if home is None:
             raise StorageError('no registered home')
-        plan=removal_plan(home=home,views=request.get('views',store.views(manifest_id=request['snapshot_manifest_id'])),node_ids=request['node_ids'],observations=request['observations'],published=published(repo,request['snapshot_manifest_id']),archive_verified=request.get('archive_verified',False),discard_unpromoted=request.get('discard_unpromoted',False))
+        plan=removal_plan(home=home,views=request.get('views',store.views(manifest_id=request['snapshot_manifest_id'])),node_ids=request['node_ids'],observations=request['observations'])
         if request.get('transactions'):
             plan['eligible']=False
             plan['blockers'].append('incomplete preparations still depend on this snapshot; explicitly purge them first')

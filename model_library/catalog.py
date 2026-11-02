@@ -533,6 +533,7 @@ def prefix_hint(repo, spec_id):
 HELP = """\
 usage: pulsar models list [--json]
        pulsar models menu [--read-only]
+       pulsar models files
        pulsar models show SPEC [--json]
        pulsar models results SPEC
        pulsar models check SPEC [--node NODE]
@@ -543,6 +544,7 @@ Browse catalog specs, saved storage state and published results; saved views nev
   show SPEC   One spec in detail: identity, image, engine arguments, home, prepared copies and blockers
   results SPEC  Published run dates, workloads and outcomes, checked against the selected spec
   check SPEC  Check the spec's managed files and archive and save the result; see pulsar model --help
+  files       Model files and disk space menu; checks every confirmed node
   menu        Open the catalog menu; it needs an interactive terminal with Gum
   --read-only  Browse saved catalog details without offering operations (menu only)
   --json      Print list or show as JSON

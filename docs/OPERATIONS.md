@@ -747,34 +747,80 @@ the container or its mount. Pulsar never removes a container it did not start.
 In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
 (asked first) and **Open Live service inventory**.
 
-**Free disk space (checks nodes now)** in the catalog's top-level menu runs
-`./pulsar model budget --json` and a service inventory, shows the storage
-budget table, then lists each catalog spec with a recorded home or prepared
-copies: how many copies, how many are pinned, and whether this inventory saw
-its service running. Choosing a spec offers that recipe's own **Stop**,
-**Unpin prepared copies**, **Purge prepared copies** and **Remove home**, in the
-order that unblocks the next. Each runs with its usual plan preview and
-question, so pins and container references still block, and no archive is ever
-deleted. **Refresh** checks the nodes again. A budget that cannot be observed
-says why, and the specs are still listed. Before
-removing a catalog model's home, clear its dependent prepared copies and verify
-its archive.
-An unpromoted model may be explicitly discarded without an archive after
-dependencies are cleared; private recipes and experiment results remain.
-All protections apply to the shared snapshot, not only the selected recipe.
+### Model files across the nodes
+
+Choose **Model files and disk space (checks nodes now)** beside **Catalog and
+storage** on the home menu. The catalog's **Free disk space (checks nodes now)**
+opens the same overview. It lists model snapshots across every confirmed node,
+including managed downloads that have no catalog recipe. You do not need to open
+each recipe to see placement. Entering this menu always checks nodes and their
+managed filesystems now; it does not present saved placement as current. The equivalent commands are:
+
+```sh
+./pulsar models files       # interactive overview
+./pulsar model files        # read-only report
+./pulsar model files --json
+```
+
+The overview shows disk free space and one model-by-node table when it fits;
+narrow screens use stacked entries. **H** means home and **P** means prepared
+copy. Pins, shared copies and container references are marked separately;
+references include stopped containers. **?** means unknown and **—** means
+not seen in the scanned roots, never absent from the whole machine. A node
+failure keeps observations from the other nodes. If only container inspection
+fails, file placement remains visible and container use is unknown. When a node
+or its binding records cannot be observed, retention is unknown; saved pins or
+shared bindings in details are explicitly labeled as saved.
+
+Discovery reads immediate children of the configured home and prepared-copy
+namespaces, explicitly configured overlay home roots, and locations named by
+saved records. It does not search the filesystem broadly, follow internal
+symlinks, register discovered files, or change model-library records. Incomplete
+staging and unidentified managed paths are shown for inspection. Declared file
+names and sizes are checked without hashing model contents; presence is not
+proof of complete verified model identity or readiness to serve. The displayed
+scope and per-node timestamps describe what was observed. **Refresh** collects
+new observations; viewing details reuses the captured result.
+
+Payload sizes are estimates from manifests for one complete copy, not allocated
+disk usage or promised reclaimable space. A home used as a prepared copy and a
+working copy shared by several recipes each remain one physical location.
+Archive information comes from saved verification records, with its time; archive
+storage is not scanned by this overview and is never a cleanup target.
+
+Select a snapshot for paths and cleanup. A registered snapshot with one catalog
+recipe opens that recipe's existing **Stop**, **Unpin prepared copies**,
+**Purge prepared copies** and **Remove home** menu. With several recipes, select
+the recipe first. Purge still covers the selected recipe's prepared copies;
+**Remove home** selects a snapshot. Every mutation keeps its existing plan,
+confirmation and protections. Uncataloged or unregistered files without a
+catalog cleanup route are inspection-only: discovery does not authorize deletion.
+
+To discard a downloaded model after trying it, stop its service, unpin and purge
+its prepared copies, then choose **Remove home** and confirm. Both catalog and
+lab homes can be removed without an archive. All protections apply to the shared
+snapshot, not only the selected recipe; dependent copies from other recipes must
+also be cleared. Recipes and experiment results remain.
 
 ### Remove an unused home
 
-Removal acts on a home, rather than its prepared-copy bindings. Clear the
-dependencies and satisfy the archive requirements described above first:
+Removal deletes the downloaded model files in a home after its prepared-copy
+dependencies are cleared. An archive is neither required nor checked, so removal
+also works when archive storage is unconfigured, disabled or unavailable.
+Review the preview and explicitly confirm:
 
 ```sh
 ./pulsar model remove <spec-id> --snapshot target --plan
 ./pulsar model remove <spec-id> --snapshot target --yes
 ```
 
-For schema 3, name the snapshot whose home you intend to remove. These operations
-preserve archives.
+For schema 3, name the snapshot whose home you intend to remove. Removal still
+refuses container references (including stopped containers), unknown node state,
+incomplete preparations and files that do not match managed ownership. Existing
+archives are preserved. Recovery requires a usable archive or an available
+download source; without either, the deleted files cannot be recovered through
+Stack. The former lab-only flag `--discard-unpromoted` remains accepted for
+compatibility but is no longer required; `--yes` confirms removal for every home.
 
 ### Shared-record compatibility
 
@@ -1156,8 +1202,9 @@ terminals drop the reserve column first. The command uses the same reserve and
 allowance settings as preparation, requires no confirmation, and does not
 change the selected recipe's saved file-check state. This budget describes
 prepared-copy storage; home and archive locations may use other filesystems.
-The catalog's top-level **Free disk space** shows the same table, even when no
-specs are published.
+For placement and disk free space across nodes, including uncataloged managed
+downloads, use [Model files and disk space](#model-files-across-the-nodes).
+Its payload estimates are separate from this prepared-copy budget.
 
 ### Verification reuse and full audits
 

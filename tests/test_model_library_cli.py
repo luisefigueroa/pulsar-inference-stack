@@ -526,6 +526,29 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']), [])
         self.assertEqual(list((f.root / 'tmp').iterdir()), [])
 
+    def test_speculative_home_removal_without_archive_selects_one_snapshot(self):
+        f = self.speculative_fixture(draft_home=1)
+        self.catalog(f)
+        f.env["PULSAR_COLD_ROOT"] = ""
+        store = Store(f.state)
+        target = f.spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+        draft = f.spec["recipe"]["required_snapshots"]["draft"]["snapshot_manifest"]["manifest_id"]
+        homes = {key: Path(store.home(key)["path"]) for key in (target, draft)}
+        self.failure(f.run("remove", "--yes", spec=True), "--snapshot")
+        self.assertTrue(all(path.exists() for path in homes.values()))
+        plan = self.success(f.run("remove", "--snapshot", "draft", "--plan", spec=True))
+        self.assertEqual(plan["snapshot_manifest_id"], draft)
+        self.assertTrue(plan["eligible"])
+        self.success(f.run("remove", "--snapshot", "draft", "--yes", spec=True))
+        self.assertFalse(homes[draft].exists())
+        self.assertIsNone(store.home(draft))
+        self.assertTrue(homes[target].exists())
+        self.assertIsNotNone(store.home(target))
+        self.success(f.run("remove", "--snapshot", "target", "--yes", spec=True))
+        self.assertFalse(homes[target].exists())
+        self.assertEqual(store.records("homes"), [])
+        self.assertFalse(any(e["operation"].startswith("archive-") for e in f.events("node-operation")))
+
     def test_speculative_preparation_retention_and_archive_coverage(self):
         f=self.speculative_fixture(draft_home=1)
         self.failure(f.run('archive','create','--yes',spec=True),'--snapshot')
@@ -578,6 +601,52 @@ class ModelLibraryCLI(unittest.TestCase):
         spec = copy.deepcopy(fixture.spec)
         spec = verify_spec(spec)
         (fixture.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
+
+    def test_model_files_is_read_only_and_lists_uncataloged_home_on_three_nodes(self):
+        f = self.fixture(nodes=3)
+        acquired = self.acquire_candidate(f, nodes=3)
+        self.success(f.run("prepare", "--yes", spec=True))
+        f.cfg["nodes"][2]["available"] = False
+        f.cfg["docker_unavailable_ranks"] = [1]
+        f.save()
+        before = {path: path.read_bytes() for path in f.state.rglob("*") if path.is_file()}
+        downloads = len(f.events("download"))
+        document = self.success(f.run("files"))
+        self.assertEqual(document["kind"], "pulsar-model-file-inventory")
+        self.assertEqual(len(document["nodes"]), 3)
+        self.assertEqual(document["nodes"][2]["status"], "unknown")
+        entry = next(row for row in document["snapshots"]
+                     if row["snapshot_manifest_id"] == acquired["manifest"]["manifest_id"])
+        self.assertEqual(entry["catalog_specs"], [])
+        self.assertEqual(entry["cleanup_spec_ids"], [])
+        by_node = {item["node_id"]: item for item in entry["locations"]}
+        self.assertEqual(by_node[f.cfg["nodes"][0]["node_id"]]["state"], "present")
+        self.assertEqual(by_node[f.cfg["nodes"][1]["node_id"]]["state"], "present")
+        self.assertIsNone(by_node[f.cfg["nodes"][1]["node_id"]]["container_references"])
+        self.assertEqual(by_node[f.cfg["nodes"][2]["node_id"]]["state"], "unknown")
+        self.assertEqual({path: path.read_bytes() for path in f.state.rglob("*") if path.is_file()}, before)
+        self.assertEqual(len(f.events("download")), downloads)
+
+    def test_model_files_discovers_unregistered_home_without_recreating_records(self):
+        f = self.fixture()
+        acquired = self.acquire_candidate(f)
+        shutil.rmtree(f.state)
+        document = self.success(f.run("files"))
+        entry = document["snapshots"][0]
+        self.assertEqual(entry["snapshot_manifest_id"], acquired["manifest"]["manifest_id"])
+        self.assertFalse(entry["locations"][0]["registered_home"])
+        self.assertEqual(entry["cleanup_spec_ids"], [])
+        self.assertFalse(f.state.exists())
+
+    def test_model_files_empty_inspection_does_not_create_model_storage(self):
+        f = self.fixture()
+        document = self.success(f.run("files"))
+        self.assertEqual(document["snapshots"], [])
+        self.assertFalse(f.state.exists())
+        for node in f.cfg["nodes"]:
+            self.assertFalse(Path(node["home_root"]).exists())
+            self.assertFalse(Path(node["view_root"]).exists())
+        self.failure(f.run("files", "--yes"), "files accepts only --json")
 
     def test_single_node_full_storage_lifecycle(self):
         f = self.fixture()
@@ -802,25 +871,68 @@ class ModelLibraryCLI(unittest.TestCase):
         self.failure(f.run("purge", "--yes", spec=True), "container")
         self.assertEqual(len(Store(f.state).views(spec_id=f.spec["spec_id"])), 1)
 
-    def test_catalog_home_cannot_be_discarded_without_archive(self):
-        f = self.fixture()
-        acquired = self.acquire_candidate(f)
-        self.catalog(f)
-        self.failure(f.run("remove", "--yes", spec=True), "archive")
-        self.failure(f.run("remove", "--yes", "--discard-unpromoted", spec=True))
-        self.assertTrue(Path(acquired["home"]["path"]).exists())
+    def test_catalog_home_removal_needs_confirmation_but_no_archive(self):
+        for setting in ("unconfigured", "disabled", "unavailable"):
+            with self.subTest(archive=setting):
+                f = Fixture(self.root / setting)
+                acquired = self.acquire_candidate(f)
+                self.catalog(f)
+                if setting == "unconfigured":
+                    f.env.pop("PULSAR_COLD_ROOT", None)
+                elif setting == "disabled":
+                    f.env["PULSAR_COLD_ROOT"] = ""
+                else:
+                    # An unusable root must not be probed or gate removal.
+                    unavailable = f.root / "not-a-directory"
+                    unavailable.write_text("unavailable archive")
+                    f.env["PULSAR_COLD_ROOT"] = str(unavailable)
+                home = Path(acquired["home"]["path"])
+                plan = self.success(f.run("remove", "--plan", spec=True))
+                self.assertTrue(plan["eligible"])
+                self.assertTrue(home.exists())
+                self.failure(f.run("remove", spec=True), "requires --yes")
+                self.assertTrue(home.exists())
+                self.success(f.run("remove", "--yes", spec=True))
+                self.assertFalse(home.exists())
+                self.assertEqual(Store(f.state).records("homes"), [])
+                self.assertTrue((f.repo / "releases" / (f.spec["spec_id"] + ".json")).exists())
+                self.assertFalse(any(e["operation"].startswith("archive-") for e in f.events("node-operation")))
 
-    def test_archive_corruption_blocks_removal_and_no_delete_interface_exists(self):
+    def test_corrupt_archive_is_untouched_by_home_removal_and_cannot_be_deleted(self):
         f = self.fixture()
         acquired = self.acquire_candidate(f)
         self.success(f.run("archive", "create", "--yes", spec=True))
         self.catalog(f)
         archive_file = next(f.archive.rglob("weights.bin")); archive_file.write_bytes(b"corrupt")
         self.failure(f.run("archive", "verify", spec=True))
-        self.failure(f.run("remove", "--yes", spec=True))
+        before = {p.relative_to(f.archive): p.read_bytes() for p in f.archive.rglob("*") if p.is_file()}
+        prior_events = len(f.events("node-operation"))
+        self.success(f.run("remove", "--yes", "--discard-unpromoted", spec=True))
+        self.assertFalse(Path(acquired["home"]["path"]).exists())
+        self.assertFalse(any(e["operation"].startswith("archive-")
+                             for e in f.events("node-operation")[prior_events:]))
         self.failure(f.run("archive", "delete", "--yes", spec=True))
-        self.assertTrue(archive_file.exists())
-        self.assertTrue(Path(acquired["home"]["path"]).exists())
+        self.assertEqual({p.relative_to(f.archive): p.read_bytes() for p in f.archive.rglob("*") if p.is_file()}, before)
+
+    def test_unarchived_home_removal_preserves_container_and_dependency_guards(self):
+        f = self.fixture()
+        acquired = self.acquire_candidate(f)
+        self.catalog(f)
+        home = Path(acquired["home"]["path"])
+        self.success(f.run("prepare", "--yes", spec=True))
+        self.success(f.run("pin", "--yes", spec=True))
+        self.failure(f.run("remove", "--yes", spec=True), "prepared copies")
+        self.failure(f.run("purge", "--yes", spec=True), "pinned")
+        self.success(f.run("unpin", "--yes", spec=True))
+        self.success(f.run("purge", "--yes", spec=True))
+        f.cfg["nodes"][0]["containers"] = [{"Id": "stopped-home-user", "State": {"Running": False},
+            "Mounts": [{"Source": str(home)}], "Config": {"Labels": {}}}]
+        f.save()
+        self.failure(f.run("remove", "--yes", spec=True), "container")
+        self.assertTrue(home.exists())
+        f.cfg["nodes"][0]["containers"] = []; f.save()
+        self.success(f.run("remove", "--yes", spec=True))
+        self.assertFalse(home.exists())
 
     def test_archive_verify_is_read_only(self):
         f = self.fixture()
@@ -836,11 +948,11 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(after, before)
         self.assertIsNone(Store(f.state).get("archives", manifest_id))
 
-    def test_lab_discard_requires_explicit_acknowledgement(self):
+    def test_lab_removal_requires_yes_without_a_discard_flag(self):
         f = self.fixture()
         acquired = self.acquire_candidate(f)
-        self.failure(f.run("remove", "--yes", spec=True), "discard")
-        self.success(f.run("remove", "--yes", "--discard-unpromoted", spec=True))
+        self.failure(f.run("remove", spec=True), "requires --yes")
+        self.success(f.run("remove", "--yes", spec=True))
         self.assertFalse(Path(acquired["home"]["path"]).exists())
         self.assertTrue(f.spec_path.exists())
 

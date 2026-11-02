@@ -34,8 +34,9 @@ Usage: pulsar model OPERATION [SPEC_ID] [options]
   archive create|verify   Save or verify an archive
   pin|unpin     Protect or release prepared copies
   purge         Remove unpinned, unused prepared copies
-  remove        Remove an unused home, preserving catalog recovery
+  remove        Remove an unused home; no archive required
   budget        Inspect prepared-copy usage and headroom on all confirmed nodes
+  files         List managed model files and placement across all confirmed nodes
 
 Options:
   --spec-file FILE       Explicit lab candidate spec
@@ -47,7 +48,7 @@ Options:
   --manifest-out FILE   Save the resulting verified source manifest
   --plan                Preview; do not change model files or records
   --yes                 Confirm a model-byte or retention mutation
-  --discard-unpromoted   Acknowledge loss of unarchived lab-only bytes
+  --discard-unpromoted   Compatibility flag; --yes is still required
   --json                Machine-readable output
   --full                Force full SHA-256 verification instead of reuse
   --verification-jobs N  Prepared-copy workers (default 3; one per node)
@@ -62,7 +63,7 @@ ARCHIVE_ACTION=""
 if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
 SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
-NODE="" PLACEMENT_NODES="" YES=0 PLAN=0 JSON=0 FULL=0 DISCARD=0 MANIFEST_OUT=""
+NODE="" PLACEMENT_NODES="" YES=0 PLAN=0 JSON=0 FULL=0 MANIFEST_OUT=""
 VERIFICATION_JOBS=3
 PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
@@ -85,7 +86,7 @@ while [ $# -gt 0 ]; do
     --json) JSON=1 ;;
     --full) FULL=1 ;;
     --for-launch) ;;
-    --discard-unpromoted) DISCARD=1 ;;
+    --discard-unpromoted) : ;; # Compatibility: --yes confirms every home removal.
     --backend) [ "${2:-}" = copy ] || usage_die "--backend accepts only copy (local-file preparation)"; shift ;;
     --transport) [ "${2:-}" = ssh-roce ] || usage_die "--transport accepts only ssh-roce: bulk copies require confirmed ssh-roce"; shift ;;
     --copy-streams) [ "${2:-}" = 8 ] || usage_die "--copy-streams accepts only 8: bulk copies use eight streams"; shift ;;
@@ -99,7 +100,7 @@ case "$OP" in help|-h|--help) usage; exit 0 ;; esac
 [ -z "$PLACEMENT_NODES" ] || case "$OP" in prepare|info|check) : ;; *) usage_die "--placement-nodes applies only to prepare, info and check" ;; esac
 [[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || usage_die "--verification-jobs requires a positive integer"
 [ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || usage_die "--plan and --yes are separate operations"
-case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget) ;; *) usage_die "unknown operation: $OP" ;; esac
+case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget|files) ;; *) usage_die "unknown operation: $OP" ;; esac
 if [ "$OP" = archive ]; then case "$ARCHIVE_ACTION" in create|verify) ;; *) usage_die "archive requires create or verify" ;; esac; fi
 # Before anything is resolved or locked: a spec file also selects the spec.
 case "$OP" in
@@ -114,13 +115,19 @@ MANIFEST_JSON="" SPEC_JSON="" MANIFEST_ID="" HOME_JSON="null"
 . "$REPO_DIR/scripts/model-library-preparation.sh"
 . "$REPO_DIR/scripts/model-library-retention.sh"
 . "$REPO_DIR/scripts/model-library-observations.sh"
+. "$REPO_DIR/scripts/model-library-inventory.sh"
+if [ "$OP" = files ]; then
+  for argument in "${ORIGINAL_ARGS[@]:1}"; do
+    [ "$argument" = --json ] || usage_die "files accepts only --json; it observes every confirmed node"
+  done
+fi
 
 # Hold the chosen archive root fixed for the entire operation. On re-entry
 # lib.sh preserves the frozen process value even if .env contains another value.
-case "$OP" in archive|restore|remove|check)
+case "$OP" in archive|restore|check)
   if [ "${PULSAR_ARCHIVE_CONFIG_LOCKED:-0}" != 1 ]; then
     archive_lock_options=()
-    case "$OP" in check|remove) archive_lock_options+=(--allow-unconfigured) ;; esac
+    case "$OP" in check) archive_lock_options+=(--allow-unconfigured) ;; esac
     if [ "$_MODEL_ARCHIVE_PROCESS_DEFINED" = 1 ]; then
       exec env PULSAR_COLD_ROOT="$_MODEL_ARCHIVE_PROCESS_VALUE" python3 -m model_library.configuration --repo-root "$REPO_DIR" run "${archive_lock_options[@]}" -- "$REPO_DIR/scripts/model-library.sh" "${ORIGINAL_ARGS[@]}"
     else
@@ -133,7 +140,7 @@ esac
 # model check follows the check scripts' exit convention: 0 ready, 1 missing or
 # changed files, 3 the check could not run or observe them.
 [ "$OP" != check ] || check_exit_convention keep-usage
-if [ "$OP" != budget ]; then
+if [ "$OP" != budget ] && [ "$OP" != files ]; then
   if [ "$OP" != acquire ] || [ -n "$SPEC_ID$SPEC_FILE$MANIFEST_FILE" ]; then
     resolve_selected || die "selected spec or manifest is invalid"
   fi
@@ -147,7 +154,7 @@ case "$OP" in
   prepare|info|check|pin|unpin|purge) [ -n "$SPEC_ID" ] || usage_die "$OP requires a spec id" ;;
 esac
 # Preview commands and archive verification never write model-library records.
-if [ "$PLAN" -eq 0 ]; then
+if [ "$PLAN" -eq 0 ] && [ "$OP" != files ]; then
   case "$OP:$ARCHIVE_ACTION" in
     info:|budget:|archive:verify) acquire_model_library_lifecycle_lock shared ;;
     *) acquire_model_library_lifecycle_lock exclusive ;;
@@ -170,4 +177,5 @@ case "$OP" in
   move) move_home ;;
   remove) remove_home ;;
   budget) show_budget ;;
+  files) show_files ;;
 esac

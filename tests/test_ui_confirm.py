@@ -1,6 +1,7 @@
 """Prompt behavior against the bundled Gum, without operator actions."""
 import errno
 import fcntl
+import json
 import os
 from pathlib import Path
 import platform
@@ -276,6 +277,22 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
         self.assertIn("\x1b[?1049h", output)
         self.assertIn("\x1b[1;94mWhat the words mean\x1b[0m", output)
         self.assertIn("\x1b[1;94mspec\x1b[0m", output)
+
+    def test_model_file_inventory_page_renders_the_executable_command_at_44_columns(self):
+        fixture = Path(self.enterContext(tempfile.TemporaryDirectory())) / "files.json"
+        fixture.write_text(json.dumps({
+            "schema_version": 1, "kind": "pulsar-model-file-inventory",
+            "observed_at": "2026-09-05T00:00:00Z", "snapshots": [], "issues": [],
+            "nodes": [{"node_id": "fixture-node", "hostname": "fixture-node", "observed_at": None,
+                       "status": "unknown", "error": "fixture node unavailable", "scopes": [],
+                       "disks": [], "issues": [], "unidentified": [], "container_error": ""}],
+        }))
+        script = '. "$REPO_DIR/scripts/ui.sh"\npage_output "" python3 -m model_library.file_inventory render --file "$1"\n'
+        code, output = self.drive(script, b"q", ready=b"Model files and disk space",
+                                  args=[str(fixture)], columns=44)
+        self.assertEqual(code, 0, output)
+        self.assertIn("\x1b[?1049h", output)
+        self.assertIn("esc quit", output)
 
     def test_short_output_prints_without_the_pager(self):
         code, output = self.page(3, b"")

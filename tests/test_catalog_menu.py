@@ -420,55 +420,6 @@ class View(unittest.TestCase):
         self.assertEqual(menu.option_label("pin", None, 80), "Pin prepared copies — protect from purge")
         self.assertEqual(set(menu.EFFECTS), set(menu.LABELS))
 
-    # TUI-50: the budget table, then each spec holding files with what holds them.
-    def test_free_space_lists_specs_holding_files_and_what_holds_them(self):
-        copies = [{"node_id": "n1", "rank": 0, "pinned": True}, {"node_id": "n2", "rank": 1, "pinned": False}]
-        held = checked(home=HOME, prepared_copies=copies)
-        bare = row(spec_id="cd" * 32)
-        running = {"services": {held["spec_id"]: {"state": "running", "hosts": ["spark-2", "spark-3"],
-                                                   "node_id": None, "modified": False}},
-                   "age": 5, "unobserved": [], "incomplete": False}
-        budget = {"nodes": [{"node_id": "n0", "available": 300 * 1024**3, "used": 50 * 1024**3,
-                             "reserve": 100 * 1024**3, "limit": 200 * 1024**3, "path": "/fixture/views"}]}
-        lines = menu.free_space_lines([held, bare], budget, None, width=100, names=NAMES, live=running)
-        headers = [line.split("\t", 1)[1] for line in lines if line.startswith("header\t")]
-        self.assertEqual(headers[0], "Node     Disk free  Reserve  Pulsar files  Can still copy")
-        self.assertTrue(headers[1].startswith("spark-1"), headers)
-        specs = [line.split("\t") for line in lines if line.startswith("spec\t")]
-        self.assertEqual(specs, [["spec", held["spec_id"], f"[{held['spec_id'][:12]}] org/model · 2 prepared copies "
-                                  "(1 pinned) · home · in use: running on 2 nodes"]])
-        self.assertIn("Archives are never deleted.", " ".join(headers))
-        # Unknown is not absent: a failed budget names why, and nothing holding files says so.
-        lines = menu.free_space_lines([bare], None, "node storage is unobservable", width=44, names=NAMES)
-        self.assertEqual(lines, ["header\tStorage budget not observed: node storage is unobservable",
-                                 "header\tNo catalog spec has a home or prepared copies recorded here; nothing to "
-                                 "reclaim."])
-        # A schema-3 recipe's other required snapshots keep their homes under snapshots.
-        draft_only = row(spec_id="ef" * 32, snapshots={
-            "target": {"home": None, "model_id": "org/model", "model_commit": "0" * 40},
-            "draft": {"home": HOME, "model_id": "org/draft", "model_commit": "1" * 40}})
-        listed = [line.split("\t") for line in menu.free_space_lines([draft_only], budget, None, width=100, names=NAMES)
-                  if line.startswith("spec\t")]
-        self.assertEqual(listed, [["spec", "ef" * 32, f"[{'ef' * 6}] org/model · home only"]])
-        # A long status shortens itself before the label would overflow the menu.
-        busy = checked(home=HOME, prepared_copies=copies * 3, model_id="org/" + "long-model-" * 4)
-        many = {**running, "services": {busy["spec_id"]: {"state": "running", "hosts": ["spark-1", "spark-2"],
-                                                        "node_id": None, "modified": False}}}
-        for width in (100, 80, 60, 44, 30):
-            with self.subTest(width=width):
-                label = menu.free_space_lines([busy], budget, None, width=width, names=NAMES, live=many)[-1]
-                label = label.split("\t")[2]
-                self.assertLessEqual(len(label), width - 2, label)
-                self.assertTrue(label.startswith(f"[{busy['spec_id'][:12]}]"), label)
-                if width >= 60:
-                    self.assertIn("pinned", label)
-                    self.assertIn("in use", label)
-        # Long model names are cut so the label fits the menu.
-        long = checked(home=HOME, model_id="org/" + "long-model-" * 10)
-        label = menu.free_space_lines([long], budget, None, width=44, names=NAMES)[-1].split("\t")[2]
-        self.assertLessEqual(len(label), 42)
-        self.assertTrue(label.endswith("... · home only"), label)
-
     def test_live_status_comes_before_stop(self):
         self.assertLess(menu.MAIN.index("status"), menu.MAIN.index("stop"))
         offered, _, _ = menu.operations(checked(home=HOME), "configured")
@@ -993,7 +944,7 @@ class Question(unittest.TestCase):
                          "Purge org/model: delete 1 working copy, release 1 binding? The home and the archive are kept.")
         self.assertIn("from spark-1 to spark-3",
                        menu.question("move", state, plan={"source_node": "n0", "destination_node": "n2"}, names=NAMES))
-        self.assertIn("Files come back only through Restore or Download",
+        self.assertIn("Recovery requires a usable archive or an available download source.",
                       menu.question("remove", state, plan={"eligible": True, "home": HOME}, names=NAMES))
         self.assertIn("never replaces a running service", menu.question("start", state, names=NAMES))
         self.assertIn("Loading can take several minutes", menu.question("start", state, names=NAMES))
@@ -1285,7 +1236,8 @@ class PlanSummary(unittest.TestCase):
 
     def test_remove(self):
         self.assertEqual(self.summary("remove", {"home": HOME}),
-                         ["Delete the home on spark-1; its files come back only through Restore or Download."])
+                         ["Delete the home model files on spark-1. No archive is required or checked.",
+                          "Recovery requires a usable archive or an available download source."])
 
     def test_blocked_plans_name_each_distinct_cause_once(self):
         container = {"code": "container-reference", "message": "m", "node_id": "n1",

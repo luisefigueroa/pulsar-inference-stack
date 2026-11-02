@@ -100,8 +100,7 @@ def container_details(record: dict, observations: dict[str, dict], message: str)
     return details
 
 
-def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observations: list[dict],
-                 published: bool, archive_verified: bool, discard_unpromoted: bool = False) -> dict:
+def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observations: list[dict]) -> dict:
     validate_home(home)
     checked = require_observations(node_ids, observations)
     dependencies = [validate_view(v) for v in views if v['snapshot_manifest_id'] == home['snapshot_manifest_id']]
@@ -114,15 +113,6 @@ def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observat
     if references:
         blockers.append(message)
         details += references
-    if published and not archive_verified:
-        blockers.append('catalog home removal requires a fully verified archive')
-        details.append(detail('archive-required', blockers[-1], 'create or verify the archive first'))
-    if not published and not archive_verified and not discard_unpromoted:
-        blockers.append('unarchived lab model requires explicit discard-unpromoted')
-        details.append(detail('discard-required', blockers[-1], 'archive it, or pass --discard-unpromoted'))
-    if published and discard_unpromoted:
-        blockers.append('a catalog snapshot cannot be discarded as an unpromoted experiment')
-        details.append(detail('catalog-snapshot', blockers[-1], 'remove --discard-unpromoted and archive it first'))
     return {'kind': 'pulsar-home-removal-plan', 'snapshot_manifest_id': home['snapshot_manifest_id'],
             'eligible': not blockers, 'blockers': blockers, 'blocker_details': details, 'home': home,
             'dependent_spec_ids': sorted({v['spec_id'] for v in dependencies})}

@@ -32,6 +32,12 @@ class StorageRendering(unittest.TestCase):
         self.assertNotIn("{'",output)
         return output,' '.join(output.split())
 
+    def test_removal_preview_explains_archive_independent_recovery_at_44_columns(self):
+        _, flat = self.display(dict(kind='pulsar-home-removal-plan', eligible=True, home=HOME,
+                                    blockers=[], dependent_spec_ids=[]), 'remove')
+        self.assertIn('No archive is required or checked.', flat)
+        self.assertIn('Recovery requires a usable archive or an available download source.', flat)
+
     def test_acquisition_preview_names_exact_source_and_scale(self):
         source=dict(model_id='example/model',snapshot_revision=REVISION,files=MANIFEST['files'])
         output,flat=self.display(dict(kind='pulsar-acquisition-plan',model_id='example/model',snapshot_revision=REVISION,source=source,selected_node='node-1',existing_homes=[]),'acquire')

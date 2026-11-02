@@ -40,7 +40,7 @@ next_action=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(js
 case "$complete:$next_action" in
   1:*) require_gum "the Pulsar menu" "./pulsar models list" "browse the catalog" \
     "./pulsar inventory" "see what runs on each node" "./pulsar topology check" "check saved nodes and fabric" \
-    "./pulsar model budget" "disk headroom on every node" "./pulsar doctor" "host diagnostics" \
+    "./pulsar model files" "model files and placement on every node" "./pulsar model budget" "disk headroom on every node" "./pulsar doctor" "host diagnostics" \
     "./pulsar configure archive-root" "archive storage setting" "./pulsar topology show" "saved cluster membership" \
     "./pulsar help" "commands and guides (help terms, help workflow)" ;;
   *:enroll-ssh-trust) require_gum "the Pulsar menu" "./pulsar ssh-trust enroll" "enroll SSH trust (next setup step)" \
@@ -74,22 +74,23 @@ unset PULSAR_HOME_STATUS_SHOWN
 [ "$status_text" = "$shown" ] || printf '\n%s\n\n' "$status_text"
 
 if [ "$complete" = 1 ]; then
-  choice=$(PULSAR_CHOOSE_ESC=exit choose_index "Pulsar Inference Stack" "Catalog and storage" "Live service inventory" \
-    "Cluster overview (checks nodes now)" "Host diagnostics" "Archive storage configuration" \
+  choice=$(PULSAR_CHOOSE_ESC=exit choose_index "Pulsar Inference Stack" "Catalog and storage" "Model files and disk space (checks nodes now)" \
+    "Live service inventory" "Cluster overview (checks nodes now)" "Host diagnostics" "Archive storage configuration" \
     "Cluster topology" "Help" "Exit") \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   # Each choice runs as a child; the menu returns here until Exit, Esc or Ctrl-C.
   set +e
   case "$choice" in
     0) "$REPO_DIR/pulsar" models menu ;;
-    1) "$REPO_DIR/pulsar" inventory menu ;;
+    1) "$REPO_DIR/pulsar" models files ;;
+    2) "$REPO_DIR/pulsar" inventory menu ;;
     # Probes the nodes only now: topology check, inventory and model budget.
-    2) "$REPO_DIR/scripts/cluster-overview.sh" ;;
+    3) "$REPO_DIR/scripts/cluster-overview.sh" ;;
     # Long output opens in the pager, so this menu cannot bury it.
-    3) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor ;;
-    4) "$REPO_DIR/pulsar" configure archive-root menu ;;
-    5) "$REPO_DIR/scripts/topology.sh" menu ;;
-    6) help_menu ;;
+    4) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor ;;
+    5) "$REPO_DIR/pulsar" configure archive-root menu ;;
+    6) "$REPO_DIR/scripts/topology.sh" menu ;;
+    7) help_menu ;;
     *) exit 0 ;;
   esac
   rc=$?

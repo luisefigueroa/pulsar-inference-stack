@@ -11,7 +11,7 @@ from .node_names import NodeNames
 
 
 OPERATIONS = ('acquire', 'prepare', 'info', 'archive', 'restore', 'move', 'pin',
-              'unpin', 'purge', 'remove', 'check', 'budget')
+              'unpin', 'purge', 'remove', 'check', 'budget', 'files')
 
 
 def bytes_text(value: Any) -> str:
@@ -261,6 +261,9 @@ def blocker_message(text: str, names: NodeNames) -> str:
     return names.prefixed(text)
 
 
+HOME_REMOVAL_RECOVERY = 'Recovery requires a usable archive or an available download source.'
+
+
 # Each structured blocker as a cause, without its fix; {node} is the hostname.
 BLOCKER_TEXT = {
     'pinned': 'the prepared copy on {node} is pinned',
@@ -269,6 +272,7 @@ BLOCKER_TEXT = {
     'reuse-unverified': 'a shared prepared copy on {node} failed verification',
     'dependent-copies': 'prepared copies still depend on this home',
     'incomplete-preparations': 'incomplete preparations still depend on this snapshot',
+    # Retain rendering for plans saved by older Stack installations.
     'archive-required': 'removing a catalog home requires a fully verified archive',
     'discard-required': 'this snapshot has no verified archive',
     'catalog-snapshot': 'a catalog snapshot cannot be discarded as an experiment',
@@ -394,6 +398,9 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
     _blockers(out, document, names)
     if operation == 'acquire':
         out.emit('The complete source file list is available with --json.')
+    if operation == 'remove':
+        out.emit('Delete the home model files. No archive is required or checked.')
+        out.emit(HOME_REMOVAL_RECOVERY)
 
 
 def _observation(out: TerminalWriter, document: dict, names: NodeNames) -> None:
@@ -429,6 +436,10 @@ def render(document: Any, *, operation: str, archive_action: str = '',
     out = writer or TerminalWriter()
     names = names or NodeNames()
     kind = str(document.get('kind') or '')
+    if operation == 'files':
+        from .file_inventory import render as render_files
+        render_files(document, writer=out)
+        return
     members=document.get('snapshots')
     if isinstance(members,dict):
         out.emit('Complete required snapshot set')

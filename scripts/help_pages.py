@@ -49,6 +49,8 @@ REFERENCE = [
         ("pulsar models menu --read-only",
          "Select published specs and inspect saved details without offering operations."),
         ("pulsar models show SPEC", "Show recipe, known copies, pins and blockers."),
+        ("pulsar models files", "Open Model files and disk space; checks all confirmed nodes."),
+        ("pulsar model files", "List managed model snapshots and their placement, including uncataloged downloads."),
         ("pulsar models results SPEC", "Inspect published run dates, workloads and policy outcomes for this spec."),
         ("pulsar models check SPEC", "Explicitly check the selected managed files and archive."),
         ("pulsar release show|verify SPEC", "Print a catalog spec as JSON, or its state and review."),

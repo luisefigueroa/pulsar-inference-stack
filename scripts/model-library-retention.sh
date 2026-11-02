@@ -100,20 +100,17 @@ snapshot_dependencies() {
 
 remove_home() {
   require_home
-  local observations archive_ok=false plan rank dependencies
+  local observations plan rank dependencies
   require_cluster_nodes 1 >/dev/null || die "home removal requires confirmed topology"
   observations=$(all_observations) || die "cannot inspect every node"
   dependencies=$(snapshot_dependencies) || die "snapshot dependencies are unobservable"
-  if [ -n "${PULSAR_COLD_ROOT:-}" ] && archive_verify >/dev/null 2>&1; then archive_ok=true; fi
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)" archive_verified: "$archive_ok" discard_unpromoted: "$([ "$DISCARD" -eq 1 ] && echo true || echo false)")") || die "home removal planning failed"
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || die "home removal planning failed"
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "home removal requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
-  # The archive must still verify at the destructive boundary; no presence-only shortcut.
-  [ "$archive_ok" != true ] || archive_verify >/dev/null || die "archive changed before removal"
   observations=$(all_observations) || die "cannot recheck nodes before home removal"
   dependencies=$(snapshot_dependencies) || die "cannot recheck snapshot dependencies"
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)" archive_verified: "$archive_ok" discard_unpromoted: "$([ "$DISCARD" -eq 1 ] && echo true || echo false)")") || return 2
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$HOME_JSON" node_id)" --path "$(json_fields "$HOME_JSON" hub_path)" --json >/dev/null || die "home acquired a container reference"

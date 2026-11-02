@@ -34,6 +34,9 @@ def run(request: dict) -> dict:
         return {'state':'present'}
     if op == 'roots':
         return {'home_root': str(home_root), 'view_root': str(view_root)}
+    if op == 'inventory-files':
+        from .file_discovery import inspect_files
+        return inspect_files(request, home_root, view_root)
     if (view_root/'.pulsar-node').is_symlink():
         raise StorageError('node state must not be an internal symlink')
     node_store = Store(view_root/'.pulsar-node')

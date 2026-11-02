@@ -28,7 +28,8 @@ from typing import Any
 from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
 from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
-from .render import blocker_detail_text, blocker_message, preparation_estimate, projected_headroom, size_text
+from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
+                     projected_headroom, size_text)
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
@@ -58,7 +59,7 @@ EFFECTS = {
     "move": "move the home to another node",
     "archive": "save a verified recovery copy", "verify": "recheck the archive's contents",
     "pin": "protect from purge", "unpin": "allow purge again",
-    "purge": "delete prepared copies; the home is kept", "remove": "delete the home; the archive is kept",
+    "purge": "delete prepared copies; the home is kept", "remove": "delete the home; no archive required",
 }
 # Operations that change model files or records; a success makes the saved
 # check out of date until the next Check now. Download, Restore and Prepare
@@ -491,60 +492,6 @@ def withdrawal_notice(row: dict) -> list[str]:
 # Reclaiming space, in the order that unblocks the next step: a running
 # container holds its copies, a pin keeps them from purge, and a home goes last.
 RECLAIM = ("stop", "unpin", "purge", "remove")
-
-
-def free_space_lines(entries: list[dict], budget: dict | None, budget_error: str | None, *, width: int,
-                     names: NodeNames, live: dict | None = None, outcomes: dict | None = None) -> list[str]:
-    """The Free disk space screen: the budget table, then each spec holding files.
-
-    Lines are "header" and text, or "spec", a spec ID and its label. Specs come
-    from saved records; "in use" comes only from this session's observation.
-    """
-    from .render import budget_table
-    lines = []
-    if budget is not None:
-        lines += [f"header\t{line}" for line in budget_table(budget["nodes"], names, width)]
-    else:
-        lines.append(f"header\tStorage budget not observed: {budget_error or 'no result'}")
-    def homes(entry: dict) -> int:
-        # A schema-3 recipe keeps each required snapshot's home under snapshots.
-        return sum(1 for member in members(entry).values() if member.get("home"))
-    holding = [entry for entry in entries if entry.get("prepared_copies") or homes(entry)]
-    if not holding:
-        lines.append("header\tNo catalog spec has a home or prepared copies recorded here; nothing to reclaim.")
-        return lines
-    lines.append("header\tChoose a spec to stop, unpin, purge or remove its files. Archives are never deleted.")
-    budget_width = width - 2  # Gum draws its cursor before each label.
-    for entry in holding:
-        copies = entry.get("prepared_copies") or []
-        pinned = sum(1 for copy in copies if copy.get("pinned"))
-        home = (_count(homes(entry), "home") if homes(entry) > 1 else "home") if homes(entry) else ""
-        fact = live_fact(entry, live, (outcomes or {}).get(entry["spec_id"]))
-        in_use = fact is not None and fact["kind"] == "service" and live_current(fact)
-        # Longest first; each later form is shorter, so the label fits the menu.
-        forms = []
-        for copies_text, use_text in (
-                (_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else ""),
-                 f"in use: {_service_words(fact, hosts=False)}" if in_use else ""),
-                (_count(len(copies), "prepared copy", "prepared copies") + (f" ({pinned} pinned)" if pinned else ""),
-                 "in use" if in_use else ""),
-                (_count(len(copies), "copy", "copies") + (f", {pinned} pinned" if pinned else ""),
-                 "in use" if in_use else "")):
-            parts = [copies_text, home] if copies else [f"{home} only"]
-            forms.append(" · " + " · ".join(part for part in (*parts, use_text) if part))
-        prefix = f"[{entry['spec_id'][:12]}] "
-        model = entry["model_id"]
-        # The whole model name first, then at least 12 of its characters.
-        suffix = next((form for need in (len(model), min(len(model), 12)) for form in forms
-                       if budget_width - len(prefix) - len(form) >= need), forms[-1])
-        room = budget_width - len(prefix) - len(suffix)
-        if len(model) > room:
-            model = model[:room - 3] + "..." if room >= 4 else ""
-        label = clean(prefix + model + suffix)
-        if len(label) > budget_width:
-            label = label[:budget_width - 1] + "…"
-        lines.append(f"spec\t{entry['spec_id']}\t{label}")
-    return lines
 
 
 def menu_label(row: dict, width: int, live: dict | None = None) -> str:
@@ -1165,7 +1112,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     if action == "remove":
         home = document.get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
-        return [f"Delete the home on {where}; its files come back only through Restore or Download."]
+        return [f"Delete the home model files on {where}. No archive is required or checked.", HOME_REMOVAL_RECOVERY]
     raise ValueError(f"no preview summary for {action}")
 
 
@@ -1235,7 +1182,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     if action == "remove":
         home = (plan.get("plan") or plan).get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
-        return f"Remove the home of {identity} on {where}? Files come back only through Restore or Download."
+        return f"Remove the home model files of {identity} on {where}? {HOME_REMOVAL_RECOVERY}"
     if action == "archive":
         root = plan.get("archive_root")
         return (f"Create an archive of {identity}{' in ' + root if root else ''}? "
@@ -1343,11 +1290,6 @@ def read_row(stream, spec_id: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    space = sub.add_parser("free-space", help="the budget table and specs holding files; catalog JSON on stdin")
-    space.add_argument("--budget", help="model budget --json output")
-    space.add_argument("--budget-error", help="why the budget is not observed")
-    space.add_argument("--live", help="service inventory JSON this menu session captured")
-    space.add_argument("--service-outcome", action="append", default=[])
     labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
     labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
     live_help = "service inventory JSON this menu session captured"
@@ -1404,28 +1346,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "memory-warning":
             from scripts.start_blockers import read
             return 0 if memory_warning_only(read(args.blockers_file)) else 1
-        if args.command == "free-space":
-            entries = json.load(sys.stdin).get("entries") or []
-            budget, budget_error = None, args.budget_error
-            if args.budget:
-                try:
-                    with open(args.budget, encoding="utf-8") as handle:
-                        document = json.load(handle)
-                except ValueError:
-                    document = None
-                result = document.get("result") if isinstance(document, dict) and document.get("ok") is True else None
-                if isinstance(result, dict) and isinstance(result.get("nodes"), list):
-                    budget = result
-                else:
-                    # A failed budget names its reason; the specs are still listed.
-                    error = document.get("error") if isinstance(document, dict) else None
-                    budget_error = clean((error or {}).get("message") or "model budget returned no result")
-            names = NodeNames.saved()
-            for line in free_space_lines(entries, budget, budget_error, width=terminal_width(), names=names,
-                                         live=load_live(args.live, entries),
-                                         outcomes=service_outcomes(args.service_outcome, names=names)):
-                print(line)
-            return 0
         if args.command == "labels":
             width = terminal_width()
             entries = json.load(sys.stdin).get("entries") or []
