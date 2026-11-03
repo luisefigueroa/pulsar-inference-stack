@@ -105,11 +105,13 @@ JSON fields, and container labels retain their existing names. The menu's
 ## Catalog labels
 
 The catalog list, a spec's frame, `./pulsar models list` and the home screen
-describe each spec with these words. Each label is written as
-`Field: words`; the field is where the words appear. The menu's
-**Help → What the labels mean**, the catalog list's **What the labels mean**
-and `./pulsar help labels` show this table. JSON output keeps its own values
-(`local_state`, `archive_state`, `state`); only the words below are for reading.
+describe each spec with these words; the **Model files and disk space** page
+and `./pulsar model files` describe each model's files with the *Model files*
+rows. Each label is written as `Field: words`; the field is where the words
+appear. The menu's **Help → What the labels mean**, the catalog list's
+**What the labels mean** and `./pulsar help labels` show this table. JSON output
+keeps its own values (`local_state`, `archive_state`, `state`); only the words
+below are for reading.
 
 | Label | Meaning |
 | --- | --- |
@@ -146,6 +148,27 @@ and `./pulsar help labels` show this table. JSON output keeps its own values
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
 | Review: withdrawn | The maintainer advises against this spec and gives a reason. Serving remains possible when the checks pass. |
+| Model files: home | The node has this model's *home*, the downloaded files that prepared copies are made from. Pulsar compared file names and sizes, not contents. |
+| Model files: copy (detail: prepared copy) | The node has a *prepared copy*: the files a *service* reads there. |
+| Model files: home missing or copy missing (detail: home not found, prepared copy not found) | A saved record says the files should be on this node, but the folder is gone. **Prepare** recreates a missing copy; a missing home needs **Download** or **Restore**. |
+| Model files: home unknown or copy unknown | The check found the folder but could not confirm its files, or could not read the node. Choose **Refresh** to look again. |
+| Model files: shared | More than one spec uses these files, so they are stored once. Clearing one spec's copies keeps them for the others. |
+| Model files: pinned | Kept from Purge until unpinned. **Unpin prepared copies** removes the protection. |
+| Model files: in use (detail: in use by a container) | A container mounts the files, even a stopped one. **Stop** removes the containers and keeps the files. |
+| Model files: pins unknown | The node's pin records could not be read, so it is not known whether the files are pinned or shared. Choose **Refresh** when the node is reachable. |
+| Model files: use unknown (detail: container use unknown) | The containers on the node could not be listed, so it is not known whether the files are in use. |
+| Model files: shared (saved record), pinned (saved record) | Pulsar's saved records say so, but the node could not confirm it now. Every cleanup rechecks before it removes anything. |
+| Model files: — (detail: none in Pulsar's folders on this node) | No copy of this model is in the homes or copies folder on that node. It does not mean the files are absent from the machine. |
+| Model files: ? | The node, or part of its folders, could not be checked, so it is not known whether the model is there. |
+| Model files: not in Pulsar's records | The files are in a Pulsar folder, but no saved record owns them. The menu offers no cleanup for them. |
+| Model files: checked | Pulsar read the folder and compared the names and sizes of what it found. |
+| Model files: none on this node | The folder does not exist on that node, so nothing is stored there yet. |
+| Model files: partly checked | Pulsar read the folder, but some items in it were not recognized; see the **Not recognized** lines. |
+| Model files: could not be checked | Pulsar could not read the folder; the reason follows the line. Fix the access, then choose **Refresh**. |
+| Model files: Unfinished copy | A download or preparation that has not finished: still running, or interrupted. Pulsar doesn't serve from it, and no Pulsar command removes it. |
+| Model files: Not recognized | An item in a Pulsar folder that is not a model snapshot Pulsar can identify; the reason follows its path. Pulsar changes nothing. |
+| Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
+| Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
 
 ## Configure topology and storage
 
@@ -811,39 +834,47 @@ managed filesystems now; it does not present saved placement as current. The equ
 ./pulsar model files --json
 ```
 
-The overview shows disk free space and one model-by-node table when it fits;
-narrow screens use stacked entries. **H** means home and **P** means prepared
-copy. Pins, shared copies and container references are marked separately;
-references include stopped containers. **?** means unknown and **—** means
-not seen in the scanned roots, never absent from the whole machine. A node
-failure keeps observations from the other nodes. If only container inspection
-fails, file placement remains visible and container use is unknown. When a node
-or its binding records cannot be observed, retention is unknown; saved pins or
-shared bindings in details are explicitly labeled as saved.
+The overview shows each node's free space and folders, then one model-by-node
+table when it fits; narrow screens use stacked entries. The cells use words
+(`home`, `copy`, `shared`, `pinned`, `in use`). Only when the words do not fit
+do short codes (`H`, `P`, `used`) take their place, with a key under the table
+that explains just what is shown. Pins, shared copies and container use are
+marked separately; `in use` includes stopped containers. `?` means the node
+could not be checked and `—` means the model is not in Pulsar's folders on that
+node, never that it is absent from the whole machine. The
+[Model files rows](#catalog-labels) of `./pulsar help labels` explain every
+word. A node failure keeps observations from the other nodes. If only container
+inspection fails, file placement remains visible and container use is unknown.
+When a node or its pin records cannot be read, pins are unknown; saved pins or
+shared copies in details are explicitly labeled as saved records.
 
 Discovery reads immediate children of the configured home and prepared-copy
 namespaces, explicitly configured overlay home roots, and locations named by
 saved records. It does not search the filesystem broadly, follow internal
-symlinks, register discovered files, or change model-library records. Incomplete
-staging and unidentified managed paths are shown for inspection. Declared file
-names and sizes are checked without hashing model contents; presence is not
-proof of complete verified model identity or readiness to serve. The displayed
-scope and per-node timestamps describe what was observed. **Refresh** collects
-new observations; viewing details reuses the captured result.
+symlinks, register discovered files, or change model-library records. A download
+or preparation that has not finished (still running, or interrupted) appears as
+an **Unfinished copy** under its node, and an unidentified managed path as
+**Not recognized**; Pulsar changes neither. Declared file names and sizes are
+checked without hashing model contents; presence is not proof of complete
+verified model identity or readiness to serve. The **Checked** line gives the
+age of the observations and each node's folder lines say what was read.
+**Refresh** collects new observations; viewing details reuses the captured
+result.
 
-Payload sizes are estimates from manifests for one complete copy, not allocated
-disk usage or promised reclaimable space. A home used as a prepared copy and a
+**Size per copy** is the model's listed size from its manifest for one complete
+copy, not allocated disk usage or promised reclaimable space. A home used as a prepared copy and a
 working copy shared by several recipes each remain one physical location.
 Archive information comes from saved verification records, with its time; archive
 storage is not scanned by this overview and is never a cleanup target.
 
-Select a snapshot for paths and cleanup. A registered snapshot with one catalog
-recipe opens that recipe's existing **Stop**, **Unpin prepared copies**,
-**Purge prepared copies** and **Remove home** menu. With several recipes, select
-the recipe first. Purge still covers the selected recipe's prepared copies;
-**Remove home** selects a snapshot. Every mutation keeps its existing plan,
-confirmation and protections. Uncataloged or unregistered files without a
-catalog cleanup route are inspection-only: discovery does not authorize deletion.
+Close the page, then choose a snapshot for its paths and cleanup. A registered
+snapshot with one catalog spec opens that spec's existing **Stop**, **Unpin
+prepared copies**, **Purge prepared copies** and **Remove home** menu. With
+several specs, **Clean up through which spec?** asks first. Purge still covers
+the selected spec's prepared copies; **Remove home** selects a snapshot. Every
+mutation keeps its existing plan, confirmation and protections. Uncataloged or
+unregistered files with no catalog spec are *view only*: the page is all the
+menu shows for them, and discovery does not authorize deletion.
 
 To discard a downloaded model after trying it, stop its service, unpin and purge
 its prepared copies, then choose **Remove home** and confirm. Both catalog and

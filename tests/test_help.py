@@ -206,6 +206,20 @@ class Help(unittest.TestCase):
         missing = sorted(word for word in words if word not in labels)
         self.assertEqual(missing, [], "add a row under ## Catalog labels in docs/OPERATIONS.md for each")
 
+    def test_every_word_the_model_files_page_prints_has_a_model_files_row(self):
+        """The page's words are checked against its own rows, so a short word such as `?` or `home` cannot
+        match an unrelated row."""
+        from model_library import file_inventory
+        words = {*file_inventory.FOLDER_STATES.values(), *file_inventory.CELL_WORDS.values(),
+                 *file_inventory.CELL_CODES.values(), *file_inventory.PLACEMENT_WORDS.values(),
+                 "home not found", "prepared copy not found", "Unfinished copy", "Not recognized", "view only",
+                 "Size per copy"}
+        # A code is explained by the key beside the table, not by the legend; only the words need rows.
+        words -= set(file_inventory.CELL_CODES.values()) - set(file_inventory.CELL_WORDS.values())
+        rows = " ".join(label.split(": ", 1)[1] for label, _ in help_pages.labels() if label.startswith("Model files: "))
+        self.assertEqual(sorted(word for word in words if word not in rows), [],
+                         "add a Model files row under ## Catalog labels in docs/OPERATIONS.md for each")
+
     def test_workflow_page_has_one_sentence_per_step_in_lifecycle_order(self):
         text = self.run_help(("help", "workflow"), 100)
         steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)

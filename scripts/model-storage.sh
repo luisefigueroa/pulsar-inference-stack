@@ -747,12 +747,14 @@ files_snapshot_menu() {
     [ -n "$spec" ] || continue
     specs+=("$spec"); labels+=("$label")
   done < <(file_inventory recipes --file "$CATALOG_WORK/files.json" --snapshot "$snapshot")
+  # Files no catalog spec uses have no cleanup here: the page above is the whole answer.
+  [ "${#specs[@]}" -gt 0 ] || return 0
   if [ "${#specs[@]}" -eq 1 ]; then
     reclaim_menu "${specs[0]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     FILES_REFRESH=1
     return 0
   fi
-  index=$(choose_index "Model snapshot" "${labels[@]}" "Back") \
+  index=$(choose_index "Clean up through which spec?" "${labels[@]}" "Back") \
     || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   [ "$index" -lt "${#specs[@]}" ] || return 0
   reclaim_menu "${specs[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
@@ -776,7 +778,7 @@ free_disk_space() {
       return 0
     fi
     while true; do
-      page_output "" python3 -m model_library.file_inventory render --file "$CATALOG_WORK/files.json" \
+      page_output "" python3 -m model_library.file_inventory render --file "$CATALOG_WORK/files.json" --menu \
         || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
       ids=(); labels=()
       while IFS=$'\t' read -r snapshot label; do

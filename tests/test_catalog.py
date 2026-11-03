@@ -768,7 +768,7 @@ raise SystemExit(rc)
         return lambda _: {"BUDGET_FIXTURE": json.dumps(envelope), "BUDGET_RC": str(rc)}
 
     @staticmethod
-    def file_inventory(with_model=True, unregistered=False, unavailable=False):
+    def file_inventory(with_model=True, unregistered=False, unavailable=False, extra_specs=0):
         def environment(spec):
             node = {"node_id": "fixture-node", "hostname": "fixture-host",
                     "observed_at": None if unavailable else "2026-09-05T00:00:00Z",
@@ -781,11 +781,13 @@ raise SystemExit(rc)
                         "state": "unknown" if unavailable else "present", "registered_home": not unregistered,
                         "bindings": [], "bindings_observed": not unavailable, "pinned": False, "shared": False,
                         "container_references": None if unavailable else []}
+            others = [chr(ord("d") + number) * 64 for number in range(extra_specs)]
             entry = {"snapshot_manifest_id": "c" * 64, "model_id": "example/model", "model_commit": "a" * 40,
                      "payload_bytes": 1024, "locations": [location], "archive": None,
-                     "catalog_specs": [] if unregistered else [{"spec_id": spec, "snapshot": "target",
-                                                                "model_id": "example/model"}],
-                     "cleanup_spec_ids": [] if unregistered else [spec]}
+                     "catalog_specs": [] if unregistered else [{"spec_id": value, "snapshot": "target",
+                                                                "model_id": "example/model"}
+                                                               for value in (spec, *others)],
+                     "cleanup_spec_ids": [] if unregistered else [spec, *others]}
             document = {"schema_version": 1, "kind": "pulsar-model-file-inventory",
                         "observed_at": "2026-09-05T00:00:00Z", "nodes": [node],
                         "snapshots": [entry] if with_model else [], "issues": []}
@@ -800,7 +802,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
         self.assertEqual(questions, "")
         self.assertIn("150 GiB", " ".join(result.stdout.split()))
-        self.assertIn("No model snapshots were identified", " ".join(result.stdout.split()))
+        self.assertIn("No model files were found in Pulsar's folders", " ".join(result.stdout.split()))
         self.assertIn("Model files and disk space\nRefresh (checks nodes now)\nBack\n", choices)
 
     def test_model_files_opens_registered_recipes_existing_cleanup_previews(self):
@@ -820,15 +822,37 @@ raise SystemExit(rc)
         self.assertIn("Nothing changed.", result.stdout)
 
     def test_uncataloged_discovery_is_visible_but_offers_no_cleanup(self):
+        # No spec uses the files, so the page is the whole answer: no empty chooser follows it.
         _, result, actions, choices, questions = self.run_menu(
-            ["Free disk space (checks nodes now)", "#0", "Back", "Back", "Back"],
+            ["Free disk space (checks nodes now)", "#0", "Back", "Back"],
             empty_catalog=True, env_extra=self.file_inventory(unregistered=True))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
         self.assertEqual(questions, "")
-        self.assertIn("inspect only", choices)
-        self.assertIn("Model snapshot\nBack\n", choices)
-        self.assertIn("no registered catalog cleanup route", " ".join(result.stdout.split()))
+        self.assertIn("— view only", choices)
+        self.assertNotIn("inspect only", choices)
+        self.assertNotIn("Clean up through which spec?", choices)
+        self.assertNotIn("Model snapshot\nBack\n", choices)
+        self.assertEqual(choices.splitlines().count("Model files and disk space"), 2)
+        self.assertIn("No catalog spec uses these files, so Pulsar has no cleanup for them. "
+                      "Nothing was changed.", " ".join(result.stdout.split()))
+        # The overview page names the menu choice; the snapshot page does not.
+        pages = [line for line in choices.splitlines() if line.startswith("[page]") and "file_inventory render" in line]
+        self.assertEqual([("--snapshot" in line, "--menu" in line) for line in pages],
+                         [(False, True), (True, False), (False, True)])
+
+    def test_files_that_two_specs_share_ask_which_spec_to_clean_up_through(self):
+        _, result, actions, choices, questions = self.run_menu(
+            ["Free disk space (checks nodes now)", "#0", "Back", "Back", "Back"],
+            env_extra=self.file_inventory(extra_specs=1))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(questions, "")
+        block = choices.split("Clean up through which spec?\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        self.assertEqual(len(block), 3, block)
+        self.assertTrue(all(label.startswith("Spec [") and label.endswith(" — target") for label in block[:2]), block)
+        self.assertEqual(block[2], "Back")
+        self.assertNotIn("Cleanup recipe", choices)
 
     # TUI-42: both run read-only in the pager, with no question.
     def test_verify_running_service_and_full_file_audit_ask_nothing(self):

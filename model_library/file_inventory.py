@@ -137,128 +137,236 @@ def combine(saved: dict, observations: list[dict]) -> dict:
             "issues": saved["issues"]}
 
 
+# Words the page prints for a model's files. Tables use words when they fit and short codes
+# when they do not; both share these keys. docs/OPERATIONS.md#catalog-labels explains each
+# one, and tests/test_help.py fails when a printable word has no row there.
+FOLDER_STATES = {"observed": "checked", "not-found": "none on this node",
+                 "partial": "partly checked", "unknown": "could not be checked"}
+CELL_WORDS = {"home": "home", "copy": "copy", "home missing": "home missing", "copy missing": "copy missing",
+              "home unknown": "home unknown", "copy unknown": "copy unknown", "shared": "shared",
+              "pinned": "pinned", "in use": "in use", "pins unknown": "pins unknown",
+              "use unknown": "use unknown", "none": "—", "node unknown": "?"}
+CELL_CODES = {"home": "H", "copy": "P", "home missing": "H missing", "copy missing": "P missing",
+              "home unknown": "H?", "copy unknown": "P?", "shared": "shared", "pinned": "pin",
+              "in use": "used", "pins unknown": "pins?", "use unknown": "use?", "none": "—",
+              "node unknown": "?"}
+# What the key under a table says about a cell word, shown only for words on screen.
+CELL_HINTS = {"home": "home", "copy": "copy", "home missing": "home not found", "copy missing": "copy not found",
+              "home unknown": "home could not be checked", "copy unknown": "copy could not be checked",
+              "none": "none on this node", "node unknown": "the node could not be fully checked",
+              "shared": "more than one spec uses it", "pinned": "kept from Purge",
+              "in use": "a container mounts it, even stopped",
+              "pins unknown": "pins could not be read on that node",
+              "use unknown": "containers could not be read on that node"}
+# Words that explain themselves, so only the codes table needs a key for them.
+SELF_EXPLAINING = ("home", "copy", "home missing", "copy missing", "home unknown", "copy unknown")
+# Detail lines have room, so they use the longer words.
+PLACEMENT_WORDS = {"home": "home", "copy": "prepared copy", "missing": "not found", "unknown": "unknown",
+                   "none": "none in Pulsar's folders on this node", "node unknown": "unknown",
+                   "pins unknown": "pins unknown", "use unknown": "container use unknown",
+                   "in use": "in use by a container", "shared saved": "shared (saved record)",
+                   "pinned saved": "pinned (saved record)", "unregistered": "not in Pulsar's records"}
+UNFINISHED = ("a download or preparation that has not finished: still running, or interrupted. "
+              "Pulsar doesn't serve from it, and no Pulsar command removes it.")
+FOOTER = ("Size per copy is the model's listed size. Shared copies are stored once, so it is not what "
+          "deleting would free.")
+NODE_LABEL_WIDTH = 16
+
+
 def _words(location: dict) -> str:
-    kind = "home" if location["kind"] == "home" else "prepared copy"
+    kind = PLACEMENT_WORDS["home" if location["kind"] == "home" else "copy"]
     state = location["state"]
-    parts = [kind if state == "present" else kind + " " + ("not found" if state == "missing" else "unknown")]
-    if not location.get("bindings_observed"):
-        parts.append("retention unknown")
+    parts = [kind if state == "present" else kind + " " + PLACEMENT_WORDS["missing" if state == "missing" else "unknown"]]
+    observed = location.get("bindings_observed")
+    if not observed:
+        parts.append(PLACEMENT_WORDS["pins unknown"])
     if location.get("shared"):
-        parts.append("shared" if location.get("bindings_observed") else "saved shared binding")
+        parts.append(CELL_WORDS["shared"] if observed else PLACEMENT_WORDS["shared saved"])
     if location.get("pinned"):
-        parts.append("pinned" if location.get("bindings_observed") else "saved pin")
+        parts.append(CELL_WORDS["pinned"] if observed else PLACEMENT_WORDS["pinned saved"])
     references = location.get("container_references")
     if references is None:
-        parts.append("container use unknown")
+        parts.append(PLACEMENT_WORDS["use unknown"])
     elif references:
-        parts.append("container referenced")
+        parts.append(PLACEMENT_WORDS["in use"])
     if not location.get("registered_home") and not location.get("bindings"):
-        parts.append("unregistered")
+        parts.append(PLACEMENT_WORDS["unregistered"])
     return ", ".join(parts)
 
 
-def placement(entry: dict, node: dict, *, compact: bool = False) -> str:
+def _cell_keys(entry: dict, node: dict) -> list[str]:
+    """The CELL_WORDS keys for a model's files on one node, in reading order."""
     locations = [item for item in entry["locations"] if item["node_id"] == node["node_id"]]
     if not locations:
         unknown = (node["status"] == "unknown" or node["issues"]
                    or any(scope["status"] in ("unknown", "partial") for scope in node["scopes"]))
-        return ("?" if compact else "unknown") if unknown else ("—" if compact else "not seen in scanned roots")
-    if not compact:
-        return "; ".join(_words(item) for item in locations)
-    parts = []
+        return ["node unknown" if unknown else "none"]
+    keys = []
     for item in locations:
-        kind = "H" if item["kind"] == "home" else "P"
-        parts.append(kind if item["state"] == "present" else kind + (" missing" if item["state"] == "missing" else "?"))
-    for field, word in (("pinned", "pin"), ("shared", "shared")):
+        kind = "home" if item["kind"] == "home" else "copy"
+        keys.append(kind if item["state"] == "present" else
+                    kind + (" missing" if item["state"] == "missing" else " unknown"))
+    for field in ("pinned", "shared"):
         if any(item.get(field) and item.get("bindings_observed") for item in locations):
-            parts.append(word)
+            keys.append(field)
     if any(not item.get("bindings_observed") for item in locations):
-        parts.append("pins?")
+        keys.append("pins unknown")
     if any(item.get("container_references") for item in locations):
-        parts.append("used")
+        keys.append("in use")
     elif any(item.get("container_references") is None for item in locations):
-        parts.append("use?")
-    return " ".join(parts)
+        keys.append("use unknown")
+    return keys
 
 
-def _table(entries: list[dict], nodes: list[dict], width: int) -> list[str]:
+def placement(entry: dict, node: dict, *, compact: bool = False, codes: bool = False) -> str:
+    """A model's files on one node: a table cell when COMPACT (short codes when CODES), else detail words."""
+    if compact:
+        words = CELL_CODES if codes else CELL_WORDS
+        return (" " if codes else ", ").join(words[key] for key in _cell_keys(entry, node))
+    locations = [item for item in entry["locations"] if item["node_id"] == node["node_id"]]
+    if not locations:
+        return PLACEMENT_WORDS[_cell_keys(entry, node)[0]]
+    return "; ".join(_words(item) for item in locations)
+
+
+def _labels(entries: list[dict]) -> list[str]:
+    """Row labels without the org, which every row of a table shares in practice; a label keeps it
+    when another row would otherwise read the same."""
+    def label(entry, named):
+        return (entry["model_id"] if named else entry["model_id"].rpartition("/")[2]) \
+            + " @" + (entry["model_commit"] or "unknown")[:8]
+    short = [label(entry, False) for entry in entries]
+    return [label(entry, True) if short.count(text) > 1 else text for entry, text in zip(entries, short)]
+
+
+def _elide(label: str, width: int) -> str:
+    """Cut the middle of a name, keeping its end and the commit: rows differ at the end."""
+    if len(label) <= width:
+        return label
+    name, at, commit = label.rpartition(" @")
+    room = width - len(at + commit) - 1
+    head = room // 2
+    return name[:head] + "…" + name[len(name) - (room - head):] + at + commit
+
+
+def _key(keys: list[str], codes: bool) -> str:
+    """One line saying what the words, or the codes, on screen mean."""
+    words = CELL_CODES if codes else CELL_WORDS
+    entries = []
+    for key in CELL_HINTS:
+        if key in keys and (codes or key not in SELF_EXPLAINING):
+            word = words[key]
+            entries.append(word + (" " if word in ("H", "P", "—", "?") else ": ") + CELL_HINTS[key])
+    return ("; " if codes else " · ").join(entries)
+
+
+def _table(entries: list[dict], nodes: list[dict], width: int) -> tuple[list[str], str]:
+    """The model-by-node table and its key: words when they fit, short codes when they do not,
+    and ([], "") when even the codes leave the first column under 16 columns."""
     from .render import short_size
-    labels = [entry["model_id"] + " @" + (entry["model_commit"] or "unknown")[:8] for entry in entries]
-    headers = ["Model snapshot", "Payload est.", *[node["hostname"] for node in nodes]]
-    cells = [[labels[index], short_size(entry["payload_bytes"]),
-              *[placement(entry, node, compact=True) for node in nodes]] for index, entry in enumerate(entries)]
-    if not cells:
-        return []
-    widths = [max(len(row[column]) for row in [headers, *cells]) for column in range(len(headers))]
-    widths[0] = min(widths[0], width - sum(widths[1:]) - 2 * (len(widths) - 1))
-    if widths[0] < 16:
-        return []
-    table = []
-    for row in [headers, *cells]:
-        first = row[0] if len(row[0]) <= widths[0] else row[0][:widths[0] - 1] + "…"
-        table.append("  ".join([first.ljust(widths[0]), *[cell.ljust(widths[column])
-                                                        for column, cell in enumerate(row[1:], 1)]]).rstrip())
-    return table
+    if not entries:
+        return [], ""
+    labels = _labels(entries)
+    headers = ["Model snapshot", "Size per copy", *[node["hostname"] for node in nodes]]
+    for codes in (False, True):
+        cells = [[short_size(entry["payload_bytes"]), *[placement(entry, node, compact=True, codes=codes)
+                                                         for node in nodes]] for entry in entries]
+        rows = [headers, *[[label, *row] for label, row in zip(labels, cells)]]
+        widths = [max(len(row[column]) for row in rows) for column in range(len(headers))]
+        room = width - sum(widths[1:]) - 2 * (len(widths) - 1)
+        if room < min(widths[0], 16):
+            continue
+        widths[0] = min(widths[0], room)
+        table = ["  ".join([_elide(row[0], widths[0]).ljust(widths[0]), *[cell.ljust(widths[column])
+                                                                         for column, cell in enumerate(row[1:], 1)]]).rstrip()
+                 for row in rows]
+        keys = [key for entry in entries for node in nodes for key in _cell_keys(entry, node)]
+        return table, _key(keys, codes)
+    return [], ""
 
 
-def render(document: dict, *, writer=None, snapshot: str | None = None) -> None:
+def _free_space(node: dict) -> list[str]:
+    """One line per distinct free-space figure, naming what lives on that disk."""
+    from .render import short_size
+    kinds = {"home": "homes", "prepared": "prepared copies"}
+    groups, errors = {}, []
+    for disk in node["disks"]:
+        if disk.get("error"):
+            errors.append("could not be checked at " + disk["path"] + ": " + disk["error"])
+        else:
+            groups.setdefault((disk.get("available"), disk.get("total")), []).append(disk["path"])
+    lines = []
+    for (available, _), paths in groups.items():
+        found = {scope["kind"] for scope in node["scopes"] if scope["path"] in paths}
+        names = [name for kind, name in kinds.items() if kind in found]
+        lines.append(short_size(available) + (" (" + " and ".join(names) + ")" if names else " at " + ", ".join(paths)))
+    return [*lines, *errors]
+
+
+def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bool = False) -> None:
     from scripts.terminal_format import TerminalWriter
     from .render import short_size
     from .catalog import age_seconds, age_text
     def observed(value):
         return (value + " (" + age_text(age_seconds(value)) + ")") if value else "not observed"
     out = writer or TerminalWriter()
+    nodes = document["nodes"]
     out.emit("Model files and disk space", role="heading")
-    out.field("Collected", observed(document["observed_at"]))
-    out.emit("Captured observations: Refresh checks again. Discovery checks declared file names and sizes, "
-             "without hashing contents. Unknown means not observed. Cleanup previews recheck all protections.")
+    count = str(len(nodes)) + (" node" if len(nodes) == 1 else " nodes")
+    out.field("Checked", (age_text(age_seconds(document["observed_at"])) + " (" + count + ")")
+              if document["observed_at"] else "not observed")
+    out.emit("Names and sizes were compared, not file contents. Archives are not looked at here.")
+    if menu and snapshot is None:
+        out.emit("Close this page, then choose a snapshot for its paths and cleanup choices.")
     for issue in document.get("issues", []):
         out.field("Warning", issue, label_role="warn")
-    nodes = document["nodes"]
     if snapshot is None:
+        def line(label, value, **style):
+            out.field(label, value, label_width=NODE_LABEL_WIDTH, **style)
         for node in nodes:
             out.blank()
             out.emit(node["hostname"], role="heading")
-            out.field("Files checked", observed(node.get("observed_at")))
             if node.get("error"):
-                out.field("Files", "unknown: " + node["error"])
-            for disk in node["disks"]:
-                out.field("Disk free", short_size(disk.get("available")) + " at " + disk["path"])
-                if disk.get("error"):
-                    out.field("Not observed", disk["error"])
+                line("Files", "could not be checked: " + node["error"])
+            for text in _free_space(node):
+                line("Free space", text)
             for scope in node["scopes"]:
-                out.field("Scope", scope["path"] + " — " + scope["status"])
+                line("Homes folder" if scope["kind"] == "home" else "Copies folder",
+                     FOLDER_STATES.get(scope["status"], scope["status"]) + " — " + scope["path"])
                 if scope.get("error"):
-                    out.field("Not observed", scope["error"])
+                    line("Not observed", scope["error"])
             for issue in node["issues"]:
-                out.field("Warning", issue, label_role="warn")
+                line("Warning", issue, label_role="warn")
             if node.get("container_error"):
-                out.field("Container use", "unknown: " + node["container_error"])
+                line("Container use", "unknown: " + node["container_error"])
             for item in node["unidentified"]:
-                out.field("Inspect only", item["path"] + " — " + item["reason"])
+                if item["kind"] == "incomplete":
+                    line("Unfinished copy", item["path"] + " — " + UNFINISHED)
+                else:
+                    line("Not recognized", item["path"] + " — " + item["reason"])
     entries = [entry for entry in document["snapshots"] if snapshot is None or entry["snapshot_manifest_id"] == snapshot]
     if not entries:
         out.blank()
-        out.emit("No model snapshots were identified in the observed managed roots or saved records.")
-    table = _table(entries, nodes, out.width) if snapshot is None else []
+        out.emit("No model files were found in Pulsar's folders or saved records.")
+    table, key = _table(entries, nodes, out.width) if snapshot is None else ([], "")
     if table:
         out.blank()
-        for index, line in enumerate(table):
-            out.emit(line, role="heading" if index == 0 else None)
-        out.emit("H home; P prepared copy; pin pinned; shared reused by recipes; used container reference "
-                 "(including stopped); pins? retention unknown; use? container use unknown; "
-                 "? unknown; — not seen in scanned roots.")
-        out.emit("Select a snapshot for paths, saved archive records and cleanup choices. Archives are not scanned.")
-        out.emit("Payload estimates are manifest sizes per complete copy, not allocated or reclaimable space.")
+        for index, text in enumerate(table):
+            out.emit(text, role="heading" if index == 0 else None)
+        out.emit(key)
+        out.emit(FOOTER)
         return
+    # One label column for an entry's fields, wide enough for its longest label.
+    width = max([len("Archive location") if snapshot is not None else len("Size per copy"),
+                 *(len(node["hostname"]) for node in nodes)]) + 1
     for entry in entries:
         out.blank()
         out.emit(entry["model_id"] + " @ " + (entry["model_commit"] or "unknown")[:12], role="heading")
-        out.field("Snapshot", entry["snapshot_manifest_id"][:12])
-        out.field("Payload estimate", short_size(entry["payload_bytes"]) + " per complete copy (manifest sizes)")
+        out.field("Snapshot", entry["snapshot_manifest_id"][:12], label_width=width)
+        out.field("Size per copy", short_size(entry["payload_bytes"]), label_width=width)
         for node in nodes:
             locations = [location for location in entry["locations"] if location["node_id"] == node["node_id"]]
-            out.field(node["hostname"], placement(entry, node))
+            out.field(node["hostname"], placement(entry, node), label_width=width)
             if snapshot is not None:
                 out.field("Files checked", observed(node.get("observed_at")), indent=2)
                 for location in locations:
@@ -272,16 +380,17 @@ def render(document: dict, *, writer=None, snapshot: str | None = None) -> None:
                         out.field("Not observed", location["error"], indent=2)
         archive = entry.get("archive")
         out.field("Archive", ("saved verification " + str(archive.get("verified_at") or "time unknown")
-                             + "; not checked now") if archive else "no saved archive record; not checked now")
+                             + "; not checked now") if archive else "no saved archive record; not checked now",
+                  label_width=width)
         if snapshot is not None and archive and archive.get("root"):
-            out.field("Archive location", archive["root"])
+            out.field("Archive location", archive["root"], label_width=width)
         if snapshot is not None and entry["cleanup_spec_ids"]:
-            out.emit("Cleanup opens a recipe. Purge covers its prepared copies; Remove home selects a snapshot.")
+            out.emit("Cleanup opens a spec's own menu: Purge removes its prepared copies, and Remove home "
+                     "removes this snapshot's home.")
         if not entry["cleanup_spec_ids"]:
-            out.emit("Inspection only: no registered catalog cleanup route. Files were not registered or changed.")
+            out.emit("No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed.")
     out.blank()
-    out.emit("Payload estimates are not allocated disk usage or reclaimable space. Shared bindings and home views "
-             "reuse the same files. Archives are separate and never deleted here.")
+    out.emit(FOOTER)
 
 
 def read_inventory(path: Path) -> dict:
@@ -304,6 +413,7 @@ def main(argv=None) -> int:
     parser.add_argument("--file", type=Path)
     parser.add_argument("--node-id")
     parser.add_argument("--snapshot")
+    parser.add_argument("--menu", action="store_true", help="name the menu choice that opens a snapshot")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -316,13 +426,13 @@ def main(argv=None) -> int:
         else:
             document = read_inventory(args.file)
             if args.command == "render":
-                render(document, snapshot=args.snapshot)
+                render(document, snapshot=args.snapshot, menu=args.menu)
             elif args.command == "choices":
                 from scripts.terminal_format import terminal_width
                 for entry in document["snapshots"]:
                     label = entry["model_id"] + " @ " + (entry["model_commit"] or "unknown")[:8]
                     if not entry["cleanup_spec_ids"]:
-                        label += " — inspect only"
+                        label += " — view only"
                     label = " ".join(label.split())
                     print(entry["snapshot_manifest_id"] + "\t" + label[:terminal_width() - 2])
             else:
@@ -330,7 +440,7 @@ def main(argv=None) -> int:
                     if entry["snapshot_manifest_id"] == args.snapshot:
                         for spec in sorted(entry["cleanup_spec_ids"]):
                             members = [value["snapshot"] for value in entry["catalog_specs"] if value["spec_id"] == spec]
-                            print(spec + "\t" + "Cleanup recipe [" + spec[:12] + "] — " + ", ".join(members))
+                            print(spec + "\t" + "Spec [" + spec[:12] + "] — " + ", ".join(members))
         return 0
     except (OSError, ValueError, KeyError, TypeError) as exc:
         from scripts.terminal_format import error_line
