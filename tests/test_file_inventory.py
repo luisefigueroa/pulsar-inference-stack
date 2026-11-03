@@ -11,7 +11,7 @@ import unittest
 from unittest.mock import patch
 
 from model_library.file_discovery import inspect_files
-from model_library.file_inventory import (FOLDER_STATES, UNFINISHED, _elide, _labels, _table, combine, context,
+from model_library.file_inventory import (FOLDER_STATES, UNFINISHED, UNFINISHED_PREPARATION, _elide, _labels, _table, combine, context,
                                           main, placement, render)
 from model_library.local import home_record, prepared_record
 from model_library.state import Store, now, shared_view
@@ -66,6 +66,20 @@ class FileInventory(unittest.TestCase):
         self.assertEqual({str(path): path.read_bytes() for path in self.root.rglob("*") if path.is_file()}, before)
         document = combine(self.saved(), [self.observation(files=files)])
         self.assertEqual(document["snapshots"][0]["cleanup_spec_ids"], [])
+
+    def test_only_a_recorded_preparation_folder_names_its_spec(self):
+        prepared = self.view_root / (".pending-" + "2" * 32)
+        download = self.home_root / "pulsar-homes" / (".pending-" + "3" * 32)
+        prepared.mkdir(parents=True)
+        download.mkdir(parents=True)
+        Store(self.view_root / ".pulsar-node").put("transactions", "d" * 64, {
+            "stage": str(prepared), "node_id": "n0", "spec_id": "fixture-spec", "kind": "pulsar-preparation-staging"})
+        Store(self.view_root / ".pulsar-node").put("transactions", "e" * 64, {
+            "stage": str(download), "node_id": "other", "spec_id": "elsewhere"})
+        by_path = {item["path"]: item for item in self.scan()["unidentified"]}
+        self.assertEqual(by_path[str(prepared)]["preparation_spec_id"], "fixture-spec")
+        self.assertNotIn("preparation_spec_id", by_path[str(download)])
+        self.assertEqual({item["kind"] for item in by_path.values()}, {"incomplete"})
 
     def test_empty_missing_roots_and_unreadable_roots_are_distinct(self):
         empty = self.scan()
@@ -388,6 +402,17 @@ class Page(unittest.TestCase):
         self.assertIn("Free space      could not be checked at /fixture/lost: gone", lone)
         self.assertNotIn("Disk free", lone)
 
+    def test_two_disks_with_the_same_kind_of_folder_keep_their_paths(self):
+        node = self.node("1")
+        node["scopes"].append({"path": "/fixture/extra-homes", "kind": "home", "status": "observed"})
+        node["disks"].append({"path": "/fixture/extra-homes", "available": 10 * 1024**3, "total": 20 * 1024**3})
+        node["disks"][1] = {"path": "/fixture/views", "available": 3 * 1024**4}
+        text = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Free space 2.00 TiB (homes) at /fixture/homes", text)
+        self.assertIn("Free space 10.0 GiB (homes) at /fixture/extra-homes", text)
+        self.assertIn("Free space 3.00 TiB (prepared copies)", text)
+        self.assertNotIn("(prepared copies) at", text)
+
     def test_folder_states_are_worded_for_the_reader_not_copied_from_discovery(self):
         states = ("observed", "not-found", "partial", "unknown")
         node = self.node("1", scopes=[{"path": "/fixture/" + state, "kind": "home" if state != "unknown" else "prepared",
@@ -413,6 +438,15 @@ class Page(unittest.TestCase):
         self.assertIn("Not recognized /fixture/homes/" + "1" * 64 + " — not a regular managed directory", flat)
         self.assertNotIn("Inspect only", flat)
         self.assertNotIn("incomplete staging", flat)
+
+    def test_a_recorded_preparation_names_the_spec_whose_purge_removes_it(self):
+        stage = "/fixture/views/.pending-" + "2" * 32
+        node = self.node("1", unidentified=[{"path": stage, "kind": "incomplete", "reason": "incomplete staging",
+                                             "preparation_spec_id": "fixture-spec"}])
+        flat = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Unfinished copy " + stage + " — " + UNFINISHED_PREPARATION.format(spec="fixture-spec"), flat)
+        self.assertIn("Purge on that spec removes it", flat)
+        self.assertNotIn("no Pulsar command removes it", flat)
 
     def test_a_node_that_could_not_be_checked_says_so(self):
         node = self.node("1", status="unknown", error="node unavailable", observed_at=None, scopes=[], disks=[])

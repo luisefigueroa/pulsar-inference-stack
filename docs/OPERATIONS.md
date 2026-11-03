@@ -165,7 +165,7 @@ below are for reading.
 | Model files: none on this node | The folder does not exist on that node, so nothing is stored there yet. |
 | Model files: partly checked | Pulsar read the folder, but some items in it were not recognized; see the **Not recognized** lines. |
 | Model files: could not be checked | Pulsar could not read the folder; the reason follows the line. Fix the access, then choose **Refresh**. |
-| Model files: Unfinished copy | A download or preparation that has not finished: still running, or interrupted. Pulsar doesn't serve from it, and no Pulsar command removes it. |
+| Model files: Unfinished copy | A download or preparation that has not finished: still running, or interrupted. Pulsar doesn't serve from it. When the line names a spec, the node recorded that preparation and Purge on that spec removes it; otherwise no Pulsar command removes it. |
 | Model files: Not recognized | An item in a Pulsar folder that is not a model snapshot Pulsar can identify; the reason follows its path. Pulsar changes nothing. |
 | Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
 | Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
@@ -854,9 +854,12 @@ saved records. It does not search the filesystem broadly, follow internal
 symlinks, register discovered files, or change model-library records. A download
 or preparation that has not finished (still running, or interrupted) appears as
 an **Unfinished copy** under its node, and an unidentified managed path as
-**Not recognized**; Pulsar changes neither. Declared file names and sizes are
-checked without hashing model contents; presence is not proof of complete
-verified model identity or readiness to serve. The **Checked** line gives the
+**Not recognized**; this page changes neither. When the node recorded an
+unfinished preparation, its line names the spec, and Purge on that spec removes
+it. When two disks hold the same kind of folder, each **Free space** line gives
+its paths. Declared file names and sizes are checked without hashing model
+contents; presence is not proof of complete verified model identity or
+readiness to serve. The **Checked** line gives the
 age of the observations and each node's folder lines say what was read.
 **Refresh** collects new observations; viewing details reuses the captured
 result.

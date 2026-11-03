@@ -70,6 +70,15 @@ def inspect_files(request: dict, home_root: Path, view_root: Path) -> dict:
     except (OSError, ValueError, KeyError, TypeError) as exc:
         result["bindings_observed"] = False
         result["issues"].append("Prepared bindings could not be reconciled: " + str(exc))
+    # A recorded preparation names the spec whose Purge removes its staging folder.
+    preparations = {}
+    try:
+        if not (view_root / ".pulsar-node").is_symlink():
+            for record in Store(view_root / ".pulsar-node").records("transactions"):
+                if record.get("node_id") == node_id and record.get("stage"):
+                    preparations[record["stage"]] = record["spec_id"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        result["issues"].append("Unfinished preparations could not be read: " + str(exc))
 
     namespaces = {(home_root / "pulsar-homes", "home"), (view_root, "prepared")}
     for raw in request.get("home_roots", []):
@@ -101,8 +110,11 @@ def inspect_files(request: dict, home_root: Path, view_root: Path) -> dict:
                         result["unidentified"].append({"path": str(path), "kind": kind,
                                                         "reason": "not a regular managed directory"})
                     elif PENDING.fullmatch(name):
-                        result["unidentified"].append({"path": str(path), "kind": "incomplete",
-                                                        "reason": "incomplete staging; not a complete snapshot"})
+                        item = {"path": str(path), "kind": "incomplete",
+                                "reason": "incomplete staging; not a complete snapshot"}
+                        if str(path) in preparations:
+                            item["preparation_spec_id"] = preparations[str(path)]
+                        result["unidentified"].append(item)
                     else:
                         candidates[str(path)] = kind
         except (OSError, StorageError) as exc:

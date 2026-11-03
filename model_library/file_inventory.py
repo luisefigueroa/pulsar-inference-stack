@@ -168,6 +168,8 @@ PLACEMENT_WORDS = {"home": "home", "copy": "prepared copy", "missing": "not foun
                    "pinned saved": "pinned (saved record)", "unregistered": "not in Pulsar's records"}
 UNFINISHED = ("a download or preparation that has not finished: still running, or interrupted. "
               "Pulsar doesn't serve from it, and no Pulsar command removes it.")
+UNFINISHED_PREPARATION = ("a preparation for {spec} that has not finished: still running, or interrupted. "
+                          "Pulsar doesn't serve from it; Purge on that spec removes it.")
 FOOTER = ("Size per copy is the model's listed size. Shared copies are stored once, so it is not what "
           "deleting would free.")
 NODE_LABEL_WIDTH = 16
@@ -295,11 +297,14 @@ def _free_space(node: dict) -> list[str]:
             errors.append("could not be checked at " + disk["path"] + ": " + disk["error"])
         else:
             groups.setdefault((disk.get("available"), disk.get("total")), []).append(disk["path"])
-    lines = []
+    named = []
     for (available, _), paths in groups.items():
         found = {scope["kind"] for scope in node["scopes"] if scope["path"] in paths}
-        names = [name for kind, name in kinds.items() if kind in found]
-        lines.append(short_size(available) + (" (" + " and ".join(names) + ")" if names else " at " + ", ".join(paths)))
+        named.append((short_size(available), " and ".join(name for kind, name in kinds.items() if kind in found), paths))
+    # Two disks holding the same kind of folder keep their paths, so each figure names its disk.
+    repeated = {name for _, name, _ in named if name and [other for _, other, _ in named].count(name) > 1}
+    lines = [size + (" (" + name + ")" if name else "") + (" at " + ", ".join(paths) if not name or name in repeated else "")
+             for size, name, paths in named]
     return [*lines, *errors]
 
 
@@ -341,7 +346,9 @@ def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bo
                 line("Container use", "unknown: " + node["container_error"])
             for item in node["unidentified"]:
                 if item["kind"] == "incomplete":
-                    line("Unfinished copy", item["path"] + " — " + UNFINISHED)
+                    spec = item.get("preparation_spec_id")
+                    line("Unfinished copy", item["path"] + " — "
+                         + (UNFINISHED_PREPARATION.format(spec=spec) if spec else UNFINISHED))
                 else:
                     line("Not recognized", item["path"] + " — " + item["reason"])
     entries = [entry for entry in document["snapshots"] if snapshot is None or entry["snapshot_manifest_id"] == snapshot]
