@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Help pages: `pulsar help` and its topics, `terms` and `workflow`.
+"""Help pages: `pulsar help` and its topics, `terms`, `labels` and `workflow`.
 
-The menu's Help runs the same commands. The terms page reads the Terms table
-in docs/OPERATIONS.md, so the menu and the docs show one list; a table that
+The menu's Help runs the same commands. The terms and labels pages read the
+Terms and Catalog labels tables in docs/OPERATIONS.md, so the menu and the
+docs show one list; a table that
 cannot be read is an error, never an empty page. The workflow page names each
 step with the catalog menu's own labels.
 
@@ -27,6 +28,7 @@ from scripts.terminal_format import TerminalWriter, error_line  # noqa: E402
 
 OPERATIONS = ROOT / "docs" / "OPERATIONS.md"
 TERMS_HEADING = "## Terms"
+LABELS_HEADING = "## Catalog labels"
 # A cell boundary: a pipe not escaped as \|.
 _CELL = re.compile(r"(?<!\\)\|")
 
@@ -34,6 +36,7 @@ _CELL = re.compile(r"(?<!\\)\|")
 REFERENCE = [
     ("Guides", [
         ("pulsar help terms", "What the words mean: spec, recipe, home, prepared copies and more."),
+        ("pulsar help labels", "What the catalog's status words mean, such as not checked yet, and what to do."),
         ("pulsar help workflow", "How serving works, from download to purge, one step at a time.")]),
     ("Set up this checkout", [
         ("pulsar", "Open the menu on a terminal with Gum: cluster setup, read-only catalog details, "
@@ -117,43 +120,57 @@ def _marked(cell: str) -> str:
     return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", cell)
 
 
-def terms(path: Path = OPERATIONS) -> list[tuple[str, str]]:
-    """The Terms table's rows as (term, meaning), in the document's order.
+def _table(path: Path, heading: str, name: str, columns: tuple[str, str]) -> list[tuple[str, str]]:
+    """The two-column table after HEADING as (key, meaning), in the document's order.
 
-    The table follows the `## Terms` heading, its header reads `Term |
-    Meaning`, and every row has exactly those two cells.
+    NAME and COLUMNS (such as "Terms" and ("Term", "Meaning")) word the errors
+    and the expected header; every row has exactly those two cells.
     """
     shown = _shown(path)
+    noun = columns[0].lower()
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeError) as error:
         raise GuideError(f"cannot read {shown}: {getattr(error, 'strerror', None) or error}") from error
-    if TERMS_HEADING not in lines:
-        raise GuideError(f"{shown} has no '{TERMS_HEADING}' section")
+    if heading not in lines:
+        raise GuideError(f"{shown} has no '{heading}' section")
     table: list[tuple[int, str]] = []
-    for number in range(lines.index(TERMS_HEADING) + 1, len(lines)):
+    for number in range(lines.index(heading) + 1, len(lines)):
         line = lines[number]
         if line.startswith("#") or (table and not line.startswith("|")):
             break
         if line.startswith("|"):
             table.append((number + 1, line))
     if len(table) < 3:
-        raise GuideError(f"{shown}: the Terms section has no table rows")
+        raise GuideError(f"{shown}: the {name} section has no table rows")
     (header_number, header), (separator_number, separator), *rows = table
-    if _cells(header) != ["Term", "Meaning"]:
-        raise GuideError(f"{shown} line {header_number}: the Terms table's header must read 'Term | Meaning'")
+    if _cells(header) != list(columns):
+        raise GuideError(f"{shown} line {header_number}: the {name} table's header must read "
+                         f"'{columns[0]} | {columns[1]}'")
     if len(_cells(separator)) != 2 or not all(re.fullmatch(r":?-+:?", cell) for cell in _cells(separator)):
-        raise GuideError(f"{shown} line {separator_number}: expected the Terms table's separator row")
+        raise GuideError(f"{shown} line {separator_number}: expected the {name} table's separator row")
     result = []
     for number, line in rows:
         cells = _cells(line)
         if len(cells) != 2:
-            raise GuideError(f"{shown} line {number}: a Terms row needs 2 cells, a term and its meaning; "
+            raise GuideError(f"{shown} line {number}: a {name} row needs 2 cells, a {noun} and its meaning; "
                              f"found {len(cells)}")
         if not all(cells):
-            raise GuideError(f"{shown} line {number}: a Terms row has an empty {'meaning' if cells[0] else 'term'}")
+            raise GuideError(f"{shown} line {number}: a {name} row has an empty {'meaning' if cells[0] else noun}")
         result.append((_marked(cells[0]).replace("`", "").replace("**", ""), _marked(cells[1])))
     return result
+
+
+def terms(path: Path = OPERATIONS) -> list[tuple[str, str]]:
+    """The Terms table's rows as (term, meaning): the `## Terms` heading, a
+    `Term | Meaning` header, and two cells per row."""
+    return _table(path, TERMS_HEADING, "Terms", ("Term", "Meaning"))
+
+
+def labels(path: Path = OPERATIONS) -> list[tuple[str, str]]:
+    """The Catalog labels table's rows as (label, meaning). Each label reads
+    `Field: words`, naming where the words appear."""
+    return _table(path, LABELS_HEADING, "Catalog labels", ("Label", "Meaning"))
 
 
 def workflow() -> list[tuple[str, str]]:
@@ -202,6 +219,25 @@ def emit_terms(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
         writer.emit(meaning, initial_indent="    ", markup=True)
 
 
+def emit_labels(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
+    """Rows grouped under their field, in the table's order: Files, Archive and so on."""
+    writer.emit("What the labels mean", role="heading")
+    writer.emit("The catalog list, a spec's frame and `pulsar models list` describe each spec with these words. "
+                "The same list is under Catalog labels in `docs/OPERATIONS.md`.", markup=True)
+    group = None
+    for label, meaning in rows:
+        field, _, words = label.partition(": ")
+        if not words:
+            field, words = "", label
+        if field != group:
+            group = field
+            writer.blank()
+            if field:
+                writer.emit(field, role="heading")
+        writer.emit(words, initial_indent="  ", role="choice")
+        writer.emit(meaning, initial_indent="    ", markup=True)
+
+
 def emit_workflow(writer: TerminalWriter) -> None:
     writer.emit("How serving works", role="heading")
     writer.emit("**Set up cluster membership and SSH trust** first. Then choose a spec in **Catalog and "
@@ -217,7 +253,7 @@ def emit_workflow(writer: TerminalWriter) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pulsar help", description="Print a Help page.")
-    parser.add_argument("topic", choices=("reference", "terms", "workflow"))
+    parser.add_argument("topic", choices=("reference", "terms", "labels", "workflow"))
     # Tests read a fixture document instead of this checkout's guide.
     parser.add_argument("--file", type=Path, default=OPERATIONS, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
@@ -229,11 +265,11 @@ def main(argv: list[str] | None = None) -> int:
         emit_workflow(writer)
         return 0
     try:
-        rows = terms(args.file)
+        rows = labels(args.file) if args.topic == "labels" else terms(args.file)
     except GuideError as error:
         error_line(error, tag="help-pages")
         return 1
-    emit_terms(writer, rows)
+    (emit_labels if args.topic == "labels" else emit_terms)(writer, rows)
     return 0
 
 

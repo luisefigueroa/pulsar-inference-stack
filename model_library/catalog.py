@@ -232,9 +232,12 @@ def entries(repo, store, *, spec_id=None, now=None):
 
 
 # Human wording for saved observations. Saved records show their age; a spec
-# that was never checked is unknown, never absent.
-FILE_STATES = {"ready": "prepared on every rank", "missing": "not prepared on every rank",
-    "changed": "changed since verification", "unknown": "unknown"}
+# without a saved check is "not checked yet", never absent. Each phrase has a
+# row under Catalog labels in docs/OPERATIONS.md.
+FILE_STATES = {"ready": "prepared on every serving node", "missing": "not prepared on every serving node",
+    "changed": "changed since they were verified", "unknown": "unknown"}
+NOT_CHECKED = "not checked yet"
+STATE_NOTE = "maintainer label, not a test result"
 SNAPSHOT_FILE_STATES = {"ready": "prepared", "missing": "not prepared", "changed": "changed",
     "unknown": "unknown"}
 # A flag token: one or two dashes and a letter, so "-1" can still be a value.
@@ -254,7 +257,7 @@ def _verified(age):
 def files_text(row):
     """The saved preparation state of the complete recipe with the check's age."""
     if not row.get("checked_at"):
-        return "unknown: never checked"
+        return NOT_CHECKED
     return f"{FILE_STATES[row['local_state']]} ({_checked(row.get('observation_age_seconds'))})"
 
 
@@ -291,7 +294,7 @@ def archive_fact(state, check_age, record, record_age, *, checked=True):
     if state == "not-configured":
         return "not-configured", check_age, "archive location not configured at last check" + before
     if not checked:
-        return "unknown", None, "unknown: never checked"
+        return "unknown", None, NOT_CHECKED
     return "unknown", check_age, f"unknown ({_checked(check_age)})"
 
 
@@ -480,7 +483,8 @@ def render(rows, *, details=False, writer=None, names=None, location=None, now=N
                      initial_indent="  ", subsequent_indent="  ")
         review = row.get("review") or {}
         if row.get("state"):
-            field("State", row["state"])
+            # State is maintainer metadata (ADR 0008); say so where it is shown.
+            field("State", f"{row['state']} ({STATE_NOTE})")
         if review.get("status"):
             field("Review", review["status"])
         if review.get("status") == "withdrawn":

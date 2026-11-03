@@ -278,6 +278,14 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
         self.assertIn("\x1b[1;94mWhat the words mean\x1b[0m", output)
         self.assertIn("\x1b[1;94mspec\x1b[0m", output)
 
+    def test_the_labels_page_is_styled_in_the_pager_at_44_columns(self):
+        script = 'unset NO_COLOR\n. "$REPO_DIR/scripts/ui.sh"\npage_output "" "$REPO_DIR/pulsar" help labels\n'
+        code, output = self.drive(script, b"q", ready=b"What the labels mean", columns=44)
+        self.assertEqual(code, 0, output)
+        self.assertIn("\x1b[?1049h", output)
+        self.assertIn("\x1b[1;94mWhat the labels mean\x1b[0m", output)
+        self.assertIn("\x1b[1;94mFiles\x1b[0m", output)
+
     def test_model_file_inventory_page_renders_the_executable_command_at_44_columns(self):
         fixture = Path(self.enterContext(tempfile.TemporaryDirectory())) / "files.json"
         fixture.write_text(json.dumps({

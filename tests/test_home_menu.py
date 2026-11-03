@@ -203,7 +203,7 @@ wait_continue() {
     def test_inspection_and_help_are_available_before_setup(self):
         pages = self.root / "pages.log"
         # Help → Command reference, then Back from Help.
-        result = self.run_home(["2", "3", "4", "2", "3", "5"], PULSAR_RC="1,2,0", PAGE_LOG=str(pages))
+        result = self.run_home(["2", "3", "4", "3", "4", "5"], PULSAR_RC="1,2,0", PAGE_LOG=str(pages))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "topology show", "help"])
         # Their output opens in the pager; only diagnostics, which probe nodes, show a spinner.
@@ -216,20 +216,21 @@ wait_continue() {
 
     def test_help_opens_each_guide_page_and_returns_to_help(self):
         pages = self.root / "pages.log"
-        result = self.run_home(["4", "0", "1", "2", "3", "5"], PAGE_LOG=str(pages))
+        result = self.run_home(["4", "0", "1", "2", "3", "4", "5"], PAGE_LOG=str(pages))
         self.assertEqual(result.returncode, 0, result.stderr)
         menus = self.menus()
-        self.assertEqual(menus[1], ["Help", "What the words mean", "How serving works", "Command reference", "Back"])
+        self.assertEqual(menus[1], ["Help", "What the words mean", "What the labels mean", "How serving works",
+                                    "Command reference", "Back"])
         self.assertEqual([menu[0] for menu in menus],
-                         ["Pulsar Inference Stack"] + ["Help"] * 4 + ["Pulsar Inference Stack"])
-        self.assertEqual(self.commands(), ["help terms", "help workflow", "help"])
+                         ["Pulsar Inference Stack"] + ["Help"] * 5 + ["Pulsar Inference Stack"])
+        self.assertEqual(self.commands(), ["help terms", "help labels", "help workflow", "help"])
         # Every page goes to the pager without a spinner; none probes a node.
-        self.assertEqual(pages.read_text(), "\n\n\n")
+        self.assertEqual(pages.read_text(), "\n\n\n\n")
         self.assertNotIn("probe:", self.pulsar_log.read_text())
 
     def test_help_from_the_full_menu_returns_home_on_esc(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["Help", "1", "esc", "Exit"])
+        result = self.run_home(["Help", "2", "esc", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["help workflow"])
         self.assertEqual([menu[0] for menu in self.menus()],
@@ -237,7 +238,7 @@ wait_continue() {
         self.assertEqual(self.menus()[-1][1], "Catalog and storage")
 
     def test_a_failed_help_page_returns_to_help(self):
-        result = self.run_home(["4", "0", "3", "5"], PULSAR_RC="1")
+        result = self.run_home(["4", "0", "4", "5"], PULSAR_RC="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["help terms"])
         self.assertEqual([menu[0] for menu in self.menus()],
@@ -276,7 +277,7 @@ wait_continue() {
 
     def test_configured_cluster_without_archives_opens_full_operations(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["0", "Live service inventory", "Host diagnostics", "Help", "2", "3", "Exit"])
+        result = self.run_home(["0", "Live service inventory", "Host diagnostics", "Help", "3", "4", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[0][1], "Catalog and storage")
         self.assertEqual(self.commands(), ["models menu", "inventory menu", "doctor", "help"])
@@ -299,7 +300,7 @@ wait_continue() {
 
     def test_returning_home_does_not_reprint_an_unchanged_status(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        result = self.run_home(["Host diagnostics", "Help", "2", "3", "Exit"])
+        result = self.run_home(["Host diagnostics", "Help", "3", "4", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["doctor", "help"])
         self.assertEqual(len(self.menus()), 5)
@@ -371,7 +372,7 @@ wait_continue() {
         self.catalog.write_text(self.catalog_entries(never_checked("a"), never_checked("b"), ready("c")))
         result = self.run_home(["Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        line = ("Next: 2 specs never checked · 1 spec ready to Start — open Catalog and storage. "
+        line = ("Next: 2 specs not checked yet · 1 spec ready to Start — open Catalog and storage. "
                 "Newest saved check: 2 hours ago.")
         self.assertIn(line, " ".join(result.stdout.split()))
         self.assertLess(result.stdout.index("Topology"), result.stdout.index("Next:"))
@@ -409,7 +410,7 @@ wait_continue() {
         result = self.run_home(["0", "Exit"], CATALOG_AFTER=str(after))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.count("open Catalog and storage"), 2)
-        self.assertLess(result.stdout.index("1 spec never checked"), result.stdout.index("1 spec ready to Start"))
+        self.assertLess(result.stdout.index("1 spec not checked yet"), result.stdout.index("1 spec ready to Start"))
         self.assertEqual(result.stdout.count("Topology"), 2)
 
     def test_next_line_is_left_out_without_a_suggested_step_or_a_readable_catalog(self):
@@ -439,7 +440,7 @@ wait_continue() {
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
         self.assertEqual(result.stdout.count("open Catalog and storage"), 1)
         self.assertLess(result.stdout.index("Topology  not confirmed"), result.stdout.index("Topology  2 nodes"))
-        self.assertLess(result.stdout.index("Topology  2 nodes"), result.stdout.index("1 spec never checked"))
+        self.assertLess(result.stdout.index("Topology  2 nodes"), result.stdout.index("1 spec not checked yet"))
 
 
 if __name__ == "__main__":

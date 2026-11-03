@@ -9,6 +9,7 @@ from the Stack checkout; replace angle-bracket placeholders before using them.
 
 - [Installation prerequisites](#installation-prerequisites)
 - [Terms](#terms)
+- [Catalog labels](#catalog-labels)
 - [Configure topology and storage](#configure-topology-and-storage)
 - [Browse and check](#browse-and-check)
 - [Obtain, prepare and start](#obtain-prepare-and-start)
@@ -100,6 +101,51 @@ JSON fields, and container labels retain their existing names. The menu's
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
+
+## Catalog labels
+
+The catalog list, a spec's frame, `./pulsar models list` and the home screen
+describe each spec with these words. Each label is written as
+`Field: words`; the field is where the words appear. The menu's
+**Help → What the labels mean**, the catalog list's **What the labels mean**
+and `./pulsar help labels` show this table. JSON output keeps its own values
+(`local_state`, `archive_state`, `state`); only the words below are for reading.
+
+| Label | Meaning |
+| --- | --- |
+| Files: not checked yet | Pulsar has no saved check of this spec's model files. It does not mean they are missing. Choose **Check now** to look; it only reads the nodes. |
+| Files: prepared on every serving node (list: files prepared) | The last saved check found the model files on every node the spec serves from. The age in brackets says when; **Check now** refreshes it. |
+| Files: not prepared on every serving node (list: files not prepared) | The last saved check found a serving node without its copy of the files. **Prepare** copies them from the *home*; **Download** comes first when there is no home. |
+| Files: changed since they were verified (list: files changed) | The last saved check found files that differ from what was verified. **Prepare** replaces them with verified copies. |
+| Files: unknown (list: files unknown) | The last check could not see the files, for example because a node was unreachable. Fix the access, then choose **Check now**. |
+| Files: checked … ago | How old the saved check is. Files can change after a check; **Check now** replaces it. |
+| Files: prepared in this session | **Prepare** finished in this menu session. Prepare saves no check, so the older saved check is shown after it. |
+| Archive: not checked yet | No saved check has looked for an *archive* of this spec. Choose **Check now**. Archives are optional. |
+| Archive: verified … ago | An archive copy was checked against the files' hashes at that time. **Restore** can rebuild the home from it. |
+| Archive: present at last check, not verified | The last check found an archive but did not compare its hashes. **Verify archive** compares them. |
+| Archive: not found at last check | The archive location has no copy of this spec's files. **Create archive** makes one if you want a recovery copy. |
+| Archive: unavailable at last check | The archive location could not be read, or the copy there was incomplete. Check that the location is reachable. |
+| Archive: archive location not configured at last check | No archive location was set. Archives are optional; **Archive storage configuration** sets one. |
+| Archive: unknown | The last check could not establish anything about the archive. |
+| List: not checked yet | The short form of **Files: not checked yet** in the catalog list. |
+| List: start unsupported (narrow: start blocked) | This Stack cannot start the spec, for example because it needs a serving guard or is a historical schema-1 spec. The spec's **Not shown** line says why. |
+| List: candidate, measured or released | The spec's **State**, shown when the line has room. See the State rows. |
+| Running?: not checked here | This menu has not looked for a running *service* of the spec. **Live status** looks. |
+| Running?: running, partly running or degraded | A service was seen with all, some, or unhealthy containers. **Live status** shows each node; **Service logs** shows output. |
+| Running?: exited containers or stopped containers | The service's containers exist but are not running. **Stop** removes them; model files are kept. |
+| Running?: service exists, service seen … ago | A service of this spec was seen by **Live service inventory**; the age says when. |
+| Running?: last seen … ago | A service observation older than ten minutes. It may have changed since; **Live status** looks again. |
+| Lifecycle: ✓ | That step is done according to saved records: Download → Prepare → Start. The bracketed step is the next one. |
+| Lifecycle: files not checked | The files have a home, but no check says whether every serving node is prepared. Choose **Check now**. |
+| Lifecycle: not offered here | The files are ready, but this Stack cannot start the spec. See **List: start unsupported**. |
+| Lifecycle: running | The service was seen running in this menu session. |
+| Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Open **Catalog and storage** and choose **Check now** on each. |
+| Next: needs Download, needs Restore or needs Prepare | The step the saved records suggest for those specs. The operation rechecks everything before it changes files. |
+| Next: ready to Start | The last saved check found every file prepared. **Start** rechecks the files, image, nodes and memory before launching. |
+| State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
+| State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
+| Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
+| Review: withdrawn | The maintainer advises against this spec and gives a reason. Serving remains possible when the checks pass. |
 
 ## Configure topology and storage
 
@@ -289,7 +335,9 @@ The selected-spec menu shows a frame of aligned fields: **Recipe**,
 **Lifecycle** marks where the spec stands in Download → Prepare → Start from
 those records (only a current running observation marks Start done);
 **Results** summarizes published results on one line; **Next** is always the
-last line.
+last line. A value that needs explaining says what to do on the same line, such
+as `Files  not checked yet; choose Check now (read-only)`, and the
+[catalog labels](#catalog-labels) explain every status word.
 On a terminal too short for the frame and every choice, the frame keeps only
 its first line and Next. Recipe geometry and explicitly recorded
 context, sequence and quantization settings describe intended execution; the
@@ -345,7 +393,8 @@ The catalog includes every released recipe even when no local files are
 present. Each spec is one block that leads with its saved state: recipe
 geometry, files, archive and, when saved records point to one, the
 **Suggested** next step as a command to paste. State and review rows appear
-only when the spec sets them. The archive line reconciles the last check with
+only when the spec sets them; State says it is a maintainer label, not a test
+result. The archive line reconciles the last check with
 the archive verification record and shows the strongest fact with its age,
 such as `verified 13 hours ago` or `not found at last check (verified 19 days
 ago before that)`. Details add exact identity, the image digest, engine
@@ -372,8 +421,8 @@ Normal browsing reads saved observations and shows their age. Unobserved
 state is unknown. A saved successful check is not a promise that the next
 launch will work. `models check` (**Check now** in the menu) checks the
 selected managed locations; it does not search arbitrary cache trees, download
-files or start a server. Files prepared on every rank does not mean a service
-is running. Use [live service inspection](#inspect-a-running-service) to check
+files or start a server. Files prepared on every serving node does not mean a
+service is running. Use [live service inspection](#inspect-a-running-service) to check
 the service itself.
 
 ### Withdrawal and catalog removal
@@ -918,7 +967,7 @@ The home menu reads saved configuration without probing nodes. It prints the
 setup status when it opens, and again after a choice only when that choice
 changed it. Cluster setup requires confirmed membership and, for multiple
 nodes, enrolled SSH trust. After setup, the status ends with a Next line built
-from saved catalog records, such as `Next: 2 specs never checked · 1 spec needs
+from saved catalog records, such as `Next: 2 specs not checked yet · 1 spec needs
 Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
 each spec's suggested step from the catalog menu and runs no probe; it is left
 out when no spec has a suggested step or the catalog cannot be read.
@@ -935,9 +984,10 @@ run only when selected. The same catalog browser is available directly as
 `./pulsar models menu --read-only`. Command-level prerequisites and confirmations
 still apply to all operational actions after setup.
 
-**Help**, before and after setup, offers three pages, each in the pager:
+**Help**, before and after setup, offers four pages, each in the pager:
 **What the words mean** (the [terms](#terms) above, `./pulsar help terms`),
-**How serving works** (one sentence for each step from Download to Purge,
+**What the labels mean** (the [catalog labels](#catalog-labels),
+`./pulsar help labels`), **How serving works** (one sentence for each step from Download to Purge,
 `./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
 a page returns to Help; **Back** or Esc returns to the home menu.
 
@@ -1015,7 +1065,9 @@ prints in place. Ctrl-C at a choose, input, confirmation, **Continue** or pager
 prompt exits the menu with status `130`, including membership and SSH
 enrollment confirmations.
 
-Opening the catalog probes no node. **Check running services (service
+Opening the catalog probes no node. The spec list always ends with **What the
+labels mean**, which opens the [catalog labels](#catalog-labels) and also
+appears in read-only browsing. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
 result while the catalog menu is open; leaving it for the root menu starts
 over. The list then says when it was observed and which nodes were not, and

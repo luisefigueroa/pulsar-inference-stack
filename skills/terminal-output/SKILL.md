@@ -1,6 +1,6 @@
 ---
 name: terminal-output
-description: Build or change what a Pulsar operator reads in a terminal (menu frames, help screens, check lines, previews and pages) with the shared TerminalWriter styles, narrow-width layout and unchanged plain output. Use when adding or editing human output, menus or help in the public stack.
+description: Word, build or change what a Pulsar operator reads in a terminal (status words, menu frames, help screens, check lines, previews and pages) with plain words explained in place, the shared TerminalWriter styles, narrow-width layout and unchanged plain output. Use when adding, rewording or editing human output, menus or help in the public stack.
 ---
 
 # Terminal output
@@ -9,7 +9,7 @@ Use this skill in the public inference stack for any text a person reads in a
 terminal. The repository's `AGENTS.md` sets the content rules: lead with the
 action, affected object and blocker, use the
 [glossary](../../docs/OPERATIONS.md#terms), and keep JSON separate. This skill
-covers how that text is laid out and styled. What operators see is described
+covers how that text is worded, laid out and styled. What operators see is described
 in [output and messages](../../docs/OPERATIONS.md#output-and-messages); the
 role-to-style map lives in `scripts/terminal_format.py`. Change it there, not
 here.
@@ -21,6 +21,37 @@ man-pages(7) (literal text versus replaceable arguments) and
 [WCAG 1.4.1](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html)
 (color is never the only cue). Menus use the accent from `scripts/ui.sh`; never
 Gum's default pink.
+
+## Words
+
+The rules follow the usability heuristics
+[NN/g #2, #6 and #10](https://www.nngroup.com/articles/ten-usability-heuristics/):
+speak the reader's language, don't make them remember an explanation from
+another screen, and put help where it is needed. The decision and its reasons
+are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explained-in-place).
+
+- Explain a status word in this order: a word that explains itself, then a
+  short hint where the word appears, then a row in the legend. The legend is
+  the reference, not the fix for an unclear word.
+- Name what the reader can see and do, not the system's internals. Write `not
+  checked yet`, not `never checked` or `unknown: never checked`, and `every
+  serving node`, not `every rank`, in status lines. Use the
+  [glossary](../../docs/OPERATIONS.md#terms) words; define a new noun there.
+- Keep "unknown" for a check that could not observe something. A missing
+  saved check is `not checked yet`; neither one means absent.
+- Hints go on the value's own line, after a semicolon, and name the choice
+  that resolves it, as `Running?` does: `not checked here; choose Live
+  status`. Show a hint only where that choice is offered, and never give one
+  a frame line of its own: a short terminal drops frame lines, and a hint
+  that wraps at 44 columns should still read as part of its value.
+- Every status word the catalog can print has a row under
+  [Catalog labels](../../docs/OPERATIONS.md#catalog-labels), written as
+  `Field: words` with what it means and what to do. `pulsar help labels`
+  shows that table, and `tests/test_help.py` fails when a word has no row.
+- Maintainer metadata says so where it is shown: State is a maintainer label,
+  not a test result.
+- Change words only in human output. JSON fields and values, container labels
+  and persisted records keep their names (see `AGENTS.md`).
 
 ## Build
 
@@ -85,6 +116,9 @@ Gum's default pink.
   the plain output. With `NO_COLOR=1`, only bold and underline remain. See the
   `Styles` and `Renderer` tests in `tests/test_help.py`.
 - Check 44 columns, and 32 for help screens.
+- For new or reworded status words, ask someone who has not used Pulsar to
+  read the screen and say what each word means and what they would do next.
+  Reword what they cannot answer.
 - Check the pager path with `BundledGum.drive` (`tests/test_ui_confirm.py`).
   It runs on arm64 Linux and is skipped elsewhere. Never send keys into a real
   catalog menu.

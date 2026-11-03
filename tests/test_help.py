@@ -148,7 +148,7 @@ class Help(unittest.TestCase):
     def test_reference_lists_the_guides_and_stop_all(self):
         text = self.run_help(("help",), 100)
         self.assertLess(text.index("Guides"), text.index("Set up this checkout"))
-        for command in ("pulsar help terms", "pulsar help workflow", "pulsar stop --all --yes"):
+        for command in ("pulsar help terms", "pulsar help labels", "pulsar help workflow", "pulsar stop --all --yes"):
             self.assertRegex(text, rf"(?m)^  {re.escape(command)}$")
 
     def test_terms_page_shows_every_row_of_the_docs_table(self):
@@ -168,6 +168,44 @@ class Help(unittest.TestCase):
         for marker in ("`", "**", "]("):
             self.assertNotIn(marker, text)
 
+    def test_labels_page_shows_every_row_of_the_docs_table_under_its_field(self):
+        lines = (ROOT / "docs/OPERATIONS.md").read_text().split("## Catalog labels\n", 1)[1].split("\n## ", 1)[0]
+        rows = [line.strip("|").split(" | ") for line in lines.splitlines() if line.startswith("| ")][2:]
+        self.assertGreaterEqual(len(rows), 30)
+        text = self.run_help(("help", "labels"), 100)
+        # Each field is a heading once, in the table's order; its words follow, indented.
+        fields = list(dict.fromkeys(label.strip().split(": ", 1)[0] for label, _ in rows))
+        self.assertEqual(re.findall(r"(?m)^(\S.*)$", text.split("\n\n", 1)[1]), fields)
+        self.assertEqual(re.findall(r"(?m)^  (\S.*)$", text),
+                         [label.strip().split(": ", 1)[1] for label, _ in rows])
+        joined = " ".join(text.split())
+        for _, meaning in rows:
+            self.assertIn(" ".join(meaning.replace("`", "").replace("**", "").replace("*", "").split()), joined)
+        for marker in ("`", "**", "]("):
+            self.assertNotIn(marker, text)
+
+    def test_every_status_word_the_catalog_prints_has_a_legend_row(self):
+        """A new status word fails here until docs/OPERATIONS.md explains it."""
+        from model_library import catalog, catalog_menu
+        from release_spec import schema
+        words = {catalog.NOT_CHECKED, *catalog.FILE_STATES.values(), *catalog.SNAPSHOT_FILE_STATES.values(),
+                 *catalog_menu.LABEL_FILES.values(), *catalog_menu.SERVICE_STATES.values(),
+                 *(one for one, _ in catalog_menu.HOME_NEXT.values()),
+                 *(state for state in schema.STATES if state), *schema.REVIEW_STATUSES,
+                 "start unsupported", "start blocked", "not checked here", "service exists", "service seen",
+                 "last seen", "files not checked", "not offered here", "✓"}
+        for state in ("verified", "present", "missing", "unavailable", "not-configured", "unknown"):
+            for checked in (True, False):
+                wording = catalog.archive_fact(state, 3600, None, None, checked=checked)[2]
+                words.add(re.sub(r" \(checked [^)]*\)$", "", wording).replace("1 hour ago", "… ago"))
+        for local in catalog.FILE_STATES:
+            lifecycle = catalog_menu.lifecycle({"local_state": local, "home": {"node_id": "n"},
+                                                "model_id": "m", "snapshot_revision": "c"}, None)
+            words.update(re.findall(r"\(([^)]*)\)", lifecycle))
+        labels = " ".join(label.split(": ", 1)[1] for label, _ in help_pages.labels())
+        missing = sorted(word for word in words if word not in labels)
+        self.assertEqual(missing, [], "add a row under ## Catalog labels in docs/OPERATIONS.md for each")
+
     def test_workflow_page_has_one_sentence_per_step_in_lifecycle_order(self):
         text = self.run_help(("help", "workflow"), 100)
         steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)
@@ -184,7 +222,7 @@ class Help(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertEqual(result.stdout, "")
         self.assertEqual(result.stderr, "Unknown help topic: glossary\n"
-                                        "Try: ./pulsar help, ./pulsar help terms or ./pulsar help workflow\n")
+                                        "Try: ./pulsar help, ./pulsar help terms, ./pulsar help labels or ./pulsar help workflow\n")
 
     def test_readme_example_commands_exist_in_help(self):
         readme = (ROOT / "README.md").read_text()
@@ -212,14 +250,14 @@ class Guide(unittest.TestCase):
              "| spec | The `releases/` spec, see [Terms](#terms). |\n| pipe | Shown as `a \\| b`, **always**. |\n"
              "\n## Next\n\n| not | a term |\n")
 
-    def page(self, text):
+    def page(self, text, topic="terms"):
         path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "OPERATIONS.md"
         if text is not None:
             path.write_text(text)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
                 mock.patch.dict(os.environ, {"PULSAR_COLOR": "never"}):
-            rc = help_pages.main(["terms", "--file", str(path)])
+            rc = help_pages.main([topic, "--file", str(path)])
         return rc, out.getvalue(), err.getvalue()
 
     def test_rows_become_plain_text_and_the_table_ends_at_the_next_heading(self):
@@ -249,6 +287,27 @@ class Guide(unittest.TestCase):
                 self.assertEqual(out, "")
                 self.assertTrue(err.startswith("error: ") and message in err, err)
                 self.assertEqual(len(err.splitlines()), 1, err)
+
+    def test_the_labels_page_reads_its_own_table_and_groups_rows_by_field(self):
+        table = ("## Terms\n\n| Term | Meaning |\n| --- | --- |\n| spec | A spec. |\n\n"
+                 "## Catalog labels\n\n| Label | Meaning |\n| --- | --- |\n"
+                 "| Files: not checked yet | Choose **Check now**. |\n| Files: unknown | Not seen. |\n"
+                 "| State: candidate | A label. |\n")
+        rc, out, err = self.page(table, "labels")
+        self.assertEqual((rc, err), (0, ""))
+        self.assertIn("\nFiles\n  not checked yet\n    Choose Check now.\n  unknown\n    Not seen.\n\n"
+                      "State\n  candidate\n    A label.\n", out)
+        self.assertNotIn("spec", out.split("Files", 1)[1])
+        cases = {"no section": (table.split("## Catalog labels")[0], "has no '## Catalog labels' section"),
+                 "header": (table.replace("| Label | Meaning |", "| Term | Meaning |"),
+                            "line 9: the Catalog labels table's header must read 'Label | Meaning'"),
+                 "empty label": (table.replace("| Files: unknown |", "|  |"),
+                                 "line 12: a Catalog labels row has an empty label")}
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                rc, out, err = self.page(text, "labels")
+                self.assertEqual((rc, out), (1, ""))
+                self.assertIn(message, err)
 
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -380,7 +439,7 @@ class Styles(unittest.TestCase):
                                   "  \x1b[1;94monto a second line\x1b[0m\n")
 
     def test_pages_strip_to_their_plain_text_and_fit(self):
-        for topic in ("reference", "terms", "workflow"):
+        for topic in ("reference", "terms", "labels", "workflow"):
             for width in (44, 60, 80):
                 with self.subTest(topic=topic, width=width):
                     styled = self.page(topic, width, PULSAR_COLOR="always")
@@ -397,6 +456,8 @@ class Styles(unittest.TestCase):
             "terms": ["\x1b[1;94mWhat the words mean\x1b[0m\n", "  \x1b[1;94mspec\x1b[0m\n",
                       "\x1b[36mreleases/\x1b[0m", "\x1b[36m./pulsar topology check\x1b[0m",
                       "\x1b[36mdocs/OPERATIONS.md\x1b[0m"],
+            "labels": ["\x1b[1;94mWhat the labels mean\x1b[0m\n", "\n\x1b[1;94mFiles\x1b[0m\n",
+                       "  \x1b[1mnot checked yet\x1b[0m\n", "\x1b[1mCheck now\x1b[0m", "\x1b[94mhome\x1b[0m"],
             "workflow": ["\x1b[1;94mHow serving works\x1b[0m\n", "  \x1b[1;94m1. Download or Restore\x1b[0m\n",
                          "\x1b[94mhome\x1b[0m", "\x1b[1mRestore\x1b[0m", "\x1b[36mpulsar model acquire\x1b[0m"],
         }
