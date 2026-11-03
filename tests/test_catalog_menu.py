@@ -691,7 +691,7 @@ class Labels(unittest.TestCase):
     def test_labels_show_saved_state_and_fit_80_and_44_columns(self):
         long_model = "org/" + "very-long-model-name-" * 4
         states = {
-            "never checked": row(model_id=long_model),
+            "not checked yet": row(model_id=long_model),
             "files prepared · start unsupported": checked(home=HOME, local_state="ready", **GUARDED),
             "not prepared": checked(local_state="missing"),
             "files changed · withdrawn": checked(home=HOME, local_state="changed",
@@ -716,7 +716,7 @@ class Labels(unittest.TestCase):
                 patch.dict("os.environ", {"COLUMNS": "80"}):
             self.assertEqual(menu.main(["labels"]), 0)
         self.assertEqual(output.getvalue().splitlines(),
-                         ["ab" * 32 + "\torg/model [abababababab] 3 nodes · never checked",
+                         ["ab" * 32 + "\torg/model [abababababab] 3 nodes · not checked yet",
                           "cd" * 32 + "\torg/model [cdcdcdcdcdcd] 3 nodes · files prepared"])
 
     # TUI-23: at 60 columns or wider, the label also names the node count and
@@ -1076,7 +1076,7 @@ class HomeNext(unittest.TestCase):
 
     def test_groups_suggestions_in_lifecycle_order_with_the_newest_check(self):
         self.assertEqual(menu.home_next(self.specs(), "configured"),
-                         "Next: 2 specs never checked · 1 spec needs a check · 1 spec needs Download · "
+                         "Next: 2 specs not checked yet · 1 spec needs a check · 1 spec needs Download · "
                          "1 spec needs Restore · 1 spec needs Prepare · 1 spec ready to Start — open Catalog "
                          "and storage. Newest saved check: 10 minutes ago.")
 
@@ -1086,11 +1086,11 @@ class HomeNext(unittest.TestCase):
                          "Next: 2 specs ready to Start — open Catalog and storage. Newest saved check: 2 hours ago.")
         stale = [checked(spec_id=c * 64, observation_age_seconds=3 * 86400) for c in "ab"]
         self.assertTrue(menu.home_next(stale, "configured").startswith("Next: 2 specs need a check — "))
-        self.assertTrue(menu.home_next([row()], "configured").startswith("Next: 1 spec never checked — "))
+        self.assertTrue(menu.home_next([row()], "configured").startswith("Next: 1 spec not checked yet — "))
 
     def test_never_checked_alone_has_no_check_age(self):
         self.assertEqual(menu.home_next([row(spec_id="a" * 64), row(spec_id="b" * 64)], "configured"),
-                         "Next: 2 specs never checked — open Catalog and storage.")
+                         "Next: 2 specs not checked yet — open Catalog and storage.")
 
     def test_the_archive_location_decides_restore(self):
         state = [checked(local_state="missing", archive_state="verified")]
@@ -1110,7 +1110,7 @@ class HomeNext(unittest.TestCase):
             self.assertIn("ready to Start", menu.home_next([state], "configured"))
 
     def test_cli_reads_the_catalog_projection_and_prints_nothing_without_a_step(self):
-        for entries, expected in ((self.specs()[:1], "Next: 1 spec never checked — open **Catalog and storage**.\n"),
+        for entries, expected in ((self.specs()[:1], "Next: 1 spec not checked yet — open **Catalog and storage**.\n"),
                                   ([], "")):
             with self.subTest(entries=len(entries)):
                 out = io.StringIO()

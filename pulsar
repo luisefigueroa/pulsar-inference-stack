@@ -82,9 +82,9 @@ case "$command" in
     # The command reference and the guide pages; the menu's Help runs these
     # same commands.
     case "${1:-}" in
-      terms|workflow) exec python3 "$REPO_DIR/scripts/help_pages.py" "$1" ;;
+      terms|labels|workflow) exec python3 "$REPO_DIR/scripts/help_pages.py" "$1" ;;
       ""|-*) exec python3 "$REPO_DIR/scripts/help_pages.py" reference ;;
-      *) printf 'Unknown help topic: %s\nTry: ./pulsar help, ./pulsar help terms or ./pulsar help workflow\n' "$1" >&2
+      *) printf 'Unknown help topic: %s\nTry: ./pulsar help, ./pulsar help terms, ./pulsar help labels or ./pulsar help workflow\n' "$1" >&2
          exit 2 ;;
     esac ;;
   *)

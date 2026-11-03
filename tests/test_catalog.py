@@ -200,7 +200,7 @@ class Catalog(unittest.TestCase):
                           "reviewed_at": "2026-09-03T00:00:00Z"}
         (self.repo / "releases" / f"{spec['spec_id']}.json").write_bytes(pretty_json_bytes(spec))
         text = self.show(entries(self.repo, self.store, now=self.now))
-        self.assertRegex(text, r"(?m)^  State +released$")
+        self.assertRegex(text, r"(?m)^  State +released \(maintainer label, not a test result\)$")
         self.assertRegex(text, r"(?m)^  Review +validated$")
 
     def test_explicit_missing_differs_from_unknown(self):
@@ -217,7 +217,7 @@ class Catalog(unittest.TestCase):
         self.observe(spec, local_state="ready", archive_state="verified")
         row = entries(self.repo, self.store, now=self.now)[0]
         text = self.show([row])
-        self.assertRegex(text, r"(?m)^  Files +prepared on every rank \(checked 1 hour ago\)$")
+        self.assertRegex(text, r"(?m)^  Files +prepared on every serving node \(checked 1 hour ago\)$")
         self.assertTrue(" ".join(text.split()).endswith("start rechecks everything."), text)
         self.assertNotIn("running", text)
         self.assertNotIn("running", row)
@@ -319,7 +319,7 @@ class Catalog(unittest.TestCase):
         record = {"verified_at": "fixture"}
         # (check state, checked, check age, record, record age) -> wording
         table = [
-            (("unknown", False, None, None, None), "unknown: never checked"),
+            (("unknown", False, None, None, None), "not checked yet"),
             (("unknown", False, None, record, 19 * day), "verified 19 days ago"),
             (("unknown", True, 2 * hour, None, None), "unknown (checked 2 hours ago)"),
             (("unknown", True, 2 * hour, record, 19 * day), "verified 19 days ago"),
@@ -375,8 +375,8 @@ class Catalog(unittest.TestCase):
             self.assertTrue(lines[0].startswith("example/model"), text)
             self.assertIn(f"spec {spec['spec_id'][:12]}", text)
             self.assertRegex(text, r"(?m)^  Recipe +1 node · tensor parallel 1$")
-            self.assertRegex(text, r"(?m)^  Files +unknown: never checked$")
-            self.assertRegex(text, r"(?m)^  Archive +unknown: never checked$")
+            self.assertRegex(text, r"(?m)^  Files +not checked yet$")
+            self.assertRegex(text, r"(?m)^  Archive +not checked yet$")
             self.assertEqual(" ".join(text.split("\n\n")[-1].split()),
                              "Saved records. ./pulsar models check SPEC refreshes them; start rechecks everything.")
             for retired in ("not specified", "choose Check now", "node(s)", "Home record", "Copy records",
@@ -699,6 +699,26 @@ raise SystemExit(rc)
         self.assertIn(f"[page]  | python3 -m model_library.catalog show {spec}\n", choices)
         self.assertIn(f"[page]  | python3 -m model_library.catalog results {spec}\n", choices)
         self.assertNotIn("[continue]", choices)
+
+    def test_the_spec_list_ends_with_the_labels_legend_in_both_modes(self):
+        for menu_args in ((), ("--read-only",)):
+            with self.subTest(menu_args=menu_args):
+                self.setUp()
+                _, result, actions, choices, _ = self.run_menu(["What the labels mean", "Back"], archive_root=None,
+                                                               menu_args=menu_args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # The legend reads the docs only: its page is the one command run.
+                self.assertEqual(actions, [["pulsar", "help", "labels"]])
+                block = choices.split("Select a catalog spec", 1)[1].split("\n\n", 1)[0].splitlines()
+                self.assertEqual(block[-2:], ["What the labels mean", "Back"])
+                self.assertIn("/pulsar help labels\n", choices.split("[page]  | ", 1)[1])
+
+    def test_read_only_frames_leave_out_the_check_hint(self):
+        _, result, _, _, _ = self.run_menu(["#0", "Back", "Back"], archive_root=None, menu_args=("--read-only",))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shown = " ".join(result.stdout.split())
+        self.assertIn("Files not checked yet", shown)
+        self.assertNotIn("choose Check now", shown)
 
     def test_catalog_comparison_uses_only_the_two_selected_published_specs(self):
         from release_spec.tests.test_serving_guard import FIXTURES, guarded
@@ -1486,7 +1506,8 @@ raise SystemExit(rc)
                 shown = " ".join(result.stdout.split())
                 self.assertIn("example/model [", shown)
                 self.assertIn("Next Check now — no saved check", shown)
-                self.assertEqual("Files unknown" in shown, full)
+                # The hint names the choice that establishes the files.
+                self.assertEqual("Files not checked yet; choose Check now (read-only)" in shown, full)
                 self.assertEqual("Not shown " in shown, full)
 
     def test_guarded_spec_menu_leaves_out_start_and_explains_why(self):

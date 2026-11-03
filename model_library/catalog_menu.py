@@ -25,7 +25,8 @@ import re
 import sys
 from typing import Any
 
-from .catalog import ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text, recipe_text
+from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text,
+                      recipe_text)
 from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
 from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
@@ -381,7 +382,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if start_unsupported(row):
         return None
     if local in ("missing", "changed") and "prepare" in offered:
-        reason = "files changed since they were verified" if local == "changed" else "files not prepared on every rank"
+        reason = "files changed since they were verified" if local == "changed" else "files not prepared on every serving node"
         return "prepare", f"{reason} (checked {age_text(age)})"
     if blocker:
         return "check", blocker
@@ -457,14 +458,17 @@ def suggested_command(row: dict, archive_location: str, names: NodeNames | None 
     return ["./pulsar", action, spec]
 
 
-# Files state in a recipe label: the same saved facts, in a few words.
-LABEL_FILES = {"ready": "files prepared", "missing": "not prepared", "changed": "files changed",
+# Files state in a recipe label: the same saved facts, in a few words. Each
+# phrase has a row under Catalog labels in docs/OPERATIONS.md.
+LABEL_FILES = {"ready": "files prepared", "missing": "files not prepared", "changed": "files changed",
                "unknown": "files unknown"}
+# The frame's hint after a Files value that no check has established yet.
+CHECK_HINT = "choose Check now (read-only)"
 
 
 def state_parts(row: dict) -> list[str]:
     """Saved state for a recipe label, files first; review status only when the spec sets one."""
-    parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked"]
+    parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED]
     if start_unsupported(row):
         parts.append("start unsupported")
     status = (row.get("review") or {}).get("status")
@@ -527,7 +531,7 @@ def menu_label(row: dict, width: int, live: dict | None = None) -> str:
         room = budget - len(heading) - 1
         if room < 4:
             return heading
-        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else "never checked")
+        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED)
         context = f"{model} · {files}" + (f" · {review}" if review and review != "withdrawn" else "")
         if len(context) > room:
             context = context[:room - 3] + "..."
@@ -600,6 +604,9 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     if review.get("status") and review["status"] != "withdrawn":
         field("Review", f"{review['status']} · {review.get('reviewed_at') or 'date not recorded'} (advisory)")
     files = files_text(row)
+    if not row.get("checked_at") and not read_only:
+        # Say what establishes the files, as Running? does; read-only views offer no check.
+        files = f"{files}; {CHECK_HINT}"
     if after == "prepare" and after_age is not None:
         # Prepare saves no observation; keep the old check visible as such.
         files = f"prepared in this session ({age_text(after_age)}); saved check: {files}"
@@ -1240,7 +1247,7 @@ def inventory_line(live: dict) -> str:
 
 # The home screen's Next line groups each spec's suggested step. Each entry is
 # (singular, plural) wording after the spec count, in display order.
-HOME_NEXT = {"never-checked": ("never checked", "never checked"),
+HOME_NEXT = {"not-checked": (NOT_CHECKED, NOT_CHECKED),
              "check": ("needs a check", "need a check"),
              "acquire": ("needs Download", "need Download"),
              "restore": ("needs Restore", "need Restore"),
@@ -1261,7 +1268,7 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
         found = suggestion(row, offered, archive_location, now=now)
         if not found or found[0] not in HOME_NEXT:
             continue
-        key = "never-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
+        key = "not-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
         counts[key] = counts.get(key, 0) + 1
     if not counts:
         return None

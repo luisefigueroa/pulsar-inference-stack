@@ -348,7 +348,7 @@ class MenuEntries(unittest.TestCase):
                     self.assertIn(expected, " ".join(output.split()))
                     if not args:
                         # Help's pages are commands too.
-                        self.assertIn("./pulsar help # commands and guides (help terms, help workflow)",
+                        self.assertIn("./pulsar help # commands and guides (help terms, help labels, help workflow)",
                                       " ".join(output.split()))
                     # Every listed command line is a complete ./pulsar command.
                     for line in output.splitlines():

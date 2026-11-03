@@ -14,18 +14,19 @@ review_catalog_error() {
   wait_continue "Catalog error"
 }
 
-# Help: the words, the serving steps and the command reference. Each page opens
+# Help: the words, the catalog's labels, the serving steps and the command reference. Each page opens
 # in the pager and returns here; Back or Esc returns to the home menu.
 help_menu() {
   local choice rc
   while true; do
-    choice=$(choose_index "Help" "What the words mean" "How serving works" "Command reference" "Back") \
+    choice=$(choose_index "Help" "What the words mean" "What the labels mean" "How serving works" "Command reference" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "$choice" in
       0) page_output "" "$REPO_DIR/pulsar" help terms || rc=$? ;;
-      1) page_output "" "$REPO_DIR/pulsar" help workflow || rc=$? ;;
-      2) page_output "" "$REPO_DIR/pulsar" help || rc=$? ;;
+      1) page_output "" "$REPO_DIR/pulsar" help labels || rc=$? ;;
+      2) page_output "" "$REPO_DIR/pulsar" help workflow || rc=$? ;;
+      3) page_output "" "$REPO_DIR/pulsar" help || rc=$? ;;
       *) return 0 ;;
     esac
     [ "$rc" -ne 130 ] || return 130
@@ -42,15 +43,15 @@ case "$complete:$next_action" in
     "./pulsar inventory" "see what runs on each node" "./pulsar topology check" "check saved nodes and fabric" \
     "./pulsar model files" "model files and placement on every node" "./pulsar model budget" "disk headroom on every node" "./pulsar doctor" "host diagnostics" \
     "./pulsar configure archive-root" "archive storage setting" "./pulsar topology show" "saved cluster membership" \
-    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
+    "./pulsar help" "commands and guides (help terms, help labels, help workflow)" ;;
   *:enroll-ssh-trust) require_gum "the Pulsar menu" "./pulsar ssh-trust enroll" "enroll SSH trust (next setup step)" \
     "./pulsar models list" "browse the catalog" "./pulsar models show SPEC" "one spec's saved details" \
     "./pulsar doctor" "host diagnostics" "./pulsar topology show" "saved cluster membership" \
-    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
+    "./pulsar help" "commands and guides (help terms, help labels, help workflow)" ;;
   *) require_gum "the Pulsar menu" "./pulsar topology setup" "set up cluster membership (next setup step)" \
     "./pulsar models list" "browse the catalog" "./pulsar models show SPEC" "one spec's saved details" \
     "./pulsar doctor" "host diagnostics" "./pulsar topology show" "saved cluster membership" \
-    "./pulsar help" "commands and guides (help terms, help workflow)" ;;
+    "./pulsar help" "commands and guides (help terms, help labels, help workflow)" ;;
 esac
 ui_keep_styles
 # The setup status prints on entry, then again only when a choice changed it;

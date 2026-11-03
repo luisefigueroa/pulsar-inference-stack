@@ -672,6 +672,8 @@ browse() {
     fi
     # Before setup the catalog stays saved records only: nothing probes nodes.
     [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Free disk space (checks nodes now)")
+    # The legend reads only the docs, so read-only browsing offers it too.
+    labels+=("What the labels mean")
     [ -z "$observed" ] || printf '\n%s\n' "$observed" | python3 -m scripts.terminal_format
     index=$(choose_index "$title" "${labels[@]}" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
@@ -685,6 +687,8 @@ browse() {
         hold_screen || return $? ;;
       "Free disk space (checks nodes now)")
         free_disk_space || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      "What the labels mean")
+        page_output "" "$REPO_DIR/pulsar" help labels || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       *) return 0 ;;
     esac
   done
