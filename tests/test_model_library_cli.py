@@ -343,13 +343,18 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertFalse(any(v['pinned'] for v in info['ranks']))
         purge=self.success(f.run('purge','--plan',spec=True))
         self.assertTrue(all(v['action']=='release-binding' for v in purge['plan']['actions']))
-        self.success(f.run('purge','--yes',spec=True))
+        released=self.success(f.run('purge','--yes',spec=True))
+        # Purge reports what it removed: shared copies are released, not deleted.
+        self.assertEqual((released['bindings_removed'],released['copies_removed']),(len(purge['plan']['actions']),0))
         f.spec=old;f.spec_path.write_bytes(pretty_json_bytes(old))
         self.success(f.run('info',spec=True))
         self.success(f.run('unpin','--yes',spec=True))
-        self.success(f.run('purge','--yes',spec=True))
+        deleted=self.success(f.run('purge','--yes',spec=True))
+        self.assertEqual(deleted['copies_removed'],sum(not row['is_home_view'] for row in before))
         for row in before:
             self.assertEqual(Path(row['path']).exists(),row['is_home_view'])
+        nothing=self.success(f.run('purge','--yes',spec=True))
+        self.assertEqual([nothing[key] for key in ('bindings_removed','copies_removed','preparations_removed')],[0,0,0])
 
     def test_shared_named_snapshots_resume_after_lost_binding_reply(self):
         f=self.speculative_fixture(nodes=2,draft_home=1)

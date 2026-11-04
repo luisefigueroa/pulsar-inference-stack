@@ -517,9 +517,31 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         if 'copies' in document:
             out.field('Copies', document['copies'])
         return
+    if document.get('purged') is True:
+        counts = [document.get(key) for key in ('bindings_removed', 'copies_removed', 'preparations_removed')]
+        if any(type(count) is not int for count in counts):
+            # An older Stack's result does not say what it removed.
+            out.emit('Prepared bindings removed')
+            _identity(out, document)
+        elif not any(counts):
+            out.emit('Nothing to purge')
+            _identity(out, document)
+            out.emit('This spec had no prepared copies or unfinished preparations. Nothing was removed.')
+            return
+        else:
+            released, deleted, preparations = counts
+            out.emit('Purge complete')
+            _identity(out, document)
+            if released:
+                out.field('Released', f"{released} prepared {'copy' if released == 1 else 'copies'} from this spec")
+            if deleted:
+                out.field('Deleted', f"{deleted} working {'copy' if deleted == 1 else 'copies'}")
+            if preparations:
+                out.field('Removed', f"{preparations} unfinished {'preparation' if preparations == 1 else 'preparations'}")
     if document.get('purged') is True or document.get('removed') is True:
-        out.emit('Prepared bindings removed' if document.get('purged') is True else 'Home removed')
-        _identity(out, document)
+        if document.get('removed') is True:
+            out.emit('Home removed')
+            _identity(out, document)
         if document.get('shared_copies_retained'):
             out.field('Shared working copies', f"{document['shared_copies_retained']} retained for other recipes")
         if document.get('home_untouched') is True:

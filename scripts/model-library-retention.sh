@@ -20,7 +20,8 @@ print(json.dumps({"views":reconcile_views(controller+node["views"]),"transaction
 }
 
 retention_model() {
-  local gathered views transactions observations plan row rank result all_views shared_retained=0
+  local gathered views transactions observations plan row rank result all_views removed retained
+  local shared_retained=0 bindings_removed=0 copies_removed=0 preparations_removed=0
   require_cluster_nodes 1 >/dev/null || die "confirmed topology is required"
   gathered=$(merged_views) || die "prepared ownership records are unobservable or inconsistent"
   views=$(json_fields "$gathered" views); transactions=$(json_fields "$gathered" transactions)
@@ -79,18 +80,23 @@ PY
     "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$row" node_id)" --path "$(json_fields "$row" hub_path)" --json >/dev/null || die "prepared copy acquired a container reference"
     if [ "$(json_fields "$row" is_home_view)" != true ]; then
       result=$(model_node "$rank" "$(model_node_request remove-view view: "$row" all_views: "$all_views")") || die "copy release incomplete; remaining records retained"
-      if [ "$(json_fields "$result" retained_bindings)" -gt 0 ]; then shared_retained=$((shared_retained+1)); fi
+      { read -r removed; read -r retained; } < <(json_fields "$result" removed retained_bindings)
+      if [ "$removed" = true ]; then copies_removed=$((copies_removed+1)); fi
+      if [ "$retained" -gt 0 ]; then shared_retained=$((shared_retained+1)); fi
     fi
     model_ctl "$(model_json operation forget-view view: "$row")" >/dev/null || die "controller record removal incomplete"
     model_node "$rank" "$(model_node_request forget-view view: "$row")" >/dev/null || die "node record removal incomplete; retry purge to finish cleanup"
+    bindings_removed=$((bindings_removed+1))
   done < <(printf '%s' "$views" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
   while IFS= read -r row; do
     select_record_manifest "$row" || die "record references an undeclared snapshot"
     rank=$(model_physical_rank "$(json_fields "$row" node_id)")
     "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$row" node_id)" --path "$(json_fields "$row" stage)" --path "$(json_fields "$row" destination)" --json >/dev/null || die "incomplete preparation has a container reference"
     model_node "$rank" "$(model_node_request remove-staging transaction: "$row")" >/dev/null || die "incomplete preparation could not be safely removed"
+    preparations_removed=$((preparations_removed+1))
   done < <(printf '%s' "$transactions" | python3 -c 'import json,sys; [print(json.dumps(r)) for r in json.load(sys.stdin)]')
-  emit_result "$(model_json spec_id "$SPEC_ID" purged: true archive_untouched: true home_untouched: true shared_copies_retained: "$shared_retained")"
+  emit_result "$(model_json spec_id "$SPEC_ID" purged: true archive_untouched: true home_untouched: true shared_copies_retained: "$shared_retained" \
+    bindings_removed: "$bindings_removed" copies_removed: "$copies_removed" preparations_removed: "$preparations_removed")"
 }
 
 
