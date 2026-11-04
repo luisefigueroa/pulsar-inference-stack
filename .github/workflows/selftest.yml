@@ -60,7 +60,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ~/.cache/pulsar/selftest-durations.json
-          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: selftest-durations-shard-${{ matrix.shard }}-
       - name: Run one shard of the unit tests
         env:
@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ~/.cache/pulsar/selftest-durations.json
-          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
   # The check the main ruleset requires: it passes only when every job above did.
   selftest:
     needs: [checks, tests]
