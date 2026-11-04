@@ -17,6 +17,29 @@ review or handoff; do not create a new checklist artifact per command.
 | Broad implementation or dependency change | The full suite when the impact spans subsystem contracts or cannot be bounded by selected coverage. |
 | Commit, push or PR with unchanged tested inputs | Reuse the selected results; run the required privacy, staged-content, commit-metadata and diff checks. |
 
+## Run the selected tests quickly
+
+Match the run to the stage of the work:
+
+| Stage | Run |
+| --- | --- |
+| Fixing one behavior | The affected test IDs, such as `python3 -m unittest tests.test_file_inventory.FileInventory.test_internal_node_state_symlink_is_never_read`, or `-k PATTERN` on one module. Rerun only what failed. |
+| After a coherent change | The modules that import or call the changed code: search `tests/` for the changed functions, operations and scripts, not for a subsystem name. Run several at once with `python3 scripts/parallel_unittest.py MODULE...`. |
+| A full-suite trigger applies | `scripts/selftest.sh --jobs "$(nproc)"`. |
+
+`tests.test_model_library_cli` takes most of the serial suite: about 50 of its
+60 minutes when measured in November 2026. Select it when the change reaches
+the model-library commands it drives, and run it through
+`scripts/parallel_unittest.py`.
+
+`scripts/parallel_unittest.py` runs each test in its own process; a class or
+module that defines fixtures runs in one process, so its fixtures run once.
+Tests without a saved duration start first, then the slowest, using durations
+saved in `~/.cache/pulsar/selftest-durations.json` (under `XDG_CACHE_HOME` when
+set). Failures print as they happen, then each traceback, the slowest tests and
+the summary. Without `--jobs`, `scripts/selftest.sh` runs the same discovery
+passes serially.
+
 ## Full-suite triggers and evidence reuse
 
 Use `scripts/selftest.sh` for broad cross-subsystem behavior changes, dependency
@@ -54,11 +77,11 @@ complete regression suite. Staged privacy, commit-metadata and contribution
 checks remain separate publication requirements.
 
 CI runs checks-only mode and the existing changed-catalog and commit-metadata
-checks on pull requests. Full regression runs use `workflow_dispatch`. There is
-no push or scheduled trigger, so opening or updating a PR does not schedule a
-second full run. Periodic regression checks can be dispatched explicitly until a
-schedule is selected. Workflow enablement is an operator setting, separate from
-these event rules.
+checks on pull requests. Full regression runs use `workflow_dispatch`, with one
+test process per runner CPU. There is no push or scheduled trigger, so opening
+or updating a PR does not schedule a second full run. Periodic regression checks
+can be dispatched explicitly until a schedule is selected. Workflow enablement is
+an operator setting, separate from these event rules.
 
 ## Existing regression coverage
 
