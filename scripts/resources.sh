@@ -38,10 +38,13 @@ if not math.isfinite(value) or not 0.1<=value<=60: raise SystemExit(1)
 PY
 work=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-resources.XXXXXX")
 declare -a pids=()
-cleanup() {
+stop_samplers() {
   local pid
   for pid in "${pids[@]}"; do kill -TERM -- "-$pid" 2>/dev/null || true; done
   for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+}
+cleanup() {
+  stop_samplers
   rm -rf -- "$work"
 }
 trap cleanup EXIT
@@ -129,6 +132,8 @@ ended_rank=""
 for ((rank=0;rank<count;rank++)); do
   kill -0 "${pids[$rank]}" 2>/dev/null || { ended_rank=$rank; break; }
 done
+# The other samplers stop before the error record, so it is the stream's last row.
+stop_samplers
 if [ -z "$ended_rank" ]; then
   python3 "$REPO_DIR/scripts/resource_relay.py" --lock "$work/relay.lock" --error sampler_ended
   error_line "a resource sampler ended; the stream stopped"

@@ -556,9 +556,9 @@ Exit statuses did not change.
 
 Resource streams have a versioned header, then rank samples or explicit error
 records. Samplers run until the stream is stopped; a stream stopped by a signal
-exits 128+signal. When a rank's sampler ends on its own, the stream writes a
-`sampler_ended` error record naming that `rank`, names its node on stderr and
-exits 1. Unavailable workload measurements are null, never zero. Stopping a
+exits 128+signal. When a rank's sampler ends on its own, the stream stops the
+other samplers, writes a `sampler_ended` error record naming that `rank` as its
+last record, names its node on stderr and exits 1. Unavailable workload measurements are null, never zero. Stopping a
 stream terminates only diagnostic processes, not model services. Resource
 sampling does not acquire, prepare, launch, or enroll nodes.
 
