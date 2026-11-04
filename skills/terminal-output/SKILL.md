@@ -48,6 +48,11 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   [Catalog labels](../../docs/OPERATIONS.md#catalog-labels), written as
   `Field: words` with what it means and what to do. `pulsar help labels`
   shows that table, and `tests/test_help.py` fails when a word has no row.
+- A table's cells use words when they fit; short codes are only a narrow-width
+  fallback, and the key beside the table explains just the words or codes on
+  screen. Where a name must be cut to fit, cut it where names do not differ and
+  keep the end and any commit, so rows stay distinct. The Model files page shows
+  both.
 - Maintainer metadata says so where it is shown: State is a maintainer label,
   not a test result.
 - Change words only in human output. JSON fields and values, container labels

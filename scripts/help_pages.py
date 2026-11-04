@@ -222,7 +222,8 @@ def emit_terms(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
 def emit_labels(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
     """Rows grouped under their field, in the table's order: Files, Archive and so on."""
     writer.emit("What the labels mean", role="heading")
-    writer.emit("The catalog list, a spec's frame and `pulsar models list` describe each spec with these words. "
+    writer.emit("The catalog list, a spec's frame and `pulsar models list` describe each spec with these words; "
+                "the Model files page (`pulsar model files`) describes each model's files. "
                 "The same list is under Catalog labels in `docs/OPERATIONS.md`.", markup=True)
     group = None
     for label, meaning in rows:

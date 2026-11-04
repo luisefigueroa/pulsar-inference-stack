@@ -1,4 +1,5 @@
 """Bounded model-file discovery and inventory projection; synthetic files only."""
+import contextlib
 import hashlib
 import io
 import json
@@ -10,9 +11,10 @@ import unittest
 from unittest.mock import patch
 
 from model_library.file_discovery import inspect_files
-from model_library.file_inventory import combine, context, placement, render, _table
+from model_library.file_inventory import (FOLDER_STATES, UNFINISHED, UNFINISHED_PREPARATION, _elide, _labels, _table, combine, context,
+                                          main, placement, render)
 from model_library.local import home_record, prepared_record
-from model_library.state import Store, shared_view
+from model_library.state import Store, now, shared_view
 from release_spec import build_snapshot_manifest
 from scripts.terminal_format import TerminalWriter
 
@@ -65,6 +67,20 @@ class FileInventory(unittest.TestCase):
         document = combine(self.saved(), [self.observation(files=files)])
         self.assertEqual(document["snapshots"][0]["cleanup_spec_ids"], [])
 
+    def test_only_a_recorded_preparation_folder_names_its_spec(self):
+        prepared = self.view_root / (".pending-" + "2" * 32)
+        download = self.home_root / "pulsar-homes" / (".pending-" + "3" * 32)
+        prepared.mkdir(parents=True)
+        download.mkdir(parents=True)
+        Store(self.view_root / ".pulsar-node").put("transactions", "d" * 64, {
+            "stage": str(prepared), "node_id": "n0", "spec_id": "fixture-spec", "kind": "pulsar-preparation-staging"})
+        Store(self.view_root / ".pulsar-node").put("transactions", "e" * 64, {
+            "stage": str(download), "node_id": "other", "spec_id": "elsewhere"})
+        by_path = {item["path"]: item for item in self.scan()["unidentified"]}
+        self.assertEqual(by_path[str(prepared)]["preparation_spec_id"], "fixture-spec")
+        self.assertNotIn("preparation_spec_id", by_path[str(download)])
+        self.assertEqual({item["kind"] for item in by_path.values()}, {"incomplete"})
+
     def test_empty_missing_roots_and_unreadable_roots_are_distinct(self):
         empty = self.scan()
         self.assertEqual({scope["status"] for scope in empty["scopes"]}, {"not-found"})
@@ -87,7 +103,7 @@ class FileInventory(unittest.TestCase):
         self.assertFalse(files["bindings_observed"])
         self.assertIn("symlink", files["issues"][0])
         document = combine(self.saved(), [self.observation(files=files)])
-        self.assertIn("retention unknown", placement(document["snapshots"][0], document["nodes"][0]))
+        self.assertIn("pins unknown", placement(document["snapshots"][0], document["nodes"][0]))
 
     def test_unknown_hubs_do_not_hide_valid_neighbors_or_follow_symlinks(self):
         hub = self.hub()
@@ -110,7 +126,7 @@ class FileInventory(unittest.TestCase):
         document = combine(self.saved(), [self.observation(files=self.scan())])
         output = io.StringIO()
         render(document, writer=TerminalWriter(width=44, stream=output))
-        self.assertIn("without hashing contents", " ".join(output.getvalue().split()))
+        self.assertIn("Names and sizes were compared, not file contents.", " ".join(output.getvalue().split()))
 
     def test_declared_missing_file_leaves_location_unknown_not_absent(self):
         hub = self.hub()
@@ -158,7 +174,7 @@ class FileInventory(unittest.TestCase):
         self.assertEqual(len(document["nodes"]), 3)
         entry = document["snapshots"][0]
         self.assertIn("container use unknown", placement(entry, document["nodes"][0]))
-        self.assertEqual(placement(entry, document["nodes"][1]), "not seen in scanned roots")
+        self.assertEqual(placement(entry, document["nodes"][1]), "none in Pulsar's folders on this node")
         self.assertIn("unknown", placement(entry, document["nodes"][2]))
         self.assertEqual(entry["locations"][0]["state"], "present")
 
@@ -172,7 +188,7 @@ class FileInventory(unittest.TestCase):
         document = combine(saved, [self.observation(files=self.scan(homes=[home], views=[binding]), containers=[container])])
         entry = document["snapshots"][0]
         self.assertEqual(entry["cleanup_spec_ids"], [binding["spec_id"]])
-        self.assertIn("container referenced", placement(entry, document["nodes"][0]))
+        self.assertIn("in use by a container", placement(entry, document["nodes"][0]))
         self.assertIn("pinned", placement(entry, document["nodes"][0]))
         self.assertNotIn("reclaimable_bytes", entry)
 
@@ -187,13 +203,17 @@ class FileInventory(unittest.TestCase):
         self.assertFalse(entry["locations"][0]["bindings_observed"])
         words = placement(entry, node)
         self.assertIn("home unknown", words)
-        self.assertIn("retention unknown", words)
-        self.assertIn("saved pin", words)
-        self.assertNotIn("pinned", words)
-        compact = placement(entry, node, compact=True).split()
-        self.assertIn("pins?", compact)
-        self.assertNotIn("pin", compact)
-        self.assertNotIn("shared", compact)
+        self.assertIn("pins unknown", words)
+        self.assertIn("pinned (saved record)", words)
+        self.assertNotIn("pinned,", words)
+        cell = placement(entry, node, compact=True).split(", ")
+        self.assertEqual(cell[:2], ["home unknown", "pins unknown"])
+        self.assertNotIn("pinned", cell)
+        self.assertNotIn("shared", cell)
+        codes = placement(entry, node, compact=True, codes=True).split()
+        self.assertIn("pins?", codes)
+        self.assertNotIn("pin", codes)
+        self.assertNotIn("shared", codes)
 
     def test_empty_context_does_not_create_controller_state(self):
         repo = self.root / "repo"; repo.mkdir()
@@ -228,15 +248,267 @@ class FileInventory(unittest.TestCase):
         self.hub()
         document = combine(self.saved(), [self.observation(files=self.scan()), self.observation("n1"),
                                          self.observation("n2")])
-        self.assertTrue(_table(document["snapshots"], document["nodes"], 100))
+        lines, key = _table(document["snapshots"], document["nodes"], 100)
+        self.assertTrue(lines and key)
         for width in (32, 44, 100):
             output = io.StringIO()
             render(document, writer=TerminalWriter(width=width, stream=output))
             text = output.getvalue()
             self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
             flat = " ".join(text.split())
-            self.assertIn("Refresh checks again", flat)
+            self.assertIn("Checked less than a minute ago (3 nodes)", flat)
             self.assertIn("fixture-n0", flat)
             self.assertIn("fixture-n1", flat)
             self.assertIn("fixture-n2", flat)
-            self.assertIn("not allocated", flat)
+            self.assertIn("not what deleting would free", flat)
+
+
+class Page(unittest.TestCase):
+    """The overview and detail pages, rendered from hand-built inventories without a filesystem."""
+    ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+    @staticmethod
+    def location(node, kind="home", **fields):
+        return {"node_id": node, "kind": kind, "hub_path": "/fixture/" + kind, "state": "present",
+                "registered_home": True, "bindings": [], "bindings_observed": True, "pinned": False,
+                "shared": False, "container_references": [], **fields}
+
+    @staticmethod
+    def entry(model, commit, locations, size=1024**3):
+        return {"snapshot_manifest_id": hashlib.sha256(model.encode()).hexdigest(), "model_id": model,
+                "model_commit": commit, "payload_bytes": size, "locations": locations, "archive": None,
+                "catalog_specs": [], "cleanup_spec_ids": []}
+
+    @staticmethod
+    def node(identity, **fields):
+        scopes = [{"path": "/fixture/homes", "kind": "home", "status": "observed"},
+                  {"path": "/fixture/views", "kind": "prepared", "status": "observed"}]
+        disks = [{"path": "/fixture/homes", "available": 2 * 1024**4, "total": 4 * 1024**4},
+                 {"path": "/fixture/views", "available": 2 * 1024**4, "total": 4 * 1024**4}]
+        return {"node_id": identity, "hostname": "alpha-" + identity, "observed_at": now(), "status": "observed",
+                "error": "", "scopes": scopes, "disks": disks, "issues": [], "unidentified": [],
+                "container_error": "", **fields}
+
+    @staticmethod
+    def document(nodes, snapshots, **fields):
+        return {"schema_version": 1, "kind": "pulsar-model-file-inventory", "observed_at": now(),
+                "nodes": nodes, "snapshots": snapshots, "issues": [], **fields}
+
+    def shared_model(self):
+        """One model: a shared home in use on node 1, a shared copy on node 2, nothing on node 3."""
+        return self.document(
+            [self.node("1"), self.node("2"), self.node("3")],
+            [self.entry("fixture/Shared-Model", "a" * 40, [
+                self.location("1", shared=True, container_references=[{"id": "c"}]),
+                self.location("2", "prepared", shared=True)])])
+
+    def two_node_model(self):
+        return self.document(
+            [self.node("1"), self.node("2")],
+            [self.entry("fixture/Shared-Model", "a" * 40, [
+                self.location("1", shared=True, container_references=[{"id": "c"}]),
+                self.location("2", "prepared", shared=True)])])
+
+    def text(self, document, width, **options):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"PULSAR_COLOR": "never"}, clear=True):
+            render(document, writer=TerminalWriter(width=width, stream=output), **options)
+        return output.getvalue()
+
+    def test_words_fill_the_cells_at_100_columns_and_the_key_explains_only_what_is_shown(self):
+        text = self.text(self.shared_model(), 100)
+        lines = text.splitlines()
+        header = next(line for line in lines if line.startswith("Model snapshot"))
+        self.assertEqual(header.split(), ["Model", "snapshot", "Size", "per", "copy", "alpha-1", "alpha-2", "alpha-3"])
+        row = next(line for line in lines if line.startswith("Shared-Model @aaaaaaaa"))
+        self.assertIn("1.00 GiB", row)
+        self.assertIn("home, shared, in use", row)
+        self.assertIn("copy, shared", row)
+        self.assertTrue(row.rstrip().endswith("—"), row)
+        self.assertNotIn("fixture/", row)
+        flat = " ".join(text.split())
+        self.assertIn("— none on this node · shared: more than one spec uses it · "
+                      "in use: a container mounts it, even stopped", flat)
+        for absent in ("pinned:", "pins unknown", "H home", "Payload"):
+            self.assertNotIn(absent, flat)
+        self.assertIn("Size per copy is the model's listed size. Shared copies are stored once, "
+                      "so it is not what deleting would free.", flat)
+
+    def test_short_codes_replace_the_words_at_60_columns_with_a_key(self):
+        document = self.two_node_model()
+        # The words need 67 columns here, the codes 56.
+        wide, _ = _table(document["snapshots"], document["nodes"], 67)
+        self.assertIn("home, shared, in use", wide[1])
+        text = self.text(document, 60)
+        lines = text.splitlines()
+        self.assertTrue(all(len(line) <= 60 for line in lines), text)
+        row = next(line for line in lines if "@aaaaaaaa" in line)
+        self.assertIn("H shared used", row)
+        self.assertIn("P shared", row)
+        self.assertNotIn("home, shared", text)
+        flat = " ".join(text.split())
+        self.assertIn("H home; P copy; shared: more than one spec uses it; used: a container mounts it, even stopped",
+                      flat)
+
+    def test_stacked_entries_remain_the_narrowest_layout(self):
+        text = self.text(self.two_node_model(), 44)
+        self.assertTrue(all(len(line) <= 44 for line in text.splitlines()), text)
+        self.assertNotIn("Model snapshot", text)
+        flat = " ".join(text.split())
+        self.assertIn("fixture/Shared-Model @ aaaaaaaaaaaa", flat)
+        self.assertIn("Size per copy 1.00 GiB", flat)
+        self.assertIn("alpha-1 home, shared, in use by a container", flat)
+        self.assertIn("alpha-2 prepared copy, shared", flat)
+
+    def test_long_names_keep_their_end_and_commit_so_similar_rows_stay_distinct(self):
+        base = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4"
+        entries = [self.entry(base, "c" * 40, [self.location("1", shared=True)], 21 * 1024**3),
+                   self.entry(base + "-DSpark", "8" * 40, [self.location("1", shared=True)], 1024**3)]
+        document = self.document([self.node("1")], entries)
+        lines, _ = _table(entries, document["nodes"], 58)
+        first = [line[:29].rstrip() for line in lines[1:]]
+        self.assertEqual(len(set(first)), 2, lines)
+        self.assertIn("-DSpark @88888888", first[1])
+        self.assertTrue(first[0].endswith("NVFP4 @cccccccc"), first)
+        self.assertTrue(all(len(line) <= 58 for line in lines), lines)
+        self.assertEqual(_elide("short @12345678", 30), "short @12345678")
+        self.assertEqual(len(_elide(base + " @12345678", 24)), 24)
+
+    def test_the_org_is_kept_only_when_two_labels_would_read_the_same(self):
+        same = [self.entry("one/Model", "a" * 40, []), self.entry("two/Model", "a" * 40, []),
+                self.entry("one/Other", "a" * 40, [])]
+        self.assertEqual(_labels(same), ["one/Model @aaaaaaaa", "two/Model @aaaaaaaa", "Other @aaaaaaaa"])
+
+    def test_a_short_label_does_not_reject_a_table_with_room(self):
+        entries = [self.entry("x/m", "b" * 40, [self.location("1")])]
+        lines, key = _table(entries, [self.node("1")], 60)
+        self.assertTrue(lines, "a 9-character label must not fail the 16-column minimum")
+        self.assertEqual(key, "")
+
+    def test_equal_free_space_prints_once_and_different_free_space_prints_per_disk(self):
+        one = self.text(self.document([self.node("1")], []), 100)
+        self.assertEqual(one.count("Free space"), 1)
+        self.assertIn("Free space      2.00 TiB (homes and prepared copies)", one)
+        views = {"path": "/fixture/views", "available": 3 * 1024**4}
+        node = self.node("1")
+        node["disks"][1] = views
+        two = self.text(self.document([node], []), 100)
+        self.assertIn("Free space      2.00 TiB (homes)", two)
+        self.assertIn("Free space      3.00 TiB (prepared copies)", two)
+        node["scopes"] = []
+        node["disks"].append({"path": "/fixture/lost", "error": "gone"})
+        lone = self.text(self.document([node], []), 100)
+        self.assertIn("2.00 TiB at /fixture/homes", lone)
+        self.assertIn("Free space      could not be checked at /fixture/lost: gone", lone)
+        self.assertNotIn("Disk free", lone)
+
+    def test_two_disks_with_the_same_kind_of_folder_keep_their_paths(self):
+        node = self.node("1")
+        node["scopes"].append({"path": "/fixture/extra-homes", "kind": "home", "status": "observed"})
+        node["disks"].append({"path": "/fixture/extra-homes", "available": 10 * 1024**3, "total": 20 * 1024**3})
+        node["disks"][1] = {"path": "/fixture/views", "available": 3 * 1024**4}
+        text = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Free space 2.00 TiB (homes) at /fixture/homes", text)
+        self.assertIn("Free space 10.0 GiB (homes) at /fixture/extra-homes", text)
+        self.assertIn("Free space 3.00 TiB (prepared copies)", text)
+        self.assertNotIn("(prepared copies) at", text)
+
+    def test_folder_states_are_worded_for_the_reader_not_copied_from_discovery(self):
+        states = ("observed", "not-found", "partial", "unknown")
+        node = self.node("1", scopes=[{"path": "/fixture/" + state, "kind": "home" if state != "unknown" else "prepared",
+                                       "status": state, **({"error": "denied"} if state == "unknown" else {})}
+                                      for state in states])
+        text = self.text(self.document([node], []), 100)
+        for state in states:
+            self.assertIn(FOLDER_STATES[state] + " — /fixture/" + state, text)
+        self.assertIn("Homes folder", text)
+        self.assertIn("Copies folder   could not be checked — /fixture/unknown", text)
+        self.assertIn("Not observed    denied", text)
+        for raw in ("not-found", "— observed", "Scope"):
+            self.assertNotIn(raw, text.replace("/fixture/not-found", ""))
+
+    def test_leftovers_say_what_they_are(self):
+        node = self.node("1", unidentified=[
+            {"path": "/fixture/homes/.pending-" + "0" * 32, "kind": "incomplete",
+             "reason": "incomplete staging; not a complete snapshot"},
+            {"path": "/fixture/homes/" + "1" * 64, "kind": "home", "reason": "not a regular managed directory"}])
+        flat = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Unfinished copy /fixture/homes/.pending-" + "0" * 32 + " — " + UNFINISHED, flat)
+        self.assertIn("has not finished: still running, or interrupted", flat)
+        self.assertIn("Not recognized /fixture/homes/" + "1" * 64 + " — not a regular managed directory", flat)
+        self.assertNotIn("Inspect only", flat)
+        self.assertNotIn("incomplete staging", flat)
+
+    def test_a_recorded_preparation_names_the_spec_whose_purge_removes_it(self):
+        stage = "/fixture/views/.pending-" + "2" * 32
+        node = self.node("1", unidentified=[{"path": stage, "kind": "incomplete", "reason": "incomplete staging",
+                                             "preparation_spec_id": "fixture-spec"}])
+        flat = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Unfinished copy " + stage + " — " + UNFINISHED_PREPARATION.format(spec="fixture-spec"), flat)
+        self.assertIn("Purge on that spec removes it", flat)
+        self.assertNotIn("no Pulsar command removes it", flat)
+
+    def test_a_node_that_could_not_be_checked_says_so(self):
+        node = self.node("1", status="unknown", error="node unavailable", observed_at=None, scopes=[], disks=[])
+        flat = " ".join(self.text(self.document([node], []), 100).split())
+        self.assertIn("Files could not be checked: node unavailable", flat)
+        self.assertNotIn("Files checked", flat)
+
+    def test_checked_line_gives_the_age_and_node_count(self):
+        one = self.text(self.document([self.node("1")], []), 100)
+        self.assertIn("Checked   less than a minute ago (1 node)", one)
+        self.assertNotRegex(one, r"20\d\d-\d\d-\d\dT")
+        self.assertIn("Checked   not observed", self.text(self.document([self.node("1")], [], observed_at=None), 100))
+
+    def test_the_menu_hint_appears_only_when_a_menu_asks_for_it(self):
+        hint = "Close this page, then choose a snapshot for its paths and cleanup choices."
+        document = self.shared_model()
+        self.assertNotIn(hint, " ".join(self.text(document, 100).split()))
+        self.assertIn(hint, " ".join(self.text(document, 100, menu=True).split()))
+        detail = self.text(document, 100, snapshot=document["snapshots"][0]["snapshot_manifest_id"], menu=True)
+        self.assertNotIn("Close this page", detail)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "files.json"
+            path.write_text(json.dumps({"ok": True, "result": document}))
+            shown = {}
+            for flag in ((), ("--menu",)):
+                output = io.StringIO()
+                with patch.dict(os.environ, {"COLUMNS": "100", "PULSAR_COLOR": "never"}), \
+                        contextlib.redirect_stdout(output):
+                    self.assertEqual(main(["render", "--file", str(path), *flag]), 0)
+                shown[flag] = " ".join(output.getvalue().split())
+        self.assertNotIn(hint, shown[()])
+        self.assertIn(hint, shown[("--menu",)])
+
+    def test_detail_page_uses_the_plain_words(self):
+        document = self.shared_model()
+        entry = document["snapshots"][0]
+        flat = " ".join(self.text(document, 100, snapshot=entry["snapshot_manifest_id"]).split())
+        self.assertIn("Size per copy 1.00 GiB", flat)
+        self.assertNotIn("Payload", flat)
+        self.assertIn("No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed.", flat)
+        self.assertIn("alpha-3 none in Pulsar's folders on this node", flat)
+        self.assertIn("Files checked", flat)
+
+    def test_styles_and_no_color_leave_the_plain_pages_unchanged_in_every_layout(self):
+        node = self.node("1", unidentified=[{"path": "/fixture/homes/.pending-" + "0" * 32, "kind": "incomplete",
+                                             "reason": "incomplete staging"}])
+        document = self.document([node, *self.shared_model()["nodes"][1:]], self.shared_model()["snapshots"])
+        two = self.two_node_model()
+        for width, subject in ((100, document), (60, two), (44, two)):
+            outputs = {}
+            for mode in ("plain", "styled", "no-color"):
+                environment = {"PULSAR_COLOR": "never" if mode == "plain" else "always"}
+                if mode == "no-color":
+                    environment["NO_COLOR"] = "1"
+                with patch.dict(os.environ, environment, clear=True):
+                    output = io.StringIO()
+                    render(subject, writer=TerminalWriter(width=width, stream=output), menu=True)
+                    outputs[mode] = output.getvalue()
+            self.assertNotIn("\x1b", outputs["plain"])
+            self.assertIn("\x1b[", outputs["styled"])
+            self.assertEqual(self.ANSI.sub("", outputs["styled"]), outputs["plain"], width)
+            self.assertEqual(self.ANSI.sub("", outputs["no-color"]), outputs["plain"], width)
+            self.assertTrue(all(len(line) <= width for line in outputs["plain"].splitlines()), width)
+            codes = {code for match in self.ANSI.findall(outputs["no-color"]) for code in match[2:-1].split(";")}
+            self.assertLessEqual(codes, {"0", "1", "4"})
