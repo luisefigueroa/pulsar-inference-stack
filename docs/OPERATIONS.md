@@ -810,7 +810,10 @@ Stop retains files, pins and evidence. Purge refuses active or pinned prepared
 copies and preserves homes and archives. It removes only the selected recipe's
 bindings; working-copy files remain while any other recipe has a binding, even
 an unpinned one. The final binding can delete the working copy only after the
-usual ownership, container and incomplete-operation checks. Container references
+usual ownership, container and incomplete-operation checks. The result counts the
+prepared copies released, working copies deleted and unfinished preparations
+removed (`bindings_removed`, `copies_removed` and `preparations_removed` in
+JSON); when all three are zero it says **Nothing to purge**. Container references
 to a shared path, including stopped containers, still block purge. A container
 that mounts any directory containing the copy, such as a whole home directory,
 counts. The plan names each such container, its node, whether it is running,

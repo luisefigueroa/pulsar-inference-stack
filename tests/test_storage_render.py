@@ -127,6 +127,20 @@ class StorageRendering(unittest.TestCase):
         self.assertIn('2 retained for other recipes',flat)
         self.assertNotIn('Prepared copies removed',flat)
 
+    def test_purge_says_what_it_removed_and_when_nothing_was_there(self):
+        counts=dict(bindings_removed=0,copies_removed=0,preparations_removed=0)
+        _,flat=self.display(dict(spec_id=SPEC,purged=True,home_untouched=True,archive_untouched=True,
+                                 shared_copies_retained=0,**counts),'purge')
+        self.assertIn('Nothing to purge',flat);self.assertIn('Nothing was removed.',flat)
+        self.assertNotIn('removed ✓',flat);self.assertNotIn('Purge complete',flat)
+        counts=dict(bindings_removed=3,copies_removed=1,preparations_removed=1)
+        _,flat=self.display(dict(spec_id=SPEC,purged=True,home_untouched=True,archive_untouched=True,
+                                 shared_copies_retained=2,**counts),'purge')
+        for text in ('Purge complete','Released 3 prepared copies from this spec','Deleted 1 working copy',
+                     'Removed 1 unfinished preparation','2 retained for other recipes','Home retained'):
+            self.assertIn(text,flat)
+        self.assertNotIn('Nothing to purge',flat)
+
     def test_retention_success_names_what_was_preserved(self):
         _,flat=self.display(dict(spec_id=SPEC,pinned=False),'unpin');self.assertIn('copies unpinned',flat)
         _,flat=self.display(dict(spec_id=SPEC,purged=True,home_untouched=True,archive_untouched=True),'purge')
