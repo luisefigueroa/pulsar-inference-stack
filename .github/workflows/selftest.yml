@@ -54,11 +54,26 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Saved durations start a shard's slowest tests first; they never change
+      # the partition. A pull request restores its own last save, else main's.
+      - name: Restore the durations this shard saved last time
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/pulsar/selftest-durations.json
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: selftest-durations-shard-${{ matrix.shard }}-
       - name: Run one shard of the unit tests
         env:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ strategy.job-total }}
         run: python3 scripts/parallel_unittest.py --jobs "$(nproc)" --shard "$SHARD/$SHARDS"
+      # A failed run measured its tests too, so save unless the run was cancelled.
+      - name: Save the durations this shard measured
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/pulsar/selftest-durations.json
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}
   # The check the main ruleset requires: it passes only when every job above did.
   selftest:
     needs: [checks, tests]

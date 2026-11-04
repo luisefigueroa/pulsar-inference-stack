@@ -84,7 +84,11 @@ checks job (checks-only mode, then the diff, changed-catalog and commit-metadata
 checks of a pull request) and the unit tests, split into shards that each run
 `scripts/parallel_unittest.py --shard INDEX/COUNT` with one process per runner
 CPU. A shard is a fixed slice of the sorted test list, so every shard of one run
-sees the same partition whatever durations its runner has saved. The `selftest`
+sees the same partition whatever durations its runner has saved. Each shard
+restores the durations it saved last time, from the pull request's own earlier
+run or else from a run on `main`, and saves what it measured at the end, so its
+slowest tests start first from the second run on. Run the workflow on `main` by
+hand once to seed the durations that new pull requests start from. The `selftest`
 job passes only when the checks and every shard passed; it is the check the
 `main` ruleset requires, so keep its name. There is no push or scheduled
 trigger, and a new push to a pull request cancels the run for its previous
