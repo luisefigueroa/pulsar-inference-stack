@@ -4,8 +4,14 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# A new push to a pull request stops the run for its previous commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
 jobs:
-  selftest:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,12 +21,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Fast pull-request checks
-        if: github.event_name == 'pull_request'
+      - name: Syntax, catalog and privacy checks
         run: scripts/selftest.sh --checks-only
-      - name: Full regression suite (manual)
-        if: github.event_name == 'workflow_dispatch'
-        run: scripts/selftest.sh --jobs "$(nproc)"
       - name: Check pull-request diff
         if: github.event_name == 'pull_request'
         env:
@@ -39,3 +41,49 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/check_commit_privacy.py --range "$BASE_SHA..$HEAD_SHA"
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # Saved durations start a shard's slowest tests first; they never change
+      # the partition. A pull request restores its own last save, else main's.
+      - name: Restore the durations this shard saved last time
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/pulsar/selftest-durations.json
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: selftest-durations-shard-${{ matrix.shard }}-
+      - name: Run one shard of the unit tests
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ strategy.job-total }}
+        run: python3 scripts/parallel_unittest.py --jobs "$(nproc)" --shard "$SHARD/$SHARDS"
+      # A failed run measured its tests too, so save unless the run was cancelled.
+      - name: Save the durations this shard measured
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/pulsar/selftest-durations.json
+          key: selftest-durations-shard-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+  # The check the main ruleset requires: it passes only when every job above did.
+  selftest:
+    needs: [checks, tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the checks and every test shard to pass
+        env:
+          CHECKS: ${{ needs.checks.result }}
+          TESTS: ${{ needs.tests.result }}
+        run: |
+          echo "checks: $CHECKS, tests: $TESTS"
+          [ "$CHECKS" = success ] && [ "$TESTS" = success ]

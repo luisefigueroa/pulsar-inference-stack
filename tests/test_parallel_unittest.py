@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -127,6 +128,29 @@ class ParallelRunner(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Ran 2 tests", result.stdout)
         self.assertTrue(result.stdout.rstrip().endswith("OK"))
+
+    def test_shards_partition_the_tests_and_keep_shared_fixtures_together(self):
+        counts, shards = [], []
+        for index in (1, 2, 3):
+            result = self.run_tests("--shard", f"{index}/3")
+            self.assertIn(f"shard {index} of 3", result.stdout)
+            counts.append(int(re.search(r"Ran (\d+) tests", result.stdout).group(1)))
+            shards.append(sorted(name for name, _ in self.notes()) if self.log.exists() else [])
+            self.log.unlink(missing_ok=True)
+        self.assertEqual(sum(counts), 10)
+        self.assertTrue(all(counts), counts)
+        self.assertEqual(sorted(name for names in shards for name in names),
+                         ["first", "second", "setUpClass", "shared", "shared", "spec"])
+        with_fixture = [names for names in shards if "shared" in names]
+        self.assertEqual(len(with_fixture), 1)
+        self.assertEqual(with_fixture[0].count("shared"), 2)
+        self.assertIn("setUpClass", with_fixture[0])
+
+    def test_a_shard_outside_its_count_is_rejected(self):
+        for value in ("0/2", "3/2", "two", "1/2/3"):
+            result = self.run_tests("--shard", value)
+            self.assertEqual(result.returncode, 2, value)
+            self.assertIn("--shard", result.stderr)
 
     def test_selftest_rejects_a_job_count_that_is_not_a_positive_number(self):
         for args in (["--jobs"], ["--jobs", "0"], ["-j", "two"]):

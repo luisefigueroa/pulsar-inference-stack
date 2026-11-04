@@ -176,7 +176,8 @@ class TopologyCommands(unittest.TestCase):
         self.addCleanup(os.close, master)
         process = subprocess.Popen([str(ROOT/'pulsar'), *args], env=f.env, stdin=slave, stdout=slave, stderr=slave)
         os.close(slave)
-        output = b''; deadline = time.monotonic()+25
+        # A loaded CI runner takes several times longer than a workstation.
+        output = b''; deadline = time.monotonic()+60
         try:
             while time.monotonic() < deadline:
                 if select.select([master], [], [], .1)[0]:
@@ -187,7 +188,7 @@ class TopologyCommands(unittest.TestCase):
                     if responses and expected_prompt.encode() in output:
                         os.write(master, responses.encode()); responses = ''
                 if process.poll() is not None: break
-            process.wait(timeout=2)
+            process.wait(timeout=max(2, deadline-time.monotonic()))
         finally:
             if process.poll() is None: process.kill(); process.wait()
         return process.returncode, output.decode(errors='replace')
