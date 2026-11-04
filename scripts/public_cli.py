@@ -292,11 +292,12 @@ Print a supported baseline policy: its digest, and what each gate requires.
   --json     Print the result as JSON
 """,
     'selftest': """\
-usage: pulsar selftest [--checks-only] [--json]
+usage: pulsar selftest [--checks-only] [--jobs N] [--json]
 
 Run this checkout's deterministic checks: unit tests, then syntax, catalog and privacy checks. Nothing reaches a node.
 
   --checks-only  Run the syntax, catalog and privacy checks without the unit tests
+  --jobs N       Run the unit tests in N processes at once, slowest first
   --json         Print the result as JSON
 """,
 }

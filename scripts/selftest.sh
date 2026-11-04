@@ -2,18 +2,25 @@
 # Deterministic local checks; no model services or hardware actions.
 set -euo pipefail
 CHECKS_ONLY=0
-if [ "$#" -gt 0 ]; then
-  if [ "$#" -eq 1 ] && [ "$1" = --checks-only ]; then
-    CHECKS_ONLY=1
-  else
-    echo "usage: scripts/selftest.sh [--checks-only]" >&2
-    exit 2
-  fi
-fi
+JOBS=1
+usage() { echo "usage: scripts/selftest.sh [--checks-only] [--jobs N]" >&2; exit "${PULSAR_USAGE_EXIT:-2}"; }
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --checks-only) CHECKS_ONLY=1 ;;
+    -j|--jobs)
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^[1-9][0-9]*$ ]] || usage
+      JOBS="$2"; shift ;;
+    *) usage ;;
+  esac
+  shift
+done
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 export PYTHONDONTWRITEBYTECODE=1
-if [ "$CHECKS_ONLY" -eq 0 ]; then
+if [ "$CHECKS_ONLY" -eq 0 ] && [ "$JOBS" -gt 1 ]; then
+  # The same two discovery passes, one process per test, longest first.
+  python3 scripts/parallel_unittest.py --jobs "$JOBS"
+elif [ "$CHECKS_ONLY" -eq 0 ]; then
   python3 -m unittest discover -s release_spec/tests -p 'test_*.py'
   # Resolve this repository's tests package before imports expose release_spec/tests.
   python3 -m unittest discover -s tests -t . -p 'test_*.py'

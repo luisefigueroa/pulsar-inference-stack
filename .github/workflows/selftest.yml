@@ -20,7 +20,7 @@ jobs:
         run: scripts/selftest.sh --checks-only
       - name: Full regression suite (manual)
         if: github.event_name == 'workflow_dispatch'
-        run: scripts/selftest.sh
+        run: scripts/selftest.sh --jobs "$(nproc)"
       - name: Check pull-request diff
         if: github.event_name == 'pull_request'
         env:

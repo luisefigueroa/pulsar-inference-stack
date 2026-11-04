@@ -191,8 +191,8 @@ Git commits. See [the public contract](docs/CONTRACT.md).
 Use [Testing](docs/TESTING.md) to select validation for the changed behavior.
 `scripts/selftest.sh --checks-only` runs fast syntax, catalog, and privacy checks;
 `scripts/selftest.sh` also runs the full deterministic regression suite when
-warranted. Neither starts models, and neither establishes physical serving
-results.
+warranted, and `--jobs N` runs its unit tests in N processes at once. Neither
+starts models, and neither establishes physical serving results.
 
 Carried-forward code retains its licenses and attribution. See [LICENSE](LICENSE)
 and [third-party notices](THIRD_PARTY_NOTICES.md). This repository began with fresh

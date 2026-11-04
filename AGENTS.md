@@ -114,7 +114,10 @@ push, PR, or new approval is not itself a full-suite trigger. Reuse passing
 validation while its relevant code, fixtures, dependencies and environment match.
 Run `scripts/selftest.sh` for broad cross-subsystem changes, dependencies that
 affect execution, uncertainty that selected coverage cannot resolve, or an
-explicit regression check. Explain that reason before running it.
+explicit regression check. Explain that reason before running it, and run it
+with `--jobs N` where the machine has the cores. Select modules by searching
+tests for the changed code, not by subsystem name; see
+[running selected tests quickly](docs/TESTING.md#run-the-selected-tests-quickly).
 
 Before commit or publication, review the selected coverage and run fast privacy
 and diff checks, including the required staged checks. Prose-only changes need

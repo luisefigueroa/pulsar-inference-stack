@@ -85,7 +85,7 @@ REFERENCE = [
         ("pulsar contribution verify --package DIR",
          "Validate a contribution package, including publication privacy."),
         ("pulsar privacy check|commits", "Check files or commit metadata for private information before publication."),
-        ("pulsar selftest [--checks-only]", "Run this checkout's deterministic tests and checks; nothing reaches a node."),
+        ("pulsar selftest [--checks-only] [--jobs N]", "Run this checkout's deterministic tests and checks; nothing reaches a node."),
         ("pulsar release list", "Deprecated; use `pulsar models list`. Removed in CLI contract 2.")]),
 ]
 REFERENCE_NOTE = (
