@@ -109,15 +109,15 @@ compatibility purpose and retirement condition.
 ## Verification and operator experience
 
 Run directly affected tests while iterating and relevant subsystem checks after
-a coherent change. Select coverage by changed behavior and callers; a commit,
-push, PR, or new approval is not itself a full-suite trigger. Reuse passing
-validation while its relevant code, fixtures, dependencies and environment match.
-Run `scripts/selftest.sh` for broad cross-subsystem changes, dependencies that
-affect execution, uncertainty that selected coverage cannot resolve, or an
-explicit regression check. Explain that reason before running it, and run it
-with `--jobs N` where the machine has the cores. Select modules by searching
-tests for the changed code, not by subsystem name; see
+a coherent change. Select coverage by changed behavior and callers, searching
+tests for the changed code rather than a subsystem name; see
 [running selected tests quickly](docs/TESTING.md#run-the-selected-tests-quickly).
+Reuse passing validation while its relevant code, fixtures, dependencies and
+environment match. Run the full suite, `scripts/selftest.sh --jobs N`, once
+before opening a pull request; CI runs it again there. During iteration run it
+only when selected tests cannot answer the question, such as a broad
+cross-subsystem change or a dependency that affects execution, and say so. A
+review comment or new approval is not itself a test trigger.
 
 Before commit or publication, review the selected coverage and run fast privacy
 and diff checks, including the required staged checks. Prose-only changes need
@@ -126,8 +126,11 @@ selection and affected-command checks. `scripts/selftest.sh --checks-only`
 runs the existing syntax, catalog and privacy checks without unit tests. See
 [validation selection](docs/TESTING.md#select-checks-for-the-change).
 
-Public CI uses fast PR checks and a manual full-suite run, with no duplicate push
-trigger. CI is standalone and must not depend on private repository access.
+Public CI runs the checks and the full unit-test suite, in shards, on every pull
+request and on manual dispatch; there is no push trigger. Its `selftest` job
+passes only when every other job did and is the check the `main` ruleset
+requires, so keep its name. CI is standalone and must not depend on private
+repository access.
 Tests use synthetic fixtures and parameterized doubles, with no real cluster mutations.
 Keep Bash scenarios thin and data-heavy fixtures in Python.
 

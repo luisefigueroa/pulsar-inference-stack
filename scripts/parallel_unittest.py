@@ -175,12 +175,25 @@ def minutes(seconds):
     return f"{int(seconds // 60)}m{int(seconds % 60):02d}s" if seconds >= 60 else f"{seconds:.1f}s"
 
 
+def shard(value):
+    """INDEX/COUNT from the command line."""
+    try:
+        index, count = (int(part) for part in value.split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("expected INDEX/COUNT, such as 2/4") from None
+    if not 1 <= index <= count:
+        raise argparse.ArgumentTypeError("INDEX must be from 1 to COUNT")
+    return index, count
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="scripts/parallel_unittest.py", description=__doc__.splitlines()[0])
     parser.add_argument("--jobs", "-j", type=int, default=os.cpu_count() or 1,
                         help="processes at once (default: the number of CPUs)")
     parser.add_argument("--durations-file", default=str(DURATIONS),
                         help="saved test durations that set the start order (default: %(default)s)")
+    parser.add_argument("--shard", type=shard, metavar="INDEX/COUNT",
+                        help="run only one of COUNT fixed slices of the test list, such as 2/4 on a CI runner")
     parser.add_argument("--root", default=str(ROOT), help=argparse.SUPPRESS)
     parser.add_argument("--list", nargs=2, metavar=("TOP", "START"), help=argparse.SUPPRESS)
     parser.add_argument("--run", nargs=2, metavar=("TOP", "OUTPUT"), help=argparse.SUPPRESS)
@@ -205,10 +218,18 @@ def main(argv=None):
             print(f"Tests could not be listed from {start or 'the names given'}.", file=sys.stderr)
             return 1
         jobs += [(top, ids) for ids in json.loads(output.splitlines()[-1])]
+    note = ""
+    if options.shard:
+        index, count = options.shard
+        # A slice of the sorted test list: every shard of one CI run sees the
+        # same partition, whatever durations each runner has saved.
+        jobs.sort(key=lambda job: (job[0], job[1][0]))
+        jobs = jobs[index - 1::count]
+        note = f", shard {index} of {count}"
     durations = load_durations(options.durations_file)
     jobs.sort(key=lambda job: -sum(durations.get(test_id, UNKNOWN_SECONDS) for test_id in job[1]))
     total = sum(len(ids) for _, ids in jobs)
-    print(f"Running {total} tests in {len(jobs)} processes, {options.jobs} at a time.", flush=True)
+    print(f"Running {total} tests in {len(jobs)} processes, {options.jobs} at a time{note}.", flush=True)
 
     def run(job):
         top, ids = job
