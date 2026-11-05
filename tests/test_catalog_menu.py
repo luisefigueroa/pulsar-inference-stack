@@ -1462,7 +1462,8 @@ class Question(unittest.TestCase):
         purge = {"plan": {"eligible": True, "actions": [{"action": "remove-copy"}, {"action": "release-binding"}]},
                  "incomplete_preparations": []}
         self.assertEqual(menu.question("purge", state, plan=purge, names=NAMES),
-                         "Purge org/model: delete 1 working copy, release 1 binding? The home and the archive are kept.")
+                         "Purge org/model: delete 1 prepared copy and release 1 prepared copy whose files stay? "
+                         "The home and the archive are kept.")
         self.assertIn("from spark-1 to spark-3",
                        menu.question("move", state, plan={"source_node": "n0", "destination_node": "n2"}, names=NAMES))
         self.assertIn("Recovery requires a usable archive or an available download source.",
@@ -1724,12 +1725,44 @@ class PlanSummary(unittest.TestCase):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": [
             {"node_id": "n1", "action": "remove-copy"}, {"node_id": "n2", "action": "remove-copy"},
             {"node_id": "n0", "action": "release-binding"}]}, "incomplete_preparations": [{}]}
+        # Without the plan's views a release cannot be named as the home or a shared copy.
         self.assertEqual(self.summary("purge", plan), [
-            "Delete 2 working copies, release 1 binding whose files are kept, clear 1 incomplete preparation "
+            "Delete 2 prepared copies, release 1 prepared copy whose files stay and clear 1 unfinished copy "
             "on spark-2, spark-3, spark-1."])
         empty = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": []}, "incomplete_preparations": []}
         self.assertEqual(self.summary("purge", empty), [
-            "Nothing to purge: no prepared copies or incomplete preparations are recorded for this spec."])
+            "Nothing to purge: no prepared copies or unfinished copies are recorded for this spec."])
+
+    @staticmethod
+    def purge_views():
+        """Views in the order of their actions: a copy with 3 GiB of files, a shared copy and the home."""
+        def view(node, home=False, files=None):
+            return {"node_id": node, "is_home_view": home,
+                    "verification": {"files": files or {"w.bin": [1, 2, 3, 1024]}}}
+        views = [view("n1", files={"a.bin": [1, 2, 33188, 2 * GIB, 0, 0], "b.bin": [1, 3, 33188, GIB, 0, 0]}),
+                 view("n2"), view("n0", home=True)]
+        actions = [{"node_id": "n1", "action": "remove-copy"}, {"node_id": "n2", "action": "release-binding"},
+                   {"node_id": "n0", "action": "release-binding"}]
+        return {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "views": views, "actions": actions},
+                "incomplete_preparations": []}
+
+    def test_purge_names_shared_copies_the_home_and_the_size_it_deletes(self):
+        plan = self.purge_views()
+        self.assertEqual(self.summary("purge", plan), [
+            "Delete 1 prepared copy (3.00 GiB), release 1 shared copy and stop using the home as a prepared copy "
+            "on spark-2, spark-3, spark-1. Shared files stay for other specs."])
+        self.assertEqual(menu.question("purge", checked(home=HOME), plan=plan, names=NAMES),
+                         "Purge org/model: delete 1 prepared copy (3.00 GiB), release 1 shared copy and stop using "
+                         "the home as a prepared copy on spark-2, spark-3, spark-1? Shared files stay for other "
+                         "specs; the home and the archive are kept.")
+        # Only what the purge does is named: no zero counts.
+        plan["plan"]["views"], plan["plan"]["actions"] = plan["plan"]["views"][:1], plan["plan"]["actions"][:1]
+        self.assertEqual(menu.question("purge", checked(home=HOME), plan=plan, names=NAMES),
+                         "Purge org/model: delete 1 prepared copy (3.00 GiB) on spark-2? "
+                         "The home and the archive are kept.")
+        # A copy without a readable size is still counted, without a size.
+        plan["plan"]["views"][0]["verification"] = {}
+        self.assertEqual(self.summary("purge", plan), ["Delete 1 prepared copy on spark-2."])
 
     def test_pin_and_unpin(self):
         views = [{"node_id": "n0", "pinned": True}, {"node_id": "n1", "pinned": False}]
@@ -1851,6 +1884,196 @@ class BlockedChoices(unittest.TestCase):
             self.assertEqual(menu.main(["blocked-choices", "--plan-file", "plan.json"]), 0)
         self.assertEqual(out.getvalue(), f"stop\t{'ab' * 32}\torg/model\tStop org/model (abababababab)\n"
                                          "inventory\t\t\tOpen Live service inventory\n")
+
+
+OTHER = "cd" * 32
+OUTSIDE_CONF = "ef" * 32
+IN_CATALOG = [{"spec_id": "ab" * 32, "model_id": "org/model", "nodes": 1},
+              {"spec_id": OTHER, "model_id": "org/other", "nodes": 2}]
+
+
+def running(conf, keys, *, mib=None, port=None, served=None, **fields):
+    """One inventory service on node KEYS; MIB and PORT as each rank measured them."""
+    ranks = [{"rank": str(index), "node": key, **({"gpu_memory": {"measured_mib": mib}} if mib is not None else {}),
+              **({"observed_api_port": port} if port is not None else {})} for index, key in enumerate(keys)]
+    return {"service_id": conf or served, "conf": conf, "state": "running", "ownership": "managed",
+            "safe_to_stop": True, **({"served_name": served} if served else {}), "ranks": ranks, **fields}
+
+
+def crowded(*services, processes=()):
+    document = inventory()
+    document["services"] = list(services)
+    document["unmanaged_gpu_processes"] = list(processes)
+    return document
+
+
+class ServicesInTheWay(unittest.TestCase):
+    """R1: a refused Start names the services on its serving nodes and offers Stop for each it may stop."""
+    ONE = {"geometry": {"nodes": 1, "tp": 1, "pp": 1}}
+
+    def way(self, document, node_ids=("n1",), ports=(8000,), **fields):
+        return menu.services_in_the_way(document, checked(**{**self.ONE, **fields}), list(node_ids), IN_CATALOG,
+                                        list(ports))
+
+    def test_only_services_on_the_serving_nodes_are_named(self):
+        document = crowded(running(OTHER, ["w1", "w2"], mib=91136, port=8000),
+                           running(OUTSIDE_CONF, ["w2"], served="far-away", port=8001))
+        stops, notes = self.way(document)
+        self.assertEqual(stops, [{"conf": OTHER, "name": "org/other", "hosts": ["spark-2", "spark-3"],
+                                  "port": 8000, "mib": 91136}])
+        self.assertEqual(notes, [])
+        # A node the inventory does not name, or no known serving node, names nothing.
+        self.assertEqual(self.way(document, node_ids=("elsewhere",)), ([], []))
+        self.assertEqual(self.way(document, node_ids=()), ([], []))
+
+    def test_the_refused_spec_itself_is_not_another_service(self):
+        stops, _ = self.way(crowded(running("ab" * 32, ["w1"], port=8000), running(OTHER, ["w1"])))
+        self.assertEqual([stop["conf"] for stop in stops], [OTHER])
+
+    def test_a_service_outside_the_catalog_is_named_by_its_served_name(self):
+        stops, _ = self.way(crowded(running(OUTSIDE_CONF, ["w1"], served="experiment-model", api_port="8001")))
+        self.assertEqual(stops, [{"conf": OUTSIDE_CONF, "name": "experiment-model", "hosts": ["spark-2"],
+                                  "port": 8001, "mib": None}])
+
+    def test_what_cannot_be_stopped_here_is_a_note_without_a_choice(self):
+        document = crowded(
+            running(OTHER, ["w1"], safe_to_stop=False, reasons=["managed candidate lacks usable exact spec labels"]),
+            running(None, ["w1"], ownership="unknown", container_name="someone-else", safe_to_stop=False),
+            processes=[{"node": "w1", "pid": 4242, "process_name": "/usr/bin/python3", "used_memory_mib": 12288},
+                       {"node": "w2", "pid": 7, "process_name": "elsewhere", "used_memory_mib": 1024}])
+        stops, notes = self.way(document)
+        self.assertEqual(stops, [])
+        self.assertEqual(notes, [
+            f"On spark-2: org/other [{OTHER[:12]}] · no Stop offered: managed candidate lacks usable exact spec labels",
+            "On spark-2: someone-else · running · not started by Pulsar · read-only",
+            "On spark-2: GPU process python3 (PID 4242) · 12 GiB · not started by Pulsar · read-only"])
+        many = crowded(processes=[{"node": "w1", "pid": n, "process_name": "p", "used_memory_mib": 512}
+                                  for n in range(1, 6)])
+        _, notes = self.way(many)
+        self.assertEqual(len(notes), 4)
+        self.assertEqual(notes[0], "On spark-2: GPU process p (PID 1) · 0.5 GiB · not started by Pulsar · read-only")
+        self.assertEqual(notes[-1], "and 2 more GPU processes not started by Pulsar")
+
+    def test_a_service_on_the_busy_port_comes_first_then_the_most_memory(self):
+        third = "01" * 32
+        document = crowded(running(OUTSIDE_CONF, ["w1"], served="small", mib=2048, port=8001),
+                           running(third, ["w1"], served="unmeasured", port=8002),
+                           running(OTHER, ["w1"], mib=1024, port=8000))
+        self.assertEqual([stop["conf"] for stop in self.way(document)[0]], [OTHER, OUTSIDE_CONF, third])
+        self.assertEqual([stop["conf"] for stop in self.way(document, ports=())[0]], [OUTSIDE_CONF, OTHER, third])
+
+    def test_multi_node_specs_use_the_first_saved_nodes_as_start_does(self):
+        names = NodeNames({"n0": "spark-1", "n1": "spark-2", "n2": "spark-3"}, ["n0", "n1", "n2"])
+        self.assertEqual(menu.serving_node_ids(checked(), names, None), ["n0", "n1", "n2"])
+        self.assertEqual(menu.serving_node_ids(checked(geometry={"nodes": 2}), names, None), ["n0", "n1"])
+        # Without enough saved nodes start refuses anyway: nothing is guessed.
+        self.assertEqual(menu.serving_node_ids(checked(geometry={"nodes": 4}), names, None), [])
+        self.assertEqual(menu.serving_node_ids(checked(**self.ONE), names, "n2"), ["n2"])
+        self.assertEqual(menu.serving_node_ids(checked(**self.ONE), names, None), [])
+
+    def test_blocker_codes_and_ports(self):
+        records = [{"blocker": "image_missing"}, {"blocker": "port_in_use", "detail": "port 8000"},
+                   {"blocker": "port_in_use", "detail": "port 8000"}, {"blocker": "port_in_use", "detail": "odd"}]
+        self.assertTrue(menu.service_blockers(records))
+        self.assertTrue(menu.service_blockers([{"blocker": "memory_insufficient"}]))
+        self.assertFalse(menu.service_blockers([{"blocker": "service_exists"}, None]))
+        self.assertEqual(menu.blocked_ports(records), [8000])
+
+    def test_stop_labels_drop_facts_then_hosts_then_cut_the_name_from_its_start(self):
+        stop = {"conf": OTHER, "name": "nvidia/Nemotron-Super-VL", "hosts": ["spark-1", "spark-2"],
+                "port": 8000, "mib": 91136}
+        self.assertEqual(menu.stop_other_label(stop, 80),
+                         "Stop nvidia/Nemotron-Super-VL on spark-1, spark-2 (port 8000 · 89 GiB per node)")
+        # An 80-column terminal leaves 78: the hosts become a count before the facts give way.
+        self.assertEqual(menu.stop_other_label(stop, 78),
+                         "Stop nvidia/Nemotron-Super-VL on 2 nodes (port 8000 · 89 GiB per node)")
+        self.assertEqual(menu.stop_other_label(stop, 58), "Stop nvidia/Nemotron-Super-VL on spark-1, spark-2")
+        self.assertEqual(menu.stop_other_label(stop, 44), f"Stop nvidia/Nemotron-Super-VL [{OTHER[:12]}]")
+        narrow = menu.stop_other_label(stop, 30)
+        self.assertEqual(narrow, f"Stop …-Super-VL [{OTHER[:12]}]")
+        self.assertEqual(len(narrow), 30)
+        # A long catalog name is cut from its start before the facts give way.
+        long = {**stop, "name": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"}
+        self.assertEqual(menu.stop_other_label(long, 78),
+                         "Stop …per-VL-120B-A12B-NVFP4 on spark-1, spark-2 (port 8000 · 89 GiB per node)")
+        self.assertEqual(menu.stop_other_label({**long, "hosts": ["node-alpha", "node-beta"]}, 78),
+                         "Stop …on-3.5-Super-VL-120B-A12B-NVFP4 on 2 nodes (port 8000 · 89 GiB per node)")
+        self.assertEqual(menu.stop_other_label(long, 58), "Stop …ron-3.5-Super-VL-120B-A12B-NVFP4 on spark-1, spark-2")
+        for width in (78, 58, 44, 32):
+            self.assertLessEqual(len(menu.stop_other_label(long, width)), width)
+        # Facts are named only when known; one node takes no "per node".
+        unknown = {**stop, "hosts": ["spark-1"], "port": None, "mib": None}
+        self.assertEqual(menu.stop_other_label(unknown, 78), "Stop nvidia/Nemotron-Super-VL on spark-1")
+        self.assertEqual(menu.stop_other_label({**unknown, "mib": 2048}, 78),
+                         "Stop nvidia/Nemotron-Super-VL on spark-1 (2.0 GiB)")
+
+    def test_choice_lines_put_start_again_first_and_stops_before_the_inventory(self):
+        records = [{"blocker": "image_missing"}, {"blocker": "port_in_use", "detail": "port 8000"}]
+        stop = {"conf": OTHER, "name": "org/other", "hosts": ["spark-2"], "port": 8000, "mib": None}
+        lines = menu.start_choice_lines(records, checked(), "configured", stops=[stop], notes=["On spark-2: x"],
+                                        width=78)
+        self.assertEqual(lines, ["title\tStart was refused: 2 blockers. Choose a next step",
+                                 "note\tOn spark-2: x",
+                                 "image-stage\tStage serving image",
+                                 f"stop-other\t{OTHER}\torg/other\tStop org/other on spark-2 (port 8000)",
+                                 "inventory\tOpen Live service inventory"])
+        lines = menu.start_choice_lines(records, checked(), "configured", start_again=True, width=78)
+        self.assertEqual(lines[:2], ["title\tStart was refused: 2 blockers. Choose a next step",
+                                     "start-again\tStart again"])
+        lines = menu.start_choice_lines(records, checked(), "configured", start_again=True, dry_run=True, width=78)
+        self.assertEqual(lines[1], "start-again\tStart now")
+        # Without stops the choices are today's.
+        self.assertEqual(menu.start_choices(records, checked(), "configured", []),
+                         menu.start_choices(records, checked(), "configured"))
+        self.assertEqual(menu.start_choice_lines([], checked(), "configured"), [])
+
+    def test_stop_question_for_a_service_outside_the_catalog(self):
+        document = crowded(running(OUTSIDE_CONF, ["w1", "w2"], served="experiment-model"))
+        self.assertEqual(menu.other_stop_question(OUTSIDE_CONF, "experiment-model", document),
+                         f"Stop and remove the service containers of experiment-model [{OUTSIDE_CONF[:12]}] on "
+                         f"spark-2, spark-3? {menu.STOP_KEEPS} {menu.OUTSIDE_CATALOG}")
+        self.assertEqual(menu.other_stop_question(OUTSIDE_CONF, "experiment-model", crowded()),
+                         f"Stop experiment-model [{OUTSIDE_CONF[:12]}]? No container of it was seen running just "
+                         f"now; Stop removes any that remain. {menu.STOP_KEEPS} {menu.OUTSIDE_CATALOG}")
+        blind = crowded()
+        blind["nodes"]["w2"]["probe_status"] = "unreachable"
+        for document in (blind, None):
+            with self.subTest(document=document is None):
+                self.assertEqual(menu.other_stop_question(OUTSIDE_CONF, "experiment-model", document),
+                                 f"Stop and remove the service containers of experiment-model "
+                                 f"[{OUTSIDE_CONF[:12]}] on its nodes? {menu.STOP_KEEPS} {menu.OUTSIDE_CATALOG}")
+
+    def test_cli_names_the_service_in_the_way_and_falls_back_without_a_readable_inventory(self):
+        import tempfile
+        record = {"field": "blocker", "stage": "check", "blocker": "port_in_use", "detail": "port 8000"}
+        with tempfile.TemporaryDirectory() as folder:
+            blockers, live = Path(folder) / "blockers", Path(folder) / "live.json"
+            blockers.write_text(json.dumps(record) + "\n")
+            live.write_text(json.dumps(crowded(running(OUTSIDE_CONF, ["w1"], served="experiment-model", port=8000))))
+
+            def run(*extra):
+                out = io.StringIO()
+                document = json.dumps({"entries": [checked(**self.ONE)]})
+                with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", out), \
+                        patch.dict("os.environ", {"COLUMNS": "80"}):
+                    code = menu.main(["start-choices", "--spec-id", "ab" * 32, "--archive-location", "configured",
+                                      "--blockers-file", str(blockers), "--repo-root", folder, *extra])
+                return code, out.getvalue().splitlines()
+
+            code, lines = run("--live", str(live), "--node", "n1")
+            self.assertEqual(code, 0)
+            self.assertEqual(lines[1:], [f"stop-other\t{OUTSIDE_CONF}\texperiment-model\t"
+                                         "Stop experiment-model on spark-2 (port 8000)",
+                                         "inventory\tOpen Live service inventory"])
+            live.write_text("not json")
+            self.assertEqual(run("--live", str(live), "--node", "n1")[1][1:], ["inventory\tOpen Live service inventory"])
+            self.assertEqual(run("--start-again")[1][1], "start-again\tStart again")
+            out = io.StringIO()
+            with patch("sys.stdout", out):
+                self.assertEqual(menu.main(["service-blockers", "--blockers-file", str(blockers)]), 0)
+                self.assertEqual(menu.main(["other-stop-question", "--conf", OUTSIDE_CONF,
+                                            "--served-name", "experiment-model"]), 0)
+            self.assertIn(menu.OUTSIDE_CATALOG, out.getvalue())
 
 
 class Historical(unittest.TestCase):

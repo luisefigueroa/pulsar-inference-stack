@@ -46,10 +46,11 @@ model is running. When you are ready to operate a recipe, choose **Set up cluste
 membership and SSH trust**. After setup, the menu opens with **Cluster overview
 (checks nodes now)**, which shows what runs on each node, then **Catalog and
 storage** for operating a recipe. Archive storage is optional.
-**Model files and disk space (checks nodes now)** on the home menu lists managed
-downloads and prepared copies across all confirmed nodes, including uncataloged
-downloads. Use `./pulsar model files` for the read-only report; cleanup keeps its
-existing previews and confirmations.
+**Model files and disk space (checks nodes now)** on the home menu and in the
+catalog lists managed downloads and prepared copies across all confirmed nodes,
+including uncataloged downloads, with each node's storage budget and what each
+spec's Purge would free. Use `./pulsar model files` for the read-only report;
+cleanup keeps its existing previews and confirmations.
 
 
 See the [menu reference](docs/OPERATIONS.md#menu-reference) for interactive
