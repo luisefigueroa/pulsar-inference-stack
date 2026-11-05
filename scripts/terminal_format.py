@@ -43,6 +43,21 @@ def terminal_width(
     return max(minimum, min(width, maximum))
 
 
+def cut_middle(name: str, width: int) -> str:
+    """Fit a name in WIDTH by cutting its middle and keeping its end.
+
+    Names that share a prefix, such as two recipes or two models of one
+    organization, usually differ at the end, so the end stays readable.
+    """
+    if len(name) <= width:
+        return name
+    if width < 2:
+        return "…"[:width]
+    room = width - 1
+    head = room // 2
+    return name[:head] + "…" + name[len(name) - (room - head):]
+
+
 _KEEP = "\u00a0"  # no-break space: textwrap never breaks at it
 
 # Styles for human output, after clig.dev, NO_COLOR (no-color.org) and

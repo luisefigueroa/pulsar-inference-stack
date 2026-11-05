@@ -220,6 +220,15 @@ print_start_checks() {
   python3 -m scripts.start_checks checklist --checks-file "$1" 2>/dev/null || true
 }
 
+# start_question_document — the catalog document a Start question reads: every
+# entry from saved records, so the question can name what tells this recipe
+# apart from others of its model; the selected recipe's document otherwise.
+start_question_document() {
+  local document
+  document=$(catalog list --json 2>/dev/null) || document=$ROW_JSON
+  printf '%s' "$document"
+}
+
 start_catalog_spec() {
   local label="$1" spec="$2" blockers checks question allow=0 rc
   shift 2
@@ -240,7 +249,7 @@ start_catalog_spec() {
   fi
   rm -f "$blockers"
   [ "$allow" -eq 1 ] || return 0
-  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" \
+  question=$(start_question_document | catalog_menu confirm --spec-id "$spec" \
     --action start-memory ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
   # The question keeps the first outcome on screen; no Continue before it.
   HOLD_SCREEN=0
@@ -538,7 +547,9 @@ perform_action() {
         live_args
         [ "$LIVE_REFRESHED" = 0 ] || scope=("${LIVE_ARGS[@]}")
       fi
-      question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action "$action" \
+      local document=$ROW_JSON
+      [ "$action" = stop ] || document=$(start_question_document)
+      question=$(printf '%s' "$document" | catalog_menu confirm --spec-id "$spec" --action "$action" \
         ${MENU_NODE:+--node "$MENU_NODE"} "${scope[@]}") || return 0
       confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
       if [ "$action" = start ]; then
