@@ -103,11 +103,20 @@ def combine(saved: dict, observations: list[dict]) -> dict:
     for observation in observations:
         node_id = observation["node_id"]
         files = observation.get("files")
+        containers = observation.get("containers")
+        unidentified = []
+        for item in (files or {}).get("unidentified", []):
+            if item.get("kind") == "incomplete":
+                # Purge checks a recorded preparation's staging folder for mounts before deleting anything.
+                item = {**item, "container_references": None if containers is None else [
+                    container for container in containers
+                    if _covering_mount({"hub_path": item["path"], "path": item["path"]}, container["mounts"]) is not None]}
+            unidentified.append(item)
         node = {"node_id": node_id, "hostname": observation["hostname"], "observed_at": (files or {}).get("observed_at"),
                 "status": "observed" if files is not None else "unknown",
                 "error": observation.get("error"), "scopes": (files or {}).get("scopes", []),
                 "disks": (files or {}).get("disks", []), "issues": (files or {}).get("issues", []),
-                "unidentified": (files or {}).get("unidentified", []),
+                "unidentified": unidentified,
                 "container_error": observation.get("container_error"),
                 # Whether the node's prepared-copy records were read; Purge needs them on every node.
                 "records": "observed" if files is not None and files.get("bindings_observed") else "unreadable"}
@@ -122,7 +131,6 @@ def combine(saved: dict, observations: list[dict]) -> dict:
                 entry.update(model_id=manifest["model_id"], model_commit=manifest["snapshot_revision"],
                              payload_bytes=manifest["total_bytes"])
             bindings = location.get("bindings", [])
-            containers = observation.get("containers")
             references = None
             if containers is not None:
                 references = [container for container in containers if _covering_mount(
@@ -214,6 +222,24 @@ def _blockers(entry: dict, spec_id: str) -> dict:
     return found
 
 
+def _unfinished(nodes: list[dict], spec_id: str) -> list[dict]:
+    """This spec's recorded unfinished copies, each with its node_id."""
+    return [{**item, "node_id": node["node_id"]} for node in nodes for item in node.get("unidentified") or []
+            if item.get("kind") == "incomplete" and item.get("preparation_spec_id") == spec_id]
+
+
+def _unfinished_blockers(nodes: list[dict], spec_id: str) -> dict:
+    """Nodes where a container mounts this spec's unfinished copy, or its containers could not be read."""
+    found = {"pinned_on": [], "in_use_on": [], "unknown_on": []}
+    for item in _unfinished(nodes, spec_id):
+        references = item.get("container_references")
+        if references:
+            found["in_use_on"].append(item["node_id"])
+        elif references is None:
+            found["unknown_on"].append(item["node_id"])
+    return found
+
+
 def _unread(node: dict) -> bool:
     """A confirmed node whose files, records or containers could not be read; Purge refuses then."""
     if node.get("error") == OUTSIDE_MEMBERSHIP:
@@ -235,8 +261,9 @@ def purge_estimate(entry: dict, spec_id: str, nodes: list[dict], snapshots: list
     """
     order = [node["node_id"] for node in nodes]
     found = {"bytes_by_node": {}, "pinned_on": [], "in_use_on": [], "unknown_on": []}
-    for member in _spec_snapshots(entry, spec_id, snapshots):
-        for key, values in _blockers(member, spec_id).items():
+    for member in [*_spec_snapshots(entry, spec_id, snapshots), None]:
+        blockers = _unfinished_blockers(nodes, spec_id) if member is None else _blockers(member, spec_id)
+        for key, values in blockers.items():
             found[key] += values
     size = entry.get("payload_bytes")
     for location in entry["locations"]:
@@ -268,14 +295,14 @@ def _freed(estimate: dict) -> int | None:
     return sum(values) if all(type(value) is int for value in values) else None
 
 
-def _mount_fixes(entries: list[dict], spec_id: str, catalog: dict[str, str]) -> list[str]:
-    """What clears each container that mounts this spec's files, by who started it, as the purge
-    plan's blocker details tell them apart. CATALOG maps catalog spec IDs to model IDs."""
+def _mount_fixes(entries: list[dict], nodes: list[dict], spec_id: str, catalog: dict[str, str]) -> list[str]:
+    """What clears each container that mounts this spec's files or unfinished copies, by who started
+    it, as the purge plan's blocker details tell them apart. CATALOG maps catalog spec IDs to model IDs."""
     from .planning import CONF_LABEL, MANAGED_LABEL, SELECTED_SPEC_LABEL, SPEC_LABEL
     fixes = []
-    for location in [location for entry in entries for location in entry["locations"]]:
-        if not any(binding.get("spec_id") == spec_id for binding in location.get("bindings") or []):
-            continue
+    mounted = [location for entry in entries for location in entry["locations"]
+               if any(binding.get("spec_id") == spec_id for binding in location.get("bindings") or [])]
+    for location in [*mounted, *_unfinished(nodes, spec_id)]:
         for container in location.get("container_references") or []:
             labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
             owner = (labels.get(SELECTED_SPEC_LABEL) or labels.get(CONF_LABEL) or labels.get(SPEC_LABEL)
@@ -308,19 +335,24 @@ def purge_line(entry: dict, spec_id: str, nodes: list[dict], catalog: dict[str, 
     members = _spec_snapshots(entry, spec_id, snapshots)
     subject = "Purge via [" + spec_id[:12] + "]"
     def where(key):
-        """The nodes for KEY, naming another snapshot of the spec where the blocker is there."""
-        parts = []
-        for member in members:
-            found = [node for node in _blockers(member, spec_id)[key] if node not in parts]
-            if not found:
-                continue
-            text = named(ordered(found))
-            if member is not entry:
+        """Each node for KEY once, noting where the blocker lies when it is not this snapshot's copy."""
+        notes = {}
+        for member in [*members, None]:
+            if member is None:
+                found, note = _unfinished_blockers(nodes, spec_id)[key], "its unfinished copy"
+            else:
+                found = _blockers(member, spec_id)[key]
                 name = next((value.get("snapshot") for value in member["catalog_specs"]
                              if value["spec_id"] == spec_id), None)
-                text += " (its " + (name + " snapshot" if name else "other snapshot") + ")"
-            parts.append(text)
-        return ", ".join(parts)
+                note = ("this snapshot" if member is entry
+                        else "its " + (name + " snapshot" if name else "other snapshot"))
+            for node in found:
+                notes.setdefault(node, [])
+                if note not in notes[node]:
+                    notes[node].append(note)
+        # This snapshot's own copy needs no note unless the node also has another.
+        return ", ".join(named([node]) + ("" if place == ["this snapshot"] else " (" + ", ".join(place) + ")")
+                         for node in ordered(notes) for place in [notes[node]])
     def ordered(identities):
         order = [node["node_id"] for node in nodes]
         return sorted(dict.fromkeys(identities), key=lambda node: order.index(node) if node in order else len(order))
@@ -328,7 +360,7 @@ def purge_line(entry: dict, spec_id: str, nodes: list[dict], catalog: dict[str, 
     causes = [word + where(key) for key, word in (("in_use_on", "in use on "), ("pinned_on", "pinned on "))
               if estimate[key]]
     if causes:
-        fixes = _mount_fixes(members, spec_id, catalog) if estimate["in_use_on"] else []
+        fixes = _mount_fixes(members, nodes, spec_id, catalog) if estimate["in_use_on"] else []
         text = "; ".join(fixes)
         if estimate["pinned_on"]:
             text = text + ", then Unpin prepared copies" if text else "Choose Unpin prepared copies first"

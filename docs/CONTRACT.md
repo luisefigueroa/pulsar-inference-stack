@@ -257,7 +257,10 @@ does not create model-library records or register discovered files. `nodes`
 retains every confirmed node (plus saved locations outside current membership)
 with observation times, scan scopes, disk readings, independent file and
 container errors, and `records` (`observed`, or `unreadable` when the node's
-prepared-copy records could not be read or reconciled). `snapshots` groups physical locations by manifest identity,
+prepared-copy records could not be read or reconciled). An `unidentified` entry
+with `kind: "incomplete"` (an unfinished copy) carries `container_references`
+like a location: the containers that mount it, or `null` when the node's
+containers could not be read. `snapshots` groups physical locations by manifest identity,
 with model identity, manifest payload estimates, bindings, pins, saved archive
 records and existing catalog cleanup routes. Shared paths are not duplicated
 for each binding. Locations with `bindings_observed: false` retain saved binding

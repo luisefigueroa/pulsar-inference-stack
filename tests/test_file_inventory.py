@@ -685,6 +685,46 @@ class PurgeEstimate(unittest.TestCase):
                          "Purge via [111111111111] would free at least 102 GiB on alpha-2; not known on alpha-9, "
                          "which could not be fully checked.")
 
+    def test_a_mounted_unfinished_copy_of_the_spec_blocks_purge(self):
+        # Purge checks each recorded preparation's staging folder for mounts before deleting anything.
+        pending = "/fixture/views/.pending-" + "0" * 32
+        files = {"observed_at": now(), "locations": [], "scopes": [], "disks": [], "issues": [],
+                 "bindings_observed": True, "unidentified": [
+                     {"path": pending, "kind": "incomplete", "reason": "incomplete staging",
+                      "preparation_spec_id": self.SPEC}]}
+        def observed(containers):
+            return combine({"homes": [], "views": [], "manifests": {}, "archives": {}, "specs": {},
+                            "home_roots": [], "issues": []},
+                           [{"node_id": "1", "hostname": "alpha-1", "files": files, "containers": containers,
+                             "error": ""}])["nodes"][0]
+        mounted = observed([{**self.service(self.SPEC), "mounts": [pending]}])
+        self.assertEqual(len(mounted["unidentified"][0]["container_references"]), 1)
+        self.assertEqual(observed([{**self.service(self.SPEC), "mounts": ["/elsewhere"]}])
+                         ["unidentified"][0]["container_references"], [])
+        unread = observed(None)
+        self.assertIsNone(unread["unidentified"][0]["container_references"])
+        entry = self.entry(self.copy("2"))
+        nodes = [mounted, Page.node("2"), Page.node("3")]
+        self.assertEqual(purge_estimate(entry, self.SPEC, nodes)["in_use_on"], ["1"])
+        self.assertEqual(purge_line(entry, self.SPEC, nodes),
+                         "Purge via [111111111111] is blocked: in use on alpha-1 (its unfinished copy). "
+                         "Choose Stop first.")
+        self.assertNotIn("frees", self.run_main(Page.document(nodes, [entry]), "choices"))
+        # Its containers could not be read: the figure is a minimum.
+        self.assertEqual(purge_estimate(entry, self.SPEC, [unread, *nodes[1:]])["unknown_on"], ["1"])
+        # Another spec's unfinished copy does not touch this spec's figure.
+        mounted["unidentified"][0]["preparation_spec_id"] = self.OTHER
+        self.assertEqual(purge_line(entry, self.SPEC, nodes), "Purge via [111111111111] would free 102 GiB on alpha-2.")
+
+    def test_a_pin_in_two_snapshots_on_one_node_names_the_host_once(self):
+        target = self.entry(self.copy("3", self.binding(pinned=True), pinned=True))
+        draft = Page.entry("fixture/Draft", "b" * 40, [self.copy("3", self.binding(pinned=True), pinned=True)])
+        draft.update(catalog_specs=[{"spec_id": self.SPEC, "snapshot": "draft", "model_id": "fixture/Model"}],
+                     cleanup_spec_ids=[self.SPEC])
+        self.assertEqual(purge_line(target, self.SPEC, self.nodes(), snapshots=[target, draft]),
+                         "Purge via [111111111111] is blocked: pinned on alpha-3 (this snapshot, its draft snapshot). "
+                         "Choose Unpin prepared copies first.")
+
     def test_a_missing_copy_frees_nothing_and_a_spec_without_copies_says_so(self):
         self.assertEqual(self.estimate(self.entry(self.copy("2", state="missing")))["bytes_by_node"], {})
         self.assertIn("no prepared copies of this snapshot are recorded for it", self.line(self.entry(Page.location("1"))))
