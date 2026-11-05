@@ -904,7 +904,7 @@ raise SystemExit(rc)
         (self.root / "no-topology.json").write_text(json.dumps(
             {"nodes": [{"node_id": "fixture-node", "hostname": "fixture-host"}]}))
         spec, result, actions, choices, questions = self.run_menu(
-            ["#0", "Back", "Free disk space (checks nodes now)", "Back", "#0", "Download (suggested)",
+            ["#0", "Back", "Model files and disk space (checks nodes now)", "Back", "#0", "Download (suggested)",
              "#0", "Back", "Back"],
             observation={"local_state": "missing", "archive_state": "verified", "blockers": []},
             plan=plan, confirms=["no"], env_extra=scan)
@@ -920,7 +920,7 @@ raise SystemExit(rc)
         self.assertIn("Which machine should hold the model files?\n"
                       "fixture-host — files found here, not in Pulsar's records\n\n", choices)
         self.assertEqual(self.cursor("Which machine should hold the model files?"), ["0"])
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"],
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"],
                                    ["model-library.sh", "acquire", spec, "--node", "fixture-node", "--plan",
                                     "--json"]])
         self.assertIn("Nothing is downloaded.", questions)
@@ -928,7 +928,7 @@ raise SystemExit(rc)
 
     def test_a_failed_scan_leaves_the_suggestion_and_question_unchanged(self):
         spec, result, actions, choices, _ = self.run_menu(
-            ["Free disk space (checks nodes now)", "#0", "Download", "#0", "Back", "Back"],
+            ["Model files and disk space (checks nodes now)", "#0", "Download", "#0", "Back", "Back"],
             observation={"local_state": "missing", "archive_state": "verified", "blockers": []},
             confirms=["no"], env_extra=lambda _: {
                 "FILES_FIXTURE": json.dumps({"schema_version": 1, "ok": False,

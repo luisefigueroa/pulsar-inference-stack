@@ -88,9 +88,9 @@ hold_screen() {
 # What this session observed about services: a service inventory captured only
 # on request, and each spec's latest Live status, Start or Stop outcome as
 # ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age. FILES_ARGS
-# names the catalog's own Model files scan (Free disk space), which the frame
-# and Download's machine question read for files no record names. A failed
-# scan leaves its error in that file; catalog_menu also ignores what it
+# names the catalog's own Model files scan (Model files and disk space), which
+# the frame and Download's machine question read for files no record names. A
+# failed scan leaves its error in that file; catalog_menu also ignores what it
 # cannot read.
 LIVE_FILE="" CATALOG_WORK=""
 declare -A SERVICE_OUTCOME=()

@@ -821,15 +821,15 @@ a second matching folder.
 ./pulsar model acquire <spec-id> --snapshot target --node <node> --plan
 ```
 
-In the catalog menu, run **Free disk space (checks nodes now)** first. When
-that scan found the home folder of a required snapshot with no recorded home,
-the recipe's Files field reads `files found on <host>, not in Pulsar's
-records; Download checks them`, and once the recipe has a saved check the
-suggestion is **Download**, ahead of **Restore**. Download's machine question
-then starts on that machine, labelled `files found here, not in Pulsar's
-records`. The choice stays **Download**: its preview says whether the files
-are reused. Only a scan from this catalog session counts; **Model files and
-disk space** on the home menu runs on its own.
+In the catalog menu, choose **Model files and disk space (checks nodes now)**
+in the catalog list first. When that scan found the home folder of a
+required snapshot with no recorded home, the recipe's Files field reads `files
+found on <host>, not in Pulsar's records; Download checks them`, and once the
+recipe has a saved check the suggestion is **Download**, ahead of **Restore**.
+Download's machine question then starts on that machine, labelled `files found
+here, not in Pulsar's records`. The choice stays **Download**: its preview
+says whether the files are reused. Only a scan from this catalog session
+counts; the same choice on the home menu runs on its own.
 
 ### Check archive integrity
 
