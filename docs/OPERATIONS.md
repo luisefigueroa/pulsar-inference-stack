@@ -75,7 +75,7 @@ Live homes and prepared copies must be on node-local serving storage. Runtime
 checks reject known network filesystems such as NFS for those paths. Recovery
 archives may use the operator's mounted storage; archive configuration never
 prescribes mount options or claims failure-domain independence. Archive locations
-must not overlap directories managed as removable homes or working copies.
+must not overlap directories managed as removable homes or prepared copies.
 
 ## Terms
 
@@ -169,6 +169,8 @@ below are for reading.
 | Model files: Not recognized | An item in a Pulsar folder that is not a model snapshot Pulsar can identify; the reason follows its path. Pulsar changes nothing. |
 | Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
 | Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
+| Model files: would free | On a snapshot's page, for each spec that can clean it up: the listed size of the prepared copies that spec's **Purge** deletes, added up across nodes. A shared copy and a home used as a prepared copy are only released, so they free nothing. Purge removes nothing while any of the spec's copies, in any of its snapshots, or an unfinished copy it recorded, is pinned or in use, so the line then says it is blocked and names what clears it. A confirmed node whose files, records or containers could not be read makes the figure a minimum; a node outside confirmed membership counts only where it holds the spec's copies. A snapshot choice shows `frees N GiB` when one spec can clean it up and the whole figure is known. |
+| Model files: Storage budget | Under the nodes, one row per node from `./pulsar model budget`: disk free, the reserve, Pulsar files, and what the node can still copy. **not observed** gives the reason the budget could not be read; the files above are still current. |
 
 ## Configure topology and storage
 
@@ -293,7 +295,7 @@ browsing works before topology is configured.
 ### Archive location
 
 A **home** is the complete local copy of one exact snapshot on a confirmed member. Serving
-nodes use prepared working copies. The library records their explicit
+nodes use prepared copies. The library records their explicit
 locations; a snapshot manifest supplies the expected file list and hashes.
 Files on every participating node must match before serving starts.
 
@@ -727,7 +729,7 @@ verification. Add `--full` to request a fresh full content audit. Archive
 verification and verification of newly copied bytes remain full audits.
 Prepared-copy inspection in `model info`, `model check` and `observe` uses up to
 three verification workers, with at most one per physical node. The batch covers
-homes and working copies for every required snapshot; shared references to the
+homes and prepared copies for every required snapshot; shared references to the
 same physical copy are verified once. `--verification-jobs N` sets the bound;
 use `--verification-jobs 1` for serial inspection. The mode is independent of
 `--full`: normal calls still reuse valid metadata, and full audits still hash
@@ -833,13 +835,18 @@ spec ID for `purge` and `remove`. Preview the intended cleanup before applying i
 ```
 
 Stop retains files, pins and evidence. Purge refuses active or pinned prepared
-copies and preserves homes and archives. It removes only the selected recipe's
-bindings; working-copy files remain while any other recipe has a binding, even
-an unpinned one. The final binding can delete the working copy only after the
-usual ownership, container and incomplete-operation checks. The result counts the
-prepared copies released, working copies deleted and unfinished preparations
-removed (`bindings_removed`, `copies_removed` and `preparations_removed` in
-JSON); when all three are zero it says **Nothing to purge**. Container references
+copies and preserves homes and archives. It releases only the selected spec's
+prepared copies: a copy another spec also uses is a shared copy, and its files
+stay while any other spec uses it, even unpinned. A home used as a prepared copy
+is released the same way. Only a prepared copy no other spec uses is deleted with
+its files, after the usual ownership, container and incomplete-operation checks.
+The menu's preview and question say how many prepared copies Purge deletes, with
+their size when the plan records it, how many shared copies it releases, and how
+many unfinished copies it clears, leaving out what it does not do. The result
+counts the prepared copies released, the prepared copies whose files were deleted
+and the unfinished copies removed (`bindings_removed`, `copies_removed` and
+`preparations_removed` in JSON); when all three are zero it says **Nothing to
+purge**. Container references
 to a shared path, including stopped containers, still block purge. A container
 that mounts any directory containing the copy, such as a whole home directory,
 counts. The plan names each such container, its node, whether it is running,
@@ -850,9 +857,9 @@ In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
 
 ### Model files across the nodes
 
-Choose **Model files and disk space (checks nodes now)** beside **Catalog and
-storage** on the home menu. The catalog's **Free disk space (checks nodes now)**
-opens the same overview. It lists model snapshots across every confirmed node,
+Choose **Model files and disk space (checks nodes now)** on the home menu, or
+the choice of the same name in the catalog list; both open the same page. It
+lists model snapshots across every confirmed node,
 including managed downloads that have no catalog recipe. You do not need to open
 each recipe to see placement. Entering this menu always checks nodes and their
 managed filesystems now; it does not present saved placement as current. The equivalent commands are:
@@ -863,8 +870,12 @@ managed filesystems now; it does not present saved placement as current. The equ
 ./pulsar model files --json
 ```
 
-The overview shows each node's free space and folders, then one model-by-node
-table when it fits; narrow screens use stacked entries. The cells use words
+The overview shows each node's free space and folders, then the storage budget
+table (see [prepared copies and storage estimates](#prepared-copies-and-storage-estimates)),
+then one model-by-node table when it fits; narrow screens use stacked entries.
+The budget is read after the file scan because it takes the shared storage lock,
+as the cluster overview does; when it cannot be read, its line says **not
+observed** with the reason and the files stay shown. The cells use words
 (`home`, `copy`, `shared`, `pinned`, `in use`). Only when the words do not fit
 do short codes (`H`, `P`, `used`) take their place, with a key under the table
 that explains just what is shown. Pins, shared copies and container use are
@@ -895,11 +906,24 @@ result.
 
 **Size per copy** is the model's listed size from its manifest for one complete
 copy, not allocated disk usage or promised reclaimable space. A home used as a prepared copy and a
-working copy shared by several recipes each remain one physical location.
+prepared copy shared by several specs each remain one physical location.
 Archive information comes from saved verification records, with its time; archive
 storage is not scanned by this overview and is never a cleanup target.
 
-Close the page, then choose a snapshot for its paths and cleanup. A registered
+Close the page, then choose a snapshot for its paths and cleanup. That page
+says, for each spec that can clean it up, what its Purge would free: the listed
+size of the copies it deletes, leaving out shared copies and the home; or that
+Purge is blocked, with what clears it: **Stop** for this spec's own service,
+stopping another service from its own recipe or **Live service inventory**,
+removing a container Pulsar did not start outside Pulsar, or **Unpin prepared
+copies**. Purge covers every snapshot the spec has copies of and the unfinished
+copies it recorded, so a pin or a container on another of its snapshots, or a
+container that mounts its unfinished copy, blocks it too, and the line names
+where. Each node is named once. The figure is a minimum when a confirmed node, or its records or
+containers, could not be fully checked; a node outside confirmed membership
+counts only where it holds the spec's copies. The snapshot
+choice adds `frees N GiB` when one spec can clean it up and the figure is
+complete. Purge's own preview rechecks every node before anything is deleted. A registered
 snapshot with one catalog spec opens that spec's existing **Stop**, **Unpin
 prepared copies**, **Purge prepared copies** and **Remove home** menu. With
 several specs, **Clean up through which spec?** asks first. Purge still covers
@@ -940,7 +964,7 @@ compatibility but is no longer required; `--yes` confirms removal for every home
 
 ### Shared-record compatibility
 
-Sharing upgrades the affected private working-copy records to schema 3 during
+Sharing upgrades the affected private prepared-copy records to schema 3 during
 the approved preparation. Their keys, paths and pins are preserved, and retries
 reconcile partial controller/node upgrades. Older Stack code rejects these
 records. Finish older model-library operations before the first shared prepare
@@ -1290,25 +1314,51 @@ lead to it:
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
-| `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
+| `memory_insufficient`, `port_in_use` | Stop, for each Pulsar-managed service on the serving nodes, named with its nodes, port and GPU memory from one service inventory the menu takes first; then Open Live service inventory |
 | `service_exists` | Live status; Stop |
 | `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Service logs; Stop |
 | A failed launch whose containers may remain (`cleanup` is `unconfirmed`) | Live status; Stop, added to the choices above |
 | `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
+
+Start cannot say what holds a busy port or the memory, so for
+`port_in_use` and `memory_insufficient` the menu takes one service inventory
+before the choices (Ctrl-C there leaves the menu). It offers **Stop** for
+each Pulsar-managed service with a container on the refused spec's serving
+nodes: the selected node of a one-node spec, or the first saved nodes, which
+ordinary start uses. A choice names the catalog model, or the served name of a
+service started outside this catalog, then its nodes, port and the most GPU
+memory one of its containers uses, such as `Stop org/model on spark-1,
+spark-2 (port 8000 · 89 GiB per node)`; a service on the busy port comes
+first. Where a choice does not fit, its nodes become a count and the model
+name is cut from its start, keeping its end, before the port and memory give
+way. That Stop takes the same refresh and question as any Stop and removes
+the service's containers on every node; for a service outside the catalog,
+the question says so. The refused spec's own service is `service_exists`,
+with its own choices. Containers Pulsar does not manage, managed services the
+inventory could not establish as safe to stop, and GPU processes Pulsar did
+not start are named above the choices, read-only, with no choice. When the
+inventory cannot be taken or read, the choices are the ones in the table.
 
 Each choice runs the existing operation with its own selections, preview and
 confirmation, and none adds `--replace` or `--pull-image`. A failed
 multi-node launch whose containers were all seen removed offers no Live
 status, Service logs or Stop. The inventory, Cluster topology, topology check,
 host diagnostics, Service logs and a declined confirmation return to the same
-choices. The diagnostics rerun replaces them with its own. Any other
-choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
-inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
-`historical_spec` and `service_stopped` have no menu choice; their printed
-note gives the supported path.
+choices. The diagnostics rerun replaces them with its own. After a finished
+Stop, Stage serving image, Download, Restore or Prepare, and after the
+inventory menu, the choices return with **Start again** first (**Start now**
+after **Check launch prerequisites**); after a Stop or the inventory menu,
+the menu takes the service inventory again. Start again asks Start's own
+question for the same spec, node and snapshot, so Stop and Start keep
+separate confirmations. Live status, a failed or interrupted operation, and
+Back return to the recipe after the outcome. An interrupted Start offers no
+choices; its outcome names the next inspection. `memory_warning` keeps its own
+retry above. `guard_unsupported`, `historical_spec` and `service_stopped` have
+no menu choice; their printed note gives the supported path.
 
-These menu choices operate on catalog specs; they do not author or override
-recipes. Historical schema-1 specs do not offer the new launch shortcuts.
+These menu choices operate on catalog specs and the services in their way;
+they do not author or override recipes. Historical schema-1 specs do not offer
+the new launch shortcuts.
 
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks
@@ -1323,7 +1373,7 @@ or launch. The menu needs Gum; every action is also a command.
 start the server. Prepared files retain metadata stamps so unchanged files
 can avoid unnecessary full rehashing. A changed tree requires verification.
 When another recipe already has the same manifest on a selected physical node,
-preparation can bind the new recipe to that working copy. Its existing path,
+preparation can bind the new recipe to that prepared copy. Its existing path,
 files and verification stamp are reused; recipe, rank and topology bindings
 remain distinct. Earlier recipes keep their bindings and pins. The home rank
 still uses its registered home directly. Only nodes missing suitable content
@@ -1345,25 +1395,24 @@ overhead and do not reserve space. Existing preparation checks remain authoritat
 Copy amounts cover full snapshot payloads; already written partial staging is
 not deducted from this conservative estimate.
 
-**Storage and archive → Storage budget (all nodes)** runs the existing
-`./pulsar model budget` inspection for every confirmed node. It shows one row
+The **Model files and disk space** page shows the `./pulsar model budget`
+inspection for every confirmed node under the nodes. It shows one row
 per node in human units: disk free, the reserve, Pulsar files, and what the
 node can still copy, which is the smaller of disk free after the reserve and the
 copy budget left. A node past either limit is named with the amount. Narrow
 terminals drop the reserve column first. The command uses the same reserve and
-allowance settings as preparation, requires no confirmation, and does not
-change the selected recipe's saved file-check state. This budget describes
-prepared-copy storage; home and archive locations may use other filesystems.
-For placement and disk free space across nodes, including uncataloged managed
-downloads, use [Model files and disk space](#model-files-across-the-nodes).
-Its payload estimates are separate from this prepared-copy budget.
+allowance settings as preparation, requires no confirmation, and changes no
+spec's saved file-check state. This budget describes prepared-copy storage;
+home and archive locations may use other filesystems. The page's payload
+estimates for [model files](#model-files-across-the-nodes) are separate from
+this prepared-copy budget.
 
 ### Verification reuse and full audits
 
 Routine acquisition of registered copies, preparation re-entry, inspection and
 serving observation reuse earlier verification while the complete file set,
 directory identity and file metadata still match. A new invocation does not
-invalidate that proof. Each new working copy is fully hashed before accepting
+invalidate that proof. Each new prepared copy is fully hashed before accepting
 staging; planning, source checks, the final rename and all-rank readiness can
 reuse valid results. Changed metadata triggers full hashing; corruption fails
 verification. Reuse preserves the timestamp of the last actual full hash. The

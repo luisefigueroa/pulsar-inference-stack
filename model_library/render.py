@@ -381,8 +381,8 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
         out.field('Action', 'reuse matching existing files')
     actions = {'reuse': 'reuse verified prepared files', 'home-view': 'use files from the home',
                'copy': 'copy and verify local files', 'bind': 'bind this recipe to existing verified files',
-               'release-binding': 'remove this binding; retain shared files',
-               'remove-copy': 'remove this binding and its working-copy files'}
+               'release-binding': 'release this prepared copy; its files stay (the home, or a shared copy)',
+               'remove-copy': 'delete this prepared copy and its files'}
     for item in document.get('actions') or []:
         out.field(f'Rank {item.get("rank", "?")}',
                   f'{names(item["node_id"]) if item.get("node_id") else "unknown node"}: {actions.get(item.get("action"), item.get("action", "unknown action"))}')
@@ -523,12 +523,12 @@ def render(document: Any, *, operation: str, archive_action: str = '',
         counts = [document.get(key) for key in ('bindings_removed', 'copies_removed', 'preparations_removed')]
         if any(type(count) is not int for count in counts):
             # An older Stack's result does not say what it removed.
-            out.emit('Prepared bindings removed')
+            out.emit('Prepared copies released')
             _identity(out, document)
         elif not any(counts):
             out.emit('Nothing to purge')
             _identity(out, document)
-            out.emit('This spec had no prepared copies or unfinished preparations. Nothing was removed.')
+            out.emit('This spec had no prepared copies or unfinished copies. Nothing was removed.')
             return
         else:
             released, deleted, preparations = counts
@@ -537,15 +537,15 @@ def render(document: Any, *, operation: str, archive_action: str = '',
             if released:
                 out.field('Released', f"{released} prepared {'copy' if released == 1 else 'copies'} from this spec")
             if deleted:
-                out.field('Deleted', f"{deleted} working {'copy' if deleted == 1 else 'copies'}")
+                out.field('Deleted', f"the files of {deleted} prepared {'copy' if deleted == 1 else 'copies'}")
             if preparations:
-                out.field('Removed', f"{preparations} unfinished {'preparation' if preparations == 1 else 'preparations'}")
+                out.field('Removed', f"{preparations} unfinished {'copy' if preparations == 1 else 'copies'}")
     if document.get('purged') is True or document.get('removed') is True:
         if document.get('removed') is True:
             out.emit('Home removed')
             _identity(out, document)
         if document.get('shared_copies_retained'):
-            out.field('Shared working copies', f"{document['shared_copies_retained']} retained for other recipes")
+            out.field('Shared copies', f"{document['shared_copies_retained']} kept for other specs")
         if document.get('home_untouched') is True:
             out.field('Home', 'retained')
         if document.get('archive_untouched') is True:

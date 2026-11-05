@@ -121,11 +121,19 @@ class StorageRendering(unittest.TestCase):
         self.assertIn('no controller model copy',flat)
         _,flat=self.display(dict(home=HOME,moved=False),'move');self.assertIn('already on the selected node',flat)
 
-    def test_shared_purge_reports_retained_working_files(self):
+    def test_shared_purge_reports_retained_shared_files(self):
         _,flat=self.display(dict(spec_id=SPEC,purged=True,shared_copies_retained=2),'purge')
-        self.assertIn('Prepared bindings removed',flat)
-        self.assertIn('2 retained for other recipes',flat)
+        self.assertIn('Prepared copies released',flat)
+        self.assertIn('Shared copies 2 kept for other specs',flat)
         self.assertNotIn('Prepared copies removed',flat)
+        self.assertNotIn('binding',flat);self.assertNotIn('working',flat)
+        # The preview's per-rank lines use the same words; the JSON action names stay.
+        plan=dict(kind='pulsar-purge-plan',eligible=True,blockers=[],views=[],
+                  actions=[dict(rank=0,node_id='node-0',action='release-binding'),dict(rank=1,node_id='node-1',action='remove-copy')])
+        _,flat=self.display(plan,'purge')
+        self.assertIn('release this prepared copy; its files stay (the home, or a shared copy)',flat)
+        self.assertIn('delete this prepared copy and its files',flat)
+        self.assertNotIn('binding',flat);self.assertNotIn('working',flat)
 
     def test_purge_says_what_it_removed_and_when_nothing_was_there(self):
         counts=dict(bindings_removed=0,copies_removed=0,preparations_removed=0)
@@ -136,8 +144,9 @@ class StorageRendering(unittest.TestCase):
         counts=dict(bindings_removed=3,copies_removed=1,preparations_removed=1)
         _,flat=self.display(dict(spec_id=SPEC,purged=True,home_untouched=True,archive_untouched=True,
                                  shared_copies_retained=2,**counts),'purge')
-        for text in ('Purge complete','Released 3 prepared copies from this spec','Deleted 1 working copy',
-                     'Removed 1 unfinished preparation','2 retained for other recipes','Home retained'):
+        for text in ('Purge complete','Released 3 prepared copies from this spec',
+                     'Deleted the files of 1 prepared copy','Removed 1 unfinished copy',
+                     'Shared copies 2 kept for other specs','Home retained'):
             self.assertIn(text,flat)
         self.assertNotIn('Nothing to purge',flat)
 
