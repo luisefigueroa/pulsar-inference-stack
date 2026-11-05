@@ -595,10 +595,11 @@ class NodeChoices(unittest.TestCase):
         self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, "draft"), "spark-1")
         self.assertEqual(menu.node_label(state, "n0", "spark-1", 78), "spark-1 — home recorded here")
 
-    def choices(self, state, action, *nodes, snapshot=None):
+    def choices(self, state, action, *nodes, snapshot=None, live=None):
         out = io.StringIO()
         args = ["node-choices", "--spec-id", state["spec_id"], "--action", action]
         args += ["--snapshot", snapshot] if snapshot else []
+        args += ["--live", live] if live else []
         for node in nodes:
             args += ["--node-name", node]
         with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
@@ -619,8 +620,77 @@ class NodeChoices(unittest.TestCase):
             with self.subTest(action=action):
                 rc, lines = self.choices(state, action, "n0=spark-1", "n1=spark-2")
                 self.assertEqual(rc, 0)
-                self.assertEqual(lines, [["title", question], ["node", "n0", "spark-1 — home recorded here"],
-                                         ["node", "n1", "spark-2"]])
+                default = [] if action in ("acquire", "restore", "move") else [["default", "n0"]]
+                self.assertEqual(lines, [["title", question], *default,
+                                         ["node", "n0", "spark-1 — home recorded here"], ["node", "n1", "spark-2"]])
+
+    # R6: the cursor starts on the node saved records name, except where the
+    # operation chooses where files go.
+    def test_the_recorded_node_is_preselected(self):
+        copies = checked(prepared_copies=[{"rank": 0, "node_id": "n1"}])
+        cases = [(checked(home=HOME), "check", ["default", "n0"]),
+                 (copies, "start", ["default", "n1"]),
+                 (copies, "status", ["default", "n1"]),
+                 (copies, "acquire", None), (copies, "restore", None), (copies, "move", None),
+                 (checked(), "check", None),
+                 # A recorded node that is not a confirmed node is never preselected.
+                 (checked(home={**HOME, "node_id": "n9"}), "check", None)]
+        for state, action, default in cases:
+            with self.subTest(action=action, default=default):
+                rc, lines = self.choices(state, action, "n0=spark-1", "n1=spark-2")
+                self.assertEqual(rc, 0)
+                self.assertEqual([line for line in lines if line[0] in ("default", "seen")],
+                                 [default] if default else [])
+
+    def live_file(self, document):
+        import tempfile
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.addCleanup(Path(handle.name).unlink)
+        with handle:
+            json.dump(document, handle)
+        return handle.name
+
+    def test_a_stop_of_a_service_seen_on_one_node_needs_no_question(self):
+        state = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        live = self.live_file(inventory((state["spec_id"], "running", ["w1"])))
+        rc, lines = self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=live)
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines, [["title", "Which machine runs the service?"], ["seen", "n1"],
+                                 ["node", "n0", "spark-1 — home recorded here"],
+                                 ["node", "n1", "spark-2 — service seen here just now"]])
+        # Exited containers on one node are what Stop removes there, too.
+        live = self.live_file(inventory((state["spec_id"], "stale", ["w1"])))
+        self.assertIn(["seen", "n1"], self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=live)[1])
+        # Only Stop reads the inventory.
+        live = self.live_file(inventory((state["spec_id"], "running", ["w1"])))
+        _, lines = self.choices(state, "status", "n0=spark-1", "n1=spark-2", live=live)
+        self.assertEqual([line for line in lines if line[0] in ("default", "seen")], [["default", "n0"]])
+
+    # Stop without a node removes containers on every node, so anything short
+    # of one confirmed node keeps the question, with the recorded node preselected.
+    def test_a_stop_keeps_the_question_unless_the_service_was_seen_on_one_confirmed_node(self):
+        state = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        spec = state["spec_id"]
+        cases = {"not running": inventory(),
+                 "on two nodes": inventory((spec, "running", ["head", "w1"])),
+                 "on a node not confirmed here": inventory((spec, "running", ["w2"])),
+                 "a node not observed": inventory((spec, "running", ["w1"]), unobserved=("w2",)),
+                 "another spec": inventory(("cd" * 32, "running", ["w1"]))}
+        for name, document in cases.items():
+            with self.subTest(name):
+                rc, lines = self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=self.live_file(document))
+                self.assertEqual(rc, 0)
+                self.assertEqual([line for line in lines if line[0] in ("default", "seen")], [["default", "n0"]])
+                self.assertNotIn("seen here", json.dumps(lines))
+
+    def test_the_seen_service_is_named_first_where_the_label_fits(self):
+        state = checked(home=HOME)
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, seen="n0"),
+                         "spark-1 — service seen here just now, home recorded here")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 40, seen="n0"),
+                         "spark-1 — service seen here just now")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 30, seen="n0"), "spark-1")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, seen="n1"), "spark-1 — home recorded here")
 
     def test_a_malformed_node_name_is_refused(self):
         err = io.StringIO()

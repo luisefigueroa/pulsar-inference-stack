@@ -680,17 +680,39 @@ NODE_QUESTIONS = {
     "observe": "Which machine runs the service?", "audit": "Which machine's prepared files should be hashed?",
 }
 NODE_QUESTION = "Which machine should serve the model?"
+# These operations choose where files go, so no machine is preselected.
+NODE_UNSELECTED = {"acquire", "restore", "move"}
 
 
-def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None) -> str:
+def seen_node(row: dict, live: dict | None, node_ids: list[str]) -> str | None:
+    """The node_id where a complete service inventory saw this one-node spec's
+    service, when it is one of NODE_IDS; None otherwise.
+
+    Stop without a node removes containers on every node, so only a service
+    seen on exactly one identified node can skip the machine question.
+    """
+    if live is None or live["incomplete"]:
+        return None
+    fact = live_fact(row, live, None)
+    if fact is None or fact["kind"] != "service" or fact.get("node_id") not in node_ids:
+        return None
+    return fact["node_id"]
+
+
+def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None,
+               seen: str | None = None) -> str:
     """HOSTNAME — what saved records place there: the home, a prepared copy.
 
-    The home is the selected snapshot's, or any required snapshot's. The
-    records are shown only where the whole label fits, the home first.
+    The home is the selected snapshot's, or any required snapshot's. SEEN is
+    the node_id where a service inventory taken just now saw the service; it
+    is named first. The records are shown only where the whole label fits,
+    the home first.
     """
     snapshots = members(row)
     holders = [snapshots[snapshot]] if snapshot in snapshots else list(snapshots.values())
     parts = []
+    if seen is not None and seen == node_id:
+        parts.append("service seen here just now")
     if any((member.get("home") or {}).get("node_id") == node_id for member in holders):
         parts.append("home recorded here")
     if any(copy.get("node_id") == node_id for copy in row.get("prepared_copies") or []):
@@ -1317,6 +1339,7 @@ def main(argv: list[str] | None = None) -> int:
     nodes.add_argument("--action", required=True)
     nodes.add_argument("--snapshot")
     nodes.add_argument("--node-name", action="append", default=[], help="NODE_ID=HOSTNAME, in topology order")
+    nodes.add_argument("--live", help="with --action stop: a service inventory captured just now")
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1396,14 +1419,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{action}\t{clean(label)}")
             return 0
         if args.command == "node-choices":
-            # Each line is "title" and the question, or "node", a node_id and its label.
-            print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
-            width = terminal_width() - 2
+            # Each line is "title" and the question; "seen" and the node_id
+            # that answers it, so nothing is asked; "default" and the node_id
+            # the cursor starts on; or "node", a node_id and its label.
+            nodes = []
             for value in args.node_name:
                 node_id, separator, hostname = value.partition("=")
                 if not separator or not node_id or not hostname:
                     raise ValueError("node names must use NODE_ID=HOSTNAME")
-                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot))}")
+                nodes.append((node_id, hostname))
+            ids = [node_id for node_id, _ in nodes]
+            seen = seen_node(row, load_live(args.live, [row]), ids) if args.action == "stop" else None
+            print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
+            if seen is not None:
+                print(f"seen\t{seen}")
+            elif args.action not in NODE_UNSELECTED and recorded_node(row) in ids:
+                print(f"default\t{recorded_node(row)}")
+            width = terminal_width() - 2
+            for node_id, hostname in nodes:
+                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot, seen))}")
             return 0
         names = NodeNames.saved()
         if args.command == "image-plan":
