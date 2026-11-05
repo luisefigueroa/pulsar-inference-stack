@@ -31,7 +31,7 @@ from .published_results import collect as published_results, frame_line as publi
 from .node_names import NodeNames
 from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
                      projected_headroom, size_text)
-from scripts.terminal_format import TerminalWriter, terminal_width
+from scripts.terminal_format import TerminalWriter, cut_middle, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
@@ -498,7 +498,8 @@ def withdrawal_notice(row: dict) -> list[str]:
 RECLAIM = ("stop", "unpin", "purge", "remove")
 
 
-def menu_label(row: dict, width: int, live: dict | None = None) -> str:
+def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_fact: str | None = None,
+               short_name: str | None = None) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
     Critical warnings take space before optional model/file context. Ordinary
@@ -506,10 +507,19 @@ def menu_label(row: dict, width: int, live: dict | None = None) -> str:
     leads the state; the saved files state yields to it when space runs out,
     since the recipe frame repeats it. Gum's two-column cursor is the only
     text drawn before the label.
+
+    When the catalog has other recipes of the same model, DISTINGUISHING_FACT
+    (see distinguishing_facts) follows the spec and is never dropped: the
+    model name is cut first, then the saved state yields. SHORT_NAME is the
+    model name without its organization, given where no other model would
+    read the same; a cut name uses it. Names are cut in the middle and keep
+    their end, where recipes and models of one organization differ.
     """
     seen = live_label(live)
     budget = max(32, min(100, width)) - 2
     model = clean(row["model_id"])
+    fact = clean(distinguishing_fact) if distinguishing_fact else None
+    short = clean(short_name) if short_name else None
     review = (row.get("review") or {}).get("status")
     critical = (["withdrawn"] if review == "withdrawn" else [])
     if start_unsupported(row):
@@ -532,7 +542,19 @@ def menu_label(row: dict, width: int, live: dict | None = None) -> str:
         if room < 4:
             return heading
         files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED)
-        context = f"{model} · {files}" + (f" · {review}" if review and review != "withdrawn" else "")
+        rest = [files] + ([review] if review and review != "withdrawn" else [])
+        if fact:
+            # As below: the name is cut first, then the files state yields;
+            # where no name fits, the fact stands for it.
+            while True:
+                tail = " · " + " · ".join([fact, *rest])
+                if room - len(tail) >= min(MIN_NAME, len(model)) or not rest:
+                    break
+                rest.pop()
+            context = _fit_name(model, short, room - len(tail)) + tail if room - len(tail) >= 2 else fact
+        else:
+            tail = " · " + " · ".join(rest)
+            context = _fit_name(model, short, max(MIN_NAME, room - len(tail))) + tail
         if len(context) > room:
             context = context[:room - 3] + "..."
         return heading + " " + context
@@ -540,36 +562,171 @@ def menu_label(row: dict, width: int, live: dict | None = None) -> str:
     if seen:
         parts.insert(0, seen)
     # Where the whole label fits (60 columns or wider), it also names the node
-    # count (unless a seen service already does) and the spec's state, as
-    # models list does. State is metadata only.
-    nodes = row["geometry"]["nodes"]
-    wider = ([] if seen else [f"{nodes} node{'' if nodes == 1 else 's'}"]) + parts
+    # count (unless a seen service or the distinguishing fact already does)
+    # and the spec's state, as models list does. State is metadata only.
+    nodes = node_count(row["geometry"]["nodes"])
+    lead = [fact] if fact else []
+    named = seen or (fact and nodes in fact.split(" · "))
+    wider = lead + ([] if named else [nodes]) + parts
     if row.get("state") and row["state"] not in parts:
         wider.append(str(row["state"]))
-    text = model + f" [{row['spec_id'][:12]}] " + " · ".join(wider)
+    identity = f" [{row['spec_id'][:12]}] "
+    text = model + identity + " · ".join(wider)
     if width >= 60 and len(text) <= budget:
         return text
-    if seen and len(model) + len(f" [{row['spec_id'][:12]}] " + " · ".join(parts)) > budget:
+    if seen and len(model) + len(identity + " · ".join(lead + parts)) > budget:
         parts.pop(1)
-    suffix = f" [{row['spec_id'][:12]}] " + " · ".join(parts)
-    if len(model) + len(suffix) > budget and len(model) > 11:
-        model = model[:max(8, budget - len(suffix) - 3)] + "..."
-    text = model + suffix
+    if fact:
+        # The model name is cut first, then the saved state yields from its
+        # end (the recipe frame repeats it); the fact stays.
+        while True:
+            suffix = identity + " · ".join([fact, *parts])
+            room = budget - len(suffix)
+            if room >= min(MIN_NAME, len(model)) or not parts:
+                break
+            parts.pop()
+        if room < min(5, len(model)):
+            # At the narrowest widths the fact outranks the copyable prefix,
+            # as a critical warning does.
+            identity = f" [{row['spec_id'][:8]}] "
+            suffix = identity + fact
+            room = budget - len(suffix)
+    else:
+        suffix = identity + " · ".join(parts)
+        room = max(MIN_NAME, budget - len(suffix))
+    text = _fit_name(model, short, room) + suffix
     return text if len(text) <= budget else text[:budget - 3] + "..."
+
+
+# A model name cut to fit a list label keeps at least this many characters
+# while other parts of the label can still yield.
+MIN_NAME = 11
+
+
+def _fit_name(model: str, short: str | None, room: int) -> str:
+    """The model name in ROOM: whole, then without its organization, then cut in the middle."""
+    if len(model) <= room:
+        return model
+    return cut_middle(short or model, room)
+
+
+def node_count(nodes: object) -> str:
+    return f"{nodes} node{'' if nodes == 1 else 's'}"
+
+
+def short_count(value: object) -> str:
+    """A recorded count in few characters: 1048576 is 1M and 500000 is 500K.
+
+    Multiples of 1024 and of 1000 take K or M; any other value keeps its digits.
+    """
+    text = str(value)
+    if not re.fullmatch(r"[0-9]+", text):
+        return text
+    number = int(text)
+    for unit, suffix in ((1024 ** 2, "M"), (1000 ** 2, "M"), (1024, "K"), (1000, "K")):
+        if number >= unit and number % unit == 0:
+            return f"{number // unit}{suffix}"
+    return text
+
+
+def _recipe_facts(row: dict) -> list[tuple[object, str, str]]:
+    """(recorded value, short words, exact words) for each fact that can tell
+    recipes of one model apart, in the order a list label names them."""
+    nodes = (row.get("geometry") or {}).get("nodes")
+    facts: list[tuple[object, str, str]] = [(nodes, node_count(nodes), node_count(nodes))]
+    for flag, values in setting_values(row.get("engine_args") or []).items():
+        label = SETTING_FLAGS[flag]
+        if not values:
+            facts.append(((), f"{label} not set", f"{label} not set"))
+        else:
+            facts.append((tuple(values), f"{label} {'/'.join(short_count(value) for value in values)}",
+                          f"{label} {'/'.join(values)}"))
+    digest = str((row.get("image") or {}).get("digest") or "")
+    image = f"image {(digest.partition(':')[2] or digest)[:12]}" if digest else "image not recorded"
+    facts.append((digest, image, f"image {digest}" if digest else image))
+    return facts
+
+
+def distinguishing_facts(rows: list[dict]) -> dict[str, str]:
+    """For recipes that share a model, the facts that tell each one apart, by spec ID.
+
+    Facts are tried in order: node count, context (--max-model-len), max
+    sequences (--max-num-seqs), quantization, then a short image digest. A
+    fact is named when it differs between recipes not yet told apart. A model
+    with one recipe gets no entry, nor do recipes that differ in none of these
+    facts; their spec IDs still differ.
+    """
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        if row.get("model_id"):
+            groups.setdefault(row["model_id"], []).append(row)
+    found: dict[str, str] = {}
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        facts = [_recipe_facts(row) for row in group]
+        ties = [list(range(len(group)))]
+        named = []
+        for position in range(len(facts[0])):
+            if all(len(tie) == 1 for tie in ties):
+                break
+            split = []
+            for tie in ties:
+                values: dict[object, list[int]] = {}
+                for index in tie:
+                    values.setdefault(facts[index][position][0], []).append(index)
+                split.extend(values.values())
+            if len(split) > len(ties):
+                named.append(position)
+                ties = split
+        for index, row in enumerate(group):
+            words = []
+            for position in named:
+                # Short words that would read the same for different values
+                # (1M for 1000000 and 1048576) give way to the exact ones.
+                shorts = {fact[position][1] for fact in facts}
+                exact = len(shorts) < len({fact[position][0] for fact in facts})
+                words.append(facts[index][position][2 if exact else 1])
+            if words:
+                found[row["spec_id"]] = " · ".join(words)
+    return found
+
+
+def short_model_names(rows: list[dict]) -> dict[str, str]:
+    """Model names without the organization, by spec ID, where no other model
+    in ROWS has the same name; a list label cut to fit uses them."""
+    models: dict[str, set[str]] = {}
+    for model in {row.get("model_id") for row in rows} - {None}:
+        models.setdefault(model.rpartition("/")[2], set()).add(model)
+    found: dict[str, str] = {}
+    for row in rows:
+        organization, _, name = (row.get("model_id") or "").rpartition("/")
+        if organization and len(models[name]) == 1:
+            found[row["spec_id"]] = name
+    return found
+
+
+# The engine settings a recipe frame summarizes; they can also tell recipes of
+# one model apart in the list.
+SETTING_FLAGS = {"--max-model-len": "context", "--max-num-seqs": "max sequences", "--quantization": "quantization"}
+
+
+def setting_values(arguments: list[str]) -> dict[str, list[str]]:
+    """Each summarized flag's recorded values in order; a flag given without a value records "not supplied"."""
+    values: dict[str, list[str]] = {flag: [] for flag in SETTING_FLAGS}
+    for index, token in enumerate(arguments):
+        flag, separator, value = token.partition("=")
+        if flag in SETTING_FLAGS:
+            if not separator:
+                value = arguments[index + 1] if index + 1 < len(arguments) and not arguments[index + 1].startswith("--") else "not supplied"
+            values[flag].append(value)
+    return values
 
 
 def explicit_settings(arguments: list[str]) -> str:
     """Summarize recorded values only; do not guess engine defaults or precedence."""
-    labels = {"--max-model-len": "context", "--max-num-seqs": "max sequences", "--quantization": "quantization"}
-    values: dict[str, list[str]] = {flag: [] for flag in labels}
-    for index, token in enumerate(arguments):
-        flag, separator, value = token.partition("=")
-        if flag in labels:
-            if not separator:
-                value = arguments[index + 1] if index + 1 < len(arguments) and not arguments[index + 1].startswith("--") else "not supplied"
-            values[flag].append(value)
-    parts = [f"{labels[flag]} {items[0] if len(items) == 1 else 'has repeated values; see details'}"
-             for flag, items in values.items() if items]
+    parts = [f"{SETTING_FLAGS[flag]} {items[0] if len(items) == 1 else 'has repeated values; see details'}"
+             for flag, items in setting_values(arguments).items() if items]
     return "; ".join(parts) if parts else "see Show details"
 
 
@@ -1136,8 +1293,14 @@ def _start_place(nodes: int, place: str | None, names: NodeNames) -> str:
 
 
 def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str | None = None,
-             node: str | None = None, names: NodeNames | None = None, live: dict | None = None) -> str:
-    """Confirmation question naming the action, model, placement and consequence."""
+             node: str | None = None, names: NodeNames | None = None, live: dict | None = None,
+             distinguishing_fact: str | None = None) -> str:
+    """Confirmation question naming the action, model, placement and consequence.
+
+    When the catalog has other recipes of the same model, Start names
+    DISTINGUISHING_FACT after the model, as the recipe list does, except a
+    node count: the question already says where Start runs.
+    """
     names = names or NodeNames()
     plan = plan or {}
     model = row["model_id"]
@@ -1194,11 +1357,13 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         root = plan.get("archive_root")
         return (f"Create an archive of {identity}{' in ' + root if root else ''}? "
                 "An existing archive is never replaced.")
+    told = [part for part in (distinguishing_fact or "").split(" · ") if part and part != node_count(nodes)]
+    recipe = f"{model} ({' · '.join(told)})" if told else model
     if action == "start":
-        return (f"{warning}Start {model} on {_start_place(nodes, place, names)}? Start rechecks prerequisites "
+        return (f"{warning}Start {recipe} on {_start_place(nodes, place, names)}? Start rechecks prerequisites "
                 "and never replaces a running service. Loading can take several minutes.")
     if action == "start-memory":
-        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {model} on "
+        return (f"{warning}Accept the reduced free-memory headroom and retry Start for {recipe} on "
                 f"{_start_place(nodes, place, names)}? Insufficient memory and all other blockers still prevent "
                 "start. Loading can take several minutes.")
     if action == "stop":
@@ -1286,12 +1451,13 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
     return line
 
 
-def read_row(stream, spec_id: str) -> dict:
-    document = json.load(stream)
-    rows = [row for row in document.get("entries") or [] if row.get("spec_id") == spec_id]
+def read_row(stream, spec_id: str) -> tuple[dict, list[dict]]:
+    """The selected recipe and every entry of the catalog document on STREAM."""
+    entries = json.load(stream).get("entries") or []
+    rows = [row for row in entries if row.get("spec_id") == spec_id]
     if len(rows) != 1:
         raise ValueError("the selected recipe is not in the catalog")
-    return rows[0]
+    return rows[0], entries
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1362,11 +1528,16 @@ def main(argv: list[str] | None = None) -> int:
             outcomes = service_outcomes(args.service_outcome, names=NodeNames.saved())
             if live:
                 print(f"observed\t{clean(inventory_line(live))}")
+            # Facts and short names come from every entry, so a label reads the
+            # same whichever entries this list leaves out.
+            facts, short_names = distinguishing_facts(entries), short_model_names(entries)
             for entry in entries:
                 if args.compare_with and (entry["spec_id"] == args.compare_with or entry.get("historical")):
                     continue
-                fact = live_fact(entry, live, outcomes.get(entry["spec_id"]))
-                print(f"{entry['spec_id']}\t{menu_label(entry, width, fact)}")
+                service = live_fact(entry, live, outcomes.get(entry["spec_id"]))
+                spec = entry["spec_id"]
+                label = menu_label(entry, width, service, facts.get(spec), short_names.get(spec))
+                print(f"{spec}\t{label}")
             return 0
         if args.command == "blocked-choices":
             with open(args.plan_file, encoding="utf-8") as handle:
@@ -1382,7 +1553,7 @@ def main(argv: list[str] | None = None) -> int:
             if line:
                 print(clean(line))
             return 0
-        row = read_row(sys.stdin, args.spec_id)
+        row, entries = read_row(sys.stdin, args.spec_id)
         if args.command == "start-choices":
             # Each line is TITLE or ACTION, a tab, then a nonempty label. Nothing
             # is printed, and the status is 1, when no choice applies.
@@ -1452,10 +1623,13 @@ def main(argv: list[str] | None = None) -> int:
                 out.blank()
                 for line in notice:
                     out.emit(line)
-        fact = live_fact(row, load_live(args.live, [row]),
-                         service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
+        service = live_fact(row, load_live(args.live, [row]),
+                            service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
+        # Start names what tells this recipe apart when the document on stdin
+        # is the whole catalog; one recipe's document has nothing to compare.
+        fact = distinguishing_facts(entries).get(row["spec_id"]) if args.action in ("start", "start-memory") else None
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names,
-                             live=fact)))
+                             live=service, distinguishing_fact=fact)))
         return 0
     except (ValueError, OSError, KeyError, TypeError) as exc:
         from scripts.terminal_format import error_line

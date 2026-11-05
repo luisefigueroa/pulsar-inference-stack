@@ -731,6 +731,135 @@ class Labels(unittest.TestCase):
         self.assertIn("start", offered)
 
 
+# R7: recipes of one model that differ in one setting read alike unless the
+# label names that setting; DeepSeek's two recipes differ only in context.
+LONG_MODEL = "deepseek-ai/DeepSeek-V4.1-Flash-1017"
+
+
+def recipe(spec_byte, context="500000", nodes=3, model=LONG_MODEL, digest="sha256:" + "b" * 64, **fields):
+    return checked(spec_id=spec_byte * 32, model_id=model, home=HOME, local_state="ready",
+                   geometry={"nodes": nodes, "tp": nodes, "pp": 1}, image={"digest": digest},
+                   engine_args=["--max-model-len", context, "--max-num-seqs", "1"], **fields)
+
+
+class RecipesOfOneModel(unittest.TestCase):
+    def test_short_count_uses_k_and_m_only_for_round_values(self):
+        for value, expected in ((1048576, "1M"), ("500000", "500K"), ("131072", "128K"), ("1000000", "1M"),
+                                ("8192", "8K"), ("8", "8"), ("1000", "1K"), ("123456", "123456"), ("0", "0"),
+                                ("fp8", "fp8"), ("not supplied", "not supplied")):
+            with self.subTest(value=value):
+                self.assertEqual(menu.short_count(value), expected)
+
+    def test_the_first_setting_that_differs_tells_recipes_apart(self):
+        rows = [recipe("aa", "500000"), recipe("bb", "1048576"), checked(spec_id="cc" * 32, model_id="org/other")]
+        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "context 500K", "bb" * 32: "context 1M"})
+        # Node count comes first; a recipe without the flag says so rather than guessing a default.
+        nodes = [recipe("aa", nodes=2), recipe("bb", nodes=1, context="1048576")]
+        self.assertEqual(menu.distinguishing_facts(nodes), {"aa" * 32: "2 nodes", "bb" * 32: "1 node"})
+        unset = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-num-seqs", "1"])]
+        self.assertEqual(menu.distinguishing_facts(unset)["bb" * 32], "context not set")
+        sequences = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-model-len", "500000", "--max-num-seqs=8"])]
+        self.assertEqual(menu.distinguishing_facts(sequences)["bb" * 32], "max sequences 8")
+        quantized = [recipe("aa"), dict(recipe("bb"), engine_args=[*recipe("bb")["engine_args"], "--quantization", "fp8"])]
+        self.assertEqual(menu.distinguishing_facts(quantized)["bb" * 32], "quantization fp8")
+        # Otherwise the image; recipes that differ in none of these keep their spec IDs only.
+        images = [recipe("aa"), recipe("bb", digest="sha256:" + "0123456789ab" + "c" * 52)]
+        self.assertEqual(menu.distinguishing_facts(images)["bb" * 32], "image 0123456789ab")
+        self.assertEqual(menu.distinguishing_facts([recipe("aa"), recipe("bb")]), {})
+
+    def test_short_words_that_read_alike_give_way_to_the_recorded_values(self):
+        rows = [recipe("aa", "1000000"), recipe("bb", "1048576")]
+        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "context 1000000", "bb" * 32: "context 1048576"})
+
+    def test_a_second_fact_is_added_only_where_the_first_leaves_recipes_alike(self):
+        rows = [recipe("aa", "500000", nodes=2), recipe("bb", "1048576", nodes=2), recipe("cc", "1048576", nodes=1)]
+        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "2 nodes · context 500K",
+                                                           "bb" * 32: "2 nodes · context 1M",
+                                                           "cc" * 32: "1 node · context 1M"})
+
+    def test_the_org_is_left_out_only_where_no_other_model_reads_the_same(self):
+        rows = [recipe("aa"), recipe("bb"), checked(spec_id="cc" * 32, model_id="one/Model"),
+                checked(spec_id="dd" * 32, model_id="two/Model"), checked(spec_id="ee" * 32, model_id="plain")]
+        self.assertEqual(menu.short_model_names(rows), {"aa" * 32: "DeepSeek-V4.1-Flash-1017",
+                                                        "bb" * 32: "DeepSeek-V4.1-Flash-1017"})
+
+    def test_labels_keep_the_fact_and_cut_the_model_name_in_the_middle(self):
+        rows = [recipe("aa", "500000"), recipe("bb", "1048576")]
+        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
+        for width in (100, 80, 60, 44, 32):
+            labels = [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
+                      for item in rows]
+            with self.subTest(width=width, labels=labels):
+                for label, fact in zip(labels, ("context 500K", "context 1M")):
+                    self.assertLessEqual(len(label), width - 2)
+                    self.assertIn(fact, label)
+                    self.assertIn("017", label)  # the end of the name, where recipes differ, stays
+                    if width >= 60:
+                        self.assertIn(f"[{label.split('[')[1][:12]}]", label)
+                        self.assertIn("files prepared", label)
+        self.assertEqual(menu.menu_label(rows[0], 80, None, "context 500K", "DeepSeek-V4.1-Flash-1017"),
+                         "DeepSeek-V4.1-Flash-1017 [aaaaaaaaaaaa] context 500K · files prepared")
+        self.assertEqual(menu.menu_label(rows[1], 60, None, "context 1M", "DeepSeek-V4.1-Flash-1017"),
+                         "DeepSee…sh-1017 [bbbbbbbbbbbb] context 1M · files prepared")
+        # At 44 columns the saved state yields; the recipe frame repeats it.
+        self.assertEqual(menu.menu_label(rows[0], 44, None, "context 500K", "DeepSeek-V4.1-Flash-1017"),
+                         "DeepSe…sh-1017 [aaaaaaaaaaaa] context 500K")
+
+    def test_a_node_count_fact_is_named_once(self):
+        two = recipe("aa", nodes=2, model="org/model")
+        self.assertEqual(menu.menu_label(two, 80, None, "2 nodes"), "org/model [aaaaaaaaaaaa] 2 nodes · files prepared")
+        self.assertEqual(menu.menu_label(two, 44, None, "2 nodes"), "org/model [aaaaaaaaaaaa] 2 nodes")
+
+    def test_seen_services_and_critical_warnings_keep_the_fact(self):
+        state = recipe("aa", **GUARDED, review={"status": "withdrawn"})
+        for width in (80, 60):
+            with self.subTest(width=width):
+                label = menu.menu_label(state, width, None, "context 500K", "DeepSeek-V4.1-Flash-1017")
+                self.assertLessEqual(len(label), width - 2)
+                self.assertIn("withdrawn", label)
+                self.assertIn("context 500K", label)
+
+    def test_cli_labels_name_the_fact_for_every_recipe_of_a_repeated_model(self):
+        document = json.dumps({"entries": [recipe("aa", "500000"), recipe("bb", "1048576"),
+                                           checked(spec_id="cc" * 32, local_state="ready", home=HOME)]})
+        for columns in ("80", "60", "44"):
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
+                    patch.dict("os.environ", {"COLUMNS": columns}):
+                self.assertEqual(menu.main(["labels"]), 0)
+            labels = [line.split("\t")[1] for line in output.getvalue().splitlines()]
+            with self.subTest(columns=columns, labels=labels):
+                self.assertIn("context 500K", labels[0])
+                self.assertIn("context 1M", labels[1])
+                self.assertNotIn("context", labels[2])
+                self.assertTrue(all(len(label) <= int(columns) - 2 for label in labels))
+
+    def test_start_questions_name_the_fact_but_not_a_node_count_twice(self):
+        state = recipe("aa", "1048576")
+        self.assertIn(f"Start {LONG_MODEL} (context 1M) on 3 nodes?",
+                      menu.question("start", state, distinguishing_fact="context 1M"))
+        self.assertIn(f"retry Start for {LONG_MODEL} (context 1M) on 3 nodes?",
+                      menu.question("start-memory", state, distinguishing_fact="context 1M"))
+        self.assertIn(f"Start {LONG_MODEL} on 3 nodes?", menu.question("start", state, distinguishing_fact="3 nodes"))
+        self.assertIn(f"Start {LONG_MODEL} (context 1M) on 3 nodes?",
+                      menu.question("start", state, distinguishing_fact="3 nodes · context 1M"))
+        self.assertNotIn("context 1M", menu.question("stop", state, distinguishing_fact="context 1M"))
+
+    def test_confirm_reads_the_fact_from_the_whole_catalog_document(self):
+        rows = [recipe("aa", "500000"), recipe("bb", "1048576")]
+
+        def ask(entries, action="start"):
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps({"entries": entries}))), patch("sys.stdout", output):
+                self.assertEqual(menu.main(["confirm", "--spec-id", "bb" * 32, "--action", action]), 0)
+            return output.getvalue()
+
+        self.assertIn(f"Start {LONG_MODEL} (context 1M) on", ask(rows))
+        self.assertIn(f"retry Start for {LONG_MODEL} (context 1M) on", ask(rows, "start-memory"))
+        # One recipe's document has nothing to compare.
+        self.assertIn(f"Start {LONG_MODEL} on", ask(rows[1:]))
+
+
 LIVE_NOW = datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)
 HOSTS = {"head": ("n0", "spark-1"), "w1": ("n1", "spark-2"), "w2": ("n2", "spark-3")}
 
@@ -900,6 +1029,14 @@ class SessionServices(unittest.TestCase):
                 self.assertIn("[abababababab]", label)
         withdrawn = checked(home=HOME, local_state="ready", review={"status": "withdrawn"})
         self.assertIn("running on 3 nodes", menu.menu_label(withdrawn, 80, fact))
+        # A recipe told apart from others of its model keeps that fact first.
+        self.assertEqual(menu.menu_label(state, 80, fact, "context 1M"),
+                         "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] context 1M · running on 3 nodes")
+        for width in (32, 44, 60):
+            with self.subTest(width=width):
+                label = menu.menu_label(state, width, fact, "context 1M", "GLM-5.3-Flash-NVFP4")
+                self.assertLessEqual(len(label), width - 2)
+                self.assertIn("context 1M", label)
 
     def test_malformed_outcomes_are_rejected(self):
         for value in ("x", f"{self.SPEC}:restart:0:1", f"{self.SPEC}:status:0:soon", f"{self.SPEC}:status::1"):
