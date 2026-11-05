@@ -558,6 +558,13 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     if sys.argv[1] == "start":
         mode = "dry" if "--dry-run" in sys.argv else ("accept" if "--accept-memory-warn" in sys.argv else "start")
         rc = fixture.get(mode + "_rc", 0)
+        if fixture.get(mode + "_rc_sequence"):
+            # Successive starts of this mode exit with these statuses in turn; the last repeats.
+            counter = os.environ["ACTION_LOG"] + "." + mode + ".n"
+            index = int(open(counter).read()) if os.path.exists(counter) else 0
+            open(counter, "w").write(str(index + 1))
+            sequence = fixture[mode + "_rc_sequence"]
+            rc = sequence[min(index, len(sequence) - 1)]
         if os.environ.get("PULSAR_START_BLOCKERS_FILE"):
             with open(os.environ["PULSAR_START_BLOCKERS_FILE"], "w") as stream:
                 # A blocker is a code, or a record such as {"blocker": ..., "stage": "launch"}.
@@ -582,7 +589,11 @@ if os.path.basename(sys.argv[0]) == "pulsar":
     elif sys.argv[1:3] == ["image", "stage"]:
         rc = fixture.get("stage_rc", 0)
     elif sys.argv[1] == "inventory":
-        print(os.environ.get("INVENTORY_FIXTURE", ""))
+        # Once down.sh has run, INVENTORY_FIXTURE_AFTER_STOP (when set) is what runs.
+        after = os.environ.get("INVENTORY_FIXTURE_AFTER_STOP")
+        stopped = after is not None and any(json.loads(line)[0] == "down.sh"
+                                            for line in open(os.environ["ACTION_LOG"]))
+        print(after if stopped else os.environ.get("INVENTORY_FIXTURE", ""))
         rc = int(os.environ.get("INVENTORY_RC", "0"))
     elif sys.argv[1:3] == ["model", "files"] and "--json" in sys.argv:
         print(os.environ["FILES_FIXTURE"])
@@ -1022,6 +1033,24 @@ raise SystemExit(rc)
                 document["nodes"]["worker"]["probe_status"] = "unreachable"
             return json.dumps(document)
         return build
+
+    @staticmethod
+    def blocking_inventory(conf=None, *, served=None, node_id="fixture-node", port=8000, mib=91136):
+        """A service inventory double taken now in which another Pulsar-managed
+        service, spec CONF (SERVED names one outside the catalog), runs on
+        fixture-host (NODE_ID) with PORT and MIB of GPU memory. Without CONF,
+        nothing runs."""
+        from tests.test_inventory_menu import snapshot
+        document = snapshot(conf or "0" * 64)
+        document["nodes"]["worker"].update(node_id=node_id, hostname="fixture-host")
+        document["generated_at"] = datetime.now(timezone.utc).isoformat()
+        service = document["services"][0]
+        service["ranks"][0].update(gpu_memory={"measured_mib": mib}, observed_api_port=port)
+        if served:
+            service["served_name"] = served
+        if conf is None:
+            document["services"] = []
+        return json.dumps(document)
 
     def test_running_services_are_checked_only_when_asked(self):
         _, result, actions, choices, questions = self.run_menu(
