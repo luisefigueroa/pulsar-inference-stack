@@ -723,6 +723,205 @@ class NodeChoices(unittest.TestCase):
         self.assertIn("NODE_ID=HOSTNAME", err.getvalue())
 
 
+# R8a: files a Model files scan found on a node, with no record naming them.
+MANIFEST_FOUND = "e" * 64
+
+
+def scan_location(node_id, kind="home", state="present", registered=False, manifest=MANIFEST_FOUND):
+    return manifest, {"node_id": node_id, "kind": kind, "hub_path": f"/fixture/{node_id}/{kind}", "state": state,
+                      "registered_home": registered, "bindings": [], "bindings_observed": True, "pinned": False,
+                      "shared": False, "container_references": []}
+
+
+def scan(*locations, envelope=True):
+    """A model files --json document (see model_library.file_inventory.combine)."""
+    snapshots: dict[str, dict] = {}
+    for manifest, location in locations:
+        snapshots.setdefault(manifest, {"snapshot_manifest_id": manifest, "model_id": "org/model",
+                                        "model_commit": "c" * 40, "payload_bytes": 1024, "locations": [],
+                                        "catalog_specs": [], "archive": None, "cleanup_spec_ids": []})
+        snapshots[manifest]["locations"].append(location)
+    document = {"schema_version": 1, "kind": "pulsar-model-file-inventory", "observed_at": "2026-09-05T00:00:00Z",
+                "nodes": [], "snapshots": list(snapshots.values()), "issues": []}
+    return {"schema_version": 1, "ok": True, "result": document} if envelope else document
+
+
+class FilesFound(unittest.TestCase):
+    """R8a: after a records loss the scan sees a home no record names. Download's
+    own plan registers it when its discovery finds it, so it comes before
+    Restore, which copies. The choice keeps its label: Download decides."""
+
+    def scan_file(self, document):
+        import tempfile
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.addCleanup(Path(handle.name).unlink)
+        with handle:
+            handle.write(document if isinstance(document, str) else json.dumps(document))
+        return handle.name
+
+    @staticmethod
+    def missing(**fields):
+        """Checked, no home recorded, a verified archive: Restore is suggested without a scan."""
+        return checked(local_state="missing", archive_state="verified", snapshot_manifest_id=MANIFEST_FOUND,
+                       **fields)
+
+    def suggest(self, state, files, after=None):
+        offered, _, _ = menu.operations(state, "configured")
+        return menu.suggestion(state, offered, "configured", after, NAMES, files=files)
+
+    def test_only_present_homes_that_no_record_names_count(self):
+        locations = (scan_location("n1"), scan_location("n1"), scan_location("n0", registered=True),
+                     scan_location("n2", kind="prepared"), scan_location("n2", state="missing"),
+                     scan_location("n2", state="unknown"), scan_location("n2", manifest="f" * 64))
+        for envelope in (True, False):
+            with self.subTest(envelope=envelope):
+                found = menu.found_files(self.scan_file(scan(*locations, envelope=envelope)))
+                self.assertEqual(found, {MANIFEST_FOUND: ["n1"], "f" * 64: ["n2"]})
+
+    def test_a_failed_or_unreadable_scan_is_ignored(self):
+        failed = {"schema_version": 1, "ok": False, "error": {"code": "prerequisite_failed", "message": "no topology"}}
+        cases = {"no file": None, "missing file": "/nonexistent/files.json", "not JSON": self.scan_file("error: x\n"),
+                 "failed scan": self.scan_file(failed), "a list": self.scan_file([]),
+                 "another document": self.scan_file({"ok": True, "result": {"kind": "pulsar-storage-budget"}}),
+                 "a malformed location": self.scan_file(scan(("e" * 64, None)))}
+        for name, path in cases.items():
+            with self.subTest(name):
+                self.assertEqual(menu.found_files(path), {})
+
+    def test_found_files_lead_to_download_ahead_of_restore(self):
+        state = self.missing()
+        reason = ("files found on spark-2 but not in Pulsar's records; "
+                  "Download checks them before fetching anything")
+        self.assertEqual(self.suggest(state, {MANIFEST_FOUND: ["n1"]}), ("acquire", reason))
+        self.assertEqual(self.suggest(state, None)[0], "restore")
+        # Files of another snapshot, or none, leave the archive suggestion.
+        self.assertEqual(self.suggest(state, {"f" * 64: ["n1"]})[0], "restore")
+        self.assertEqual(self.suggest(state, {})[0], "restore")
+        # Two folders: Download stops on the second, and its preview says so.
+        self.assertIn("files found on spark-2, spark-3 but", self.suggest(state, {MANIFEST_FOUND: ["n1", "n2"]})[1])
+        # The scan never outranks a recorded home or the check rules before it.
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="missing", snapshot_manifest_id=MANIFEST_FOUND),
+                                      {MANIFEST_FOUND: ["n1"]})[0], "prepare")
+        self.assertEqual(self.suggest(row(snapshot_manifest_id=MANIFEST_FOUND), {MANIFEST_FOUND: ["n1"]}),
+                         ("check", "no saved check"))
+        self.assertEqual(self.suggest(state, {MANIFEST_FOUND: ["n1"]}, after="purge")[0], "check")
+        with patch("subprocess.run", side_effect=AssertionError("suggestions must not probe")):
+            self.suggest(state, {MANIFEST_FOUND: ["n1"]})
+
+    def test_a_snapshot_is_named_after_the_previous_download(self):
+        snapshots = two_snapshots(HOME, None)
+        snapshots["target"]["snapshot_manifest_id"] = "f" * 64
+        snapshots["draft"]["snapshot_manifest_id"] = MANIFEST_FOUND
+        state = checked(local_state="missing", snapshots=snapshots)
+        reason = ("files of snapshot draft found on spark-1 but not in Pulsar's records; "
+                  "Download checks them before fetching anything")
+        self.assertEqual(self.suggest(state, {MANIFEST_FOUND: ["n0"]}, after="acquire"), ("acquire", reason))
+        self.assertEqual(self.suggest(state, {MANIFEST_FOUND: ["n0"]}), ("acquire", reason))
+        # The target's files have a home already; only the snapshot without one counts.
+        self.assertNotIn("files", self.suggest(state, {"f" * 64: ["n0"]})[1])
+
+    def test_the_files_field_says_where_and_names_download(self):
+        hint = "files found on spark-2, not in Pulsar's records; Download checks them"
+        for state in (self.missing(), row(snapshot_manifest_id=MANIFEST_FOUND)):
+            for width in (44, 60, 80):
+                with self.subTest(checked=bool(state["checked_at"]), width=width):
+                    lines = menu.view_lines(state, "configured", width=width, names=NAMES,
+                                            files={MANIFEST_FOUND: ["n1"]})
+                    frame = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
+                    self.assertTrue(all(len(line) <= width - 4 for line in frame), frame)
+                    text = frame_text(lines)
+                    self.assertIn(hint, text)
+                    # One hint per value: Check now cannot see an unrecorded home.
+                    self.assertNotIn(menu.CHECK_HINT, text)
+                    if state["checked_at"]:
+                        self.assertIn("Next Download — files found on spark-2 but not in Pulsar's records", text)
+                        self.assertIn("suggest\tacquire", lines)
+                    # The choice keeps its label and effect.
+                    self.assertIn("option\tmain\tacquire\tDownload" + (" (suggested)" if state["checked_at"] else ""),
+                                  "\n".join(lines))
+        read_only = menu.view_lines(self.missing(), "configured", width=80, names=NAMES, read_only=True,
+                                    files={MANIFEST_FOUND: ["n1"]})
+        self.assertNotIn("files found", frame_text(read_only))
+        self.assertNotIn("files found", frame_text(menu.view_lines(self.missing(home=HOME), "configured", width=80,
+                                                                   names=NAMES, files={MANIFEST_FOUND: ["n1"]})))
+
+    def node_choices(self, state, path, *, snapshot=None, action="acquire", columns="80"):
+        out = io.StringIO()
+        args = ["node-choices", "--spec-id", state["spec_id"], "--action", action, "--files", path,
+                "--node-name", "n0=spark-1", "--node-name", "n1=spark-2"]
+        args += ["--snapshot", snapshot] if snapshot else []
+        with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
+                patch.dict("os.environ", {"COLUMNS": columns}), \
+                patch("subprocess.run", side_effect=AssertionError("node choices must not probe")):
+            self.assertEqual(menu.main(args), 0)
+        return [line.split("\t") for line in out.getvalue().splitlines()]
+
+    def test_the_machine_holding_the_files_is_preselected_and_labelled(self):
+        state = self.missing()
+        lines = self.node_choices(state, self.scan_file(scan(scan_location("n1"))))
+        self.assertEqual(lines, [["title", "Which machine should hold the model files?"], ["default", "n1"],
+                                 ["node", "n0", "spark-1"],
+                                 ["node", "n1", "spark-2 — files found here, not in Pulsar's records"]])
+        # Too narrow for the fact: the hostname alone, still preselected.
+        lines = self.node_choices(state, self.scan_file(scan(scan_location("n1"))), columns="40")
+        self.assertEqual(lines[1:], [["default", "n1"], ["node", "n0", "spark-1"], ["node", "n1", "spark-2"]])
+        # Two machines: both named, neither preselected, as Download would stop.
+        lines = self.node_choices(state, self.scan_file(scan(scan_location("n0"), scan_location("n1"))))
+        self.assertEqual([line for line in lines if line[0] == "default"], [])
+        self.assertEqual(sum("files found here" in line[-1] for line in lines), 2)
+        # A recorded home, a failed scan or files of another snapshot change nothing.
+        for name, other, path in (("home", self.missing(home=HOME), self.scan_file(scan(scan_location("n1")))),
+                                  ("failed", state, self.scan_file("error: no topology\n")),
+                                  ("other", state, self.scan_file(scan(scan_location("n1", manifest="f" * 64))))):
+            with self.subTest(name):
+                lines = self.node_choices(other, path)
+                self.assertNotIn("files found", json.dumps(lines))
+                self.assertEqual([line for line in lines if line[0] == "default"], [])
+
+    def test_the_selected_snapshot_is_the_one_looked_up(self):
+        snapshots = two_snapshots(None, None)
+        snapshots["target"]["snapshot_manifest_id"] = "f" * 64
+        snapshots["draft"]["snapshot_manifest_id"] = MANIFEST_FOUND
+        state = checked(local_state="missing", snapshots=snapshots)
+        path = self.scan_file(scan(scan_location("n1")))
+        self.assertIn(["default", "n1"], self.node_choices(state, path, snapshot="draft"))
+        self.assertNotIn("files found", json.dumps(self.node_choices(state, path, snapshot="target")))
+
+    def test_labels_and_view_take_the_scan_and_ignore_a_failed_one(self):
+        state = self.missing()
+        good, bad = self.scan_file(scan(scan_location("n1"))), self.scan_file("error: no topology\n")
+        document = json.dumps({"entries": [state]})
+        labels = []
+        for args in ([], ["--files", good], ["--files", bad]):
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
+                    patch.dict("os.environ", {"COLUMNS": "80"}):
+                self.assertEqual(menu.main(["labels", *args]), 0)
+            labels.append(output.getvalue())
+        # A list label adds no word for found files; the frame says it.
+        self.assertEqual(labels[0], labels[1])
+        self.assertEqual(labels[0], labels[2])
+        frames = {}
+        for name, path in (("good", good), ("bad", bad)):
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
+                    patch.object(menu.NodeNames, "saved", return_value=NAMES), \
+                    patch.dict("os.environ", {"COLUMNS": "80"}):
+                self.assertEqual(menu.main(["view", "--spec-id", state["spec_id"], "--archive-location",
+                                            "configured", "--files", path]), 0)
+            frames[name] = output.getvalue()
+        self.assertIn("suggest\tacquire", frames["good"])
+        self.assertIn("files found on spark-2, not in Pulsar's records", frame_text(frames["good"].splitlines()))
+        self.assertIn("suggest\trestore", frames["bad"])
+        self.assertNotIn("files found", frames["bad"])
+        # Stop's question is asked with the same session arguments.
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output):
+            self.assertEqual(menu.main(["confirm", "--spec-id", state["spec_id"], "--action", "stop",
+                                        "--files", good]), 0)
+        self.assertTrue(output.getvalue().startswith("Stop and remove"), output.getvalue())
+
+
 class SuggestedCommand(unittest.TestCase):
     def command(self, state, location="configured"):
         return menu.suggested_command(state, location, NAMES)
