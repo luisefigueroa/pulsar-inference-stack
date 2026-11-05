@@ -28,11 +28,15 @@ archive_location() {
   else echo configured; fi
 }
 
-# select_node ACTION SPEC — asks which confirmed machine to use and prints its
-# node_id. Each choice names the machine by hostname and what saved records
-# place there (the home, a prepared copy); nothing is probed.
+# select_node ACTION SPEC [--live FILE] — asks which confirmed machine to use
+# and prints its node_id. Each choice names the machine by hostname and what
+# saved records place there (the home, a prepared copy); nothing is probed.
+# The cursor starts on the recorded node, except where the files go (Download,
+# Restore, Move home). A Stop given an inventory captured just now that saw
+# the service on one confirmed node uses that node without asking.
 select_node() {
-  local action="$1" spec="$2" index rc kind first second title="Which machine?"
+  local action="$1" spec="$2" index rc kind first second title="Which machine?" seen="" default="" start=""
+  shift 2
   local -a names=() args=() ids=() labels=()
   require_cluster_nodes 1 >/dev/null || return 2
   for index in "${!CLUSTER_NODE_IDS[@]}"; do
@@ -42,15 +46,24 @@ select_node() {
   while IFS=$'\t' read -r kind first second; do
     case "$kind" in
       title) title="$first" ;;
+      seen) seen="$first" ;;
+      default) default="$first" ;;
       node) ids+=("$first"); labels+=("$second") ;;
     esac
   done < <(printf '%s' "$ROW_JSON" | catalog_menu node-choices --spec-id "$spec" --action "$action" \
-    ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} "${args[@]}" 2>/dev/null || true)
+    ${MENU_SNAPSHOT:+--snapshot "$MENU_SNAPSHOT"} "${args[@]}" "$@" 2>/dev/null || true)
   # Without saved records the choices are the hostnames alone.
   if [ "${#ids[@]}" -ne "${#CLUSTER_NODE_IDS[@]}" ]; then
-    ids=("${CLUSTER_NODE_IDS[@]}") labels=("${names[@]}")
+    ids=("${CLUSTER_NODE_IDS[@]}") labels=("${names[@]}") seen="" default=""
   fi
-  index=$(choose_index "$title" "${labels[@]}") || { rc=$?; return "$rc"; }
+  for index in "${!ids[@]}"; do
+    if [ -n "$seen" ] && [ "${ids[$index]}" = "$seen" ]; then
+      printf '%s\n' "$seen"
+      return 0
+    fi
+    [ "${ids[$index]}" != "$default" ] || start="$index"
+  done
+  index=$(PULSAR_CHOOSE_DEFAULT="$start" choose_index "$title" "${labels[@]}") || { rc=$?; return "$rc"; }
   printf '%s\n' "${ids[$index]}"
 }
 
@@ -490,10 +503,22 @@ perform_action() {
     MENU_SNAPSHOT="${snapshots[$choice]}"
   fi
   [ -z "$MENU_SNAPSHOT" ] || args+=(--snapshot "$MENU_SNAPSHOT")
+  local -a seen_in=()
+  if [ "$action" = stop ]; then
+    # As the inventory menu does, refresh what runs before asking, so the
+    # question names the nodes the service runs on now. A one-node service
+    # this capture saw on one confirmed node needs no machine question; after
+    # a failed refresh the question stays.
+    check_running_services "$ROW_JSON" || return $?
+    [ "$LIVE_REFRESHED" = 0 ] || seen_in=(--live "$LIVE_FILE")
+  fi
+  # Live status asks no machine: status uses the service's recorded node.
   case "$action" in
     acquire|restore|move) MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; } ;;
-    prepare|start|stop|status|observe|audit|check|readiness|image-check|image-stage)
-      if [ "$RECIPE_NODES" -eq 1 ]; then MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; }; fi ;;
+    prepare|start|stop|observe|audit|check|readiness|image-check|image-stage)
+      if [ "$RECIPE_NODES" -eq 1 ]; then
+        MENU_NODE=$(select_node "$action" "$spec" "${seen_in[@]}") || { rc=$?; return "$rc"; }
+      fi ;;
   esac
   [ -z "$MENU_NODE" ] || args+=(--node "$MENU_NODE")
   case "$action" in
@@ -518,10 +543,8 @@ perform_action() {
     start|stop)
       local -a scope=()
       if [ "$action" = stop ]; then
-        # As the inventory menu does, refresh what runs before asking, so the
-        # question names the nodes the service runs on now. After a failed
-        # refresh it names only where Stop acts.
-        check_running_services "$ROW_JSON" || return $?
+        # The inventory was refreshed before the node step. After a failed
+        # refresh the question names only where Stop acts.
         live_args
         [ "$LIVE_REFRESHED" = 0 ] || scope=("${LIVE_ARGS[@]}")
       fi

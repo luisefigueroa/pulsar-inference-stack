@@ -141,9 +141,9 @@ below are for reading.
 | Lifecycle: files not checked | The files have a home, but no check says whether every serving node is prepared. Choose **Check now**. |
 | Lifecycle: not offered here | The files are ready, but this Stack cannot start the spec. See **List: start unsupported**. |
 | Lifecycle: running | The service was seen running in this menu session. |
-| Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Open **Catalog and storage** and choose **Check now** on each. |
+| Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Once any spec has a home, it counts only specs with one, so recipes this cluster never downloaded are left out. Open **Catalog and storage** and choose **Check now** on each. |
 | Next: needs Download, needs Restore or needs Prepare | The step the saved records suggest for those specs. The operation rechecks everything before it changes files. |
-| Next: ready to Start | The last saved check found every file prepared. **Start** rechecks the files, image, nodes and memory before launching. |
+| Next: ready to Start | The last saved check found every file prepared, however long ago. **Start** rechecks the files, image, nodes and memory before launching. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -667,8 +667,22 @@ multi-node services retain the commands' participating-node resolution.
 The frame shows how long ago the inventory was taken and its UTC time, and
 **Refresh inventory** obtains a new observation. Each service row names its
 observed node count and the API port its rank 0 container runs with; nodes are
-listed in rank order. Services outside the catalog each get a read-only line
-with their container name and owner. **Stop every Pulsar service…** runs
+listed in rank order.
+
+Catalog services come first. A Pulsar-managed service whose spec is not in
+this catalog, for example one an experiment started, follows as its own row
+ending `outside the catalog`. Selecting it offers **Service logs** and **Stop
+service**, but no **Detailed status** (status needs a catalog spec) and no
+**Open in catalog**. Its Stop runs `./pulsar stop` with the full spec ID,
+which finds the containers by their Pulsar labels on every node, and its
+question adds `This service was started outside this catalog.` It is offered
+only when the inventory established safe ownership and every confirmed node
+answered.
+
+The frame names, one line each, the containers this menu cannot act on, by
+what they serve, their state and their owner, such as `vllm-port80 · running ·
+not started by Pulsar · read-only`, and the unmanaged GPU processes with
+their memory on each node. These stay read-only. **Stop every Pulsar service…** runs
 `stop --all --yes` after a fresh inventory: its question lists each service
 with the Pulsar-managed label and its nodes, says containers Pulsar does not
 manage are untouched and files are kept, and defaults to No. **Open in catalog** opens the service's recipe in the catalog
@@ -679,9 +693,11 @@ of all detected workloads, including those outside the catalog.
 Stop refreshes the inventory and shows the current scope before confirmation.
 The catalog menu's **Stop** does the same, and both ask one question that names
 the nodes the service was seen on and says model files, pins and archives are
-kept. For a one-node recipe the catalog menu stops on the machine chosen
-first, so its question names that machine, and adds where the inventory saw
-the service when that is elsewhere. Outcomes name the model and its spec.
+kept. For a one-node recipe the catalog menu stops on one machine: where the
+refreshed inventory saw the service, without asking, when it saw it on exactly
+one confirmed machine; otherwise the machine chosen next. Its question names
+that machine, and adds where the inventory saw the service when that is
+elsewhere. Outcomes name the model and its spec.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
@@ -1006,8 +1022,9 @@ changed it. Cluster setup requires confirmed membership and, for multiple
 nodes, enrolled SSH trust. After setup, the status ends with a Next line built
 from saved catalog records, such as `Next: 2 specs not checked yet · 1 spec needs
 Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
-each spec's suggested step from the catalog menu and runs no probe; it is left
-out when no spec has a suggested step or the catalog cannot be read.
+each spec's suggested step from the catalog menu and runs no probe; once any
+spec has a home, specs without one are not counted as needing a check. The line
+is left out when no spec has a suggested step or the catalog cannot be read.
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
@@ -1028,7 +1045,12 @@ still apply to all operational actions after setup.
 `./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
 a page returns to Help; **Back** or Esc returns to the home menu.
 
-After setup, **Cluster overview (checks nodes now)** runs `./pulsar topology
+After setup, the home menu offers **Cluster overview (checks nodes now)**,
+**Catalog and storage**, **Model files and disk space (checks nodes now)**,
+**Live service inventory**, **Host diagnostics**, **Archive storage
+configuration**, **Cluster topology**, **Help** and **Exit**, in that order.
+
+**Cluster overview (checks nodes now)**, the first choice, runs `./pulsar topology
 check`, `./pulsar inventory` and `./pulsar model budget` in turn, each under a
 spinner, and shows every saved node by hostname: its topology status and
 issues, available memory (GB10 shares it between the GPU and the host), disk
@@ -1077,6 +1099,13 @@ node), while the menu asks for a node. Its question says what the machine is
 for, such as "Which machine should hold the model files?", and each machine
 is named by hostname with what saved records place there: "home recorded
 here" or "prepared copy recorded here". Nothing is probed to build the list.
+For a one-node recipe the cursor starts on the machine saved records name
+(the home, else a prepared copy); **Download**, **Restore** and **Move home**
+start on no machine, because choosing where the files go is the decision.
+**Live status** asks no machine question: status uses the service's recorded
+node. **Stop** takes its service inventory first and asks only when that
+inventory did not see the one-node service on exactly one confirmed machine,
+because Stop without a node removes the service's containers on every node.
 The recipe list labels show the same short saved state; where the whole label
 fits (60 columns or wider), they also name the node count and the spec's state,
 as `models list` does. State is metadata, never a gate. When the catalog has
@@ -1189,10 +1218,14 @@ findings, rather than an execution failure. Missing or changed files can be a
 completed check's result; an interrupted or unrecorded check still needs a retry.
 
 A recent check that found missing or changed files suggests acquisition,
-restoration or preparation even when it recorded blockers. Unknown or stale
-file observations still suggest **Check now**. A check that records a result
-clears the previous operation's pending check; one that could not record a
-result does not turn earlier readiness into a new Start suggestion.
+restoration or preparation even when it recorded blockers. A check that found
+the files prepared, with no blocker, suggests **Start** at any age, because
+Start rechecks the files, image, nodes and memory before launching; the Files
+line shows how old that check is. Unknown file observations, and missing,
+changed or blocked ones more than a day old, still suggest **Check now**. A
+check that records a result clears the previous operation's pending check; one
+that could not record a result does not turn earlier readiness into a new
+Start suggestion.
 
 Operations that verify what they record move straight to the next step. After
 a successful **Download** or **Restore**, which verify the files before

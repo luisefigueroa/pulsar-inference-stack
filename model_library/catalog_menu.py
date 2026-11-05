@@ -367,10 +367,13 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", f"{LABELS[after].lower()} ran after the last check"
     if row.get("checked_at") is None:
         return "check", "no saved check"
-    if age is None or age > STALE_SECONDS:
-        return "check", "last check " + age_text(age)
     local = row.get("local_state", "unknown")
     blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
+    # Start rechecks prepared files before launching, so a saved check that
+    # found them prepared stays usable at any age; every other state is
+    # checked again once its observation is out of date.
+    if age is None or (age > STALE_SECONDS and (local != "ready" or blocker)):
+        return "check", "last check " + age_text(age)
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     found = _next_home(row, offered, archive_location, now)
@@ -389,7 +392,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if local == "ready":
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
             return "status", live_value(live) + "; check before starting"
-        return "start", "files prepared as of the last check; start rechecks prerequisites"
+        return "start", f"files prepared as of the last check ({age_text(age)}); Start rechecks them"
     return None
 
 
@@ -918,17 +921,39 @@ NODE_QUESTIONS = {
     "observe": "Which machine runs the service?", "audit": "Which machine's prepared files should be hashed?",
 }
 NODE_QUESTION = "Which machine should serve the model?"
+# These operations choose where files go, so no machine is preselected.
+NODE_UNSELECTED = {"acquire", "restore", "move"}
 
 
-def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None) -> str:
+def seen_node(row: dict, live: dict | None, node_ids: list[str]) -> str | None:
+    """The node_id where a complete service inventory saw this one-node spec's
+    service, when it is one of NODE_IDS; None otherwise.
+
+    Stop without a node removes containers on every node, so only a service
+    seen on exactly one identified node can skip the machine question.
+    """
+    if live is None or live["incomplete"]:
+        return None
+    fact = live_fact(row, live, None)
+    if fact is None or fact["kind"] != "service" or fact.get("node_id") not in node_ids:
+        return None
+    return fact["node_id"]
+
+
+def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None,
+               seen: str | None = None) -> str:
     """HOSTNAME — what saved records place there: the home, a prepared copy.
 
-    The home is the selected snapshot's, or any required snapshot's. The
-    records are shown only where the whole label fits, the home first.
+    The home is the selected snapshot's, or any required snapshot's. SEEN is
+    the node_id where a service inventory taken just now saw the service; it
+    is named first. The records are shown only where the whole label fits,
+    the home first.
     """
     snapshots = members(row)
     holders = [snapshots[snapshot]] if snapshot in snapshots else list(snapshots.values())
     parts = []
+    if seen is not None and seen == node_id:
+        parts.append("service seen here just now")
     if any((member.get("home") or {}).get("node_id") == node_id for member in holders):
         parts.append("home recorded here")
     if any(copy.get("node_id") == node_id for copy in row.get("prepared_copies") or []):
@@ -1466,6 +1491,8 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
 
 
 STOP_KEEPS = "Model files, pins and archives are kept."
+# Added to the Stop question of a Pulsar-managed service whose spec is not in this catalog.
+OUTSIDE_CATALOG = "This service was started outside this catalog."
 
 
 def stop_question(model: str, spec_id: str, where: str | None) -> str:
@@ -1505,9 +1532,15 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
     """One line for the home screen: what the saved records suggest, and their age.
 
     Uses the same suggestion as each recipe menu, without session outcomes or
-    service observations; nothing here probes nodes. None when no spec has a
+    service observations; nothing here probes nodes. When some spec has a
+    recorded home, the check counts cover only specs with one, so recipes
+    this cluster never downloaded are not counted. None when no spec has a
     suggested step.
     """
+    def has_home(row: dict) -> bool:
+        return any(member.get("home") for member in members(row).values())
+
+    any_home = any(has_home(row) for row in rows)
     counts: dict[str, int] = {}
     for row in rows:
         offered, _, _ = operations(row, archive_location)
@@ -1515,6 +1548,8 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
         if not found or found[0] not in HOME_NEXT:
             continue
         key = "not-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
+        if key in ("not-checked", "check") and any_home and not has_home(row):
+            continue
         counts[key] = counts.get(key, 0) + 1
     if not counts:
         return None
@@ -1564,6 +1599,7 @@ def main(argv: list[str] | None = None) -> int:
     nodes.add_argument("--action", required=True)
     nodes.add_argument("--snapshot")
     nodes.add_argument("--node-name", action="append", default=[], help="NODE_ID=HOSTNAME, in topology order")
+    nodes.add_argument("--live", help="with --action stop: a service inventory captured just now")
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1648,14 +1684,25 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{action}\t{clean(label)}")
             return 0
         if args.command == "node-choices":
-            # Each line is "title" and the question, or "node", a node_id and its label.
-            print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
-            width = terminal_width() - 2
+            # Each line is "title" and the question; "seen" and the node_id
+            # that answers it, so nothing is asked; "default" and the node_id
+            # the cursor starts on; or "node", a node_id and its label.
+            nodes = []
             for value in args.node_name:
                 node_id, separator, hostname = value.partition("=")
                 if not separator or not node_id or not hostname:
                     raise ValueError("node names must use NODE_ID=HOSTNAME")
-                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot))}")
+                nodes.append((node_id, hostname))
+            ids = [node_id for node_id, _ in nodes]
+            seen = seen_node(row, load_live(args.live, [row]), ids) if args.action == "stop" else None
+            print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
+            if seen is not None:
+                print(f"seen\t{seen}")
+            elif args.action not in NODE_UNSELECTED and recorded_node(row) in ids:
+                print(f"default\t{recorded_node(row)}")
+            width = terminal_width() - 2
+            for node_id, hostname in nodes:
+                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot, seen))}")
             return 0
         names = NodeNames.saved()
         if args.command == "image-plan":

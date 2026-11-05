@@ -46,16 +46,21 @@ load_service() {
 }
 
 service_actions() {
-  local spec="$1" index choice rc
+  # KIND is service for a catalog spec, other for a Pulsar service outside the catalog.
+  local spec="$1" kind="${2:-service}" index choice rc title="Selected catalog service"
   local -a options=() STATUS_ARGS=() LOGS_ARGS=() STOP_ARGS=()
   local STOP_QUESTION="" SERVICE_MODEL="" started subject
+  [ "$kind" = service ] || title="Selected service outside the catalog"
   while load_service "$spec"; do
     subject="${SERVICE_MODEL:+$SERVICE_MODEL }[${spec:0:12}]"
-    options=("Detailed status")
+    # Detailed status needs a catalog spec; the view leaves it out otherwise.
+    options=()
+    [ "${#STATUS_ARGS[@]}" -eq 0 ] || options+=("Detailed status")
     [ "${#LOGS_ARGS[@]}" -eq 0 ] || options+=("Service logs")
     [ "${#STOP_ARGS[@]}" -eq 0 ] || options+=("Stop service")
-    options+=("Open in catalog" "Refresh inventory" "Back")
-    index=$(choose_index "Selected catalog service" "${options[@]}") \
+    [ "$kind" != service ] || options+=("Open in catalog")
+    options+=("Refresh inventory" "Back")
+    index=$(choose_index "$title" "${options[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     choice="${options[$index]}"
     case "$choice" in
@@ -128,12 +133,13 @@ stop_every_service() {
 }
 
 while true; do
-  ids=() labels=() stop_all=0
+  ids=() kinds=() labels=() stop_all=0
   if refresh_inventory && result=$(inventory_view); then
     while IFS=$'\t' read -r kind first second; do
       case "$kind" in
         header) printf '%s\n' "$first" ;;
-        service) ids+=("$first"); labels+=("$second") ;;
+        # Catalog services first, then Pulsar services outside the catalog.
+        service|other) ids+=("$first"); kinds+=("$kind"); labels+=("$second") ;;
         stopall) stop_all=1 ;;
       esac
     done <<<"$result"
@@ -141,10 +147,10 @@ while true; do
   labels+=("Refresh inventory" "Show full inventory")
   [ "$stop_all" -eq 0 ] || labels+=("Stop every Pulsar service…")
   labels+=("Back")
-  index=$(choose_index "Select a catalog service" "${labels[@]}") \
+  index=$(choose_index "Select a service" "${labels[@]}") \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   if [ "$index" -lt "${#ids[@]}" ]; then
-    service_actions "${ids[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
+    service_actions "${ids[$index]}" "${kinds[$index]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
     continue
   fi
   case "${labels[$index]}" in
