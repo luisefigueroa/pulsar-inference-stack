@@ -510,6 +510,16 @@ completed operation makes every required snapshot available on every selected
 serving rank. It does not start a model. See [prepared copies and storage
 estimates](#prepared-copies-and-storage-estimates) for sharing and retry behavior.
 
+Each node keeps its own records of the prepared copies on it, beside the
+controller's. After the controller's records are lost, Prepare finds the copies
+through the nodes' records and reuses them. When a node's records are lost as
+well, a prepared copy left on that node has no record, and Pulsar never adopts
+or deletes files it did not record. The preview is then blocked: it names the
+node and the folder where Prepare would place the copy, and `prepare --yes`
+stops before it copies or records anything. Purge cannot help, since it removes
+only what records name. Inspect the folder; if it is not needed, remove it
+outside Pulsar, then prepare again, which copies and verifies the files.
+
 Control SSH, inference traffic and model transfer use distinct configured
 paths. Multi-node preparation preserves the selected transfer contract and
 does not silently change networks.
@@ -896,7 +906,11 @@ several specs, **Clean up through which spec?** asks first. Purge still covers
 the selected spec's prepared copies; **Remove home** selects a snapshot. Every
 mutation keeps its existing plan, confirmation and protections. Uncataloged or
 unregistered files with no catalog spec are *view only*: the page is all the
-menu shows for them, and discovery does not authorize deletion.
+menu shows for them, and discovery does not authorize deletion. A prepared copy
+whose records were lost appears as a copy marked *not in Pulsar's records*.
+Pulsar does not record or delete it; if Prepare for its spec is blocked by that
+folder, inspect it and remove it outside Pulsar when it is not needed (see
+[Prepare all serving nodes](#prepare-all-serving-nodes)).
 
 To discard a downloaded model after trying it, stop its service, unpin and purge
 its prepared copies, then choose **Remove home** and confirm. Both catalog and
@@ -950,6 +964,7 @@ remain explicit decisions.
 | Pinned image missing | `./pulsar image check <spec-id> --node <node>` | Review [image staging](#check-and-stage-the-image) for the same spec and nodes. |
 | Model files missing or not prepared | `./pulsar model info <spec-id> --node <node>` | Acquire or restore missing homes, then prepare every required snapshot and rank. |
 | Too little storage | `./pulsar model budget` and the operation's `--plan` | Review [storage cleanup](#stop-and-reclaim-storage); a preview does not reserve capacity. |
+| Prepare blocked by a folder that no Pulsar record names | `./pulsar model prepare <spec-id> --plan`, which names the node and the folder | Inspect the folder on that node; if it is not needed, remove it outside Pulsar, then prepare again. Purge cannot remove it; see [Prepare all serving nodes](#prepare-all-serving-nodes). |
 | Insufficient memory or a memory warning | `./pulsar inventory` and the failed start's memory report | Insufficient memory blocks start. `--accept-memory-warn` acknowledges only a warning; see [memory estimates](MEMORY_ESTIMATES.md) for the optional exact-spec estimate. |
 | Existing service or port in use | `./pulsar inventory` and `./pulsar status <spec-id>` | Identify the owner; stopping, replacement, and a deployment-port change are separate choices. |
 | `guard_unsupported` | `./pulsar models show <spec-id>` | Use the separately scoped [guarded serving](GUARDED_SERVING.md) procedure. |
