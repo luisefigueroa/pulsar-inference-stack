@@ -154,12 +154,29 @@ class Suggestion(unittest.TestCase):
     def test_rules_in_order(self):
         self.assertEqual(self.suggest(row())[0], "check")
         self.assertEqual(self.suggest(checked(observation_age_seconds=3 * 86400)), ("check", "last check 3 days ago"))
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="missing", observation_age_seconds=3 * 86400)),
+                         ("check", "last check 3 days ago"))
         self.assertEqual(self.suggest(checked(blockers=["n1: disk full"])), ("check", "saved blocker: spark-2: disk full"))
         self.assertEqual(self.suggest(checked(local_state="missing"))[0], "acquire")
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="changed")),
                          ("prepare", "files changed since they were verified (checked 2 hours ago)"))
-        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready"))[0], "start")
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready")),
+                         ("start", "files prepared as of the last check (2 hours ago); Start rechecks them"))
+
+    def test_prepared_files_suggest_start_at_any_age(self):
+        # Start rechecks the files, so an old check that found them prepared
+        # still leads to Start; any other old observation is checked again.
+        old = 30 * 86400
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", observation_age_seconds=old)),
+                         ("start", "files prepared as of the last check (30 days ago); Start rechecks them"))
+        for state in (checked(home=HOME, local_state=local, observation_age_seconds=old)
+                      for local in ("unknown", "missing", "changed")):
+            with self.subTest(local=state["local_state"]):
+                self.assertEqual(self.suggest(state), ("check", "last check 30 days ago"))
+        blocked = checked(home=HOME, local_state="ready", observation_age_seconds=old, blockers=["n1: disk full"])
+        self.assertEqual(self.suggest(blocked), ("check", "last check 30 days ago"))
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", observation_age_seconds=None))[0], "check")
 
     def test_restore_needs_a_configured_archive_location(self):
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"), location="disabled")[0], "acquire")
@@ -181,9 +198,14 @@ class Suggestion(unittest.TestCase):
             for after in (None, "stop", "check"):
                 with self.subTest(local=local, after=after):
                     self.assertIsNone(self.suggest(checked(home=HOME, local_state=local, **GUARDED), after))
+        old_ready = checked(home=HOME, local_state="ready", observation_age_seconds=9 * 86400, **GUARDED)
+        for after in (None, "stop", "check"):
+            with self.subTest(after=after, age="9 days"):
+                self.assertIsNone(self.suggest(old_ready, after))
 
     def test_suggestion_never_starts_a_guarded_spec(self):
         for state in (row(**GUARDED), checked(**GUARDED), checked(home=HOME, local_state="ready", **GUARDED),
+                      checked(home=HOME, local_state="ready", observation_age_seconds=9 * 86400, **GUARDED),
                       checked(home=HOME, local_state="changed", **GUARDED)):
             for after in (None, "stop", "check", "prepare", "restore"):
                 result = self.suggest(state, after)
@@ -595,10 +617,11 @@ class NodeChoices(unittest.TestCase):
         self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, "draft"), "spark-1")
         self.assertEqual(menu.node_label(state, "n0", "spark-1", 78), "spark-1 — home recorded here")
 
-    def choices(self, state, action, *nodes, snapshot=None):
+    def choices(self, state, action, *nodes, snapshot=None, live=None):
         out = io.StringIO()
         args = ["node-choices", "--spec-id", state["spec_id"], "--action", action]
         args += ["--snapshot", snapshot] if snapshot else []
+        args += ["--live", live] if live else []
         for node in nodes:
             args += ["--node-name", node]
         with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
@@ -619,8 +642,77 @@ class NodeChoices(unittest.TestCase):
             with self.subTest(action=action):
                 rc, lines = self.choices(state, action, "n0=spark-1", "n1=spark-2")
                 self.assertEqual(rc, 0)
-                self.assertEqual(lines, [["title", question], ["node", "n0", "spark-1 — home recorded here"],
-                                         ["node", "n1", "spark-2"]])
+                default = [] if action in ("acquire", "restore", "move") else [["default", "n0"]]
+                self.assertEqual(lines, [["title", question], *default,
+                                         ["node", "n0", "spark-1 — home recorded here"], ["node", "n1", "spark-2"]])
+
+    # R6: the cursor starts on the node saved records name, except where the
+    # operation chooses where files go.
+    def test_the_recorded_node_is_preselected(self):
+        copies = checked(prepared_copies=[{"rank": 0, "node_id": "n1"}])
+        cases = [(checked(home=HOME), "check", ["default", "n0"]),
+                 (copies, "start", ["default", "n1"]),
+                 (copies, "status", ["default", "n1"]),
+                 (copies, "acquire", None), (copies, "restore", None), (copies, "move", None),
+                 (checked(), "check", None),
+                 # A recorded node that is not a confirmed node is never preselected.
+                 (checked(home={**HOME, "node_id": "n9"}), "check", None)]
+        for state, action, default in cases:
+            with self.subTest(action=action, default=default):
+                rc, lines = self.choices(state, action, "n0=spark-1", "n1=spark-2")
+                self.assertEqual(rc, 0)
+                self.assertEqual([line for line in lines if line[0] in ("default", "seen")],
+                                 [default] if default else [])
+
+    def live_file(self, document):
+        import tempfile
+        handle = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        self.addCleanup(Path(handle.name).unlink)
+        with handle:
+            json.dump(document, handle)
+        return handle.name
+
+    def test_a_stop_of_a_service_seen_on_one_node_needs_no_question(self):
+        state = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        live = self.live_file(inventory((state["spec_id"], "running", ["w1"])))
+        rc, lines = self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=live)
+        self.assertEqual(rc, 0)
+        self.assertEqual(lines, [["title", "Which machine runs the service?"], ["seen", "n1"],
+                                 ["node", "n0", "spark-1 — home recorded here"],
+                                 ["node", "n1", "spark-2 — service seen here just now"]])
+        # Exited containers on one node are what Stop removes there, too.
+        live = self.live_file(inventory((state["spec_id"], "stale", ["w1"])))
+        self.assertIn(["seen", "n1"], self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=live)[1])
+        # Only Stop reads the inventory.
+        live = self.live_file(inventory((state["spec_id"], "running", ["w1"])))
+        _, lines = self.choices(state, "status", "n0=spark-1", "n1=spark-2", live=live)
+        self.assertEqual([line for line in lines if line[0] in ("default", "seen")], [["default", "n0"]])
+
+    # Stop without a node removes containers on every node, so anything short
+    # of one confirmed node keeps the question, with the recorded node preselected.
+    def test_a_stop_keeps_the_question_unless_the_service_was_seen_on_one_confirmed_node(self):
+        state = checked(home=HOME, geometry={"nodes": 1, "tp": 1, "pp": 1})
+        spec = state["spec_id"]
+        cases = {"not running": inventory(),
+                 "on two nodes": inventory((spec, "running", ["head", "w1"])),
+                 "on a node not confirmed here": inventory((spec, "running", ["w2"])),
+                 "a node not observed": inventory((spec, "running", ["w1"]), unobserved=("w2",)),
+                 "another spec": inventory(("cd" * 32, "running", ["w1"]))}
+        for name, document in cases.items():
+            with self.subTest(name):
+                rc, lines = self.choices(state, "stop", "n0=spark-1", "n1=spark-2", live=self.live_file(document))
+                self.assertEqual(rc, 0)
+                self.assertEqual([line for line in lines if line[0] in ("default", "seen")], [["default", "n0"]])
+                self.assertNotIn("seen here", json.dumps(lines))
+
+    def test_the_seen_service_is_named_first_where_the_label_fits(self):
+        state = checked(home=HOME)
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, seen="n0"),
+                         "spark-1 — service seen here just now, home recorded here")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 40, seen="n0"),
+                         "spark-1 — service seen here just now")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 30, seen="n0"), "spark-1")
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78, seen="n1"), "spark-1 — home recorded here")
 
     def test_a_malformed_node_name_is_refused(self):
         err = io.StringIO()
@@ -1067,8 +1159,8 @@ class Question(unittest.TestCase):
 class HomeNext(unittest.TestCase):
     """The home screen's Next line, from saved records only (TUI-26)."""
     def specs(self):
-        return [row(spec_id="a" * 64), row(spec_id="b" * 64),
-                checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
+        return [row(spec_id="a" * 64, home=HOME), row(spec_id="b" * 64, home=HOME),
+                checked(spec_id="c" * 64, home=HOME, observation_age_seconds=3 * 86400),
                 checked(spec_id="d" * 64, local_state="missing"),
                 checked(spec_id="e" * 64, local_state="missing", archive_state="verified"),
                 checked(spec_id="f" * 64, home=HOME, local_state="changed", observation_age_seconds=600),
@@ -1079,6 +1171,26 @@ class HomeNext(unittest.TestCase):
                          "Next: 2 specs not checked yet · 1 spec needs a check · 1 spec needs Download · "
                          "1 spec needs Restore · 1 spec needs Prepare · 1 spec ready to Start — open Catalog "
                          "and storage. Newest saved check: 10 minutes ago.")
+
+    def test_an_old_check_that_found_prepared_files_counts_as_ready_to_start(self):
+        old = [checked(spec_id="a" * 64, home=HOME, local_state="ready", observation_age_seconds=9 * 86400),
+               checked(spec_id="b" * 64, home=HOME, local_state="missing", observation_age_seconds=9 * 86400)]
+        self.assertEqual(menu.home_next(old, "configured"),
+                         "Next: 1 spec needs a check · 1 spec ready to Start — open Catalog and storage. "
+                         "Newest saved check: 9 days ago.")
+
+    def test_check_counts_cover_specs_with_a_home_once_any_spec_has_one(self):
+        # Specs this cluster never downloaded would otherwise fill the line.
+        specs = [row(spec_id="a" * 64), row(spec_id="b" * 64, home=HOME),
+                 checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
+                 checked(spec_id="d" * 64, local_state="missing"),
+                 checked(spec_id="0" * 64, home=HOME, local_state="ready")]
+        self.assertEqual(menu.home_next(specs, "configured"),
+                         "Next: 1 spec not checked yet · 1 spec needs Download · 1 spec ready to Start — open "
+                         "Catalog and storage. Newest saved check: 2 hours ago.")
+        # Without any home (a fresh checkout or lost records), every spec counts.
+        self.assertTrue(menu.home_next(specs[:1] + specs[2:4], "configured").startswith(
+            "Next: 1 spec not checked yet · 1 spec needs a check · 1 spec needs Download — "))
 
     def test_counts_use_singular_and_plural_wording(self):
         ready = [checked(spec_id=c * 64, home=HOME, local_state="ready") for c in "ab"]
