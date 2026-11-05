@@ -23,7 +23,7 @@ prepare_snapshot() {
   [ -n "$SPEC_ID" ] && [ -n "$SPEC_JSON" ] || die "prepare requires a frozen spec"
   require_home
   selected_nodes
-  local home_node home_rank observations existing transactions ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp candidates candidate reuse_view
+  local home_node home_rank observations existing transactions ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp candidates candidate reuse_view destination
   home_node=$(json_fields "$HOME_JSON" node_id)
   home_rank=$(model_physical_rank "$home_node")
   [ "$home_rank" -lt "$CLUSTER_TOPOLOGY_COUNT" ] || die "snapshot home is outside confirmed membership"
@@ -53,7 +53,13 @@ prepare_snapshot() {
         if [ "$reuse_view" != null ]; then reuse_view="$result"; else printf '%s\n' "$result" >>"$views_tmp"; fi
       fi
     fi
-    printf '%s\n' "$(model_json node_id "$node" view_verified: "$verified" reuse_view: "$reuse_view")" >>"$ranks_tmp"
+    # A rank with no record to reuse gets a new copy; ask whether its path is
+    # already taken by a folder that no record names, which Prepare must not replace.
+    destination=null
+    if [ "$row" = null ] && [ "$node" != "$home_node" ]; then
+      destination=$(model_node "$rank" "$(model_node_request view-destination spec_id "$SPEC_ID" node_id "$node")") || die "prepared copy destination is unobservable"
+    fi
+    printf '%s\n' "$(model_json node_id "$node" view_verified: "$verified" reuse_view: "$reuse_view" destination: "$destination")" >>"$ranks_tmp"
     roots=$(model_node "$rank" "$(model_node_request roots)") || die "node storage roots are unavailable"
     space=$(model_node "$rank" "$(model_node_request space path "$(json_fields "$roots" view_root)")") || die "node disk usage is unavailable"
     budget=$(printf '%s' "$space" | python3 -c 'import json,sys; from model_library.planning import storage_budget; print(json.dumps(storage_budget(json.load(sys.stdin),sys.argv[1],sys.argv[2],path=sys.argv[3])))' "${PULSAR_HOT_RESERVE_BYTES:-}" "${PULSAR_HOT_BUDGET_BYTES:-}" "$(json_fields "$roots" view_root)") || die "invalid disk budget"

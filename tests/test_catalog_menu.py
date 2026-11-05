@@ -1634,6 +1634,17 @@ class PlanSummary(unittest.TestCase):
                                  "Blocked: not enough copy budget or disk space on spark-2; free space.",
                                  "2 more blockers in the full preview."])
 
+    def test_an_unrecorded_folder_shows_its_whole_path_and_the_fix(self):
+        path = "/fixture/views/" + "ab" * 32
+        detail = {"code": "unrecorded-destination", "message": "m", "node_id": "n1", "path": path,
+                  "fix": "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."}
+        plan = {"eligible": False, "blocker_details": [detail]}
+        self.assertEqual(self.summary("prepare", plan), [
+            f"Blocked: a folder already exists where Prepare would place the prepared copy on spark-2: {path}; "
+            "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."])
+        # No menu operation removes a folder that no record names.
+        self.assertEqual(menu.blocked_choices(plan, [checked()]), [])
+
     def test_blocked_plans_without_details_use_their_messages(self):
         plan = {"eligible": False, "blockers": ["n1: disk is full", "n1: disk is full"]}
         self.assertEqual(self.summary("restore", plan), ["Blocked: spark-2: disk is full."])
