@@ -235,11 +235,13 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
         destination = obs.get('destination')
         if action == 'copy' and isinstance(destination, dict) and destination.get('state') == 'present':
             # The node reports its own records; the merged views add the controller's.
+            # Only this node's views count: other nodes use the same path strings.
             path = destination.get('path')
             if not isinstance(path, str) or not path:
                 raise StorageError('prepared copy destination observation has no path')
             named = destination.get('recorded') is True or any(
-                _nested(path, v[field]) for v in views for field in ('hub_path', 'path'))
+                _nested(path, v[field]) for v in views if v.get('node_id') == node_id
+                for field in ('hub_path', 'path'))
             if not named:
                 blockers.append(f'{node_id}: a folder already exists at the prepared copy path {path} '
                                 'and no Pulsar record names it')

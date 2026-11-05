@@ -266,6 +266,23 @@ class Preparation(Details):
                 plan = self.plan(views=views, observations=observed("n0", "n1", n1={"destination": destination}))
                 self.assertNotIn("unrecorded-destination", [item["code"] for item in plan["blocker_details"]])
 
+    def test_another_nodes_record_at_the_same_path_does_not_name_this_folder(self):
+        # A home outside the serving nodes: both ranks copy, and destinations share one path string.
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        def at_path(record):
+            return {**record, "hub_path": path, "path": path + "/snapshots/" + "a" * 40}
+        present = {"path": path, "state": "present", "recorded": False}
+        for name, views, blocked in (("other node's record", [at_path(view(node="n2", rank=1))], True),
+                                     ("own record", [at_path(view(node="n1", rank=0, spec_id="cd" * 32))], False)):
+            with self.subTest(name):
+                plan = preparation_plan(spec=self.spec, home=home(node="n0"), node_ids=["n1", "n2"],
+                                        confirmed_node_ids=["n0", "n1", "n2"], topology_id=TOPOLOGY,
+                                        observations=observed("n1", "n2", n1={"destination": present}),
+                                        views=views, budgets={"n1": budget(), "n2": budget()})
+                found = [(d["code"], d["node_id"], d["path"]) for d in plan["blocker_details"]
+                         if d["code"] == "unrecorded-destination"]
+                self.assertEqual(found, [("unrecorded-destination", "n1", path)] if blocked else [])
+
     def test_only_a_planned_copy_checks_its_destination(self):
         present = {"destination": {"path": "/fixture/views/x", "state": "present", "recorded": False}}
         plan = self.plan(observations=observed("n0", "n1", n0=present))
