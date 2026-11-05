@@ -9,8 +9,12 @@ before it is saved. Nothing here contacts a node.
 
     python3 -m scripts.saved_observations save-inventory < INVENTORY_JSON
     python3 -m scripts.saved_observations save-budget < BUDGET_NODES_JSON
-    python3 -m scripts.saved_observations home [--now TIME] < CATALOG_JSON
-    python3 -m scripts.saved_observations key [--now TIME]
+    python3 -m scripts.saved_observations home [--now TIME] [--width N] < CATALOG_JSON
+
+`home` prints `key<TAB>KEY` on its first line, then the Running block. Both
+come from one read of each record at one instant, so the home menu compares
+exactly the records it printed; KEY changes only with a new observation or the
+inventory turning "last seen".
 
 The records live under the checkout's `.pulsar/` directory, which is never
 tracked; PULSAR_SERVICE_INVENTORY_FILE and PULSAR_STORAGE_BUDGET_FILE name
@@ -482,13 +486,9 @@ def main(argv: list[str] | None = None) -> int:
                           ("save-budget", "save the model budget nodes list from stdin")):
         save = sub.add_parser(command, help=text)
         save.add_argument("--path", help="save here instead of the default path")
-    home = sub.add_parser("home", help="the Running block; catalog JSON on stdin")
+    home = sub.add_parser("home", help="a `key\\tKEY` line, then the Running block; catalog JSON on stdin")
     home.add_argument("--width", type=int)
-    key = sub.add_parser("key", help="what changes when a new observation is saved")
-    # The home menu gives home and key one instant, so the block and its key
-    # agree on "last seen"; without it each uses the current time.
-    for command in (home, key):
-        command.add_argument("--now", type=_instant, help="the time ages are taken at (UTC)")
+    home.add_argument("--now", type=_instant, help="the time ages are taken at (UTC); the current time by default")
     for command in sub.choices.values():
         command.add_argument("--repo-root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
@@ -496,18 +496,18 @@ def main(argv: list[str] | None = None) -> int:
         return _save(args, INVENTORY_NAME, "the service inventory", save_inventory)
     if args.command == "save-budget":
         return _save(args, BUDGET_NAME, "the storage budget", save_budget)
+    # One read of each record and one instant give both the block and its
+    # change key, so a save while the menu draws can never split them.
     now = args.now or datetime.now(timezone.utc)
     inventory, inventory_unreadable = _read(load_inventory, args.repo_root, INVENTORY_NAME)
     budget, budget_unreadable = _read(load_budget, args.repo_root, BUDGET_NAME)
-    if args.command == "key":
-        print(change_key(inventory, budget, now))
-        return 0
     try:
         entries = json.load(sys.stdin).get("entries") or []
         unreadable = {name for name, flag in (("inventory", inventory_unreadable), ("budget", budget_unreadable))
                       if flag}
-        sys.stdout.write(home_block(inventory, budget, entries, width=args.width, now=now, unreadable=unreadable,
-                                    hostnames=NodeNames.saved(args.repo_root).hostnames))
+        block = home_block(inventory, budget, entries, width=args.width, now=now, unreadable=unreadable,
+                           hostnames=NodeNames.saved(args.repo_root).hostnames)
+        sys.stdout.write(f"key\t{change_key(inventory, budget, now)}\n{block}")
         return 0
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         error_line(exc, tag="saved observations")

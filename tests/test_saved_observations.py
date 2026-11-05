@@ -1,6 +1,7 @@
 """The saved service inventory and storage budget, and the home menu's Running block."""
 import copy
 from datetime import datetime, timedelta, timezone
+import io
 import json
 import os
 from pathlib import Path
@@ -152,6 +153,14 @@ class Command(unittest.TestCase):
                               input=stdin, env={**self.env, **extra}, cwd=ROOT, text=True, capture_output=True,
                               timeout=60)
 
+    def home(self, *args, **extra):
+        """`home`'s change key and its block, from its first line and the rest."""
+        result = self.run_command("home", *args, stdin=json.dumps({"entries": ENTRIES}), **extra)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first, block = result.stdout.split("\n", 1)
+        self.assertTrue(first.startswith("key\t"), first)
+        return first[len("key\t"):], block
+
     def test_saving_into_the_checkout_and_through_the_overrides(self):
         result = self.run_command("save-inventory", stdin=json.dumps(observed()))
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "", ""))
@@ -166,8 +175,9 @@ class Command(unittest.TestCase):
         self.run_command("save-budget", stdin=json.dumps([budget_node("node-2")]), **overrides)
         self.assertEqual(json.loads(inventory.read_text()), observed())
         self.assertEqual(json.loads(budget.read_text())["nodes"], [budget_node("node-2")])
-        key = self.run_command("key", **overrides)
-        self.assertEqual(key.stdout.split()[:2], ["2026-09-05T00:00:00Z", "last-seen"])
+        key, block = self.home(**overrides)
+        self.assertEqual(key.split()[:2], ["2026-09-05T00:00:00Z", "last-seen"])
+        self.assertIn("example/model · last seen running on", block)
 
     def test_a_failed_save_is_one_warning_and_never_fails_its_caller(self):
         for command, stdin, extra in (
@@ -186,21 +196,51 @@ class Command(unittest.TestCase):
         self.assertFalse((ROOT / "relative").exists())
 
     def test_home_reads_the_records_and_says_when_one_is_unreadable(self):
-        catalog = json.dumps({"entries": ENTRIES})
-        result = self.run_command("home", "--width", "80", stdin=catalog)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.splitlines()[0][:26], "Running   not observed yet")
+        key, block = self.home("--width", "80")
+        self.assertEqual(key, "none none")
+        self.assertEqual(block.splitlines()[0][:26], "Running   not observed yet")
         (self.root / ".pulsar").mkdir()
         (self.root / ".pulsar/service-inventory.json").write_text("{broken")
         (self.root / ".pulsar/storage-budget.json").write_text(json.dumps(budget_record()))
-        result = self.run_command("home", "--width", "80", stdin=catalog)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        text = " ".join(result.stdout.split())
+        key, block = self.home("--width", "80")
+        text = " ".join(block.split())
         self.assertIn("Services saved inventory unreadable; Cluster overview (checks nodes now) replaces it", text)
         self.assertIn("Disk node-1 can still copy 150 GiB · 300 GiB free", text)
         # An unreadable record keys as none, so the block prints again once it is replaced.
-        key = self.run_command("key")
-        self.assertEqual(key.stdout, "none 2026-09-04T22:00:00Z\n")
+        self.assertEqual(key, "none 2026-09-04T22:00:00Z")
+        # A catalog that cannot be read prints nothing, not even the key.
+        result = self.run_command("home", stdin="not json")
+        self.assertEqual((result.returncode, result.stdout), (2, ""))
+
+    def test_the_key_comes_from_the_same_single_read_as_the_block(self):
+        (self.root / ".pulsar").mkdir()
+        inventory, budget = self.root / ".pulsar/service-inventory.json", self.root / ".pulsar/storage-budget.json"
+        inventory.write_text(json.dumps(observed()))
+        budget.write_text(json.dumps(budget_record()))
+        reads = []
+
+        def counted(loader):
+            def read(path):
+                reads.append(Path(path).name)
+                return loader(path)
+            return read
+
+        stdout = io.StringIO()
+        with patch.object(saved, "load_inventory", counted(saved.load_inventory)), \
+                patch.object(saved, "load_budget", counted(saved.load_budget)), \
+                patch.dict(os.environ, {saved.INVENTORY_ENV: str(inventory), saved.BUDGET_ENV: str(budget)}), \
+                patch("sys.stdin", io.StringIO(json.dumps({"entries": ENTRIES}))), patch("sys.stdout", stdout):
+            code = saved.main(["home", "--now", "2026-09-05T00:11:00Z", "--width", "80",
+                               "--repo-root", str(self.root)])
+        self.assertEqual(code, 0)
+        # Exactly one read of each record gives both the key and the block.
+        self.assertEqual(sorted(reads), ["service-inventory.json", "storage-budget.json"])
+        first, block = stdout.getvalue().split("\n", 1)
+        at = datetime(2026, 9, 5, 0, 11, tzinfo=timezone.utc)
+        self.assertEqual(first, "key\t" + saved.change_key(saved.load_inventory(inventory),
+                                                          saved.load_budget(budget), at))
+        self.assertEqual(first, "key\t2026-09-05T00:00:00Z last-seen 2026-09-04T22:00:00Z")
+        self.assertIn("last seen running on fixture-remote", " ".join(block.split()))
 
     def test_a_save_waits_for_the_record_lock(self):
         (self.root / ".pulsar").mkdir()
@@ -236,23 +276,21 @@ class Command(unittest.TestCase):
         self.assertFalse((self.root / ".pulsar/service-inventory.json").exists())
         self.assertFalse((self.root / "elsewhere").exists())
 
-    def test_home_and_key_agree_on_last_seen_at_one_instant(self):
+    def test_the_key_and_the_block_agree_on_last_seen_at_one_instant(self):
         (self.root / ".pulsar").mkdir()
         (self.root / ".pulsar/service-inventory.json").write_text(json.dumps(observed()))
-        catalog = json.dumps({"entries": ENTRIES})
         for minutes, state in ((9, "fresh"), (11, "last-seen")):
             with self.subTest(minutes=minutes):
-                now = f"2026-09-05T00:{minutes:02d}:00Z"
-                block = " ".join(self.run_command("home", "--now", now, "--width", "80", stdin=catalog).stdout.split())
-                key = self.run_command("key", "--now", now).stdout
-                self.assertEqual(key, f"2026-09-05T00:00:00Z {state} none\n")
+                key, block = self.home("--now", f"2026-09-05T00:{minutes:02d}:00Z", "--width", "80")
+                block = " ".join(block.split())
+                self.assertEqual(key, f"2026-09-05T00:00:00Z {state} none")
                 self.assertEqual("last seen running on fixture-remote" in block, state == "last-seen", block)
                 self.assertEqual("last seen, not current" in block, state == "last-seen", block)
                 self.assertIn(f"services {minutes} minutes ago (00:00 UTC)", block)
         for value in ("2026-09-05T00:09:00", "yesterday"):
             with self.subTest(value=value):
-                result = self.run_command("key", "--now", value)
-                self.assertEqual(result.returncode, 2)
+                result = self.run_command("home", "--now", value, stdin=json.dumps({"entries": ENTRIES}))
+                self.assertEqual((result.returncode, result.stdout), (2, ""))
                 self.assertIn("2026-11-05T22:00:00Z", result.stderr)
 
 

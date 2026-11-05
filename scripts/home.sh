@@ -84,16 +84,22 @@ if [ "$complete" = 1 ]; then
   # The Running block comes from the last saved service inventory and storage
   # budget, with their ages; nothing here probes a node. It prints again only
   # when a new observation was saved or the saved inventory became "last seen",
-  # so its ages do not tick while the menu is open.
-  # The block and its key take their ages at one instant, so they agree on
-  # "last seen".
+  # so its ages do not tick while the menu is open. One call reads the records
+  # once and prints the block's change key on its first line, so the key
+  # remembered is always the one for the block printed.
   running="" running_key=""
   if [ -n "$catalog_json" ]; then
     now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    running=$(printf '%s' "$catalog_json" | with_width python3 -m scripts.saved_observations home \
-      --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) || running=""
-    running_key=$(python3 -m scripts.saved_observations key --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) \
-      || running_key=""
+    output=$(printf '%s' "$catalog_json" | with_width python3 -m scripts.saved_observations home \
+      --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) || output=""
+    # Only a key line followed by a block is used; anything else leaves both out.
+    case "$output" in
+      key$'\t'*$'\n'?*)
+        running_key=${output%%$'\n'*}
+        running_key=${running_key#key$'\t'}
+        running=${output#*$'\n'}
+        ;;
+    esac
   fi
   status_key="$status_text"$'\n'"$running_key"
   [ -z "$running" ] || status_text+=$'\n\n'"$running"

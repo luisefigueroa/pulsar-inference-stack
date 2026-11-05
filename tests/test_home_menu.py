@@ -543,27 +543,24 @@ class RunningBlock(MenuHarness):
         self.assertNotIn("probe:", self.pulsar_log.read_text() if self.pulsar_log.exists() else "")
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
 
-    def test_the_block_and_its_key_take_their_ages_at_one_instant(self):
-        # Ten minutes and a few seconds old: the instant decides "last seen" for both.
+    def test_one_read_gives_the_block_and_its_key_at_one_instant(self):
+        # Ten minutes and a few seconds old: the instant decides "last seen".
         old = datetime.now(timezone.utc) - timedelta(minutes=10, seconds=2)
         self.saved_inventory.write_text(saved_inventory(f"{old:%Y-%m-%dT%H:%M:%SZ}"))
         log = self.root / "observations.log"
         result = self.run_home(["Exit"], OBSERVATIONS_LOG=str(log))
         self.assertEqual(result.returncode, 0, result.stderr)
+        # One call reads the records for both the block and its key.
         calls = [line.split() for line in log.read_text().splitlines()]
-        self.assertEqual([call[0] for call in calls], ["home", "key"])
-        instants = [call[call.index("--now") + 1] for call in calls]
-        self.assertEqual(instants[0], instants[1])
-        now = datetime.fromisoformat(instants[0].replace("Z", "+00:00"))
+        self.assertEqual([call[0] for call in calls], ["home"])
+        instant = calls[0][calls[0].index("--now") + 1]
+        now = datetime.fromisoformat(instant.replace("Z", "+00:00"))
         self.assertEqual(now.tzinfo, timezone.utc)
         stale = (now - old).total_seconds() > 600
-        # The key the block was compared by says what the block printed.
-        key = subprocess.run([sys.executable, "-m", "scripts.saved_observations", "key", "--now", instants[0],
-                              "--repo-root", str(self.root)], text=True, capture_output=True, timeout=60, cwd=ROOT,
-                             env={**os.environ, "PYTHONPATH": str(ROOT),
-                                  "PULSAR_SERVICE_INVENTORY_FILE": str(self.saved_inventory),
-                                  "PULSAR_STORAGE_BUDGET_FILE": str(self.saved_budget)}).stdout
-        self.assertEqual(key.split()[1], "last-seen" if stale else "fresh")
+        # The key line is the menu's own; the block it belongs to prints alone.
+        self.assertNotIn("key\t", result.stdout)
+        self.assertNotIn(old.strftime("%Y-%m-%dT%H:%M:%SZ"), result.stdout)
+        self.assertEqual(self.running_count(result.stdout), 1)
         text = " ".join(result.stdout.split())
         self.assertEqual("last seen running on fixture-remote" in text, stale, text)
 
