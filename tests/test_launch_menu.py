@@ -427,13 +427,17 @@ class LaunchMenu(unittest.TestCase):
 
     def test_what_the_menu_cannot_stop_is_named_above_the_choices(self):
         document = json.loads(catalog_tests.Catalog.blocking_inventory())
-        document["unmanaged_gpu_processes"] = [{"node": "worker", "pid": 4242, "process_name": "/usr/bin/python3",
-                                                "used_memory_mib": 12288}]
+        document["unmanaged_gpu_processes"] = [{"node": "worker", "pid": pid, "process_name": "/usr/bin/python3",
+                                                "used_memory_mib": 12288} for pid in (4242, 4343)]
         _, result, _, choices, _ = self.refused([{"blocker": "memory_insufficient"}], "Back", "Back", "Back",
                                                 inventory=json.dumps(document))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("On fixture-host: GPU process python3 (PID 4242) · 12 GiB · not started by Pulsar · read-only",
-                      " ".join(result.stdout.split()))
+        # The notes form one block after one blank line, each wrapped to the terminal.
+        block = result.stdout.split("\n\nOn fixture-host: ", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(" ".join(("On fixture-host: " + block).split()),
+                         "On fixture-host: GPU process python3 (PID 4242) · 12 GiB · not started by Pulsar · "
+                         "read-only On fixture-host: GPU process python3 (PID 4343) · 12 GiB · not started by "
+                         "Pulsar · read-only")
         self.assertEqual(self.lists(choices, self.REFUSED_LIST), [["Open Live service inventory", "Back"]])
 
     def test_ctrl_c_while_checking_running_services_leaves_the_menu(self):

@@ -362,7 +362,7 @@ start_choices() {
       "${live[@]}" "${again[@]}" || true)
     [ "${#kinds[@]}" -gt 0 ] || return 0
     HOLD_SCREEN=0
-    [ "${#notes[@]}" -eq 0 ] || printf '\n%s\n' "${notes[@]}" | python3 -m scripts.terminal_format --text
+    [ "${#notes[@]}" -eq 0 ] || { echo; printf '%s\n' "${notes[@]}"; } | python3 -m scripts.terminal_format --text
     choice=$(choose_index "$title" "${labels[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$choice" -lt "${#kinds[@]}" ] || return 0
     rc=0
