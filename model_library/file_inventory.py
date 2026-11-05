@@ -197,7 +197,8 @@ def purge_estimate(entry: dict, spec_id: str, nodes: list[dict]) -> dict:
             continue
         node = location["node_id"]
         references = location.get("container_references")
-        if any(binding.get("pinned") for binding in own):
+        # A pin the node could not confirm is a saved record only, so that node is unknown, not pinned.
+        if location.get("bindings_observed") and any(binding.get("pinned") for binding in own):
             found["pinned_on"].append(node)
         if references:
             found["in_use_on"].append(node)

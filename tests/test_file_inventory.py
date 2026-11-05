@@ -584,6 +584,10 @@ class PurgeEstimate(unittest.TestCase):
                                            "not known on alpha-1, alpha-3, which could not be fully checked.")
         only = self.entry(self.copy("1", container_references=None))
         self.assertIn("what it would free is not known on alpha-1", self.line(only))
+        # A pin from a saved record the node could not confirm makes the node unknown, as on the page.
+        saved = self.entry(self.copy("1", self.binding(pinned=True), pinned=True, bindings_observed=False))
+        self.assertEqual((self.estimate(saved)["pinned_on"], self.estimate(saved)["unknown_on"]), ([], ["1"]))
+        self.assertNotIn("blocked", self.line(saved))
 
     def test_a_missing_copy_frees_nothing_and_a_spec_without_copies_says_so(self):
         self.assertEqual(self.estimate(self.entry(self.copy("2", state="missing")))["bytes_by_node"], {})
