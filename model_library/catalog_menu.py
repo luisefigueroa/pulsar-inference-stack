@@ -23,7 +23,7 @@ import io
 import json
 import re
 import sys
-from typing import Any
+from typing import Any, NamedTuple
 
 from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text,
                       recipe_text)
@@ -498,7 +498,7 @@ def withdrawal_notice(row: dict) -> list[str]:
 RECLAIM = ("stop", "unpin", "purge", "remove")
 
 
-def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_fact: str | None = None,
+def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: RecipeFacts | None = None,
                short_name: str | None = None) -> str:
     """One recipe list entry that fits the menu: model [spec] state.
 
@@ -508,23 +508,28 @@ def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_f
     since the recipe frame repeats it. Gum's two-column cursor is the only
     text drawn before the label.
 
-    When the catalog has other recipes of the same model, DISTINGUISHING_FACT
-    (see distinguishing_facts) follows the spec and is never dropped: the
-    model name is cut first, then the saved state yields. SHORT_NAME is the
-    model name without its organization, given where no other model would
-    read the same; a cut name uses it. Names are cut in the middle and keep
-    their end, where recipes and models of one organization differ.
+    When the catalog has other recipes of the same model, RECIPE_FACTS (see
+    distinguishing_facts) follow the spec, and no fact is ever cut. As room
+    runs short the model name is cut, then the saved state yields, then facts
+    this recipe does not need to be told apart, then the spec prefix shortens
+    to 8; at last the facts stand alone. SHORT_NAME is the model name without
+    its organization, given where no other model would read the same; a cut
+    name uses it. Names are cut in the middle and keep their end, where
+    recipes and models of one organization differ.
     """
     seen = live_label(live)
     budget = max(32, min(100, width)) - 2
     model = clean(row["model_id"])
-    fact = clean(distinguishing_fact) if distinguishing_fact else None
     short = clean(short_name) if short_name else None
     review = (row.get("review") or {}).get("status")
     critical = (["withdrawn"] if review == "withdrawn" else [])
     if start_unsupported(row):
         critical.append("start unsupported")
     if critical:
+        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED)
+        rest = [files] + ([review] if review and review != "withdrawn" else [])
+        if recipe_facts:
+            return _critical_label_with_facts(critical, model, short, row["spec_id"], recipe_facts, rest, budget)
         warning = " · ".join(critical)
         identity = f" [{row['spec_id'][:12]}]"
         if len(warning + identity) > budget:
@@ -541,20 +546,8 @@ def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_f
         room = budget - len(heading) - 1
         if room < 4:
             return heading
-        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED)
-        rest = [files] + ([review] if review and review != "withdrawn" else [])
-        if fact:
-            # As below: the name is cut first, then the files state yields;
-            # where no name fits, the fact stands for it.
-            while True:
-                tail = " · " + " · ".join([fact, *rest])
-                if room - len(tail) >= min(MIN_NAME, len(model)) or not rest:
-                    break
-                rest.pop()
-            context = _fit_name(model, short, room - len(tail)) + tail if room - len(tail) >= 2 else fact
-        else:
-            tail = " · " + " · ".join(rest)
-            context = _fit_name(model, short, max(MIN_NAME, room - len(tail))) + tail
+        tail = " · " + " · ".join(rest)
+        context = _fit_name(model, short, max(MIN_NAME, room - len(tail))) + tail
         if len(context) > room:
             context = context[:room - 3] + "..."
         return heading + " " + context
@@ -562,12 +555,11 @@ def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_f
     if seen:
         parts.insert(0, seen)
     # Where the whole label fits (60 columns or wider), it also names the node
-    # count (unless a seen service or the distinguishing fact already does)
-    # and the spec's state, as models list does. State is metadata only.
+    # count (unless a seen service or a fact already does) and the spec's
+    # state, as models list does. State is metadata only.
     nodes = node_count(row["geometry"]["nodes"])
-    lead = [fact] if fact else []
-    named = seen or (fact and nodes in fact.split(" · "))
-    wider = lead + ([] if named else [nodes]) + parts
+    lead = recipe_facts.sets[0] if recipe_facts else []
+    wider = lead + ([] if seen or nodes in lead else [nodes]) + parts
     if row.get("state") and row["state"] not in parts:
         wider.append(str(row["state"]))
     identity = f" [{row['spec_id'][:12]}] "
@@ -576,25 +568,10 @@ def menu_label(row: dict, width: int, live: dict | None = None, distinguishing_f
         return text
     if seen and len(model) + len(identity + " · ".join(lead + parts)) > budget:
         parts.pop(1)
-    if fact:
-        # The model name is cut first, then the saved state yields from its
-        # end (the recipe frame repeats it); the fact stays.
-        while True:
-            suffix = identity + " · ".join([fact, *parts])
-            room = budget - len(suffix)
-            if room >= min(MIN_NAME, len(model)) or not parts:
-                break
-            parts.pop()
-        if room < min(5, len(model)):
-            # At the narrowest widths the fact outranks the copyable prefix,
-            # as a critical warning does.
-            identity = f" [{row['spec_id'][:8]}] "
-            suffix = identity + fact
-            room = budget - len(suffix)
-    else:
-        suffix = identity + " · ".join(parts)
-        room = max(MIN_NAME, budget - len(suffix))
-    text = _fit_name(model, short, room) + suffix
+    if recipe_facts:
+        return _label_with_facts(model, short, row["spec_id"], recipe_facts, parts, budget)
+    suffix = identity + " · ".join(parts)
+    text = _fit_name(model, short, max(MIN_NAME, budget - len(suffix))) + suffix
     return text if len(text) <= budget else text[:budget - 3] + "..."
 
 
@@ -608,6 +585,74 @@ def _fit_name(model: str, short: str | None, room: int) -> str:
     if len(model) <= room:
         return model
     return cut_middle(short or model, room)
+
+
+def _fact_layouts(facts: RecipeFacts, parts: list[str]):
+    """(facts, state parts) for a label, most first: the state yields from its
+    end, then the facts shorten as far as they still tell the recipe apart."""
+    for count in range(len(parts), -1, -1):
+        yield facts.sets[0], parts[:count]
+    for shorter in facts.sets[1:]:
+        yield shorter, []
+
+
+def _facts_alone(facts: RecipeFacts, spec_id: str, budget: int, lead: str = "") -> str:
+    """The last resort of a label with facts: LEAD and the shortest facts when
+    they tell the recipe apart and fit; otherwise the 8-character spec prefix
+    and the whole facts that fit."""
+    told = " · ".join(facts.sets[-1])
+    if facts.unique:
+        for text in ((f"{lead} · {told}" if lead else ""), told):
+            if text and len(text) <= budget:
+                return text
+    text = f"[{spec_id[:8]}]"
+    for fact in facts.sets[-1]:
+        if len(text) + len(fact) + 3 > budget:
+            break
+        text += (" " if text.endswith("]") else " · ") + fact
+    return text
+
+
+def _label_with_facts(model: str, short: str | None, spec_id: str, facts: RecipeFacts, parts: list[str],
+                      budget: int) -> str:
+    """model [spec] facts · state, giving way in the order menu_label describes."""
+    for prefix, layouts in ((12, list(_fact_layouts(facts, parts))), (8, [(facts.sets[-1], [])])):
+        for told, shown in layouts:
+            suffix = f" [{spec_id[:prefix]}] " + " · ".join(told + shown)
+            room = budget - len(suffix)
+            if room >= min(MIN_NAME, len(model)):
+                return _fit_name(model, short, room) + suffix
+    # The model name gives way, then the spec prefix.
+    suffix = f"[{spec_id[:8]}] " + " · ".join(facts.sets[-1])
+    if budget - len(suffix) - 1 >= min(5, len(model)):
+        return _fit_name(model, short, budget - len(suffix) - 1) + " " + suffix
+    if len(suffix) <= budget:
+        return suffix
+    return _facts_alone(facts, spec_id, budget)
+
+
+def _critical_label_with_facts(critical: list[str], model: str, short: str | None, spec_id: str,
+                               facts: RecipeFacts, rest: list[str], budget: int) -> str:
+    """warning [spec] model · facts · state: the warning keeps its priority,
+    the facts are placed before anything else gives way and are never cut."""
+    joined = " · ".join(critical)
+    blocked = joined.replace("start unsupported", "start blocked")
+    for warning, prefix in ((joined, 12), (blocked, 12), (blocked, 8), (critical[0], 8)):
+        heading = f"{warning} [{spec_id[:prefix]}] "
+        room = budget - len(heading)
+        if room < 0:
+            continue
+        for told, shown in _fact_layouts(facts, rest):
+            tail = " · " + " · ".join(told + shown)
+            if room - len(tail) >= min(MIN_NAME, len(model)):
+                return heading + _fit_name(model, short, room - len(tail)) + tail
+        # The model name gives way.
+        tail = " · " + " · ".join(facts.sets[-1])
+        if room - len(tail) >= min(5, len(model)):
+            return heading + _fit_name(model, short, room - len(tail)) + tail
+        if len(tail) - 3 <= room:
+            return heading + tail[3:]
+    return _facts_alone(facts, spec_id, budget, "withdrawn" if "withdrawn" in critical else "start blocked")
 
 
 def node_count(nodes: object) -> str:
@@ -651,20 +696,37 @@ def _recipe_facts(row: dict) -> list[tuple[object, str, str]]:
     return facts
 
 
-def distinguishing_facts(rows: list[dict]) -> dict[str, str]:
+class RecipeFacts(NamedTuple):
+    """What tells one recipe apart from others of its model.
+
+    sets runs from fullest to shortest: the first names every fact that told
+    the model's recipes apart, and each next one leaves out one more fact
+    while the facts it keeps still tell this recipe apart from every other.
+    unique says whether those facts tell it apart at all; recipes that differ
+    in none of them are told apart by spec ID only.
+    """
+    sets: list[list[str]]
+    unique: bool
+
+    def words(self) -> str:
+        return " · ".join(self.sets[0])
+
+
+def distinguishing_facts(rows: list[dict]) -> dict[str, RecipeFacts]:
     """For recipes that share a model, the facts that tell each one apart, by spec ID.
 
     Facts are tried in order: node count, context (--max-model-len), max
     sequences (--max-num-seqs), quantization, then a short image digest. A
-    fact is named when it differs between recipes not yet told apart. A model
-    with one recipe gets no entry, nor do recipes that differ in none of these
-    facts; their spec IDs still differ.
+    fact is named when it differs between recipes not yet told apart. A
+    shorter set leaves out facts earliest first, and only where the facts it
+    keeps still differ from every other recipe of the model. A model with one
+    recipe gets no entry, nor do recipes that differ in none of these facts.
     """
     groups: dict[str, list[dict]] = {}
     for row in rows:
         if row.get("model_id"):
             groups.setdefault(row["model_id"], []).append(row)
-    found: dict[str, str] = {}
+    found: dict[str, RecipeFacts] = {}
     for group in groups.values():
         if len(group) < 2:
             continue
@@ -683,16 +745,27 @@ def distinguishing_facts(rows: list[dict]) -> dict[str, str]:
             if len(split) > len(ties):
                 named.append(position)
                 ties = split
+        if not named:
+            continue
+        # Short words that would read the same for different values (1M for
+        # 1000000 and 1048576) give way to the exact ones.
+        exact = {position: len({fact[position][1] for fact in facts}) < len({fact[position][0] for fact in facts})
+                 for position in named}
+
+        def apart(index: int, kept: list[int]) -> bool:
+            return all(any(facts[index][p][0] != facts[other][p][0] for p in kept)
+                       for other in range(len(group)) if other != index)
+
         for index, row in enumerate(group):
-            words = []
-            for position in named:
-                # Short words that would read the same for different values
-                # (1M for 1000000 and 1048576) give way to the exact ones.
-                shorts = {fact[position][1] for fact in facts}
-                exact = len(shorts) < len({fact[position][0] for fact in facts})
-                words.append(facts[index][position][2 if exact else 1])
-            if words:
-                found[row["spec_id"]] = " · ".join(words)
+            words = {position: facts[index][position][2 if exact[position] else 1] for position in named}
+            unique = apart(index, named)
+            kept, sets = list(named), [[words[position] for position in named]]
+            for position in named if unique else []:
+                trial = [other for other in kept if other != position]
+                if trial and apart(index, trial):
+                    kept = trial
+                    sets.append([words[other] for other in kept])
+            found[row["spec_id"]] = RecipeFacts(sets, unique)
     return found
 
 
@@ -1631,7 +1704,8 @@ def main(argv: list[str] | None = None) -> int:
                             service_outcomes(args.service_outcome, names=names).get(row["spec_id"]))
         # Start names what tells this recipe apart when the document on stdin
         # is the whole catalog; one recipe's document has nothing to compare.
-        fact = distinguishing_facts(entries).get(row["spec_id"]) if args.action in ("start", "start-memory") else None
+        told = distinguishing_facts(entries).get(row["spec_id"]) if args.action in ("start", "start-memory") else None
+        fact = told.words() if told else None
         print(clean(question(args.action, row, plan=plan, snapshot=args.snapshot, node=args.node, names=names,
                              live=service, distinguishing_fact=fact)))
         return 0

@@ -3,6 +3,7 @@ import copy
 from datetime import datetime, timezone
 import io
 import json
+import re
 import sys
 from pathlib import Path
 import unittest
@@ -742,6 +743,15 @@ def recipe(spec_byte, context="500000", nodes=3, model=LONG_MODEL, digest="sha25
                    engine_args=["--max-model-len", context, "--max-num-seqs", "1"], **fields)
 
 
+def told_apart(rows):
+    """Each recipe's fullest distinguishing facts, as words."""
+    return {spec: facts.words() for spec, facts in menu.distinguishing_facts(rows).items()}
+
+
+def told(*sets, unique=True):
+    return menu.RecipeFacts([list(words) for words in sets], unique)
+
+
 class RecipesOfOneModel(unittest.TestCase):
     def test_short_count_uses_k_and_m_only_for_round_values(self):
         for value, expected in ((1048576, "1M"), ("500000", "500K"), ("131072", "128K"), ("1000000", "1M"),
@@ -752,30 +762,30 @@ class RecipesOfOneModel(unittest.TestCase):
 
     def test_the_first_setting_that_differs_tells_recipes_apart(self):
         rows = [recipe("aa", "500000"), recipe("bb", "1048576"), checked(spec_id="cc" * 32, model_id="org/other")]
-        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "context 500K", "bb" * 32: "context 1M"})
+        self.assertEqual(told_apart(rows), {"aa" * 32: "context 500K", "bb" * 32: "context 1M"})
         # Node count comes first; a recipe without the flag says so rather than guessing a default.
         nodes = [recipe("aa", nodes=2), recipe("bb", nodes=1, context="1048576")]
-        self.assertEqual(menu.distinguishing_facts(nodes), {"aa" * 32: "2 nodes", "bb" * 32: "1 node"})
+        self.assertEqual(told_apart(nodes), {"aa" * 32: "2 nodes", "bb" * 32: "1 node"})
         unset = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-num-seqs", "1"])]
-        self.assertEqual(menu.distinguishing_facts(unset)["bb" * 32], "context not set")
+        self.assertEqual(told_apart(unset)["bb" * 32], "context not set")
         unrecorded = [recipe("aa"), {key: value for key, value in recipe("bb").items() if key != "engine_args"}]
-        self.assertEqual(menu.distinguishing_facts(unrecorded)["bb" * 32], "context not recorded")
+        self.assertEqual(told_apart(unrecorded)["bb" * 32], "context not recorded")
         sequences = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-model-len", "500000", "--max-num-seqs=8"])]
-        self.assertEqual(menu.distinguishing_facts(sequences)["bb" * 32], "max sequences 8")
+        self.assertEqual(told_apart(sequences)["bb" * 32], "max sequences 8")
         quantized = [recipe("aa"), dict(recipe("bb"), engine_args=[*recipe("bb")["engine_args"], "--quantization", "fp8"])]
-        self.assertEqual(menu.distinguishing_facts(quantized)["bb" * 32], "quantization fp8")
+        self.assertEqual(told_apart(quantized)["bb" * 32], "quantization fp8")
         # Otherwise the image; recipes that differ in none of these keep their spec IDs only.
         images = [recipe("aa"), recipe("bb", digest="sha256:" + "0123456789ab" + "c" * 52)]
-        self.assertEqual(menu.distinguishing_facts(images)["bb" * 32], "image 0123456789ab")
-        self.assertEqual(menu.distinguishing_facts([recipe("aa"), recipe("bb")]), {})
+        self.assertEqual(told_apart(images)["bb" * 32], "image 0123456789ab")
+        self.assertEqual(told_apart([recipe("aa"), recipe("bb")]), {})
 
     def test_short_words_that_read_alike_give_way_to_the_recorded_values(self):
         rows = [recipe("aa", "1000000"), recipe("bb", "1048576")]
-        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "context 1000000", "bb" * 32: "context 1048576"})
+        self.assertEqual(told_apart(rows), {"aa" * 32: "context 1000000", "bb" * 32: "context 1048576"})
 
     def test_a_second_fact_is_added_only_where_the_first_leaves_recipes_alike(self):
         rows = [recipe("aa", "500000", nodes=2), recipe("bb", "1048576", nodes=2), recipe("cc", "1048576", nodes=1)]
-        self.assertEqual(menu.distinguishing_facts(rows), {"aa" * 32: "2 nodes · context 500K",
+        self.assertEqual(told_apart(rows), {"aa" * 32: "2 nodes · context 500K",
                                                            "bb" * 32: "2 nodes · context 1M",
                                                            "cc" * 32: "1 node · context 1M"})
 
@@ -799,24 +809,25 @@ class RecipesOfOneModel(unittest.TestCase):
                     if width >= 60:
                         self.assertIn(f"[{label.split('[')[1][:12]}]", label)
                         self.assertIn("files prepared", label)
-        self.assertEqual(menu.menu_label(rows[0], 80, None, "context 500K", "DeepSeek-V4.1-Flash-1017"),
+        self.assertEqual(menu.menu_label(rows[0], 80, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017"),
                          "DeepSeek-V4.1-Flash-1017 [aaaaaaaaaaaa] context 500K · files prepared")
-        self.assertEqual(menu.menu_label(rows[1], 60, None, "context 1M", "DeepSeek-V4.1-Flash-1017"),
+        self.assertEqual(menu.menu_label(rows[1], 60, None, told(["context 1M"]), "DeepSeek-V4.1-Flash-1017"),
                          "DeepSee…sh-1017 [bbbbbbbbbbbb] context 1M · files prepared")
         # At 44 columns the saved state yields; the recipe frame repeats it.
-        self.assertEqual(menu.menu_label(rows[0], 44, None, "context 500K", "DeepSeek-V4.1-Flash-1017"),
+        self.assertEqual(menu.menu_label(rows[0], 44, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017"),
                          "DeepSe…sh-1017 [aaaaaaaaaaaa] context 500K")
 
     def test_a_node_count_fact_is_named_once(self):
         two = recipe("aa", nodes=2, model="org/model")
-        self.assertEqual(menu.menu_label(two, 80, None, "2 nodes"), "org/model [aaaaaaaaaaaa] 2 nodes · files prepared")
-        self.assertEqual(menu.menu_label(two, 44, None, "2 nodes"), "org/model [aaaaaaaaaaaa] 2 nodes")
+        self.assertEqual(menu.menu_label(two, 80, None, told(["2 nodes"])),
+                         "org/model [aaaaaaaaaaaa] 2 nodes · files prepared")
+        self.assertEqual(menu.menu_label(two, 44, None, told(["2 nodes"])), "org/model [aaaaaaaaaaaa] 2 nodes")
 
     def test_seen_services_and_critical_warnings_keep_the_fact(self):
         state = recipe("aa", **GUARDED, review={"status": "withdrawn"})
         for width in (80, 60):
             with self.subTest(width=width):
-                label = menu.menu_label(state, width, None, "context 500K", "DeepSeek-V4.1-Flash-1017")
+                label = menu.menu_label(state, width, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017")
                 self.assertLessEqual(len(label), width - 2)
                 self.assertIn("withdrawn", label)
                 self.assertIn("context 500K", label)
@@ -860,6 +871,69 @@ class RecipesOfOneModel(unittest.TestCase):
         self.assertIn(f"retry Start for {LONG_MODEL} (context 1M) on", ask(rows, "start-memory"))
         # One recipe's document has nothing to compare.
         self.assertIn(f"Start {LONG_MODEL} on", ask(rows[1:]))
+
+    # Review of PR 97: at narrow widths a group needing several facts must not
+    # lose the one that separates two recipes, and no fact is ever cut.
+    @staticmethod
+    def four(last):
+        """Four recipes told apart by node count, context and max sequences."""
+        rows = []
+        for byte, (nodes, context, sequences) in zip(("aa", "bb", "cc", "dd"), (
+                (2, "500000", "1"), (2, "500000", "8"), (2, "1048576", "1"), last)):
+            rows.append(dict(recipe(byte, context, nodes=nodes),
+                             engine_args=["--max-model-len", context, "--max-num-seqs", sequences]))
+        return rows
+
+    def assert_told_apart(self, rows, widths):
+        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
+        words = {fact for told in facts.values() for fact in told.sets[0]}
+        for width in widths:
+            labels = [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
+                      for item in rows]
+            with self.subTest(width=width, labels=labels):
+                self.assertEqual(len(set(labels)), len(labels))
+                for label in labels:
+                    self.assertLessEqual(len(label), width - 2)
+                    self.assertNotIn("...", label)
+                    # Only the model name is ever cut; the facts are whole.
+                    for part in re.split(r"\] | · | \[", label):
+                        head, cut, tail = part.partition("…")
+                        if cut:
+                            self.assertTrue(LONG_MODEL.endswith(tail) and head in LONG_MODEL, part)
+                    self.assertTrue(any(fact in label for fact in words), label)
+        return facts
+
+    def test_shorter_fact_sets_keep_only_facts_that_still_tell_a_recipe_apart(self):
+        facts = menu.distinguishing_facts(self.four((1, "500000", "1")))
+        self.assertEqual(facts["aa" * 32].sets, [["2 nodes", "context 500K", "max sequences 1"]])
+        self.assertEqual(facts["bb" * 32].sets, [["2 nodes", "context 500K", "max sequences 8"],
+                                                 ["context 500K", "max sequences 8"], ["max sequences 8"]])
+        self.assertTrue(all(told.unique for told in facts.values()))
+        # Recipes alike in every fact are not unique, and keep their fullest facts only.
+        alike = menu.distinguishing_facts([recipe("aa", nodes=2), recipe("bb", nodes=2), recipe("cc", nodes=1)])
+        self.assertEqual(alike["aa" * 32], menu.RecipeFacts([["2 nodes"]], False))
+        self.assertTrue(alike["cc" * 32].unique)
+
+    def test_four_recipes_differ_and_fit_at_44_and_32_columns(self):
+        for last in ((1, "1048576", "8"), (1, "500000", "1")):
+            with self.subTest(last=last):
+                self.assert_told_apart(self.four(last), (80, 60, 44, 32))
+        rows = self.four((1, "1048576", "8"))
+        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
+        labels = {width: [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
+                          for item in rows] for width in (44, 32)}
+        self.assertEqual(labels[44][:2], ["[aaaaaaaa] context 500K · max sequences 1",
+                                          "[bbbbbbbb] context 500K · max sequences 8"])
+        self.assertEqual(labels[32][:2], ["context 500K · max sequences 1", "context 500K · max sequences 8"])
+
+    def test_guarded_recipes_of_one_model_differ_at_32_columns(self):
+        rows = [recipe("aa", "500000", **GUARDED), recipe("bb", "1048576", **GUARDED)]
+        self.assert_told_apart(rows, (80, 60, 44, 32))
+        facts = menu.distinguishing_facts(rows)
+        self.assertEqual([menu.menu_label(item, 32, None, facts[item["spec_id"]]) for item in rows],
+                         ["start blocked · context 500K", "start blocked · context 1M"])
+        withdrawn = [dict(item, review={"status": "withdrawn"}) for item in rows]
+        self.assert_told_apart(withdrawn, (80, 60, 44, 32))
 
 
 LIVE_NOW = datetime(2026, 9, 5, 0, 10, tzinfo=timezone.utc)
@@ -1032,11 +1106,11 @@ class SessionServices(unittest.TestCase):
         withdrawn = checked(home=HOME, local_state="ready", review={"status": "withdrawn"})
         self.assertIn("running on 3 nodes", menu.menu_label(withdrawn, 80, fact))
         # A recipe told apart from others of its model keeps that fact first.
-        self.assertEqual(menu.menu_label(state, 80, fact, "context 1M"),
+        self.assertEqual(menu.menu_label(state, 80, fact, told(["context 1M"])),
                          "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] context 1M · running on 3 nodes")
         for width in (32, 44, 60):
             with self.subTest(width=width):
-                label = menu.menu_label(state, width, fact, "context 1M", "GLM-5.3-Flash-NVFP4")
+                label = menu.menu_label(state, width, fact, told(["context 1M"]), "GLM-5.3-Flash-NVFP4")
                 self.assertLessEqual(len(label), width - 2)
                 self.assertIn("context 1M", label)
 

@@ -1083,10 +1083,13 @@ as `models list` does. State is metadata, never a gate. When the catalog has
 several recipes of one model, each of their labels names, after the spec, the
 first recorded fact that differs: the node count (`2 nodes`), the context
 (`context 1M` for `--max-model-len 1048576`, `context 500K`), `max sequences`,
-`quantization`, or else a short image digest. That fact is never left out: the
-model name is cut first, without its organization where no other model reads
-the same and then in the middle so its end stays, and on a narrow terminal the
-saved state yields. The Start question names the same fact after the model,
+`quantization`, or else a short image digest; where that leaves recipes alike,
+the next fact that differs is added. No fact is ever cut, and no two recipes of
+one model show the same label. As the terminal narrows, the model name is cut
+first, without its organization where no other model reads the same and then in
+the middle so its end stays; then the saved state yields; then facts the recipe
+does not need to be told apart from the others; then the spec prefix shortens
+to 8 characters; at the narrowest, the facts stand alone. The Start question names the same fact after the model,
 such as "Start deepseek-ai/DeepSeek-V4.1-Flash-1017 (context 1M) on …?", except
 a node count, since it already names the nodes. Any other model name that does
 not fit is cut the same way. The list keeps catalog order. Storage mutations run the
