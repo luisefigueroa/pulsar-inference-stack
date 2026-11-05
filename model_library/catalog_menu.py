@@ -512,7 +512,9 @@ def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: Re
     distinguishing_facts) follow the spec, and no fact is ever cut. As room
     runs short the model name is cut, then the saved state yields, then facts
     this recipe does not need to be told apart, then the spec prefix shortens
-    to 8; at last the facts stand alone. SHORT_NAME is the model name without
+    to 8, then the model name goes and the facts that do not fit whole. A
+    label always keeps at least the 8-character spec prefix, after any
+    critical warning. SHORT_NAME is the model name without
     its organization, given where no other model would read the same; a cut
     name uses it. Names are cut in the middle and keep their end, where
     recipes and models of one organization differ.
@@ -596,21 +598,21 @@ def _fact_layouts(facts: RecipeFacts, parts: list[str]):
         yield shorter, []
 
 
-def _facts_alone(facts: RecipeFacts, spec_id: str, budget: int, lead: str = "") -> str:
-    """The last resort of a label with facts: LEAD and the shortest facts when
-    they tell the recipe apart and fit; otherwise the 8-character spec prefix
-    and the whole facts that fit."""
-    told = " · ".join(facts.sets[-1])
-    if facts.unique:
-        for text in ((f"{lead} · {told}" if lead else ""), told):
-            if text and len(text) <= budget:
-                return text
-    text = f"[{spec_id[:8]}]"
-    for fact in facts.sets[-1]:
-        if len(text) + len(fact) + 3 > budget:
-            break
-        text += (" " if text.endswith("]") else " · ") + fact
-    return text
+def _lead_and_facts(lead: str, facts: RecipeFacts, budget: int) -> str:
+    """LEAD (a spec prefix, after any warning) and the fullest fact set that
+    fits whole; else the whole facts of the shortest set that fit, the later
+    ones first since they separate the closest recipes; else LEAD alone. A
+    label never loses its identity, and a fact is never cut."""
+    for told in facts.sets:
+        text = f"{lead} " + " · ".join(told)
+        if len(text) <= budget:
+            return text
+    room, kept = budget - len(lead) - 1, []
+    for fact in reversed(facts.sets[-1]):
+        if len(fact) + 3 * bool(kept) <= room:
+            kept.insert(0, fact)
+            room -= len(fact) + 3 * (len(kept) > 1)
+    return f"{lead} " + " · ".join(kept) if kept else lead
 
 
 def _label_with_facts(model: str, short: str | None, spec_id: str, facts: RecipeFacts, parts: list[str],
@@ -622,19 +624,17 @@ def _label_with_facts(model: str, short: str | None, spec_id: str, facts: Recipe
             room = budget - len(suffix)
             if room >= min(MIN_NAME, len(model)):
                 return _fit_name(model, short, room) + suffix
-    # The model name gives way, then the spec prefix.
-    suffix = f"[{spec_id[:8]}] " + " · ".join(facts.sets[-1])
-    if budget - len(suffix) - 1 >= min(5, len(model)):
-        return _fit_name(model, short, budget - len(suffix) - 1) + " " + suffix
-    if len(suffix) <= budget:
-        return suffix
-    return _facts_alone(facts, spec_id, budget)
+    # The model name gives way; the 8-character spec prefix always stays.
+    suffix = f" [{spec_id[:8]}] " + " · ".join(facts.sets[-1])
+    if budget - len(suffix) >= min(5, len(model)):
+        return _fit_name(model, short, budget - len(suffix)) + suffix
+    return _lead_and_facts(f"[{spec_id[:8]}]", facts, budget)
 
 
 def _critical_label_with_facts(critical: list[str], model: str, short: str | None, spec_id: str,
                                facts: RecipeFacts, rest: list[str], budget: int) -> str:
-    """warning [spec] model · facts · state: the warning keeps its priority,
-    the facts are placed before anything else gives way and are never cut."""
+    """warning [spec] model · facts · state. The warning and at least the
+    8-character spec prefix are placed first; facts take what is left."""
     joined = " · ".join(critical)
     blocked = joined.replace("start unsupported", "start blocked")
     for warning, prefix in ((joined, 12), (blocked, 12), (blocked, 8), (critical[0], 8)):
@@ -652,7 +652,11 @@ def _critical_label_with_facts(critical: list[str], model: str, short: str | Non
             return heading + _fit_name(model, short, room - len(tail)) + tail
         if len(tail) - 3 <= room:
             return heading + tail[3:]
-    return _facts_alone(facts, spec_id, budget, "withdrawn" if "withdrawn" in critical else "start blocked")
+    # Lead with the blocker: the shortest warning that keeps every critical
+    # word, else the first, and the spec prefix; facts take what is left.
+    leads = [f"{warning} [{spec_id[:8]}]" for warning in (blocked, critical[0])]
+    lead = next((text for text in leads if len(text) <= budget), leads[-1])
+    return _lead_and_facts(lead, facts, budget)
 
 
 def node_count(nodes: object) -> str:
@@ -703,7 +707,7 @@ class RecipeFacts(NamedTuple):
     the model's recipes apart, and each next one leaves out one more fact
     while the facts it keeps still tell this recipe apart from every other.
     unique says whether those facts tell it apart at all; recipes that differ
-    in none of them are told apart by spec ID only.
+    in none of them keep their fullest facts and are told apart by spec ID.
     """
     sets: list[list[str]]
     unique: bool

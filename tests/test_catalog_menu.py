@@ -884,24 +884,26 @@ class RecipesOfOneModel(unittest.TestCase):
                              engine_args=["--max-model-len", context, "--max-num-seqs", sequences]))
         return rows
 
-    def assert_told_apart(self, rows, widths):
+    def labels(self, rows, width):
         facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
-        words = {fact for told in facts.values() for fact in told.sets[0]}
+        return [menu.menu_label(item, width, None, facts[item["spec_id"]], short.get(item["spec_id"]))
+                for item in rows]
+
+    def assert_told_apart(self, rows, widths):
         for width in widths:
-            labels = [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
-                      for item in rows]
+            labels = self.labels(rows, width)
             with self.subTest(width=width, labels=labels):
                 self.assertEqual(len(set(labels)), len(labels))
-                for label in labels:
+                for item, label in zip(rows, labels):
                     self.assertLessEqual(len(label), width - 2)
                     self.assertNotIn("...", label)
+                    # Every label keeps its identity: at least the 8-character spec prefix.
+                    self.assertIn(f"[{item['spec_id'][:8]}", label)
                     # Only the model name is ever cut; the facts are whole.
                     for part in re.split(r"\] | · | \[", label):
                         head, cut, tail = part.partition("…")
                         if cut:
-                            self.assertTrue(LONG_MODEL.endswith(tail) and head in LONG_MODEL, part)
-                    self.assertTrue(any(fact in label for fact in words), label)
-        return facts
+                            self.assertTrue(item["model_id"].endswith(tail) and head in item["model_id"], part)
 
     def test_shorter_fact_sets_keep_only_facts_that_still_tell_a_recipe_apart(self):
         facts = menu.distinguishing_facts(self.four((1, "500000", "1")))
@@ -919,19 +921,34 @@ class RecipesOfOneModel(unittest.TestCase):
             with self.subTest(last=last):
                 self.assert_told_apart(self.four(last), (80, 60, 44, 32))
         rows = self.four((1, "1048576", "8"))
-        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
-        labels = {width: [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
-                          for item in rows] for width in (44, 32)}
-        self.assertEqual(labels[44][:2], ["[aaaaaaaa] context 500K · max sequences 1",
-                                          "[bbbbbbbb] context 500K · max sequences 8"])
-        self.assertEqual(labels[32][:2], ["context 500K · max sequences 1", "context 500K · max sequences 8"])
+        self.assertEqual(self.labels(rows, 44)[:2], ["[aaaaaaaa] context 500K · max sequences 1",
+                                                     "[bbbbbbbb] context 500K · max sequences 8"])
+        # Where a whole set does not fit, the later facts, which separate the
+        # closest recipes, come first.
+        self.assertEqual(self.labels(rows, 32)[:2], ["[aaaaaaaa] max sequences 1", "[bbbbbbbb] max sequences 8"])
+
+    # Second review of PR 97: facts alone could read the same for two models,
+    # and a warning could give way to facts.
+    def test_two_models_with_alike_recipes_keep_their_spec_prefixes(self):
+        first = self.four((1, "1048576", "8"))
+        second = [dict(item, spec_id=byte * 32, model_id="other-org/Other-Model-7B")
+                  for item, byte in zip(self.four((1, "1048576", "8")), ("ee", "ff", "11", "22"))]
+        self.assert_told_apart(first + second, (80, 60, 44, 32))
+        self.assertEqual(self.labels(first + second, 32)[4], "[eeeeeeee] max sequences 1")
+
+    def test_a_withdrawn_recipe_keeps_its_warning_and_prefix(self):
+        rows = self.four((1, "1048576", "8"))
+        rows[0] = dict(rows[0], review={"status": "withdrawn"})
+        self.assert_told_apart(rows, (80, 60, 44, 32))
+        self.assertEqual(self.labels(rows, 44)[0], "withdrawn [aaaaaaaa] max sequences 1")
+        self.assertEqual(self.labels(rows, 32)[0], "withdrawn [aaaaaaaa]")
 
     def test_guarded_recipes_of_one_model_differ_at_32_columns(self):
         rows = [recipe("aa", "500000", **GUARDED), recipe("bb", "1048576", **GUARDED)]
         self.assert_told_apart(rows, (80, 60, 44, 32))
-        facts = menu.distinguishing_facts(rows)
-        self.assertEqual([menu.menu_label(item, 32, None, facts[item["spec_id"]]) for item in rows],
-                         ["start blocked · context 500K", "start blocked · context 1M"])
+        self.assertEqual(self.labels(rows, 44), ["start blocked [aaaaaaaaaaaa] context 500K",
+                                                 "start blocked [bbbbbbbbbbbb] context 1M"])
+        self.assertEqual(self.labels(rows, 32), ["start blocked [aaaaaaaa]", "start blocked [bbbbbbbb]"])
         withdrawn = [dict(item, review={"status": "withdrawn"}) for item in rows]
         self.assert_told_apart(withdrawn, (80, 60, 44, 32))
 
