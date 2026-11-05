@@ -567,8 +567,16 @@ class PurgeEstimate(unittest.TestCase):
                                      pinned=True, shared=True))
         self.assertEqual(self.estimate(other)["pinned_on"], [])
 
+    @staticmethod
+    def service(spec=None, managed=True):
+        """A container that mounts the files: a Pulsar service for SPEC, or one Pulsar did not start."""
+        labels = {"io.pulsar.gb10.managed": "true"} if managed else {"org.example": "x"}
+        if spec:
+            labels["io.pulsar.gb10.selected-spec-id"] = spec
+        return {"id": "c", "running": True, "mounts": ["/fixture"], "labels": labels}
+
     def test_a_mounted_home_this_spec_uses_blocks_purge_and_frees_nothing(self):
-        entry = self.entry(self.copy("1", kind="home", container_references=[{"id": "c"}]),
+        entry = self.entry(self.copy("1", kind="home", container_references=[self.service(self.SPEC)]),
                            self.copy("2", self.binding(pinned=True), pinned=True))
         estimate = self.estimate(entry)
         self.assertEqual((estimate["in_use_on"], estimate["pinned_on"], estimate["bytes_by_node"]), (["1"], ["2"], {}))
@@ -588,6 +596,35 @@ class PurgeEstimate(unittest.TestCase):
         saved = self.entry(self.copy("1", self.binding(pinned=True), pinned=True, bindings_observed=False))
         self.assertEqual((self.estimate(saved)["pinned_on"], self.estimate(saved)["unknown_on"]), ([], ["1"]))
         self.assertNotIn("blocked", self.line(saved))
+
+    def test_the_remedy_names_who_started_the_mounting_container(self):
+        def line(container, catalog=None):
+            return purge_line(self.entry(self.copy("1", container_references=[container])), self.SPEC,
+                              self.nodes(), catalog)
+        blocked = "Purge via [111111111111] is blocked: in use on alpha-1. "
+        self.assertEqual(line(self.service(self.SPEC)), blocked + "Choose Stop first.")
+        self.assertEqual(line(self.service(self.OTHER), {self.OTHER: "fixture/Other"}),
+                         blocked + "Stop fixture/Other first, from its own recipe or Live service inventory.")
+        self.assertEqual(line(self.service("3" * 64)), blocked + "Stop it from Live service inventory first.")
+        self.assertEqual(line(self.service(managed=False)),
+                         blocked + "A container Pulsar did not start mounts the files; remove it outside Pulsar first.")
+        # A pin adds Unpin after the container's own remedy.
+        entry = self.entry(self.copy("1", self.binding(pinned=True), pinned=True,
+                                     container_references=[self.service(managed=False)]))
+        self.assertTrue(purge_line(entry, self.SPEC, self.nodes()).endswith(
+            "remove it outside Pulsar first, then Unpin prepared copies."))
+
+    def test_a_confirmed_node_that_could_not_be_read_makes_the_figure_a_minimum(self):
+        entry = self.entry(self.copy("2"))
+        for broken in ({"status": "unknown", "error": "node unavailable"}, {"container_error": "docker failed"}):
+            nodes = [Page.node("1", **broken), Page.node("2")]
+            estimate = purge_estimate(entry, self.SPEC, nodes)
+            self.assertEqual((estimate["unknown_on"], estimate["bytes_by_node"]), (["1"], {"2": 102 * self.G}))
+            self.assertEqual(purge_line(entry, self.SPEC, nodes),
+                             "Purge via [111111111111] would free at least 102 GiB on alpha-2; not known on "
+                             "alpha-1, which could not be fully checked.")
+        document = Page.document([Page.node("1", status="unknown", error="node unavailable"), Page.node("2")], [entry])
+        self.assertNotIn("frees", self.run_main(document, "choices"))
 
     def test_a_missing_copy_frees_nothing_and_a_spec_without_copies_says_so(self):
         self.assertEqual(self.estimate(self.entry(self.copy("2", state="missing")))["bytes_by_node"], {})

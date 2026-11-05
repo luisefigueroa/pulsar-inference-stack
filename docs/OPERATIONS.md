@@ -903,8 +903,11 @@ storage is not scanned by this overview and is never a cleanup target.
 Close the page, then choose a snapshot for its paths and cleanup. That page
 says, for each spec that can clean it up, what its Purge would free: the listed
 size of the copies it deletes, leaving out shared copies and the home; or that
-Purge is blocked, with **Stop** or **Unpin prepared copies** to clear it; or that
-the figure is a minimum because a node could not be fully checked. The snapshot
+Purge is blocked, with what clears it: **Stop** for this spec's own service,
+stopping another service from its own recipe or **Live service inventory**,
+removing a container Pulsar did not start outside Pulsar, or **Unpin prepared
+copies**; or that the figure is a minimum because a confirmed node, or its
+records or containers, could not be fully checked. The snapshot
 choice adds `frees N GiB` when one spec can clean it up and the figure is
 complete. Purge's own preview rechecks every node before anything is deleted. A registered
 snapshot with one catalog spec opens that spec's existing **Stop**, **Unpin

@@ -211,6 +211,10 @@ def purge_estimate(entry: dict, spec_id: str, nodes: list[dict]) -> dict:
             previous = found["bytes_by_node"].get(node, 0)
             found["bytes_by_node"][node] = (previous + size if type(size) is int and previous is not None
                                             else None)
+    # Purge refuses until every confirmed node reports its records and containers, so a node that
+    # could not be read leaves the figure a minimum even when no saved record names it.
+    found["unknown_on"] += [node["node_id"] for node in nodes if node.get("status") != "observed"
+                            or node.get("error") or node.get("container_error")]
     def ordered(values):
         return sorted(dict.fromkeys(values), key=lambda node: order.index(node) if node in order else len(order))
     for key in ("pinned_on", "in_use_on", "unknown_on"):
@@ -227,22 +231,51 @@ def _freed(estimate: dict) -> int | None:
     return sum(values) if all(type(value) is int for value in values) else None
 
 
-def purge_line(entry: dict, spec_id: str, nodes: list[dict]) -> str:
-    """One sentence on what Purge through SPEC_ID would free from this snapshot, or why it would not run."""
+def _mount_fixes(entry: dict, spec_id: str, catalog: dict[str, str]) -> list[str]:
+    """What clears each container that mounts this spec's files, by who started it, as the purge
+    plan's blocker details tell them apart. CATALOG maps catalog spec IDs to model IDs."""
+    from .planning import CONF_LABEL, MANAGED_LABEL, SELECTED_SPEC_LABEL, SPEC_LABEL
+    fixes = []
+    for location in entry["locations"]:
+        if not any(binding.get("spec_id") == spec_id for binding in location.get("bindings") or []):
+            continue
+        for container in location.get("container_references") or []:
+            labels = container.get("labels") if isinstance(container.get("labels"), dict) else {}
+            owner = (labels.get(SELECTED_SPEC_LABEL) or labels.get(CONF_LABEL) or labels.get(SPEC_LABEL)
+                     if labels.get(MANAGED_LABEL) == "true" else None)
+            if owner == spec_id:
+                fix = "Choose Stop first"
+            elif owner in catalog:
+                fix = ("Stop " + (catalog[owner] or "[" + owner[:12] + "]")
+                       + " first, from its own recipe or Live service inventory")
+            elif labels.get(MANAGED_LABEL) == "true":
+                fix = "Stop it from Live service inventory first"
+            else:
+                fix = "A container Pulsar did not start mounts the files; remove it outside Pulsar first"
+            if fix not in fixes:
+                fixes.append(fix)
+    return fixes
+
+
+def purge_line(entry: dict, spec_id: str, nodes: list[dict], catalog: dict[str, str] | None = None) -> str:
+    """One sentence on what Purge through SPEC_ID would free from this snapshot, or why it would not run.
+    CATALOG maps the catalog's spec IDs to model IDs, to name another spec's service."""
     from .render import short_size
+    catalog = {value["spec_id"]: value.get("model_id") for value in entry["catalog_specs"]} | (catalog or {})
     hostnames = {node["node_id"]: node["hostname"] for node in nodes}
     def named(identities):
         return ", ".join(hostnames.get(node, node) for node in identities)
     estimate = purge_estimate(entry, spec_id, nodes)
     subject = "Purge via [" + spec_id[:12] + "]"
-    # Purge refuses the whole spec while any copy is mounted or pinned: say so, and the choice that clears it.
-    causes = [(word + named(estimate[key]), fix) for key, word, fix in
-              (("in_use_on", "in use on ", "Stop"), ("pinned_on", "pinned on ", "Unpin prepared copies"))
+    # Purge refuses the whole spec while any copy is mounted or pinned: say so, and what clears it.
+    causes = [word + named(estimate[key]) for key, word in (("in_use_on", "in use on "), ("pinned_on", "pinned on "))
               if estimate[key]]
     if causes:
-        fixes = [fix for _, fix in causes]
-        return (subject + " is blocked: " + "; ".join(cause for cause, _ in causes) + ". Choose " + fixes[0]
-                + " first" + "".join(", then " + fix for fix in fixes[1:]) + ".")
+        fixes = _mount_fixes(entry, spec_id, catalog) if estimate["in_use_on"] else []
+        text = "; ".join(fixes)
+        if estimate["pinned_on"]:
+            text = text + ", then Unpin prepared copies" if text else "Choose Unpin prepared copies first"
+        return subject + " is blocked: " + "; ".join(causes) + ". " + text + "."
     freeing = estimate["bytes_by_node"]
     values = list(freeing.values())
     total = sum(values) if values and all(type(value) is int for value in values) else None
@@ -462,6 +495,9 @@ def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bo
         if budget is not None:
             _budget(out, budget, nodes)
     entries = [entry for entry in document["snapshots"] if snapshot is None or entry["snapshot_manifest_id"] == snapshot]
+    # Every catalog spec the inventory knows, to name another spec's service that mounts these files.
+    catalog = {value["spec_id"]: value.get("model_id") for entry in document["snapshots"]
+               for value in entry["catalog_specs"]}
     if not entries:
         out.blank()
         out.emit("No model files were found in Pulsar's folders or saved records.")
@@ -505,7 +541,7 @@ def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bo
             out.emit("Cleanup opens a spec's own menu: Purge removes its prepared copies, and Remove home "
                      "removes this snapshot's home.")
             for spec_id in sorted(entry["cleanup_spec_ids"]):
-                out.emit(purge_line(entry, spec_id, nodes), subsequent_indent="  ")
+                out.emit(purge_line(entry, spec_id, nodes, catalog), subsequent_indent="  ")
         if not entry["cleanup_spec_ids"]:
             out.emit("No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed.")
     out.blank()
