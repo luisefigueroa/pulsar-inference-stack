@@ -417,6 +417,12 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "start", "prepared on every serving rank just now; start rechecks prerequisites"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
+    # Check now reads homes from records only, so it cannot see a home the
+    # session's Model files scan found with no record naming it; no saved or
+    # current check is needed before Download looks for it.
+    found = _next_home(row, offered, archive_location, now, files=files, names=names)
+    if found and found[3:]:
+        return found[1], found[2]
     if row.get("checked_at") is None:
         return "check", "no saved check"
     local = row.get("local_state", "unknown")

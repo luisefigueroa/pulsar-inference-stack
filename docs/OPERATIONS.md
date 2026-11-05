@@ -824,8 +824,11 @@ a second matching folder.
 In the catalog menu, choose **Model files and disk space (checks nodes now)**
 in the catalog list first. When that scan found the home folder of a
 required snapshot with no recorded home, the recipe's Files field reads `files
-found on <host>, not in Pulsar's records; Download checks them`, and once the
-recipe has a saved check the suggestion is **Download**, ahead of **Restore**.
+found on <host>, not in Pulsar's records; Download checks them`, and the
+suggestion is **Download**, ahead of **Restore**. It needs no saved or current
+check, since **Check now** reads homes from records only and cannot see that
+folder; an outcome from this session, such as an interrupted operation, still
+comes first.
 Download's machine question then starts on that machine, labelled `files found
 here, not in Pulsar's records`. The choice stays **Download**: its preview
 says whether the files are reused. Only a scan from this catalog session
@@ -1290,7 +1293,10 @@ restoration or preparation even when it recorded blockers. A check that found
 the files prepared, with no blocker, suggests **Start** at any age, because
 Start rechecks the files, image, nodes and memory before launching; the Files
 line shows how old that check is. Unknown file observations, and missing,
-changed or blocked ones more than a day old, still suggest **Check now**. A
+changed or blocked ones more than a day old, still suggest **Check now**,
+except where this session's Model files scan found the home folder of a
+snapshot with no recorded home: that suggests **Download** with or without a
+check (see [Restore after controller loss](#restore-after-controller-loss)). A
 check that records a result clears the previous operation's pending check; one
 that could not record a result does not turn earlier readiness into a new
 Start suggestion.

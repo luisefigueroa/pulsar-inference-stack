@@ -900,31 +900,37 @@ raise SystemExit(rc)
             return self.file_inventory(unregistered=True, manifest=manifest)(spec_id)
         plan = {"kind": "pulsar-acquisition-plan", "action": "reuse", "selected_node": "fixture-node",
                 "home": {"node_id": "fixture-node"}}
-        # The frame names machines from the saved topology, which run_menu points here.
-        (self.root / "no-topology.json").write_text(json.dumps(
-            {"nodes": [{"node_id": "fixture-node", "hostname": "fixture-host"}]}))
-        spec, result, actions, choices, questions = self.run_menu(
-            ["#0", "Back", "Model files and disk space (checks nodes now)", "Back", "#0", "Download (suggested)",
-             "#0", "Back", "Back"],
-            observation={"local_state": "missing", "archive_state": "verified", "blockers": []},
-            plan=plan, confirms=["no"], env_extra=scan)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        frames = " ".join(result.stdout.split()).split(f"[{spec[:12]}]")
-        # Before the scan, the archive; after it, the files found on the node.
-        self.assertIn("Next Restore", frames[1])
-        self.assertNotIn("files found", frames[1])
-        self.assertIn("Files not prepared on every serving node", frames[-1])
-        self.assertIn("files found on fixture-host, not in Pulsar's records; Download checks them", frames[-1])
-        self.assertIn("Next Download — files found on fixture-host but not in Pulsar's records; "
-                      "Download checks them before fetching anything", frames[-1])
-        self.assertIn("Which machine should hold the model files?\n"
-                      "fixture-host — files found here, not in Pulsar's records\n\n", choices)
-        self.assertEqual(self.cursor("Which machine should hold the model files?"), ["0"])
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"],
-                                   ["model-library.sh", "acquire", spec, "--node", "fixture-node", "--plan",
-                                    "--json"]])
-        self.assertIn("Nothing is downloaded.", questions)
-        self.assertIn("Nothing changed.", result.stdout)
+        # Check now reads homes from records only, so even with no saved check
+        # the scan's files lead to Download.
+        saved = {"local_state": "missing", "archive_state": "verified", "blockers": []}
+        for observation, before in ((saved, "Next Restore"), (None, "Next Check now — no saved check")):
+            with self.subTest(saved_check=observation is not None):
+                self.setUp()
+                # The frame names machines from the saved topology, which run_menu points here.
+                (self.root / "no-topology.json").write_text(json.dumps(
+                    {"nodes": [{"node_id": "fixture-node", "hostname": "fixture-host"}]}))
+                spec, result, actions, choices, questions = self.run_menu(
+                    ["#0", "Back", "Model files and disk space (checks nodes now)", "Back", "#0",
+                     "Download (suggested)", "#0", "Back", "Back"],
+                    observation=observation, plan=plan, confirms=["no"], env_extra=scan)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                frames = " ".join(result.stdout.split()).split(f"[{spec[:12]}]")
+                # Before the scan, the saved records; after it, the files found on the node.
+                self.assertIn(before, frames[1])
+                self.assertNotIn("files found", frames[1])
+                self.assertIn("files found on fixture-host, not in Pulsar's records; Download checks them",
+                              frames[-1])
+                self.assertIn("Next Download — files found on fixture-host but not in Pulsar's records; "
+                              "Download checks them before fetching anything", frames[-1])
+                self.assertIn("Which machine should hold the model files?\n"
+                              "fixture-host — files found here, not in Pulsar's records\n\n", choices)
+                self.assertEqual(self.cursor("Which machine should hold the model files?"), ["0"])
+                self.assertEqual(actions, [["pulsar", "model", "files", "--json"],
+                                           ["pulsar", "model", "budget", "--json"],
+                                           ["model-library.sh", "acquire", spec, "--node", "fixture-node", "--plan",
+                                            "--json"]])
+                self.assertIn("Nothing is downloaded.", questions)
+                self.assertIn("Nothing changed.", result.stdout)
 
     def test_a_failed_scan_leaves_the_suggestion_and_question_unchanged(self):
         spec, result, actions, choices, _ = self.run_menu(

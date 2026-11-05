@@ -799,14 +799,40 @@ class FilesFound(unittest.TestCase):
         self.assertEqual(self.suggest(state, {})[0], "restore")
         # Two folders: Download stops on the second, and its preview says so.
         self.assertIn("files found on spark-2, spark-3 but", self.suggest(state, {MANIFEST_FOUND: ["n1", "n2"]})[1])
-        # The scan never outranks a recorded home or the check rules before it.
+        # A recorded home still wins: the scan's files are another folder.
         self.assertEqual(self.suggest(checked(home=HOME, local_state="missing", snapshot_manifest_id=MANIFEST_FOUND),
                                       {MANIFEST_FOUND: ["n1"]})[0], "prepare")
-        self.assertEqual(self.suggest(row(snapshot_manifest_id=MANIFEST_FOUND), {MANIFEST_FOUND: ["n1"]}),
-                         ("check", "no saved check"))
-        self.assertEqual(self.suggest(state, {MANIFEST_FOUND: ["n1"]}, after="purge")[0], "check")
         with patch("subprocess.run", side_effect=AssertionError("suggestions must not probe")):
             self.suggest(state, {MANIFEST_FOUND: ["n1"]})
+
+    # Check now reads homes from records only, so it cannot see these files:
+    # no saved check, a stale one or one that left files unknown waits for nothing.
+    def test_found_files_need_no_saved_or_current_check(self):
+        reason = ("files found on spark-2 but not in Pulsar's records; "
+                  "Download checks them before fetching anything")
+        files = {MANIFEST_FOUND: ["n1"]}
+        cases = {"no saved check": row(snapshot_manifest_id=MANIFEST_FOUND),
+                 "stale check": self.missing(observation_age_seconds=menu.STALE_SECONDS + 1),
+                 "files unknown": checked(snapshot_manifest_id=MANIFEST_FOUND),
+                 "stale check with a blocker": self.missing(observation_age_seconds=menu.STALE_SECONDS + 1,
+                                                            blockers=["home missing"])}
+        for name, state in cases.items():
+            with self.subTest(name):
+                self.assertEqual(self.suggest(state, files), ("acquire", reason))
+                # Without the scan, the check rules apply as before.
+                self.assertEqual(self.suggest(state, None)[0], "check")
+        # A guarded spec gets Download, as without the scan; never anything toward Start.
+        self.assertEqual(self.suggest(row(snapshot_manifest_id=MANIFEST_FOUND, **GUARDED), files),
+                         ("acquire", reason))
+
+    def test_session_outcomes_still_come_first(self):
+        files = {MANIFEST_FOUND: ["n1"]}
+        for state in (self.missing(), row(snapshot_manifest_id=MANIFEST_FOUND)):
+            with self.subTest(checked=bool(state["checked_at"])):
+                for after in ("purge", "storage-failed", "storage-interrupted", "check-failed"):
+                    self.assertEqual(self.suggest(state, files, after=after)[0], "check", after)
+                self.assertEqual(self.suggest(state, files, after="start")[0], "status")
+                self.assertEqual(self.suggest(state, files, after="service-interrupted")[0], "status")
 
     def test_a_snapshot_is_named_after_the_previous_download(self):
         snapshots = two_snapshots(HOME, None)
@@ -833,12 +859,11 @@ class FilesFound(unittest.TestCase):
                     self.assertIn(hint, text)
                     # One hint per value: Check now cannot see an unrecorded home.
                     self.assertNotIn(menu.CHECK_HINT, text)
-                    if state["checked_at"]:
-                        self.assertIn("Next Download — files found on spark-2 but not in Pulsar's records", text)
-                        self.assertIn("suggest\tacquire", lines)
+                    # With or without a saved check: Check now cannot see these files.
+                    self.assertIn("Next Download — files found on spark-2 but not in Pulsar's records", text)
+                    self.assertIn("suggest\tacquire", lines)
                     # The choice keeps its label and effect.
-                    self.assertIn("option\tmain\tacquire\tDownload" + (" (suggested)" if state["checked_at"] else ""),
-                                  "\n".join(lines))
+                    self.assertIn("option\tmain\tacquire\tDownload (suggested)", "\n".join(lines))
         read_only = menu.view_lines(self.missing(), "configured", width=80, names=NAMES, read_only=True,
                                     files={MANIFEST_FOUND: ["n1"]})
         self.assertNotIn("files found", frame_text(read_only))
