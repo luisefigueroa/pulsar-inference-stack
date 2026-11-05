@@ -295,12 +295,21 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
                        "status": "unknown", "error": "fixture node unavailable", "scopes": [],
                        "disks": [], "issues": [], "unidentified": [], "container_error": ""}],
         }))
-        script = '. "$REPO_DIR/scripts/ui.sh"\npage_output "" python3 -m model_library.file_inventory render --file "$1"\n'
+        # The page as the menu shows it, with the storage budget under the nodes.
+        budget = fixture.with_name("budget.json")
+        budget.write_text(json.dumps({"schema_version": 1, "ok": True, "result": {
+            "kind": "pulsar-storage-budget", "nodes": [{
+                "node_id": "fixture-node", "available": 300 * 1024**3, "used": 50 * 1024**3,
+                "total": 1000 * 1024**3, "reserve": 100 * 1024**3, "limit": 200 * 1024**3,
+                "path": "/fixture/views"}]}}))
+        script = ('. "$REPO_DIR/scripts/ui.sh"\n'
+                  'page_output "" python3 -m model_library.file_inventory render --file "$1" --menu --budget "$2"\n')
         code, output = self.drive(script, b"q", ready=b"Model files and disk space",
-                                  args=[str(fixture)], columns=44)
+                                  args=[str(fixture), str(budget)], columns=44)
         self.assertEqual(code, 0, output)
         self.assertIn("\x1b[?1049h", output)
         self.assertIn("esc quit", output)
+        self.assertIn("Storage budget", output)
 
     def test_short_output_prints_without_the_pager(self):
         code, output = self.page(3, b"")
@@ -325,7 +334,7 @@ class BundledGumReview(BundledGum):
     SCRIPT = '''
 . "$REPO_DIR/scripts/ui.sh"
 rc=0
-confirm_or_review "Purge fixture/model: delete 1 working copy?" "Purge prepared copies" \\
+confirm_or_review "Purge fixture/model: delete 1 prepared copy?" "Purge prepared copies" \\
   bash -c 'echo PREVIEW_RAN >>"$1"; for i in $(seq 1 40); do echo "full preview line $i"; done' _ "$PREVIEW_LOG" || rc=$?
 printf '\\nREVIEWED=%s\\n' "$rc"
 exit "$rc"
@@ -341,7 +350,7 @@ exit "$rc"
         code, output, previews = self.review(b"\r")
         self.assertEqual((code, previews), (1, 0), output)
         self.assertIn("REVIEWED=1", output)
-        self.assertLess(output.index("Purge fixture/model: delete 1 working copy?"), output.index("Yes, purge prepared copies"))
+        self.assertLess(output.index("Purge fixture/model: delete 1 prepared copy?"), output.index("Yes, purge prepared copies"))
         for option in ("Yes, purge prepared copies", "Show full preview", "No, change nothing"):
             self.assertIn(option, output)
 
