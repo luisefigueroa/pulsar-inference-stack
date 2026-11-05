@@ -1,5 +1,6 @@
 """Catalog launch shortcuts reuse existing commands and explicit permissions."""
 import copy
+import json
 import io
 import unittest
 from unittest.mock import patch
@@ -186,7 +187,10 @@ class LaunchMenu(unittest.TestCase):
             ["memory_insufficient", "memory_insufficient", "port_in_use", "image_missing", "node_unreachable"],
             "Back", "Back", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(actions), 1)
+        # R1: a busy port or too little memory takes one service inventory first;
+        # an unreadable one leaves today's choices.
+        self.assertEqual(actions[1:], [["pulsar", "inventory", "--json"]])
+        self.assertIn("✗ The service inventory could not be read", result.stdout)
         self.assertEqual(self.offered(choices, "Start was refused: 5 blockers. Choose a next step"),
                          ["Open Live service inventory", "Stage serving image",
                           "Check saved nodes and fabric (checks nodes now)", "Back"])
@@ -199,21 +203,33 @@ class LaunchMenu(unittest.TestCase):
             "Open Live service inventory", "Check saved nodes and fabric (checks nodes now)", "Host diagnostics",
             "Back", "Back", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions[1:3], [["pulsar", "inventory", "menu"], ["pulsar", "topology", "check"]])
-        self.assertEqual(actions[3], ["pulsar", "doctor"])
+        # The inventory is taken before the first list and again after the inventory menu.
+        self.assertEqual(actions[1:], [["pulsar", "inventory", "--json"], ["pulsar", "inventory", "menu"],
+                                       ["pulsar", "inventory", "--json"], ["pulsar", "topology", "check"],
+                                       ["pulsar", "doctor"]])
         self.assertEqual(choices.count("Start was refused: 3 blockers"), 4)
+        # After the inventory menu, Start again leads the same choices.
+        self.assertEqual(self.offered(choices, "Start was refused: 3 blockers. Choose a next step")[0],
+                         "Open Live service inventory")
+        self.assertEqual(choices.split("Start was refused: 3 blockers. Choose a next step\n")[2].splitlines()[:2],
+                         ["Start again", "Open Live service inventory"])
         self.assertIn("[page] Checking saved nodes and fabric…", choices)
 
     def test_existing_service_offers_live_status_and_a_separately_confirmed_stop(self):
         spec, result, actions, choices, questions = self.refused(
-            ["service_exists"], "Stop", "fixture-host", "Back", "Back", confirms=["yes", "yes"])
+            ["service_exists"], "Stop", "fixture-host", "Back", "Back", "Back", confirms=["yes", "yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.offered(choices, "Start was refused: 1 blocker. Choose a next step"),
                          ["Live status", "Stop", "Back"])
-        # Stop refreshes the service inventory before its question (TUI-43).
+        # Stop refreshes the service inventory before its question (TUI-43);
+        # service_exists alone takes no inventory of its own.
         self.assertEqual(actions[1:], [["pulsar", "inventory", "--json"], ["down.sh", spec, "--node", "fixture-node"]])
         self.assertEqual(len(questions.splitlines()), 2)
-        self.assertEqual(choices.count("[continue]"), 1)
+        # R1: after the Stop the choices return with Start again first; they
+        # stand in for the Continue hold.
+        self.assertEqual(choices.split("Start was refused: 1 blocker. Choose a next step\n")[2].split("\n\n")[0]
+                         .splitlines(), ["Start again", "Live status", "Stop", "Back"])
+        self.assertEqual(choices.count("[continue]"), 0)
 
     def test_declined_stop_returns_to_the_choices_and_changes_nothing(self):
         _, result, actions, choices, _ = self.refused(
@@ -304,7 +320,131 @@ class LaunchMenu(unittest.TestCase):
     def test_ctrl_c_at_the_choices_leaves_the_menu(self):
         _, result, actions, _, _ = self.refused(["port_in_use"], "<ctrl-c>")
         self.assertEqual(result.returncode, 130, result.stderr)
-        self.assertEqual(len(actions), 1)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["pulsar", "inventory"]])
+
+    # R1: a refused Start names the service in the way, offers its Stop, then Start again.
+    PORT_BUSY = [{"blocker": "port_in_use", "detail": "port 8000"}]
+    REFUSED_LIST = "Start was refused: 1 blocker. Choose a next step"
+
+    def other_spec(self):
+        """Another catalog spec of the same model, and the list position of the fixture spec beside it."""
+        from release_spec.tests.test_serving_guard import FIXTURES, guarded
+        refused = json.loads((FIXTURES / "spec.json").read_text())
+        other = guarded(json.loads((FIXTURES / "spec.json").read_text()))
+        return other, f"#{sorted([refused['spec_id'], other['spec_id']]).index(refused['spec_id'])}"
+
+    def in_the_way(self, answers, *, confirms, conf, served=None, launch=None, additional_specs=(), **kwargs):
+        """A refused Start (then one that succeeds) with another service on the fixture node."""
+        Catalog = catalog_tests.Catalog
+        return self.run_menu(answers, confirms=confirms, additional_specs=additional_specs,
+                             launch={"start_rc_sequence": [1, 0], "blockers": self.PORT_BUSY, **(launch or {})},
+                             inventory=Catalog.blocking_inventory(conf, served=served),
+                             env_extra=lambda _: {"INVENTORY_FIXTURE_AFTER_STOP": Catalog.blocking_inventory(),
+                                                  "FIXTURE_COLUMNS": "80"}, **kwargs)
+
+    def lists(self, choices, title):
+        return [block.split("\n\n", 1)[0].splitlines() for block in choices.split(title + "\n")[1:]]
+
+    def test_refused_start_stops_the_service_in_the_way_then_starts_again(self):
+        extra, position = self.other_spec()
+        other = extra["spec_id"]
+        stop = "Stop example/model on fixture-host (port 8000 · 89 GiB)"
+        spec, result, actions, choices, questions = self.in_the_way(
+            [position, "Start", "fixture-host", stop, "Start again", "Back", "Back"], confirms=["yes", "yes", "yes"],
+            conf=other, additional_specs=(extra,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        start = ["pulsar", "start", spec, "--node", "fixture-node"]
+        inventory = ["pulsar", "inventory", "--json"]
+        # The capture, the refresh every Stop takes before its question, then the re-capture after it.
+        self.assertEqual(actions, [start, inventory, inventory, ["down.sh", other], inventory, start])
+        self.assertEqual(self.lists(choices, self.REFUSED_LIST),
+                         [[stop, "Open Live service inventory", "Back"],
+                          ["Start again", "Open Live service inventory", "Back"]])
+        asked = questions.splitlines()
+        self.assertEqual(len(asked), 3)
+        self.assertTrue(asked[0].startswith("Start example/model on fixture-node"), asked[0])
+        self.assertIn(f"Stop and remove the service containers of example/model [{other[:12]}] on fixture-host?",
+                      asked[1])
+        self.assertEqual(asked[2], asked[0])
+        # Stop and Start each held their outcome until the next choice; one Continue at the end.
+        self.assertEqual(choices.count("[continue]"), 1)
+        self.assertNotIn("--replace", [arg for action in actions for arg in action])
+        # The machine question is asked once.
+        self.assertEqual(choices.count("Which machine should serve the model?"), 1)
+
+    def test_a_service_outside_the_catalog_is_named_by_its_served_name(self):
+        conf = "c" * 64
+        stop = "Stop experiment-model on fixture-host (port 8000 · 89 GiB)"
+        _, result, actions, choices, questions = self.in_the_way(
+            ["#0", "Start", "fixture-host", stop, "Start again", "Back", "Back"], confirms=["yes", "yes", "yes"],
+            conf=conf, served="experiment-model")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["down.sh", conf], actions)
+        self.assertEqual(self.lists(choices, self.REFUSED_LIST)[0], [stop, "Open Live service inventory", "Back"])
+        asked = questions.splitlines()[1]
+        self.assertIn(f"experiment-model [{conf[:12]}] on fixture-host?", asked)
+        self.assertTrue(asked.endswith(menu.OUTSIDE_CATALOG), asked)
+
+    def test_declining_start_again_changes_nothing_more(self):
+        conf = "c" * 64
+        stop = "Stop experiment-model on fixture-host (port 8000 · 89 GiB)"
+        spec, result, actions, choices, questions = self.in_the_way(
+            ["#0", "Start", "fixture-host", stop, "Start again", "Back", "Back"], confirms=["yes", "yes", "no"],
+            conf=conf, served="experiment-model")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([action[:2] for action in actions].count(["pulsar", "start"]), 1)
+        self.assertEqual(actions[-1], ["pulsar", "inventory", "--json"])
+        self.assertEqual(len(questions.splitlines()), 3)
+        self.assertIn("Nothing changed.", result.stdout)
+        # Back at the recipe, with nothing left to hold.
+        self.assertEqual(choices.count("[continue]"), 0)
+        self.assertEqual(choices.count("Choose one operation"), 2)
+
+    def test_check_launch_prerequisites_offers_start_now_with_start_s_own_question(self):
+        conf = "c" * 64
+        stop = "Stop experiment-model on fixture-host (port 8000 · 89 GiB)"
+        spec, result, actions, choices, questions = self.in_the_way(
+            ["#0", "Launch options…", "Check launch prerequisites", "fixture-host", stop, "Start now", "Back", "Back"],
+            confirms=["yes", "yes"], conf=conf, served="experiment-model",
+            launch={"dry_rc": 1, "start_rc_sequence": [0]})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions[0], ["pulsar", "start", spec, "--node", "fixture-node", "--dry-run"])
+        self.assertEqual(actions[-1], ["pulsar", "start", spec, "--node", "fixture-node"])
+        self.assertEqual(self.lists(choices, "Not ready to start: 1 blocker. Choose a next step")[1][0], "Start now")
+        self.assertTrue(questions.splitlines()[-1].startswith("Start example/model on fixture-node"))
+        self.assertEqual(choices.count("[continue]"), 1)
+
+    def test_only_other_services_on_the_serving_node_are_offered(self):
+        Catalog = catalog_tests.Catalog
+        for name, inventory in (("refused spec itself", Catalog.live_inventory(node_id="fixture-node")),
+                                ("another node", Catalog.blocking_inventory("c" * 64, node_id="node-elsewhere"))):
+            with self.subTest(name):
+                self.setUp()
+                _, result, actions, choices, _ = self.refused(self.PORT_BUSY, "Back", "Back", "Back",
+                                                              inventory=inventory)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.lists(choices, self.REFUSED_LIST), [["Open Live service inventory", "Back"]])
+
+    def test_what_the_menu_cannot_stop_is_named_above_the_choices(self):
+        document = json.loads(catalog_tests.Catalog.blocking_inventory())
+        document["unmanaged_gpu_processes"] = [{"node": "worker", "pid": pid, "process_name": "/usr/bin/python3",
+                                                "used_memory_mib": 12288} for pid in (4242, 4343)]
+        _, result, _, choices, _ = self.refused([{"blocker": "memory_insufficient"}], "Back", "Back", "Back",
+                                                inventory=json.dumps(document))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # The notes form one block after one blank line, each wrapped to the terminal.
+        block = result.stdout.split("\n\nOn fixture-host: ", 1)[1].split("\n\n", 1)[0]
+        self.assertEqual(" ".join(("On fixture-host: " + block).split()),
+                         "On fixture-host: GPU process python3 (PID 4242) · 12 GiB · not started by Pulsar · "
+                         "read-only On fixture-host: GPU process python3 (PID 4343) · 12 GiB · not started by "
+                         "Pulsar · read-only")
+        self.assertEqual(self.lists(choices, self.REFUSED_LIST), [["Open Live service inventory", "Back"]])
+
+    def test_ctrl_c_while_checking_running_services_leaves_the_menu(self):
+        _, result, actions, choices, _ = self.refused(self.PORT_BUSY, inventory_rc=130)
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["pulsar", "inventory"]])
+        self.assertNotIn(self.REFUSED_LIST, choices)
 
     def test_a_refusal_without_records_offers_nothing_new(self):
         _, result, _, choices, _ = self.refused([], "Back", "Back")

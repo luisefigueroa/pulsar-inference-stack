@@ -1065,15 +1065,19 @@ START_CHOICE_LABELS = {
 }
 
 
-def start_choices(records: list[dict], row: dict, archive_location: str) -> list[tuple[str, str]]:
+def start_choices(records: list[dict], row: dict, archive_location: str,
+                  stops: list[tuple[str, str, str]] | tuple = ()) -> list[tuple[str, ...]]:
     """(action, label) choices for recorded start blockers, without duplicates.
 
     Actions name existing menu operations, or one of START_CHOICE_LABELS. A
     code without a choice, or an unknown one, adds nothing; its own next step
-    is already printed with the blocker.
+    is already printed with the blocker. STOPS are (spec ID, model, label) for
+    services in the way (see services_in_the_way); each becomes a
+    ("stop-other", spec ID, model, label) choice right before the service
+    inventory, which stays offered.
     """
     offered, _, _ = operations(row, archive_location)
-    choices: list[tuple[str, str]] = []
+    choices: list[tuple[str, ...]] = []
     for record in records:
         if not isinstance(record, dict):
             continue
@@ -1089,8 +1093,10 @@ def start_choices(records: list[dict], row: dict, archive_location: str) -> list
             if kind == "files":
                 missing = _next_home(row, offered, archive_location)
                 kind = missing[1] if missing else "prepare"
-            if not kind or kind in (action for action, _ in choices):
+            if not kind or kind in (choice[0] for choice in choices):
                 continue
+            if kind == "inventory":
+                choices.extend(("stop-other", *stop) for stop in stops)
             if kind in START_CHOICE_LABELS:
                 choices.append((kind, START_CHOICE_LABELS[kind]))
             elif kind in offered:
@@ -1107,6 +1113,186 @@ def start_choices_title(records: list[dict], *, dry_run: bool = False) -> str:
     if any(isinstance(record, dict) and record.get("stage") == "launch" for record in records):
         return f"Start failed after launch: {count}. Choose a next step"
     return f"Start was refused: {count}. Choose a next step"
+
+
+# Start cannot say what holds a busy port or the memory; a service inventory
+# taken after the refusal can name the services on the refused spec's nodes.
+SERVICE_BLOCKERS = frozenset({"port_in_use", "memory_insufficient"})
+
+
+def service_blockers(records: list[dict]) -> bool:
+    """Whether a running service may be what refused the start: a busy port or too little free memory."""
+    return any(isinstance(record, dict) and record.get("blocker") in SERVICE_BLOCKERS for record in records)
+
+
+def blocked_ports(records: list[dict]) -> list[int]:
+    """The ports start found in use ("port 8000" in a record's detail), in order; they only order the choices."""
+    ports: list[int] = []
+    for record in records:
+        if isinstance(record, dict) and record.get("blocker") == "port_in_use":
+            found = re.fullmatch(r"port ([0-9]+)", clean(record.get("detail") or ""))
+            if found and int(found.group(1)) not in ports:
+                ports.append(int(found.group(1)))
+    return ports
+
+
+def serving_node_ids(row: dict, names: NodeNames, node: str | None) -> list[str]:
+    """The node_ids the refused spec serves on: the selected node of a one-node
+    spec, or ordinary start's first saved nodes. Empty when they are unknown."""
+    nodes = row["geometry"]["nodes"]
+    if nodes == 1:
+        return [node] if node else []
+    return list(names.order[:nodes]) if nodes > 1 and len(names.order) >= nodes else []
+
+
+def gib_text(mib: int | float) -> str:
+    gib = mib / 1024
+    return f"{gib:.0f} GiB" if gib >= 10 else f"{gib:.1f} GiB"
+
+
+def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog: list[dict],
+                        ports: list[int] = ()) -> tuple[list[dict], list[str]]:
+    """Services on the refused spec's serving nodes, from a service inventory taken just now.
+
+    Returns (stops, notes). A stop is a Pulsar-managed service the inventory
+    established as safe to stop, other than the refused spec's own (Start
+    reports that one as service_exists): its spec ID (conf), name (catalog
+    model, else served name), hosts in rank order (Stop removes every rank),
+    API port and the most GPU memory one of its ranks uses, in MiB, when
+    measured. Services on a busy port come first, then the most memory.
+    Notes name, with no choice, what this menu cannot stop there: managed
+    services without safe ownership, containers Pulsar does not manage and
+    GPU processes Pulsar did not start. CATALOG rows hold spec_id, model_id
+    and nodes; nothing here probes.
+    """
+    from scripts.inventory_menu import SPEC_ID, project, project_others, read_only_line
+    services = project(inventory, catalog)
+    others = project_others(inventory, catalog)
+    nodes = inventory["nodes"]
+    serving = {key for key, node in nodes.items() if isinstance(node, dict) and node.get("node_id") in node_ids}
+
+    def host(key: object) -> str:
+        node = nodes.get(key) if isinstance(key, str) else None
+        return clean((node or {}).get("hostname") or (node or {}).get("node_id") or key or "unknown node")
+
+    stops: list[dict] = []
+    notes: list[str] = []
+    for service in inventory["services"]:
+        ranks = [rank for rank in service.get("ranks") or [] if isinstance(rank, dict)]
+        here = [rank for rank in ranks if rank.get("node") in serving]
+        conf = service.get("conf")
+        if not here or conf == row["spec_id"]:
+            continue
+        where = ", ".join(dict.fromkeys(host(rank.get("node")) for rank in here))
+        if service.get("ownership") != "managed" or not (isinstance(conf, str) and SPEC_ID.fullmatch(conf)):
+            notes.append(f"On {where}: {read_only_line(service)}")
+            continue
+        projected = services.get(conf) or others.get(conf)
+        if projected is None:
+            continue
+        if projected["stop_reason"]:
+            # Inventory's own reason when it found ownership unsafe; else the menu's.
+            reasons = service.get("reasons") if service.get("safe_to_stop") is not True else None
+            reason = clean(reasons[0]) if isinstance(reasons, list) and reasons and reasons[0] else projected["stop_reason"]
+            notes.append(f"On {where}: {clean(projected['model_id'])} [{conf[:12]}] · no Stop offered: "
+                         f"{reason.rstrip('.')}")
+            continue
+        measured = [(rank.get("gpu_memory") if isinstance(rank.get("gpu_memory"), dict) else {}).get("measured_mib")
+                    for rank in ranks]
+        measured = [mib for mib in measured if type(mib) in (int, float) and mib >= 0]
+        stops.append({"conf": conf, "name": clean(projected["model_id"]), "hosts": list(projected["hosts"]),
+                      "port": projected["port"], "mib": max(measured) if measured else None})
+    stops.sort(key=lambda stop: (stop["port"] not in ports, stop["mib"] is None, -(stop["mib"] or 0)))
+    processes = [process for process in inventory.get("unmanaged_gpu_processes") or []
+                 if isinstance(process, dict) and process.get("node") in serving]
+    for process in processes[:3]:
+        name = str(process.get("process_name") or "?").rstrip("/").rpartition("/")[2] or "?"
+        mib = process.get("used_memory_mib")
+        size = f" · {gib_text(mib)}" if type(mib) is int and mib >= 0 else ""
+        notes.append(f"On {host(process.get('node'))}: GPU process {clean(name)} (PID {process.get('pid') or '?'})"
+                     f"{size} · not started by Pulsar · read-only")
+    if len(processes) > 3:
+        notes.append(f"and {len(processes) - 3} more GPU processes not started by Pulsar")
+    return stops, notes
+
+
+def stop_other_label(service: dict, width: int) -> str:
+    """Stop MODEL on HOSTS (port P · N GiB per node), fitted to WIDTH.
+
+    The facts are shown only when known, and say why the service is in the
+    way, so they stay longest: where the label does not fit, a multi-node
+    service's hosts become a count (Stop's question names them), then the
+    model name is cut from its start, keeping its end and at least
+    STOP_NAME_ROOM characters; then the facts give way, then the hosts give
+    way to the spec prefix, before which the name is cut as far as needed.
+    """
+    count = len(service["hosts"])
+    name, hosts = clean(service["name"]), ", ".join(service["hosts"]) or "its nodes"
+    facts = []
+    if service.get("port") is not None:
+        facts.append(f"port {service['port']}")
+    if service.get("mib") is not None:
+        facts.append(gib_text(service["mib"]) + (" per node" if count > 1 else ""))
+    places = [f" on {hosts}"] + ([f" on {count} nodes"] if count > 1 else [])
+    with_facts = [place + f" ({' · '.join(facts)})" for place in places] if facts else []
+    for tail, least in ([(tail, len(name)) for tail in with_facts] + [(tail, STOP_NAME_ROOM) for tail in with_facts]
+                        + [(places[0], len(name)), (places[0], STOP_NAME_ROOM)]):
+        room = width - len("Stop ") - len(tail)
+        if room >= min(least, len(name)):
+            return f"Stop {_keep_end(name, room)}{tail}"
+    identity = f" [{service['conf'][:12]}]"
+    room = width - len("Stop ") - len(identity)
+    return f"Stop {_keep_end(name, room)}{identity}" if room >= 4 else f"Stop{identity}"
+
+
+# A model name cut to fit a Stop choice keeps at least this many characters
+# while other parts of the label can still give way.
+STOP_NAME_ROOM = 20
+
+
+def _keep_end(name: str, room: int) -> str:
+    """NAME in ROOM characters: whole, or cut from its start, keeping its end."""
+    return name if len(name) <= room else "…" + name[len(name) - room + 1:]
+
+
+def start_choice_lines(records: list[dict], row: dict, archive_location: str, *, dry_run: bool = False,
+                       stops: list[dict] = (), notes: list[str] = (), start_again: bool = False,
+                       width: int | None = None) -> list[str]:
+    """The menu lines after a refused Start or dry run: the title, Start again
+    (Start now after a dry run) once a choice fixed something, the notes on
+    what is in the way, then the choices. Empty when nothing applies.
+
+    Each line is KIND, a tab, then its text; a stop-other line is
+    stop-other, the spec ID, the model and the label.
+    """
+    width = width or terminal_width() - 2
+    found = start_choices(records, row, archive_location,
+                          [(stop["conf"], stop["name"], stop_other_label(stop, width)) for stop in stops])
+    if not found and not start_again:
+        return []
+    lines = [f"title\t{clean(start_choices_title(records, dry_run=dry_run))}"]
+    if start_again:
+        lines.append("start-again\t" + ("Start now" if dry_run else "Start again"))
+    lines += [f"note\t{clean(note)}" for note in notes]
+    lines += ["\t".join(clean(part) for part in choice) for choice in found]
+    return lines
+
+
+def other_stop_question(conf: str, name: str, inventory: dict | None = None) -> str:
+    """Stop's question for a Pulsar-managed service whose spec is not in this
+    catalog, naming the nodes a service inventory taken just now saw it on."""
+    from scripts.inventory_menu import project, project_others, unobserved_hosts
+    model = clean(name)
+    if inventory is None:
+        return f"{stop_question(model, conf, None)} {OUTSIDE_CATALOG}"
+    project(inventory, [])
+    service = project_others(inventory, []).get(conf)
+    if service is not None:
+        return f"{stop_question(model, conf, service['where'])} {OUTSIDE_CATALOG}"
+    if unobserved_hosts(inventory):
+        return f"{stop_question(model, conf, None)} {OUTSIDE_CATALOG}"
+    return (f"Stop {model} [{conf[:12]}]? No container of it was seen running just now; "
+            f"Stop removes any that remain. {STOP_KEEPS} {OUTSIDE_CATALOG}")
 
 
 def render_image_plan(row: dict, response: dict, node_names: dict[int, str], *, mode: str, width=None) -> bool:
@@ -1637,6 +1823,18 @@ def main(argv: list[str] | None = None) -> int:
     choices.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     choices.add_argument("--blockers-file", required=True)
     choices.add_argument("--dry-run", action="store_true", help="the blockers come from Check launch prerequisites")
+    choices.add_argument("--live", help="a service inventory captured after the refusal; names the services "
+                         "on the serving nodes when start found a busy port or too little memory")
+    choices.add_argument("--node", help="the node_id a one-node spec was started on")
+    choices.add_argument("--repo-root", default=ROOT, help="the catalog that names other services' models")
+    choices.add_argument("--start-again", action="store_true", help="a choice fixed something: offer Start again")
+    service_check = sub.add_parser("service-blockers", help="whether start found a busy port or too little memory")
+    service_check.add_argument("--blockers-file", required=True)
+    other_stop = sub.add_parser("other-stop-question", help="Stop's question for a Pulsar-managed service "
+                                "whose spec is not in this catalog")
+    other_stop.add_argument("--conf", required=True, help="the service's full spec ID")
+    other_stop.add_argument("--served-name", required=True)
+    other_stop.add_argument("--live", help="a service inventory captured just now")
     nodes = sub.add_parser("node-choices", help="a title, then one choice per confirmed node from saved "
                            "records; catalog JSON on stdin")
     nodes.add_argument("--spec-id", required=True)
@@ -1680,6 +1878,19 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "memory-warning":
             from scripts.start_blockers import read
             return 0 if memory_warning_only(read(args.blockers_file)) else 1
+        if args.command == "service-blockers":
+            from scripts.start_blockers import read
+            return 0 if service_blockers(read(args.blockers_file)) else 1
+        if args.command == "other-stop-question":
+            # No catalog row exists for this service, so nothing is read from stdin.
+            if not SPEC_ID.fullmatch(args.conf):
+                raise ValueError("the service's spec ID must be 64 lowercase hex characters")
+            inventory = None
+            if args.live:
+                with open(args.live, encoding="utf-8") as handle:
+                    inventory = json.load(handle)
+            print(clean(other_stop_question(args.conf, args.served_name, inventory)))
+            return 0
         if args.command == "labels":
             width = terminal_width()
             entries = json.load(sys.stdin).get("entries") or []
@@ -1720,12 +1931,23 @@ def main(argv: list[str] | None = None) -> int:
             # is printed, and the status is 1, when no choice applies.
             from scripts.start_blockers import read
             records = read(args.blockers_file)
-            found = start_choices(records, row, args.archive_location)
-            if not found:
+            stops, notes = [], []
+            if args.live and service_blockers(records):
+                # An inventory that cannot be read leaves today's choices.
+                try:
+                    from scripts.release_consumer import list_releases
+                    with open(args.live, encoding="utf-8") as handle:
+                        inventory = json.load(handle)
+                    node_ids = serving_node_ids(row, NodeNames.saved(), args.node)
+                    stops, notes = services_in_the_way(inventory, row, node_ids, list_releases(args.repo_root),
+                                                       blocked_ports(records))
+                except (ValueError, OSError, KeyError, TypeError, AttributeError):
+                    stops, notes = [], []
+            lines = start_choice_lines(records, row, args.archive_location, dry_run=args.dry_run, stops=stops,
+                                       notes=notes, start_again=args.start_again)
+            if not lines:
                 return 1
-            print(f"title\t{clean(start_choices_title(records, dry_run=args.dry_run))}")
-            for action, label in found:
-                print(f"{action}\t{clean(label)}")
+            print("\n".join(lines))
             return 0
         if args.command == "node-choices":
             # Each line is "title" and the question; "seen" and the node_id

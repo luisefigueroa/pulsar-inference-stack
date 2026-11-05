@@ -1299,25 +1299,51 @@ lead to it:
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
-| `memory_insufficient`, `port_in_use` | Open Live service inventory, where an unneeded service can be stopped |
+| `memory_insufficient`, `port_in_use` | Stop, for each Pulsar-managed service on the serving nodes, named with its nodes, port and GPU memory from one service inventory the menu takes first; then Open Live service inventory |
 | `service_exists` | Live status; Stop |
 | `smoke_test_failed`, `health_timeout`, `container_exited` | Live status; Service logs; Stop |
 | A failed launch whose containers may remain (`cleanup` is `unconfirmed`) | Live status; Stop, added to the choices above |
 | `image_check_failed`, `model_files_check_failed`, `memory_check_failed`, `preflight_failed` | Rerun the checks with full diagnostics (`start --dry-run --verbose`) |
+
+Start cannot say what holds a busy port or the memory, so for
+`port_in_use` and `memory_insufficient` the menu takes one service inventory
+before the choices (Ctrl-C there leaves the menu). It offers **Stop** for
+each Pulsar-managed service with a container on the refused spec's serving
+nodes: the selected node of a one-node spec, or the first saved nodes, which
+ordinary start uses. A choice names the catalog model, or the served name of a
+service started outside this catalog, then its nodes, port and the most GPU
+memory one of its containers uses, such as `Stop org/model on spark-1,
+spark-2 (port 8000 · 89 GiB per node)`; a service on the busy port comes
+first. Where a choice does not fit, its nodes become a count and the model
+name is cut from its start, keeping its end, before the port and memory give
+way. That Stop takes the same refresh and question as any Stop and removes
+the service's containers on every node; for a service outside the catalog,
+the question says so. The refused spec's own service is `service_exists`,
+with its own choices. Containers Pulsar does not manage, managed services the
+inventory could not establish as safe to stop, and GPU processes Pulsar did
+not start are named above the choices, read-only, with no choice. When the
+inventory cannot be taken or read, the choices are the ones in the table.
 
 Each choice runs the existing operation with its own selections, preview and
 confirmation, and none adds `--replace` or `--pull-image`. A failed
 multi-node launch whose containers were all seen removed offers no Live
 status, Service logs or Stop. The inventory, Cluster topology, topology check,
 host diagnostics, Service logs and a declined confirmation return to the same
-choices. The diagnostics rerun replaces them with its own. Any other
-choice, and Back, returns to the recipe after its outcome. An interrupted Start offers no choices; its outcome names the next
-inspection. `memory_warning` keeps its own retry above. `guard_unsupported`,
-`historical_spec` and `service_stopped` have no menu choice; their printed
-note gives the supported path.
+choices. The diagnostics rerun replaces them with its own. After a finished
+Stop, Stage serving image, Download, Restore or Prepare, and after the
+inventory menu, the choices return with **Start again** first (**Start now**
+after **Check launch prerequisites**); after a Stop or the inventory menu,
+the menu takes the service inventory again. Start again asks Start's own
+question for the same spec, node and snapshot, so Stop and Start keep
+separate confirmations. Live status, a failed or interrupted operation, and
+Back return to the recipe after the outcome. An interrupted Start offers no
+choices; its outcome names the next inspection. `memory_warning` keeps its own
+retry above. `guard_unsupported`, `historical_spec` and `service_stopped` have
+no menu choice; their printed note gives the supported path.
 
-These menu choices operate on catalog specs; they do not author or override
-recipes. Historical schema-1 specs do not offer the new launch shortcuts.
+These menu choices operate on catalog specs and the services in their way;
+they do not author or override recipes. Historical schema-1 specs do not offer
+the new launch shortcuts.
 
 The catalog menu exposes **Download**, **Restore**, **Move home**, **Prepare**,
 **Start**, pinning and cleanup through the same command boundaries. It asks

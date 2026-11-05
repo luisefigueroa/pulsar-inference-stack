@@ -262,10 +262,41 @@ start_catalog_spec() {
   rm -f "$checks"
 }
 
+# Returned by start_choices, and the Start functions above it, when the
+# operator chose Start again after a choice fixed something. The caller asks
+# Start's own question again for the same spec, node and snapshot.
+START_AGAIN=4
+
+# ask_start LABEL SPEC START_ARGS... — Start's question, then Start. Returns 0
+# when Start ran or could not be asked, 1 when declined, START_AGAIN, or 130.
+ask_start() {
+  local label="$1" spec="$2" question rc
+  shift 2
+  question=$(start_question_document | catalog_menu confirm --spec-id "$spec" --action start \
+    ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
+  confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
+  start_catalog_spec "$label" "$spec" "$@"
+}
+
+# start_until_done RC NODE SNAPSHOT LABEL SPEC START_ARGS... — while RC is
+# START_AGAIN, asks Start's question again with the node and snapshot
+# selected before the refusal (a choice in between selects its own). No
+# recursion: the machine question is not asked again and no screen hold is
+# nested. Returns the last ask_start status.
+start_until_done() {
+  local rc="$1" node="$2" snapshot="$3" label="$4" spec="$5"
+  shift 5
+  while [ "$rc" -eq "$START_AGAIN" ]; do
+    MENU_NODE="$node" MENU_SNAPSHOT="$snapshot" HOLD_SCREEN=0 rc=0
+    ask_start "$label" "$spec" "$@" || rc=$?
+  done
+  return "$rc"
+}
+
 # check_launch_prerequisites LABEL SPEC START_ARGS... — the existing dry run;
 # when it records blockers, the same choices as a refused Start follow.
 check_launch_prerequisites() {
-  local label="$1" spec="$2" blockers checks rc=0
+  local label="$1" spec="$2" blockers checks rc=0 node="$MENU_NODE" snapshot="$MENU_SNAPSHOT"
   shift 2
   blockers=$(mktemp) || return 1
   checks=$(mktemp) || { rm -f "$blockers"; return 1; }
@@ -277,7 +308,8 @@ check_launch_prerequisites() {
     start_choices "$spec" "$blockers" --dry-run "$@" || rc=$?
   fi
   rm -f "$blockers"
-  return "$rc"
+  # Start now leads to Start's own question, never straight to a launch.
+  start_until_done "$rc" "$node" "$snapshot" Start "$spec" "$@"
 }
 
 # start_choices SPEC BLOCKERS_FILE [--dry-run] START_ARGS...
@@ -285,27 +317,71 @@ check_launch_prerequisites() {
 # address its recorded blockers, from the codes rather than the printed text.
 # Each runs with its own selection, preview and confirmation, and none passes
 # --replace or --pull-image. The choice stands in for the Continue hold. Read-only
-# choices return here; a declined one returns here too. Returns 130 on Ctrl-C.
+# choices return here; a declined one returns here too.
+#
+# A busy port or too little memory may be held by another service, which start
+# cannot name: the menu takes one service inventory before the choices, and
+# again after a Stop or the inventory menu, and offers Stop for each
+# Pulsar-managed service on the serving nodes. After a finished Stop, image
+# staging, Download, Restore or Prepare, and after the inventory menu, the
+# choices return with Start again (Start now after a dry run) first. Returns
+# START_AGAIN for it, 130 on Ctrl-C, else 0.
 start_choices() {
-  local spec="$1" blockers="$2" dry_run="$3" title="" line kind label choice rc
+  local spec="$1" blockers="$2" dry_run="$3" title="" line kind label choice rc conf name
+  local refresh=1 wants_live=0 node="$MENU_NODE" snapshot="$MENU_SNAPSHOT"
   shift 3
-  local -a kinds=() labels=()
+  local -a kinds=() labels=() confs=() names=() notes=() live=() again=()
   while true; do
-    title=""; kinds=(); labels=()
-    # Each line is KIND, a tab and a nonempty label.
+    wants_live=0
+    if catalog_menu service-blockers --blockers-file "$blockers"; then wants_live=1; fi
+    # The first list, and one after a change, read what runs now. A failed
+    # capture leaves today's choices; its line stays above them.
+    if [ "$wants_live" = 1 ] && [ "$refresh" = 1 ]; then
+      refresh=0
+      check_running_services "$ROW_JSON" || return $?
+      live=(--repo-root "$REPO_DIR" ${node:+--node "$node"})
+      [ "$LIVE_REFRESHED" = 0 ] || live+=(--live "$LIVE_FILE")
+    fi
+    title=""; kinds=(); labels=(); confs=(); names=(); notes=()
+    # Each line is KIND, a tab and a nonempty label; a stop-other line puts
+    # the spec ID and the model, each followed by a tab, before its label.
     while IFS= read -r line; do
       kind=${line%%$'\t'*}; label=${line#*$'\t'}
       [ -n "$kind" ] && [ "$kind" != "$line" ] || continue
-      if [ "$kind" = title ]; then title=$label; else kinds+=("$kind"); labels+=("$label"); fi
+      conf="" name=""
+      case "$kind" in
+        title) title=$label; continue ;;
+        note) notes+=("$label"); continue ;;
+        stop-other)
+          conf=${label%%$'\t'*}; label=${label#*$'\t'}
+          name=${label%%$'\t'*}; label=${label#*$'\t'} ;;
+      esac
+      kinds+=("$kind"); labels+=("$label"); confs+=("$conf"); names+=("$name")
     done < <(printf '%s' "$ROW_JSON" | catalog_menu start-choices --spec-id "$spec" \
-      --archive-location "$(archive_location)" --blockers-file "$blockers" ${dry_run:+--dry-run} || true)
+      --archive-location "$(archive_location)" --blockers-file "$blockers" ${dry_run:+--dry-run} \
+      "${live[@]}" "${again[@]}" || true)
     [ "${#kinds[@]}" -gt 0 ] || return 0
     HOLD_SCREEN=0
+    [ "${#notes[@]}" -eq 0 ] || { echo; printf '%s\n' "${notes[@]}"; } | python3 -m scripts.terminal_format --text
     choice=$(choose_index "$title" "${labels[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "$choice" -lt "${#kinds[@]}" ] || return 0
     rc=0
     case "${kinds[$choice]}" in
-      inventory) "$REPO_DIR/pulsar" inventory menu || rc=$? ;;
+      start-again)
+        MENU_NODE="$node" MENU_SNAPSHOT="$snapshot"
+        return "$START_AGAIN" ;;
+      stop-other)
+        OPERATION_RC=-1 OPERATION_INTERRUPTED=0
+        stop_other_service "${confs[$choice]}" "${names[$choice]}" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+          # A failed or interrupted Stop leaves its outcome on screen and returns to the recipe.
+          [ "$OPERATION_RC" -eq 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ] || return 0
+          again=(--start-again) refresh=1
+        fi ;;
+      inventory)
+        # Whatever was stopped there, the next list reads what runs now.
+        "$REPO_DIR/pulsar" inventory menu || rc=$?
+        again=(--start-again) refresh=1 ;;
       topology-menu) "$REPO_DIR/pulsar" topology menu || rc=$? ;;
       topology-check) page_output "Checking saved nodes and fabric…" "$REPO_DIR/pulsar" topology check || rc=$? ;;
       doctor) page_output "Running host diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
@@ -320,11 +396,50 @@ start_choices() {
         [ "$OPERATION_RC" -ne 0 ] || return 0
         dry_run=--dry-run ;;
       *)
+        OPERATION_RC=-1 OPERATION_INTERRUPTED=0
         perform_action "${kinds[$choice]}" "${labels[$choice]}" "$spec" || rc=$?
-        [ "$rc" -eq 0 ] && [ "$HOLD_SCREEN" = 1 ] && return 0 ;;
+        if [ "$rc" -eq 0 ] && [ "$HOLD_SCREEN" = 1 ]; then
+          # A finished fix returns here with Start again first; Live status,
+          # a failed or interrupted operation, and a preview that ended
+          # without a question return to the recipe with their outcome.
+          case "${kinds[$choice]}" in
+            stop|image-stage|prepare|acquire|restore)
+              [ "$OPERATION_RC" -eq 0 ] && [ "$OPERATION_INTERRUPTED" -eq 0 ] || return 0
+              again=(--start-again)
+              [ "${kinds[$choice]}" != stop ] || refresh=1 ;;
+            *) return 0 ;;
+          esac
+        fi ;;
     esac
     [ "$rc" -ne 130 ] || return 130
   done
+}
+
+# stop_other_service SPEC_ID MODEL — Stop for another service a refused Start
+# named, as a blocked plan's Stop does: refresh what runs, ask Stop's own
+# question (a service outside the catalog says so), then run down.sh SPEC_ID,
+# which removes its containers on every node. Returns 0 when Stop ran, 1 when
+# it was declined or could not be asked, 130 on Ctrl-C.
+stop_other_service() {
+  local conf="$1" name="$2" row question rc node="$MENU_NODE"
+  local -a scope=()
+  if row=$(catalog show "$conf" --json 2>/dev/null); then
+    check_running_services "$row" || return $?
+    live_args
+    [ "$LIVE_REFRESHED" = 0 ] || scope=("${LIVE_ARGS[@]}")
+    question=$(printf '%s' "$row" | catalog_menu confirm --spec-id "$conf" --action stop "${scope[@]}") || return 1
+  else
+    check_running_services "$ROW_JSON" || return $?
+    [ "$LIVE_REFRESHED" = 0 ] || scope=(--live "$LIVE_FILE")
+    question=$(catalog_menu other-stop-question --conf "$conf" --served-name "$name" "${scope[@]}") || return 1
+  fi
+  confirm "$question" no || { rc=$?; echo 'Nothing changed.'; [ "$rc" -ne 130 ] || return 130; return 1; }
+  # run_operation stamps MENU_NODE on the stopped spec's outcome, which would
+  # read as a one-node Stop of that spec; this Stop has no node.
+  MENU_NODE=""
+  run_operation stop Stop "$conf" "$name" "$REPO_DIR/scripts/down.sh" "$conf"
+  MENU_NODE="$node"
+  return 0
 }
 
 stage_catalog_image() {
@@ -553,7 +668,10 @@ perform_action() {
         ${MENU_NODE:+--node "$MENU_NODE"} "${scope[@]}") || return 0
       confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
       if [ "$action" = start ]; then
-        start_catalog_spec "$label" "$spec" "${args[@]}"
+        rc=0
+        start_catalog_spec "$label" "$spec" "${args[@]}" || rc=$?
+        # Start again restores the node and snapshot selected for this Start.
+        start_until_done "$rc" "$MENU_NODE" "$MENU_SNAPSHOT" "$label" "$spec" "${args[@]}"
       else
         run_operation stop "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/down.sh" "$spec" "${args[@]}"
       fi ;;
