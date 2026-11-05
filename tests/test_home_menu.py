@@ -369,10 +369,12 @@ wait_continue() {
 
     def test_next_line_follows_the_setup_status_from_saved_records(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
-        self.catalog.write_text(self.catalog_entries(never_checked("a"), never_checked("b"), ready("c")))
+        # Once a spec has a home, the check counts leave out specs without one.
+        downloaded = {**never_checked("a"), "home": ready("a")["home"]}
+        self.catalog.write_text(self.catalog_entries(downloaded, never_checked("b"), ready("c")))
         result = self.run_home(["Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        line = ("Next: 2 specs not checked yet · 1 spec ready to Start — open Catalog and storage. "
+        line = ("Next: 1 spec not checked yet · 1 spec ready to Start — open Catalog and storage. "
                 "Newest saved check: 2 hours ago.")
         self.assertIn(line, " ".join(result.stdout.split()))
         self.assertLess(result.stdout.index("Topology"), result.stdout.index("Next:"))

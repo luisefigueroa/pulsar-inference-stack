@@ -459,8 +459,11 @@ class Catalog(unittest.TestCase):
         manifest = self.put_home(spec)
         # Never checked, or checked too long ago: check the node the saved home names.
         self.assert_suggestion(["./pulsar", "models", "check", prefix, "--node", "spark-1"])
-        self.observe(spec, local_state="ready", archive_state="present", checked_at="2026-09-01T00:00:00Z")
+        self.observe(spec, local_state="missing", archive_state="present", checked_at="2026-09-01T00:00:00Z")
         self.assert_suggestion(["./pulsar", "models", "check", prefix, "--node", "spark-1"])
+        # Start rechecks prepared files, so an old check that found them prepared still leads to Start.
+        self.observe(spec, local_state="ready", archive_state="present", checked_at="2026-09-01T00:00:00Z")
+        self.assert_suggestion(["./pulsar", "start", prefix, "--node", "spark-1"])
         self.observe(spec, local_state="changed", archive_state="present")
         self.assert_suggestion(["./pulsar", "model", "prepare", prefix, "--node", "spark-1", "--yes"])
         self.observe(spec, local_state="ready", archive_state="present")
