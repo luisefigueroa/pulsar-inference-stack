@@ -367,10 +367,13 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", f"{LABELS[after].lower()} ran after the last check"
     if row.get("checked_at") is None:
         return "check", "no saved check"
-    if age is None or age > STALE_SECONDS:
-        return "check", "last check " + age_text(age)
     local = row.get("local_state", "unknown")
     blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
+    # Start rechecks prepared files before launching, so a saved check that
+    # found them prepared stays usable at any age; every other state is
+    # checked again once its observation is out of date.
+    if age is None or (age > STALE_SECONDS and (local != "ready" or blocker)):
+        return "check", "last check " + age_text(age)
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     found = _next_home(row, offered, archive_location, now)
@@ -389,7 +392,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if local == "ready":
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
             return "status", live_value(live) + "; check before starting"
-        return "start", "files prepared as of the last check; start rechecks prerequisites"
+        return "start", f"files prepared as of the last check ({age_text(age)}); Start rechecks them"
     return None
 
 
@@ -1259,9 +1262,15 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
     """One line for the home screen: what the saved records suggest, and their age.
 
     Uses the same suggestion as each recipe menu, without session outcomes or
-    service observations; nothing here probes nodes. None when no spec has a
+    service observations; nothing here probes nodes. When some spec has a
+    recorded home, the check counts cover only specs with one, so recipes
+    this cluster never downloaded are not counted. None when no spec has a
     suggested step.
     """
+    def has_home(row: dict) -> bool:
+        return any(member.get("home") for member in members(row).values())
+
+    any_home = any(has_home(row) for row in rows)
     counts: dict[str, int] = {}
     for row in rows:
         offered, _, _ = operations(row, archive_location)
@@ -1269,6 +1278,8 @@ def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool
         if not found or found[0] not in HOME_NEXT:
             continue
         key = "not-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
+        if key in ("not-checked", "check") and any_home and not has_home(row):
+            continue
         counts[key] = counts.get(key, 0) + 1
     if not counts:
         return None
