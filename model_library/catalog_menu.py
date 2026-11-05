@@ -634,9 +634,13 @@ def _recipe_facts(row: dict) -> list[tuple[object, str, str]]:
     recipes of one model apart, in the order a list label names them."""
     nodes = (row.get("geometry") or {}).get("nodes")
     facts: list[tuple[object, str, str]] = [(nodes, node_count(nodes), node_count(nodes))]
-    for flag, values in setting_values(row.get("engine_args") or []).items():
+    arguments = row.get("engine_args")
+    for flag, values in setting_values(arguments or []).items():
         label = SETTING_FLAGS[flag]
-        if not values:
+        if arguments is None:
+            # Unknown is not absent: a row without its arguments says so.
+            facts.append((None, f"{label} not recorded", f"{label} not recorded"))
+        elif not values:
             facts.append(((), f"{label} not set", f"{label} not set"))
         else:
             facts.append((tuple(values), f"{label} {'/'.join(short_count(value) for value in values)}",

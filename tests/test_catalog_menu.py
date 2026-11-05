@@ -758,6 +758,8 @@ class RecipesOfOneModel(unittest.TestCase):
         self.assertEqual(menu.distinguishing_facts(nodes), {"aa" * 32: "2 nodes", "bb" * 32: "1 node"})
         unset = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-num-seqs", "1"])]
         self.assertEqual(menu.distinguishing_facts(unset)["bb" * 32], "context not set")
+        unrecorded = [recipe("aa"), {key: value for key, value in recipe("bb").items() if key != "engine_args"}]
+        self.assertEqual(menu.distinguishing_facts(unrecorded)["bb" * 32], "context not recorded")
         sequences = [recipe("aa"), dict(recipe("bb"), engine_args=["--max-model-len", "500000", "--max-num-seqs=8"])]
         self.assertEqual(menu.distinguishing_facts(sequences)["bb" * 32], "max sequences 8")
         quantized = [recipe("aa"), dict(recipe("bb"), engine_args=[*recipe("bb")["engine_args"], "--quantization", "fp8"])]
