@@ -1108,7 +1108,22 @@ inventory did not see the one-node service on exactly one confirmed machine,
 because Stop without a node removes the service's containers on every node.
 The recipe list labels show the same short saved state; where the whole label
 fits (60 columns or wider), they also name the node count and the spec's state,
-as `models list` does. State is metadata, never a gate. Storage mutations run the
+as `models list` does. State is metadata, never a gate. When the catalog has
+several recipes of one model, each of their labels names, after the spec, the
+first recorded fact that differs: the node count (`2 nodes`), the context
+(`context 1M` for `--max-model-len 1048576`, `context 500K`), `max sequences`,
+`quantization`, or else a short image digest; where that leaves recipes alike,
+the next fact that differs is added. No fact is ever cut, and no two recipes of
+one model show the same label. As the terminal narrows, the model name is cut
+first, without its organization where no other model reads the same and then in
+the middle so its end stays; then the saved state yields; then facts the recipe
+does not need to be told apart from the others; then the spec prefix shortens
+to 8 characters; at the narrowest, the model name goes and only whole facts
+that fit remain. Every label keeps a warning such as `withdrawn` or `start
+blocked` and at least the 8-character spec prefix. The Start question names the same fact after the model,
+such as "Start deepseek-ai/DeepSeek-V4.1-Flash-1017 (context 1M) on …?", except
+a node count, since it already names the nodes. Any other model name that does
+not fit is cut the same way. The list keeps catalog order. Storage mutations run the
 operation's own `--plan` preview and show a one-to-three-line summary of it:
 what changes, where, how much, and the headroom left, or that nothing would be
 copied, deleted or changed. A question then names the model, nodes and

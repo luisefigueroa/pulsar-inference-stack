@@ -1137,6 +1137,20 @@ raise SystemExit(rc)
         self.assertTrue(last.startswith(" not running on any node (Live status"), last)
         self.assertNotIn("started from this menu", last)
 
+    def test_start_question_names_the_setting_that_tells_recipes_of_one_model_apart(self):
+        from release_spec import serving
+        from release_spec.tests.test_serving_guard import FIXTURES
+        base = json.loads((FIXTURES / "spec.json").read_text())
+        longer = serving.apply_overrides(base, {"engine_args": [*base["recipe"]["engine_args"], "--max-model-len", "1048576"]})
+        order = sorted([base["spec_id"], longer["spec_id"]])
+        _, result, actions, choices, questions = self.run_menu(
+            ["#0", "Start", "fixture-host", "Back", "Back"], confirms=["no"], additional_specs=(longer,))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [])
+        fact = "context 1M" if order[0] == longer["spec_id"] else "context not set"
+        self.assertIn(f"Start example/model ({fact}) on fixture-node", questions)
+        self.assertIn(f"[{order[1][:12]}] context ", choices)
+
     def test_a_one_node_stop_does_not_claim_absence_everywhere(self):
         _, result, _, _, _ = self.run_menu(["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
