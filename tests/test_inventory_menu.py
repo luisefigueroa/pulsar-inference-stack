@@ -236,15 +236,32 @@ class Projection(unittest.TestCase):
     def test_rows_outside_the_catalog_fit_narrow_terminals(self):
         data = snapshot(); data["services"].append(outside())
         data["services"][-1]["served_name"] = "experiment/" + "long-model-" * 8
-        expected = {80: " · 1 node · port 8001 · outside the catalog", 60: " · outside the catalog", 44: ""}
+        expected = {80: " · 1 node · outside the catalog", 60: " · outside the catalog", 44: ""}
         for width, suffix in expected.items():
             with self.subTest(width=width):
                 label = next(line.split("\t")[2] for line in inventory_menu.view(data, CATALOG, width=width)
                              if line.startswith("other\t"))
                 self.assertLessEqual(len(label), width - 2)
-                # The model keeps at least 12 characters, as catalog rows do.
                 self.assertTrue(label.startswith(f"RUNNING [{OUTSIDE[:12]}] experimen"), label)
                 self.assertTrue(label.endswith("..." + suffix), label)
+
+    # The served name is the identity of a row outside the catalog: the count
+    # and port give way before it is cut below 24 characters; the marker alone
+    # leaves it 12, as catalog rows have.
+    def test_rows_outside_the_catalog_keep_room_for_the_served_name(self):
+        data = snapshot(); data["services"].append(outside())
+        data["services"][-1]["served_name"] = "nvidia/Nemotron-Super-Experiment-FP8"
+        labels = {width: next(line.split("\t")[2] for line in inventory_menu.view(data, CATALOG, width=width)
+                              if line.startswith("other\t"))
+                  for width in (80, 60)}
+        self.assertEqual(labels, {
+            80: f"RUNNING [{OUTSIDE[:12]}] nvidia/Nemotron-Super... · 1 node · outside the catalog",
+            60: f"RUNNING [{OUTSIDE[:12]}] nvidia/Nem... · outside the catalog"})
+        # Catalog rows keep their 12-character rule.
+        catalog = [{**CATALOG[0], "model_id": "nvidia/Nemotron-Super-Catalog-Model-FP8"}]
+        row = next(line.split("\t")[2] for line in inventory_menu.view(snapshot(), catalog, width=60)
+                   if line.startswith("service\t"))
+        self.assertEqual(row, f"RUNNING [{SPEC[:12]}] nvidia/Nemotron-Super-C... · 1 node")
 
     # TUI-78: stop --all names every service with the Pulsar-managed label.
     def test_stop_all_question_names_every_managed_service(self):

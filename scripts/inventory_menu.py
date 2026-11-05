@@ -207,13 +207,18 @@ def project_others(inventory, catalog):
     return result
 
 
-def service_label(state, key, model, details, budget):
-    """STATE [spec12] MODEL then the longest of DETAILS that leaves the model its room."""
+def service_label(state, key, model, details, budget, rooms=None):
+    """STATE [spec12] MODEL then the longest of DETAILS that leaves the model its room.
+
+    ROOMS gives, for each detail, the characters the model keeps before that
+    detail is dropped; 12 for each by default.
+    """
     prefix = f"{state.upper()} [{key[:12]}] "
+    rooms = list(rooms or [12] * len(details))
     # Narrow terminals drop details, last first, before the model's room.
-    for suffix in (*details, ""):
+    for suffix, room in zip((*details, ""), (*rooms, 12)):
         remaining = budget - len(prefix) - len(suffix)
-        if remaining >= min(len(model), 12):
+        if remaining >= min(len(model), room):
             break
     if len(model) > remaining:
         model = model[:remaining - 3] + "..." if remaining >= 4 else ""
@@ -291,8 +296,11 @@ def view(inventory, catalog, spec_id=None, *, width=None, now=None):
             port = f" · port {service['port']}" if service["port"] else ""
             count = node_count(service)
             outside = " · outside the catalog"
+            # The served name is this row's identity, so the count and port
+            # give way before it is cut below 24 characters.
             label = service_label(service["state"], key, service["model_id"],
-                                  (f" · {count}{port}{outside}", f" · {count}{outside}", outside), budget)
+                                  (f" · {count}{port}{outside}", f" · {count}{outside}", outside), budget,
+                                  rooms=(24, 24, 12))
             commands.append(f"other\t{key}\t{label}")
         question = stop_all_question(inventory, {row["spec_id"]: row for row in catalog})
         if question:
