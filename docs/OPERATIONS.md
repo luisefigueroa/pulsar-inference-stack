@@ -1088,7 +1088,8 @@ model name is cut first, without its organization where no other model reads
 the same and then in the middle so its end stays, and on a narrow terminal the
 saved state yields. The Start question names the same fact after the model,
 such as "Start deepseek-ai/DeepSeek-V4.1-Flash-1017 (context 1M) on …?", except
-a node count, since it already names the nodes. The list keeps catalog order. Storage mutations run the
+a node count, since it already names the nodes. Any other model name that does
+not fit is cut the same way. The list keeps catalog order. Storage mutations run the
 operation's own `--plan` preview and show a one-to-three-line summary of it:
 what changes, where, how much, and the headroom left, or that nothing would be
 copied, deleted or changed. A question then names the model, nodes and
