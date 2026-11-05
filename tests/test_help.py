@@ -188,7 +188,9 @@ class Help(unittest.TestCase):
         """A new status word fails here until docs/OPERATIONS.md explains it."""
         from model_library import catalog, catalog_menu
         from release_spec import schema
+        from scripts import saved_observations
         words = {catalog.NOT_CHECKED, *catalog.FILE_STATES.values(), *catalog.SNAPSHOT_FILE_STATES.values(),
+                 *saved_observations.HOME_WORDS.values(),
                  *catalog_menu.LABEL_FILES.values(), *catalog_menu.SERVICE_STATES.values(),
                  *(one for one, _ in catalog_menu.HOME_NEXT.values()),
                  *(state for state in schema.STATES if state), *schema.REVIEW_STATUSES,

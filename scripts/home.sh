@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Neutral workflow menu. Local files decide whether cluster setup is complete.
-# Entering the menu runs no SSH, Docker, GPU or Hugging Face probes.
+# Entering the menu runs no SSH, Docker, GPU or Hugging Face probes. The
+# Running block reads the last saved service inventory and storage budget.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 if [ ! -t 0 ] && [ "${PULSAR_FORCE_MENU:-0}" != 1 ]; then exec "$REPO_DIR/pulsar" help; fi
@@ -55,25 +56,47 @@ case "$complete:$next_action" in
     "./pulsar help" "commands and guides (help terms, help labels, help workflow)" ;;
 esac
 ui_keep_styles
+# The status is captured before it prints, so Python can't see the terminal;
+# it gets the width ui.sh reads from it, as the catalog menu does.
+columns=$(_ui_terminal_columns) || columns=""
+with_width() {
+  if [ -n "$columns" ]; then COLUMNS=$columns "$@"; else "$@"; fi
+}
 # The setup status prints on entry, then again only when a choice changed it;
-# the previous run of this menu passes what it printed.
-status_text=$(python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text)
-# After setup, a Next line from saved catalog records; a catalog that cannot
-# be read leaves it out, and Catalog and storage reports the error. So does an
-# unreadable archive setting, since suggestions depend on it; the status
-# above already says how to fix it.
+# the previous run of this menu passes what it compared.
+status_text=$(with_width python3 "$SETUP_PY" --repo-root "$REPO_DIR" --format text)
+status_key="$status_text"
 if [ "$complete" = 1 ]; then
+  # The catalog is listed once for the Next line and the Running block; a
+  # catalog that cannot be read leaves both out, and Catalog and storage
+  # reports the error.
+  catalog_json=$(python3 -m model_library.catalog list --json 2>/dev/null) || catalog_json=""
+  # The Next line comes from saved catalog records. An unreadable archive
+  # setting leaves it out, since suggestions depend on it; the status above
+  # already says how to fix it.
   archives=$(printf '%s' "$status_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["archives"]["status"])')
-  if [ "$archives" != unreadable ]; then
-    next_line=$(python3 -m model_library.catalog list --json 2>/dev/null \
+  if [ -n "$catalog_json" ] && [ "$archives" != unreadable ]; then
+    next_line=$(printf '%s' "$catalog_json" \
       | python3 -m model_library.catalog_menu next --archive-location "$archives" 2>/dev/null \
-      | python3 -m scripts.terminal_format --text) || next_line=""
+      | with_width python3 -m scripts.terminal_format --text) || next_line=""
     [ -z "$next_line" ] || status_text+=$'\n\n'"$next_line"
   fi
+  # The Running block comes from the last saved service inventory and storage
+  # budget, with their ages; nothing here probes a node. It prints again only
+  # when a new observation was saved or the saved inventory became "last seen",
+  # so its ages do not tick while the menu is open.
+  running="" running_key=""
+  if [ -n "$catalog_json" ]; then
+    running=$(printf '%s' "$catalog_json" \
+      | with_width python3 -m scripts.saved_observations home --repo-root "$REPO_DIR" 2>/dev/null) || running=""
+    running_key=$(python3 -m scripts.saved_observations key --repo-root "$REPO_DIR" 2>/dev/null) || running_key=""
+  fi
+  status_key="$status_text"$'\n'"$running_key"
+  [ -z "$running" ] || status_text+=$'\n\n'"$running"
 fi
 shown=${PULSAR_HOME_STATUS_SHOWN-}
 unset PULSAR_HOME_STATUS_SHOWN
-[ "$status_text" = "$shown" ] || printf '\n%s\n\n' "$status_text"
+[ "$status_key" = "$shown" ] || printf '\n%s\n\n' "$status_text"
 
 if [ "$complete" = 1 ]; then
   # The overview comes first: it answers what runs where before a catalog
@@ -104,7 +127,7 @@ if [ "$complete" = 1 ]; then
     review_catalog_error "$rc" || exit $?
   fi
   # Re-read local setup state; a submenu may have changed it.
-  PULSAR_HOME_STATUS_SHOWN="$status_text" exec "$REPO_DIR/scripts/home.sh"
+  PULSAR_HOME_STATUS_SHOWN="$status_key" exec "$REPO_DIR/scripts/home.sh"
 fi
 
 # First run: the next setup step and existing read-only inspection paths.
@@ -133,4 +156,4 @@ fi
 if [ "$choice" = 0 ] && [ "$rc" -ne 0 ]; then
   printf '✗ Setup step did not complete; details above\n'
 fi
-PULSAR_HOME_STATUS_SHOWN="$status_text" exec "$REPO_DIR/scripts/home.sh"
+PULSAR_HOME_STATUS_SHOWN="$status_key" exec "$REPO_DIR/scripts/home.sh"

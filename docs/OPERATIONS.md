@@ -98,6 +98,8 @@ JSON fields, and container labels retain their existing names. The menu's
 | node | A confirmed machine, named by its hostname. |
 | rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
 | controller | The machine that runs `./pulsar` from this checkout and keeps its saved records. It may also be a node. |
+| service inventory | What `./pulsar inventory` observed on every node: Pulsar services, their containers and memory, at one time. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Live service inventory save a new one. |
+| storage budget | What `./pulsar model budget` observed where each node keeps prepared copies: disk free, the reserve, Pulsar files and what it can still copy. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Model files and disk space (checks nodes now) save a new one. |
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
@@ -107,7 +109,8 @@ JSON fields, and container labels retain their existing names. The menu's
 The catalog list, a spec's frame, `./pulsar models list` and the home screen
 describe each spec with these words; the **Model files and disk space** page
 and `./pulsar model files` describe each model's files with the *Model files*
-rows. Each label is written as `Field: words`; the field is where the words
+rows. The home screen's Running block uses the *Running*, *Memory*, *GPU work*,
+*Disk* and *Observed* rows. Each label is written as `Field: words`; the field is where the words
 appear. The menu's **Help → What the labels mean**, the catalog list's
 **What the labels mean** and `./pulsar help labels` show this table. JSON output
 keeps its own values (`local_state`, `archive_state`, `state`); only the words
@@ -144,6 +147,19 @@ below are for reading.
 | Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Once any spec has a home, it counts only specs with one, so recipes this cluster never downloaded are left out. Open **Catalog and storage** and choose **Check now** on each. |
 | Next: needs Download, needs Restore or needs Prepare | The step the saved records suggest for those specs. The operation rechecks everything before it changes files. |
 | Next: ready to Start | The last saved check found every file prepared, however long ago. **Start** rechecks the files, image, nodes and memory before launching. |
+| Running: not observed yet | No *service inventory* or *storage budget* is saved on this controller yet, so the home screen cannot say what runs. It does not mean nothing runs. **Cluster overview (checks nodes now)** probes the nodes and saves what it sees. |
+| Running: running, exited containers … on nodes, port, GPU memory | Each Pulsar *service* in the last saved service inventory: its state, in the words of the **Running?** rows, the nodes it was seen on, its port and, when every rank measured it, its GPU memory. **Observed** says when; **Live service inventory** shows it and offers Stop. |
+| Running: last seen … | The saved service inventory is older than ten minutes, so the service may have started, stopped or changed since. **Cluster overview (checks nodes now)** rechecks. |
+| Running: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. |
+| Running: unknown, others unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. The **Memory** row gives the reason. |
+| Running: outside the catalog | A Pulsar-managed service whose spec this checkout does not publish, for example one an experiment started or one started with `--spec-file`. **Live service inventory** shows it and offers Stop. |
+| Running: saved inventory unreadable, saved budget unreadable | The saved file could not be read, so its rows are left out. The next check replaces it; the choice on the line runs one. |
+| Memory: … GiB available of … | Each node's available memory and its total, in GiB, from the last saved service inventory. GB10 shares this memory between the GPU and the host. |
+| Memory: not observed, memory not measured | The node did not answer, for the reason given, or answered without a memory reading. Its services are then unknown, not absent. |
+| GPU work: … Pulsar did not start | Processes using the GPU that Pulsar did not start, counted, with their GPU memory on each node. Pulsar leaves them alone; **Live service inventory** lists them. |
+| Disk: can still copy, free | Each node's disk in the last saved storage budget, in the budget table's terms: what it can still copy (the smaller of disk free after the reserve and the copy budget left) and its disk free. It reads `not observed yet` until a budget is saved; **Observed** gives its age. |
+| Disk: past its reserve or copy budget, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. **Model files and disk space (checks nodes now)** shows the whole table. |
+| Observed: services … ago, disk … ago; last seen, not current | When the saved service inventory and storage budget were taken. The ages do not change while the menu stays open; a check that saves a new observation prints the block again. After ten minutes the inventory is `last seen, not current`. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -170,7 +186,7 @@ below are for reading.
 | Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
 | Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
 | Model files: would free | On a snapshot's page, for each spec that can clean it up: the listed size of the prepared copies that spec's **Purge** deletes, added up across nodes. A shared copy and a home used as a prepared copy are only released, so they free nothing. Purge removes nothing while any of the spec's copies, in any of its snapshots, or an unfinished copy it recorded, is pinned or in use, so the line then says it is blocked and names what clears it. A confirmed node whose files, records or containers could not be read makes the figure a minimum; a node outside confirmed membership counts only where it holds the spec's copies. A snapshot choice shows `frees N GiB` when one spec can clean it up and the whole figure is known. |
-| Model files: Storage budget | Under the nodes, one row per node from `./pulsar model budget`: disk free, the reserve, Pulsar files, and what the node can still copy. **not observed** gives the reason the budget could not be read; the files above are still current. |
+| Model files: Storage budget | Under the nodes, one row per node from `./pulsar model budget`: disk free, the reserve, Pulsar files, and what the node can still copy. **not observed** gives the reason the budget could not be read; the files above are still current. Each budget read is also saved on the controller for the home screen's **Disk** rows. |
 
 ## Configure topology and storage
 
@@ -736,7 +752,9 @@ After stop, the menu prints the outcome and how long it took, then waits for
 inventory** open in the pager when their output is long. Detailed status adds
 an outcome only when status answers no (exit 1) or cannot tell (exit 3).
 Model files, pins and archives are retained. The ordinary `inventory` and
-`inventory --json` commands remain read-only reports.
+`inventory --json` commands remain read-only toward the cluster and change
+nothing on a node; each run saves its observation on the controller for the
+home menu's Running block.
 
 ### Verify the recorded service and files
 
@@ -1103,14 +1121,32 @@ are gone. `start --json` reports the same record in its `cancelled` error.
 ### Before cluster setup
 
 The home menu reads saved configuration without probing nodes. It prints the
-setup status when it opens, and again after a choice only when that choice
-changed it. Cluster setup requires confirmed membership and, for multiple
+setup status when it opens, and again after a choice only when the setup
+status, the saved catalog records, the saved service inventory or the saved
+storage budget changed. Cluster setup requires confirmed membership and, for multiple
 nodes, enrolled SSH trust. After setup, the status ends with a Next line built
 from saved catalog records, such as `Next: 2 specs not checked yet · 1 spec needs
 Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
 each spec's suggested step from the catalog menu and runs no probe; once any
 spec has a home, specs without one are not counted as needing a check. The line
 is left out when no spec has a suggested step or the catalog cannot be read.
+
+After the Next line, the Running block shows the last saved
+[service inventory](#terms) and [storage budget](#terms): each Pulsar service
+with its state, nodes, port and GPU memory; each node's available memory, GPU
+work Pulsar did not start, and disk headroom; and when each was observed (see
+the [Running, Memory, GPU work, Disk and Observed labels](#catalog-labels)).
+Every `./pulsar inventory` and `./pulsar model budget` run, including those
+from **Cluster overview (checks nodes now)**, **Live service inventory** and
+**Model files and disk space (checks nodes now)**, saves its observation on the
+controller in `.pulsar/service-inventory.json` and `.pulsar/storage-budget.json`,
+which are never tracked. Before any is saved the rows read `not observed yet`,
+and an inventory older than ten minutes reads `last seen`. The ages do not
+tick while the menu stays open, as the Next line's do not; the block prints
+again when a new observation is saved or the inventory turns `last seen`. A
+saved file that cannot be read says so on its row and is replaced by the next
+check. The block is left out when the catalog cannot be read.
+
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
 needed; entering or browsing the menu never saves or disables that setting.
@@ -1236,7 +1272,8 @@ Opening the catalog probes no node. The spec list always ends with **What the
 labels mean**, which opens the [catalog labels](#catalog-labels) and also
 appears in read-only browsing. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
-result while the catalog menu is open; leaving it for the root menu starts
+result while the catalog menu is open; like every inventory run, it is also
+saved for the home menu's Running block. Leaving it for the root menu starts
 over. The list then says when it was observed and which nodes were not, and
 labels name a spec's service, such as `running on 3 nodes`. The recipe frame's **Running?** field gives the state, nodes, source
 and age; **Live status**, **Start** and **Stop** in the same catalog menu
@@ -1452,7 +1489,9 @@ node can still copy, which is the smaller of disk free after the reserve and the
 copy budget left. A node past either limit is named with the amount. Narrow
 terminals drop the reserve column first. The command uses the same reserve and
 allowance settings as preparation, requires no confirmation, and changes no
-spec's saved file-check state. This budget describes prepared-copy storage;
+spec's saved file-check state. It changes nothing on a node; each complete run
+saves the budget on the controller, stamped with the time it finished, for the
+home menu's Running block. This budget describes prepared-copy storage;
 home and archive locations may use other filesystems. The page's payload
 estimates for [model files](#model-files-across-the-nodes) are separate from
 this prepared-copy budget.
