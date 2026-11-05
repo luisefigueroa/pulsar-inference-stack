@@ -373,6 +373,11 @@ class Page(unittest.TestCase):
         self.assertTrue(all(len(line) <= 58 for line in lines), lines)
         self.assertEqual(_elide("short @12345678", 30), "short @12345678")
         self.assertEqual(len(_elide(base + " @12345678", 24)), 24)
+        # The catalog's recipe list cuts model names by the same rule.
+        from scripts.terminal_format import cut_middle
+        self.assertEqual(cut_middle("DeepSeek-V4.1-Flash-1017", 13), "DeepSe…h-1017")
+        self.assertEqual(cut_middle("short", 13), "short")
+        self.assertEqual([cut_middle("abc", width) for width in (1, 0)], ["…", ""])
 
     def test_the_org_is_kept_only_when_two_labels_would_read_the_same(self):
         same = [self.entry("one/Model", "a" * 40, []), self.entry("two/Model", "a" * 40, []),

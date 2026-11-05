@@ -243,12 +243,11 @@ def _labels(entries: list[dict]) -> list[str]:
 
 def _elide(label: str, width: int) -> str:
     """Cut the middle of a name, keeping its end and the commit: rows differ at the end."""
+    from scripts.terminal_format import cut_middle
     if len(label) <= width:
         return label
     name, at, commit = label.rpartition(" @")
-    room = width - len(at + commit) - 1
-    head = room // 2
-    return name[:head] + "…" + name[len(name) - (room - head):] + at + commit
+    return cut_middle(name, width - len(at + commit)) + at + commit
 
 
 def _key(keys: list[str], codes: bool) -> str:
