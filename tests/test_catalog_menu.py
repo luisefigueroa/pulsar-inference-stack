@@ -1263,7 +1263,8 @@ class Question(unittest.TestCase):
         purge = {"plan": {"eligible": True, "actions": [{"action": "remove-copy"}, {"action": "release-binding"}]},
                  "incomplete_preparations": []}
         self.assertEqual(menu.question("purge", state, plan=purge, names=NAMES),
-                         "Purge org/model: delete 1 working copy, release 1 binding? The home and the archive are kept.")
+                         "Purge org/model: delete 1 prepared copy and release 1 prepared copy whose files stay? "
+                         "The home and the archive are kept.")
         self.assertIn("from spark-1 to spark-3",
                        menu.question("move", state, plan={"source_node": "n0", "destination_node": "n2"}, names=NAMES))
         self.assertIn("Recovery requires a usable archive or an available download source.",
@@ -1525,12 +1526,44 @@ class PlanSummary(unittest.TestCase):
         plan = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": [
             {"node_id": "n1", "action": "remove-copy"}, {"node_id": "n2", "action": "remove-copy"},
             {"node_id": "n0", "action": "release-binding"}]}, "incomplete_preparations": [{}]}
+        # Without the plan's views a release cannot be named as the home or a shared copy.
         self.assertEqual(self.summary("purge", plan), [
-            "Delete 2 working copies, release 1 binding whose files are kept, clear 1 incomplete preparation "
+            "Delete 2 prepared copies, release 1 prepared copy whose files stay and clear 1 unfinished copy "
             "on spark-2, spark-3, spark-1."])
         empty = {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "actions": []}, "incomplete_preparations": []}
         self.assertEqual(self.summary("purge", empty), [
-            "Nothing to purge: no prepared copies or incomplete preparations are recorded for this spec."])
+            "Nothing to purge: no prepared copies or unfinished copies are recorded for this spec."])
+
+    @staticmethod
+    def purge_views():
+        """Views in the order of their actions: a copy with 3 GiB of files, a shared copy and the home."""
+        def view(node, home=False, files=None):
+            return {"node_id": node, "is_home_view": home,
+                    "verification": {"files": files or {"w.bin": [1, 2, 3, 1024]}}}
+        views = [view("n1", files={"a.bin": [1, 2, 33188, 2 * GIB, 0, 0], "b.bin": [1, 3, 33188, GIB, 0, 0]}),
+                 view("n2"), view("n0", home=True)]
+        actions = [{"node_id": "n1", "action": "remove-copy"}, {"node_id": "n2", "action": "release-binding"},
+                   {"node_id": "n0", "action": "release-binding"}]
+        return {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "views": views, "actions": actions},
+                "incomplete_preparations": []}
+
+    def test_purge_names_shared_copies_the_home_and_the_size_it_deletes(self):
+        plan = self.purge_views()
+        self.assertEqual(self.summary("purge", plan), [
+            "Delete 1 prepared copy (3.00 GiB), release 1 shared copy and stop using the home as a prepared copy "
+            "on spark-2, spark-3, spark-1. Shared files stay for other specs."])
+        self.assertEqual(menu.question("purge", checked(home=HOME), plan=plan, names=NAMES),
+                         "Purge org/model: delete 1 prepared copy (3.00 GiB), release 1 shared copy and stop using "
+                         "the home as a prepared copy on spark-2, spark-3, spark-1? Shared files stay for other "
+                         "specs; the home and the archive are kept.")
+        # Only what the purge does is named: no zero counts.
+        plan["plan"]["views"], plan["plan"]["actions"] = plan["plan"]["views"][:1], plan["plan"]["actions"][:1]
+        self.assertEqual(menu.question("purge", checked(home=HOME), plan=plan, names=NAMES),
+                         "Purge org/model: delete 1 prepared copy (3.00 GiB) on spark-2? "
+                         "The home and the archive are kept.")
+        # A copy without a readable size is still counted, without a size.
+        plan["plan"]["views"][0]["verification"] = {}
+        self.assertEqual(self.summary("purge", plan), ["Delete 1 prepared copy on spark-2."])
 
     def test_pin_and_unpin(self):
         views = [{"node_id": "n0", "pinned": True}, {"node_id": "n1", "pinned": False}]
