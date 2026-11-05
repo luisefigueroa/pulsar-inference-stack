@@ -1530,6 +1530,15 @@ class ServicesInTheWay(unittest.TestCase):
         narrow = menu.stop_other_label(stop, 30)
         self.assertEqual(narrow, f"Stop …-Super-VL [{OTHER[:12]}]")
         self.assertEqual(len(narrow), 30)
+        # A long catalog name is cut from its start before the facts give way.
+        long = {**stop, "name": "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"}
+        self.assertEqual(menu.stop_other_label(long, 78),
+                         "Stop …per-VL-120B-A12B-NVFP4 on spark-1, spark-2 (port 8000 · 89 GiB per node)")
+        self.assertEqual(menu.stop_other_label({**long, "hosts": ["node-alpha", "node-beta"]}, 78),
+                         "Stop …on-3.5-Super-VL-120B-A12B-NVFP4 on 2 nodes (port 8000 · 89 GiB per node)")
+        self.assertEqual(menu.stop_other_label(long, 58), "Stop …ron-3.5-Super-VL-120B-A12B-NVFP4 on spark-1, spark-2")
+        for width in (78, 58, 44, 32):
+            self.assertLessEqual(len(menu.stop_other_label(long, width)), width)
         # Facts are named only when known; one node takes no "per node".
         unknown = {**stop, "hosts": ["spark-1"], "port": None, "mib": None}
         self.assertEqual(menu.stop_other_label(unknown, 78), "Stop nvidia/Nemotron-Super-VL on spark-1")

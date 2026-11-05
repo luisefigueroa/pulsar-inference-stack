@@ -1275,7 +1275,9 @@ ordinary start uses. A choice names the catalog model, or the served name of a
 service started outside this catalog, then its nodes, port and the most GPU
 memory one of its containers uses, such as `Stop org/model on spark-1,
 spark-2 (port 8000 · 89 GiB per node)`; a service on the busy port comes
-first. That Stop takes the same refresh and question as any Stop and removes
+first. Where a choice does not fit, its nodes become a count and the model
+name is cut from its start, keeping its end, before the port and memory give
+way. That Stop takes the same refresh and question as any Stop and removes
 the service's containers on every node; for a service outside the catalog,
 the question says so. The refused spec's own service is `service_exists`,
 with its own choices. Containers Pulsar does not manage, managed services the

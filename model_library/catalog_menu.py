@@ -981,11 +981,12 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
 def stop_other_label(service: dict, width: int) -> str:
     """Stop MODEL on HOSTS (port P · N GiB per node), fitted to WIDTH.
 
-    The facts are shown only when known; where the hosts and facts do not fit
-    together, a multi-node service's hosts become a count (Stop's question
-    names them), then the facts give way, then the hosts give way to the
-    spec prefix, and at the narrowest the model name is cut from its start,
-    keeping its end.
+    The facts are shown only when known, and say why the service is in the
+    way, so they stay longest: where the label does not fit, a multi-node
+    service's hosts become a count (Stop's question names them), then the
+    model name is cut from its start, keeping its end and at least
+    STOP_NAME_ROOM characters; then the facts give way, then the hosts give
+    way to the spec prefix, before which the name is cut as far as needed.
     """
     count = len(service["hosts"])
     name, hosts = clean(service["name"]), ", ".join(service["hosts"]) or "its nodes"
@@ -994,17 +995,26 @@ def stop_other_label(service: dict, width: int) -> str:
         facts.append(f"port {service['port']}")
     if service.get("mib") is not None:
         facts.append(gib_text(service["mib"]) + (" per node" if count > 1 else ""))
-    identity = f"[{service['conf'][:12]}]"
-    ladder = []
-    if facts:
-        ladder.append(f"Stop {name} on {hosts} ({' · '.join(facts)})")
-        if count > 1:
-            ladder.append(f"Stop {name} on {count} nodes ({' · '.join(facts)})")
-    for text in ladder + [f"Stop {name} on {hosts}", f"Stop {name} {identity}"]:
-        if len(text) <= width:
-            return text
-    room = width - len(f"Stop … {identity}")
-    return f"Stop …{name[-room:]} {identity}" if room >= 4 else f"Stop {identity}"
+    places = [f" on {hosts}"] + ([f" on {count} nodes"] if count > 1 else [])
+    with_facts = [place + f" ({' · '.join(facts)})" for place in places] if facts else []
+    for tail, least in ([(tail, len(name)) for tail in with_facts] + [(tail, STOP_NAME_ROOM) for tail in with_facts]
+                        + [(places[0], len(name)), (places[0], STOP_NAME_ROOM)]):
+        room = width - len("Stop ") - len(tail)
+        if room >= min(least, len(name)):
+            return f"Stop {_keep_end(name, room)}{tail}"
+    identity = f" [{service['conf'][:12]}]"
+    room = width - len("Stop ") - len(identity)
+    return f"Stop {_keep_end(name, room)}{identity}" if room >= 4 else f"Stop{identity}"
+
+
+# A model name cut to fit a Stop choice keeps at least this many characters
+# while other parts of the label can still give way.
+STOP_NAME_ROOM = 20
+
+
+def _keep_end(name: str, room: int) -> str:
+    """NAME in ROOM characters: whole, or cut from its start, keeping its end."""
+    return name if len(name) <= room else "…" + name[len(name) - room + 1:]
 
 
 def start_choice_lines(records: list[dict], row: dict, archive_location: str, *, dry_run: bool = False,
