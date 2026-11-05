@@ -1109,6 +1109,19 @@ class HomeNext(unittest.TestCase):
                          "Next: 1 spec needs a check · 1 spec ready to Start — open Catalog and storage. "
                          "Newest saved check: 9 days ago.")
 
+    def test_check_counts_cover_specs_with_a_home_once_any_spec_has_one(self):
+        # Specs this cluster never downloaded would otherwise fill the line.
+        specs = [row(spec_id="a" * 64), row(spec_id="b" * 64, home=HOME),
+                 checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
+                 checked(spec_id="d" * 64, local_state="missing"),
+                 checked(spec_id="0" * 64, home=HOME, local_state="ready")]
+        self.assertEqual(menu.home_next(specs, "configured"),
+                         "Next: 1 spec not checked yet · 1 spec needs Download · 1 spec ready to Start — open "
+                         "Catalog and storage. Newest saved check: 2 hours ago.")
+        # Without any home (a fresh checkout or lost records), every spec counts.
+        self.assertTrue(menu.home_next(specs[:1] + specs[2:4], "configured").startswith(
+            "Next: 1 spec not checked yet · 1 spec needs a check · 1 spec needs Download — "))
+
     def test_counts_use_singular_and_plural_wording(self):
         ready = [checked(spec_id=c * 64, home=HOME, local_state="ready") for c in "ab"]
         self.assertEqual(menu.home_next(ready, "configured"),
