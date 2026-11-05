@@ -75,7 +75,7 @@ Live homes and prepared copies must be on node-local serving storage. Runtime
 checks reject known network filesystems such as NFS for those paths. Recovery
 archives may use the operator's mounted storage; archive configuration never
 prescribes mount options or claims failure-domain independence. Archive locations
-must not overlap directories managed as removable homes or working copies.
+must not overlap directories managed as removable homes or prepared copies.
 
 ## Terms
 
@@ -293,7 +293,7 @@ browsing works before topology is configured.
 ### Archive location
 
 A **home** is the complete local copy of one exact snapshot on a confirmed member. Serving
-nodes use prepared working copies. The library records their explicit
+nodes use prepared copies. The library records their explicit
 locations; a snapshot manifest supplies the expected file list and hashes.
 Files on every participating node must match before serving starts.
 
@@ -717,7 +717,7 @@ verification. Add `--full` to request a fresh full content audit. Archive
 verification and verification of newly copied bytes remain full audits.
 Prepared-copy inspection in `model info`, `model check` and `observe` uses up to
 three verification workers, with at most one per physical node. The batch covers
-homes and working copies for every required snapshot; shared references to the
+homes and prepared copies for every required snapshot; shared references to the
 same physical copy are verified once. `--verification-jobs N` sets the bound;
 use `--verification-jobs 1` for serial inspection. The mode is independent of
 `--full`: normal calls still reuse valid metadata, and full audits still hash
@@ -823,13 +823,18 @@ spec ID for `purge` and `remove`. Preview the intended cleanup before applying i
 ```
 
 Stop retains files, pins and evidence. Purge refuses active or pinned prepared
-copies and preserves homes and archives. It removes only the selected recipe's
-bindings; working-copy files remain while any other recipe has a binding, even
-an unpinned one. The final binding can delete the working copy only after the
-usual ownership, container and incomplete-operation checks. The result counts the
-prepared copies released, working copies deleted and unfinished preparations
-removed (`bindings_removed`, `copies_removed` and `preparations_removed` in
-JSON); when all three are zero it says **Nothing to purge**. Container references
+copies and preserves homes and archives. It releases only the selected spec's
+prepared copies: a copy another spec also uses is a shared copy, and its files
+stay while any other spec uses it, even unpinned. A home used as a prepared copy
+is released the same way. Only a prepared copy no other spec uses is deleted with
+its files, after the usual ownership, container and incomplete-operation checks.
+The menu's preview and question say how many prepared copies Purge deletes, with
+their size when the plan records it, how many shared copies it releases, and how
+many unfinished copies it clears, leaving out what it does not do. The result
+counts the prepared copies released, the prepared copies whose files were deleted
+and the unfinished copies removed (`bindings_removed`, `copies_removed` and
+`preparations_removed` in JSON); when all three are zero it says **Nothing to
+purge**. Container references
 to a shared path, including stopped containers, still block purge. A container
 that mounts any directory containing the copy, such as a whole home directory,
 counts. The plan names each such container, its node, whether it is running,
@@ -885,7 +890,7 @@ result.
 
 **Size per copy** is the model's listed size from its manifest for one complete
 copy, not allocated disk usage or promised reclaimable space. A home used as a prepared copy and a
-working copy shared by several recipes each remain one physical location.
+prepared copy shared by several specs each remain one physical location.
 Archive information comes from saved verification records, with its time; archive
 storage is not scanned by this overview and is never a cleanup target.
 
@@ -926,7 +931,7 @@ compatibility but is no longer required; `--yes` confirms removal for every home
 
 ### Shared-record compatibility
 
-Sharing upgrades the affected private working-copy records to schema 3 during
+Sharing upgrades the affected private prepared-copy records to schema 3 during
 the approved preparation. Their keys, paths and pins are preserved, and retries
 reconcile partial controller/node upgrades. Older Stack code rejects these
 records. Finish older model-library operations before the first shared prepare
@@ -1293,7 +1298,7 @@ or launch. The menu needs Gum; every action is also a command.
 start the server. Prepared files retain metadata stamps so unchanged files
 can avoid unnecessary full rehashing. A changed tree requires verification.
 When another recipe already has the same manifest on a selected physical node,
-preparation can bind the new recipe to that working copy. Its existing path,
+preparation can bind the new recipe to that prepared copy. Its existing path,
 files and verification stamp are reused; recipe, rank and topology bindings
 remain distinct. Earlier recipes keep their bindings and pins. The home rank
 still uses its registered home directly. Only nodes missing suitable content
@@ -1333,7 +1338,7 @@ Its payload estimates are separate from this prepared-copy budget.
 Routine acquisition of registered copies, preparation re-entry, inspection and
 serving observation reuse earlier verification while the complete file set,
 directory identity and file metadata still match. A new invocation does not
-invalidate that proof. Each new working copy is fully hashed before accepting
+invalidate that proof. Each new prepared copy is fully hashed before accepting
 staging; planning, source checks, the final rename and all-rank readiness can
 reuse valid results. Changed metadata triggers full hashing; corruption fails
 verification. Reuse preserves the timestamp of the last actual full hash. The

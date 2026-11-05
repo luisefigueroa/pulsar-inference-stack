@@ -30,7 +30,7 @@ from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, a
 from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
 from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
-                     projected_headroom, size_text)
+                     projected_headroom, short_size, size_text)
 from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
@@ -952,6 +952,42 @@ def _count(number: int, one: str, many: str | None = None) -> str:
     return f"{number} {one if number == 1 else (many or one + 's')}"
 
 
+def _view_size(view: dict) -> int | None:
+    """Bytes of a prepared copy's files from its verification stamp (path -> [dev, ino, mode, size, ...])."""
+    verification = view.get("verification")
+    files = verification.get("files") if isinstance(verification, dict) else None
+    if not isinstance(files, dict) or not files:
+        return None
+    sizes = [meta[3] for meta in files.values() if isinstance(meta, list) and len(meta) > 3]
+    return sum(sizes) if len(sizes) == len(files) and all(type(value) is int for value in sizes) else None
+
+
+def purge_parts(effect: dict) -> tuple[list[str], bool]:
+    """What a purge does, in glossary words, omitting what it does not do; and whether
+    it releases shared copies, whose files stay for other specs."""
+    parts = []
+    if effect["removed"]:
+        size = f" ({short_size(effect['removed_bytes'])})" if effect.get("removed_bytes") else ""
+        parts.append("delete " + _count(effect["removed"], "prepared copy", "prepared copies") + size)
+    if effect.get("released_shared") is None:
+        # A plan without its views cannot say which released copy is the home.
+        if effect["released"]:
+            parts.append("release " + _count(effect["released"], "prepared copy", "prepared copies")
+                         + " whose files stay")
+    else:
+        if effect["released_shared"]:
+            parts.append("release " + _count(effect["released_shared"], "shared copy", "shared copies"))
+        if effect["released_home"]:
+            parts.append("stop using the home as a prepared copy")
+    if effect["pending"]:
+        parts.append("clear " + _count(effect["pending"], "unfinished copy", "unfinished copies"))
+    return parts, bool(effect.get("released_shared"))
+
+
+def _joined(parts: list[str]) -> str:
+    return parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
 def plan_effect(action: str, plan: dict) -> dict:
     """What a storage plan would change; the preview summary and the question share it.
 
@@ -974,7 +1010,19 @@ def plan_effect(action: str, plan: dict) -> dict:
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
+        # The plan lists its views in the order of its actions; with them, a release
+        # is told apart as the home or a shared copy, and deleted files have a size.
+        views = document.get("views")
+        paired = isinstance(views, list) and len(views) == len(steps) and all(isinstance(v, dict) for v in views)
+        home = shared = size = None
+        if paired:
+            releases = [view for view, step in zip(views, steps) if step.get("action") != "remove-copy"]
+            home = sum(1 for view in releases if view.get("is_home_view") is True)
+            shared = len(releases) - home
+            sizes = [_view_size(view) for view, step in zip(views, steps) if step.get("action") == "remove-copy"]
+            size = sum(sizes) if sizes and all(value is not None for value in sizes) else None
         return {"removed": removed, "released": len(steps) - removed, "pending": pending,
+                "released_home": home, "released_shared": shared, "removed_bytes": size,
                 "nothing": not steps and not pending}
     if action in ("pin", "unpin"):
         views = document.get("views") or []
@@ -1081,17 +1129,11 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         return lines
     if action == "purge":
         if effect["nothing"]:
-            return ["Nothing to purge: no prepared copies or incomplete preparations are recorded for this spec."]
-        parts = []
-        if effect["removed"]:
-            parts.append("delete " + _count(effect["removed"], "working copy", "working copies"))
-        if effect["released"]:
-            parts.append("release " + _count(effect["released"], "binding") + " whose files are kept")
-        if effect["pending"]:
-            parts.append("clear " + _count(effect["pending"], "incomplete preparation"))
+            return ["Nothing to purge: no prepared copies or unfinished copies are recorded for this spec."]
+        parts, shared = purge_parts(effect)
         where = _node_list([str(step["node_id"]) for step in _plan_actions(plan) if step.get("node_id")], names)
-        text = ", ".join(parts)
-        return [text[0].upper() + text[1:] + (f" on {where}." if where else ".")]
+        text = _joined(parts) + (f" on {where}." if where else ".")
+        return [text[0].upper() + text[1:] + (" Shared files stay for other specs." if shared else "")]
     if action in ("pin", "unpin"):
         state = "pinned" if action == "pin" else "unpinned"
         if not effect["views"]:
@@ -1207,10 +1249,12 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
     if action == "purge":
         effect = plan_effect(action, plan)
         if effect["nothing"]:
-            return f"Purge {model}? No prepared copies or incomplete preparations are recorded; nothing is deleted."
-        staging = (" and " + _count(effect["pending"], "incomplete preparation")) if effect["pending"] else ""
-        return (f"Purge {model}: delete {_count(effect['removed'], 'working copy', 'working copies')}{staging}, "
-                f"release {_count(effect['released'], 'binding')}? The home and the archive are kept.")
+            return f"Purge {model}? No prepared copies or unfinished copies are recorded; nothing is deleted."
+        parts, shared = purge_parts(effect)
+        where = _node_list([str(step["node_id"]) for step in _plan_actions(plan) if step.get("node_id")], names)
+        return (f"Purge {model}: {_joined(parts)}{f' on {where}' if where else ''}? "
+                + ("Shared files stay for other specs; the home and the archive are kept." if shared
+                   else "The home and the archive are kept."))
     if action == "remove":
         home = (plan.get("plan") or plan).get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"

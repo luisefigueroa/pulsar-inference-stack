@@ -1513,7 +1513,7 @@ raise SystemExit(rc)
         answers = ["#0", "Storage and archive…", "Purge prepared copies", "Back", "Back", "Back"]
         _, result, _, _, questions = self.run_menu(answers, plan=plan, confirms=["no"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Delete 1 working copy on fixture-node", result.stdout)
+        self.assertIn("Delete 1 prepared copy on fixture-node", result.stdout)
         self.assertNotIn("Prepared-copy removal preview", result.stdout)
         self.assertIn("Purge", questions)
         # The summary cannot count these incomplete preparations; the whole
@@ -1523,7 +1523,7 @@ raise SystemExit(rc)
         _, result, actions, _, questions = self.run_menu(answers, plan=plan, confirms=["yes"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Prepared-copy removal preview", result.stdout)
-        self.assertNotIn("Delete 1 working copy", result.stdout)
+        self.assertNotIn("Delete 1 prepared copy", result.stdout)
         self.assertEqual(questions, "")
         self.assertEqual([action[-2:] for action in actions], [["--plan", "--json"]])
 

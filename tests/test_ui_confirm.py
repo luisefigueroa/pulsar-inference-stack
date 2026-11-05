@@ -325,7 +325,7 @@ class BundledGumReview(BundledGum):
     SCRIPT = '''
 . "$REPO_DIR/scripts/ui.sh"
 rc=0
-confirm_or_review "Purge fixture/model: delete 1 working copy?" "Purge prepared copies" \\
+confirm_or_review "Purge fixture/model: delete 1 prepared copy?" "Purge prepared copies" \\
   bash -c 'echo PREVIEW_RAN >>"$1"; for i in $(seq 1 40); do echo "full preview line $i"; done' _ "$PREVIEW_LOG" || rc=$?
 printf '\\nREVIEWED=%s\\n' "$rc"
 exit "$rc"
@@ -341,7 +341,7 @@ exit "$rc"
         code, output, previews = self.review(b"\r")
         self.assertEqual((code, previews), (1, 0), output)
         self.assertIn("REVIEWED=1", output)
-        self.assertLess(output.index("Purge fixture/model: delete 1 working copy?"), output.index("Yes, purge prepared copies"))
+        self.assertLess(output.index("Purge fixture/model: delete 1 prepared copy?"), output.index("Yes, purge prepared copies"))
         for option in ("Yes, purge prepared copies", "Show full preview", "No, change nothing"):
             self.assertIn(option, output)
 

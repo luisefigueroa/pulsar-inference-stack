@@ -580,7 +580,7 @@ Archive location is explicit PULSAR_COLD_ROOT.
 
     def test_text_without_a_usage_line_is_never_styled(self):
         # Questions and the SSH help pass through here too.
-        for text in ("\nPurge fixture/model: delete 1 working copy?\n", "Options:\n  --node NODE  One node\n"):
+        for text in ("\nPurge fixture/model: delete 1 prepared copy?\n", "Options:\n  --node NODE  One node\n"):
             with self.subTest(text=text):
                 self.assertEqual(self.render(80, text, terminal=True), self.render(80, text))
 
