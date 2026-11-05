@@ -1,5 +1,6 @@
 """End-to-end storage CLI contracts with synthetic nodes and real filesystem state."""
 import copy
+from datetime import datetime
 import json
 import hashlib
 import base64
@@ -710,13 +711,21 @@ class ModelLibraryCLI(unittest.TestCase):
         manifest = f.spec['recipe']['model']['snapshot_manifest']
         self.assertEqual(plan['total_bytes'], manifest['total_bytes'])
         self.assertEqual(plan['file_count'], manifest['file_count'])
-        report = self.success(f.run('budget'))
+        f.env.pop('PULSAR_STORAGE_BUDGET_FILE', None)
+        result = f.run('budget')
+        report = self.success(result)
+        self.assertNotIn('warning:', result.stderr)
         for index, node in enumerate(report['nodes']):
             self.assertEqual(node['reserve'], 5)
             self.assertEqual(node['limit'], 3000)
             self.assertEqual(node['path'], f.cfg['nodes'][index]['view_root'])
             self.assertEqual(plan['budgets'][node['node_id']]['reserve'], node['reserve'])
             self.assertEqual(plan['budgets'][node['node_id']]['limit'], node['limit'])
+        # The budget is saved in the checkout for the home menu, stamped when it finished.
+        saved = json.loads((f.repo / '.pulsar/storage-budget.json').read_text())
+        self.assertEqual(saved['nodes'], report['nodes'])
+        self.assertEqual(saved['kind'], 'pulsar-saved-storage-budget')
+        self.assertIsNotNone(datetime.fromisoformat(saved['saved_at'].replace('Z', '+00:00')).tzinfo)
         self.assertEqual({p: p.read_bytes() for p in f.state.rglob('*.json')}, before)
         self.assertEqual(f.events('transfer'), [])
 

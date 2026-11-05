@@ -524,6 +524,26 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         # Each rank reports the port its container runs with, apart from today's configuration.
         self.assertEqual({rank['observed_api_port'] for rank in service['ranks']},{8000})
 
+    def test_inventory_saves_its_observation_without_changing_its_output(self):
+        # A fixture run saves only where the override points, never into the checkout.
+        checkout=ROOT/'.pulsar'/'service-inventory.json'
+        def state():
+            return (checkout.stat().st_mtime_ns,checkout.stat().st_size) if checkout.exists() else None
+        before=state()
+        self.env.pop('PULSAR_SERVICE_INVENTORY_FILE',None)
+        plain=self.inventory(self.raw_inventory());self.assertEqual(plain.returncode,0,plain.stderr)
+        self.assertEqual(state(),before)
+        saved=self.root/'saved'/'service-inventory.json'
+        self.env['PULSAR_SERVICE_INVENTORY_FILE']=str(saved)
+        result=self.inventory(self.raw_inventory());self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stderr,'')
+        self.assertEqual(json.loads(saved.read_text()),json.loads(result.stdout))
+        # Only the generation time can differ between the two runs.
+        first,second=json.loads(plain.stdout),json.loads(result.stdout)
+        first.pop('generated_at');second.pop('generated_at')
+        self.assertEqual(first,second)
+        self.assertEqual(state(),before)
+
     def test_inventory_wrong_physical_identity_and_unknown_rank(self):
         for mode in ('wrong-node','unknown-node'):
             raw=self.raw_inventory()

@@ -10,7 +10,8 @@
 # Human output (default) is a stacked, width-aware operator view of active and
 # actionable services, unmanaged GPU PIDs, and summarized inactive diagnostics.
 # --verbose prints every service plus diagnostic metadata. --json always retains
-# the full inventory (schema_version=1).
+# the full inventory (schema_version=1). Each live run also saves the inventory
+# on the controller for the home menu's Running block; nothing on a node changes.
 set -euo pipefail
 if [ "${1:-}" = menu ]; then
   shift
@@ -1375,6 +1376,14 @@ fi
 
 export SNAP_PATH="$snap_file"
 inventory=$(classify_snapshot)
+
+# The last observation is kept for menus that must not wait on a probe
+# (scripts/saved_observations.py). Fixture runs save only where
+# PULSAR_SERVICE_INVENTORY_FILE points, so tests never write into a checkout.
+# Saving never changes this command's output or exit status.
+if [ -z "$FROM_FIXTURE" ] || [ -n "${PULSAR_SERVICE_INVENTORY_FILE:-}" ]; then
+  printf '%s\n' "$inventory" | python3 -m scripts.saved_observations save-inventory --repo-root "$REPO_DIR" >&2 || true
+fi
 
 if [ "$JSON" = 1 ]; then
   printf '%s\n' "$inventory"
