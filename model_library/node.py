@@ -15,6 +15,23 @@ from .state import (Store, checked_id, ensure_directory, validate_home, validate
                     view_record_key, view_destination, shared_view, reconcile_views,
                     copy_references, VIEW_IDENTITY_FIELDS, now)
 
+# Prepare's advice for a folder at a prepared copy's path that no record names.
+# Purge acts on records only, so it cannot remove such a folder.
+UNRECORDED_DESTINATION_FIX = ('Pulsar has no record of this folder and never deletes files it did not record. '
+                              'Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
+
+
+def destination_recorded(store: Store, destination: Path) -> bool:
+    """Whether a node record names the prepared copy path, a path inside it, or one containing it."""
+    def overlaps(value) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+        path = Path(value)
+        return path == destination or destination in path.parents or path in destination.parents
+    return (any(overlaps(v.get(field)) for v in store.views() for field in ('hub_path', 'path'))
+            or any(overlaps(t.get(field)) for t in store.records('transactions')
+                   for field in ('destination', 'stage', 'path')))
+
 
 def run(request: dict) -> dict:
     if sys.version_info < (3, 11):
@@ -40,13 +57,14 @@ def run(request: dict) -> dict:
     if (view_root/'.pulsar-node').is_symlink():
         raise StorageError('node state must not be an internal symlink')
     node_store = Store(view_root/'.pulsar-node')
-    owned_operations = {'view-records', 'refresh-view', 'save-view', 'pin-view',
+    read_operations = {'view-records', 'view-destination'}
+    owned_operations = {*read_operations, 'refresh-view', 'save-view', 'pin-view',
                         'forget-view', 'remove-staging', 'begin-view', 'publish-view',
                         'bind-view', 'remove-view'}
     # Serialize sharing and final deletion on the physical node, including calls
     # from different controllers. A read of absent state must stay read-only.
-    lock = (node_store.lock(exclusive=op != 'view-records') if op in owned_operations
-            and (op != 'view-records' or node_store.root.exists()) else nullcontext())
+    lock = (node_store.lock(exclusive=op not in read_operations) if op in owned_operations
+            and (op not in read_operations or node_store.root.exists()) else nullcontext())
     with lock:
         return run_node(request, node_store, home_root, view_root)
 
@@ -175,6 +193,15 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
     manifest = verify_manifest(request['manifest'])
     view_identity = {'schema_version':request.get('view_schema',1), 'spec_id':request.get('spec_id'),
                      'node_id':request.get('node_id'), 'snapshot_manifest_id':manifest['manifest_id']}
+    if op == 'view-destination':
+        # Read-only: where begin-view would place this rank's prepared copy, and
+        # whether something is already there that no node record names.
+        dest = view_destination(view_root, view_identity)
+        try:
+            dest.lstat()
+        except FileNotFoundError:
+            return {'path': str(dest), 'state': 'missing', 'recorded': destination_recorded(node_store, dest)}
+        return {'path': str(dest), 'state': 'present', 'recorded': destination_recorded(node_store, dest)}
     if op == 'exists':
         require_serving_filesystem(home_root)
         hub = location(home_root, manifest)
@@ -204,7 +231,10 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
         require_serving_filesystem(view_root)
         dest = view_destination(view_root,view_identity)
         if dest.exists() or dest.is_symlink():
-            raise StorageError('prepared-view destination exists; inspect and explicitly purge first')
+            if destination_recorded(node_store, dest):
+                raise StorageError('prepared-view destination exists; inspect and explicitly purge first')
+            raise StorageError(f'a folder already exists where Prepare would place the prepared copy: {dest}. '
+                               + UNRECORDED_DESTINATION_FIX)
         previous = node_store.get('transactions',view_record_key(view_identity))
         if previous is not None:
             from .integrity import directory
