@@ -1245,6 +1245,8 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
 
 
 STOP_KEEPS = "Model files, pins and archives are kept."
+# Added to the Stop question of a Pulsar-managed service whose spec is not in this catalog.
+OUTSIDE_CATALOG = "This service was started outside this catalog."
 
 
 def stop_question(model: str, spec_id: str, where: str | None) -> str:

@@ -33,6 +33,19 @@ def other(name, ownership="unknown"):
             "ownership": ownership, "safe_to_stop": False, "ranks": [{"rank": None, "node": "head"}]}
 
 
+OUTSIDE = "c" * 64
+
+
+def outside(conf=OUTSIDE, *, node="head", safe=True):
+    """A Pulsar-managed service whose spec is not in the catalog, as inventory reports one.
+
+    Its served name and port come from the container's command, so the port is text.
+    """
+    service = snapshot(conf, node=node, safe=safe)["services"][0]
+    service.update(served_name="experiment-model", api_port="8001", expected_nodes=1)
+    return service
+
+
 def snapshot(spec=SPEC, *, count=1, safe=True, state="running", node="worker"):
     nodes = {
         "head": {"node_id": "node-0", "hostname": "fixture-local", "confirmed": True, "probe_status": "ok"},
@@ -56,8 +69,10 @@ class Projection(unittest.TestCase):
         self.assertEqual(set(projected), {SPEC})
         self.assertEqual(projected[SPEC]["node_id"], "node-1")
         self.assertEqual(data, before)
+        # R4: a Pulsar service outside the catalog has its own view, without Detailed status.
+        self.assertFalse(any(line.startswith("status\t") for line in inventory_menu.view(data, CATALOG, "f" * 64)))
         with self.assertRaises(inventory_menu.ServiceNotObserved):
-            inventory_menu.view(data, CATALOG, "f" * 64)
+            inventory_menu.view(data, CATALOG, "e" * 64)
 
     def test_single_node_actions_keep_observed_placement(self):
         lines = inventory_menu.view(snapshot(), CATALOG, SPEC)
@@ -142,16 +157,111 @@ class Projection(unittest.TestCase):
         self.assertEqual(labels(data, CATALOG, 50), [f"RUNNING [{SPEC[:12]}] example/model · 1 node"])
         self.assertEqual(labels(data, CATALOG, 44), [f"RUNNING [{SPEC[:12]}] example/model"])
 
-    def test_other_services_each_get_a_read_only_line(self):
+    # R4: the header names only what the menu cannot act on, by what it serves and its state.
+    def test_containers_pulsar_cannot_stop_each_get_a_read_only_line(self):
         data = snapshot()
-        data["services"] += [other("vllm-port80"), other("old-pulsar", "legacy")]
-        text = "\n".join(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG, width=80))
-        self.assertIn("Other services 2\n  vllm-port80 · unknown owner · read-only\n"
-                      "  old-pulsar · older Pulsar labels · read-only\n", text)
+        served = other("vllm-port80"); served["served_name"] = "someone/model"
+        data["services"] += [served, other("old-pulsar", "legacy"), outside()]
+        header = lambda data: "\n".join(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG, width=80)
+                                        if line.startswith("header\t"))
+        text = header(data)
+        self.assertEqual(text, "Live service inventory\nObserved  " + inventory_menu.observed_text(data["generated_at"])
+                         + "\nsomeone/model · running · not started by Pulsar · read-only\n"
+                         "old-pulsar · running · older Pulsar labels · read-only\nUnmanaged GPU processes 0")
+        # Counts are gone: the rows show the services, and Pulsar's own service outside the catalog is a row.
+        self.assertNotIn("Catalog services", text)
+        self.assertNotIn("experiment-model", text)
         data["services"] += [other(f"extra-{index}") for index in range(3)]
-        text = "\n".join(line.split("\t")[1] for line in inventory_menu.view(data, CATALOG, width=80))
-        self.assertIn("  extra-0 · unknown owner · read-only\n  and 2 more in Show full inventory\n", text)
+        text = header(data)
+        self.assertIn("extra-0 · running · not started by Pulsar · read-only\nand 2 more in Show full inventory\n", text)
         self.assertNotIn("extra-1", text)
+
+    def test_unmanaged_gpu_processes_name_their_memory_on_each_node(self):
+        data = snapshot()
+        data["unmanaged_gpu_processes"] = [{"node": "head", "pid": 1, "used_memory_mib": 40960},
+                                           {"node": "head", "pid": 2, "used_memory_mib": 3072},
+                                           {"node": "worker", "pid": 3, "used_memory_mib": None}]
+        text = " ".join(" ".join(inventory_menu.view(data, CATALOG, width=80)).split())
+        self.assertIn("Unmanaged GPU processes 3 · 43.0 GiB on fixture-local · read-only", text)
+        self.assertNotIn("on fixture-remote", text)
+
+    # R4, reversing TUI-77's read-only line by maintainer decision: a Pulsar
+    # service outside the catalog is a row, and Stop asks its own question.
+    def test_pulsar_service_outside_the_catalog_is_a_row_with_logs_and_stop(self):
+        data = managed(snapshot())
+        data["services"].append(managed({"services": [outside()]})["services"][0])
+        before = copy.deepcopy(data)
+        # project() still keys only catalog specs; its callers depend on that.
+        self.assertEqual(set(inventory_menu.project(data, CATALOG)), {SPEC})
+        lines = inventory_menu.view(data, CATALOG, width=100)
+        rows = [line for line in lines if not line.startswith(("header\t", "stopall\t"))]
+        self.assertEqual(rows, [f"service\t{SPEC}\tRUNNING [{SPEC[:12]}] example/model · 1 node",
+                                f"other\t{OUTSIDE}\tRUNNING [{OUTSIDE[:12]}] experiment-model · 1 node · port 8001 · "
+                                "outside the catalog"])
+        selected = inventory_menu.view(data, CATALOG, OUTSIDE, width=80)
+        text = "\n".join(line.split("\t", 1)[1] for line in selected if line.startswith("header\t"))
+        self.assertIn("Model     experiment-model\n", text)
+        self.assertIn("API port  8001\n", text)
+        self.assertIn("Started outside this catalog, for example by an experiment; Pulsar manages its", text)
+        # No Detailed status (status needs a catalog spec); Stop removes the service on every node.
+        self.assertFalse(any(line.startswith("status\t") for line in selected))
+        self.assertIn(f"logs\t{OUTSIDE}", selected)
+        self.assertIn(f"stop\t{OUTSIDE}\t-", selected)
+        question = next(line.split("\t")[1] for line in selected if line.startswith("confirm\t"))
+        self.assertEqual(question, f"Stop and remove the service containers of experiment-model [{OUTSIDE[:12]}] on "
+                                   "fixture-local? Model files, pins and archives are kept. "
+                                   "This service was started outside this catalog.")
+        self.assertEqual(data, before)
+
+    def test_service_outside_the_catalog_without_safe_ownership_offers_no_stop(self):
+        unsafe = snapshot(); unsafe["services"].append(outside(safe=False))
+        blind = snapshot(); blind["services"].append(outside())
+        blind["nodes"]["worker"]["probe_status"] = "unreachable"
+        for data, reason in ((unsafe, "Inventory has not established safe ownership"),
+                             (blind, "fixture-remote could not be observed; Stop needs every confirmed node")):
+            with self.subTest(reason=reason):
+                selected = inventory_menu.view(data, CATALOG, OUTSIDE, width=80)
+                self.assertFalse(any(line.startswith(("stop\t", "confirm\t", "status\t")) for line in selected))
+                self.assertIn(f"logs\t{OUTSIDE}", selected)
+                self.assertIn(reason, " ".join(" ".join(selected).split()))
+        # Containers Pulsar does not manage, or a managed label without a full spec ID, stay read-only lines.
+        for ownership, conf in (("legacy", OUTSIDE), ("mismatch", OUTSIDE), ("managed", "short")):
+            with self.subTest(ownership=ownership, conf=conf):
+                data = snapshot(); service = outside(conf); service["ownership"] = ownership
+                data["services"].append(service)
+                self.assertFalse(any(line.startswith("other\t") for line in inventory_menu.view(data, CATALOG)))
+                with self.assertRaises(inventory_menu.ServiceNotObserved):
+                    inventory_menu.view(data, CATALOG, conf)
+
+    def test_rows_outside_the_catalog_fit_narrow_terminals(self):
+        data = snapshot(); data["services"].append(outside())
+        data["services"][-1]["served_name"] = "experiment/" + "long-model-" * 8
+        expected = {80: " · 1 node · outside the catalog", 60: " · outside the catalog", 44: ""}
+        for width, suffix in expected.items():
+            with self.subTest(width=width):
+                label = next(line.split("\t")[2] for line in inventory_menu.view(data, CATALOG, width=width)
+                             if line.startswith("other\t"))
+                self.assertLessEqual(len(label), width - 2)
+                self.assertTrue(label.startswith(f"RUNNING [{OUTSIDE[:12]}] experimen"), label)
+                self.assertTrue(label.endswith("..." + suffix), label)
+
+    # The served name is the identity of a row outside the catalog: the count
+    # and port give way before it is cut below 24 characters; the marker alone
+    # leaves it 12, as catalog rows have.
+    def test_rows_outside_the_catalog_keep_room_for_the_served_name(self):
+        data = snapshot(); data["services"].append(outside())
+        data["services"][-1]["served_name"] = "nvidia/Nemotron-Super-Experiment-FP8"
+        labels = {width: next(line.split("\t")[2] for line in inventory_menu.view(data, CATALOG, width=width)
+                              if line.startswith("other\t"))
+                  for width in (80, 60)}
+        self.assertEqual(labels, {
+            80: f"RUNNING [{OUTSIDE[:12]}] nvidia/Nemotron-Super... · 1 node · outside the catalog",
+            60: f"RUNNING [{OUTSIDE[:12]}] nvidia/Nem... · outside the catalog"})
+        # Catalog rows keep their 12-character rule.
+        catalog = [{**CATALOG[0], "model_id": "nvidia/Nemotron-Super-Catalog-Model-FP8"}]
+        row = next(line.split("\t")[2] for line in inventory_menu.view(snapshot(), catalog, width=60)
+                   if line.startswith("service\t"))
+        self.assertEqual(row, f"RUNNING [{SPEC[:12]}] nvidia/Nemotron-Super-C... · 1 node")
 
     # TUI-78: stop --all names every service with the Pulsar-managed label.
     def test_stop_all_question_names_every_managed_service(self):
@@ -369,7 +479,7 @@ else: sys.exit(99)
         # The outcome stays on screen until Continue; the refreshed menu follows.
         blocks = [block.splitlines()[0].strip() for block in choices.strip().split("\n\n")]
         self.assertEqual(blocks[blocks.index("[continue]"):], ["[continue]", "Selected catalog service",
-                                                                "Select a catalog service"])
+                                                                "Select a service"])
         for used in ("counter", "answers.n", "confirms.n", "choices"):
             (self.root / used).unlink(missing_ok=True)
         result, calls, choices, _ = self.run_menu(["#0", "Stop service"], confirms=["yes"], continue_rc=130)
@@ -432,6 +542,49 @@ else: sys.exit(99)
         self.assertFalse(any(call[0] == "stop" for call in calls))
         self.assertEqual(questions, "")
         self.assertIn("No Pulsar service was observed just now; nothing was stopped.", result.stdout)
+
+    def with_outside(self, *, safe=True):
+        data = snapshot(self.spec["spec_id"])
+        data["services"].append(outside(safe=safe))
+        return data
+
+    # R4: Stop for a Pulsar service outside the catalog runs the existing
+    # stop command with its full spec ID; stop finds containers by labels.
+    def test_service_outside_the_catalog_stops_after_its_own_question(self):
+        gone = snapshot(self.spec["spec_id"])
+        result, calls, choices, questions = self.run_menu(
+            ["#1", "Stop service", "Back"], confirms=["yes"],
+            snapshots=[self.with_outside(), self.with_outside(), gone])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([call for call in calls if call[0] != "inventory"], [["stop", OUTSIDE]])
+        self.assertIn(f"Select a service\nRUNNING [{self.spec['spec_id'][:12]}] ", choices)
+        # No Detailed status (status needs a catalog spec) and no Open in catalog.
+        self.assertIn("Selected service outside the catalog\nService logs\nStop service\nRefresh inventory\nBack\n",
+                      choices)
+        self.assertIn(f"Stop and remove the service containers of experiment-model [{OUTSIDE[:12]}] on "
+                      "fixture-local? Model files, pins and archives are kept. "
+                      "This service was started outside this catalog.", " ".join(questions.split()))
+        outcome = " ".join(result.stdout.split())
+        self.assertRegex(outcome, rf"✓ Stop finished for experiment-model \[{OUTSIDE[:12]}\] in \d+s ")
+        self.assertIn(f"Same as: ./pulsar stop {OUTSIDE[:12]}", outcome)
+        self.assertIn("[continue]", choices)
+
+    def test_service_outside_the_catalog_reads_logs_and_declines_stop(self):
+        result, calls, choices, questions = self.run_menu(
+            ["#1", "Service logs", "Stop service", "Back", "Back"], confirms=["no"],
+            snapshots=[self.with_outside()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(["logs", OUTSIDE], calls)
+        self.assertFalse(any(call[0] in ("stop", "status") for call in calls))
+        self.assertIn("This service was started outside this catalog.", " ".join(questions.split()))
+        self.assertIn("Nothing was stopped.", result.stdout)
+        # Without safe ownership there is no Stop and no question.
+        self.setUp()
+        result, calls, choices, questions = self.run_menu(["#1", "Back", "Back"],
+                                                          snapshots=[self.with_outside(safe=False)])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Selected service outside the catalog\nService logs\nRefresh inventory\nBack\n", choices)
+        self.assertEqual(questions, "")
 
     def test_interrupted_inventory_exits_without_service_actions(self):
         result, calls, _, questions = self.run_menu([], snapshots=[{"failure": 130}])

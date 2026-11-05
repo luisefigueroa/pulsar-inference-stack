@@ -667,8 +667,22 @@ multi-node services retain the commands' participating-node resolution.
 The frame shows how long ago the inventory was taken and its UTC time, and
 **Refresh inventory** obtains a new observation. Each service row names its
 observed node count and the API port its rank 0 container runs with; nodes are
-listed in rank order. Services outside the catalog each get a read-only line
-with their container name and owner. **Stop every Pulsar service…** runs
+listed in rank order.
+
+Catalog services come first. A Pulsar-managed service whose spec is not in
+this catalog, for example one an experiment started, follows as its own row
+ending `outside the catalog`. Selecting it offers **Service logs** and **Stop
+service**, but no **Detailed status** (status needs a catalog spec) and no
+**Open in catalog**. Its Stop runs `./pulsar stop` with the full spec ID,
+which finds the containers by their Pulsar labels on every node, and its
+question adds `This service was started outside this catalog.` It is offered
+only when the inventory established safe ownership and every confirmed node
+answered.
+
+The frame names, one line each, the containers this menu cannot act on, by
+what they serve, their state and their owner, such as `vllm-port80 · running ·
+not started by Pulsar · read-only`, and the unmanaged GPU processes with
+their memory on each node. These stay read-only. **Stop every Pulsar service…** runs
 `stop --all --yes` after a fresh inventory: its question lists each service
 with the Pulsar-managed label and its nodes, says containers Pulsar does not
 manage are untouched and files are kept, and defaults to No. **Open in catalog** opens the service's recipe in the catalog
@@ -1031,7 +1045,12 @@ still apply to all operational actions after setup.
 `./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
 a page returns to Help; **Back** or Esc returns to the home menu.
 
-After setup, **Cluster overview (checks nodes now)** runs `./pulsar topology
+After setup, the home menu offers **Cluster overview (checks nodes now)**,
+**Catalog and storage**, **Model files and disk space (checks nodes now)**,
+**Live service inventory**, **Host diagnostics**, **Archive storage
+configuration**, **Cluster topology**, **Help** and **Exit**, in that order.
+
+**Cluster overview (checks nodes now)**, the first choice, runs `./pulsar topology
 check`, `./pulsar inventory` and `./pulsar model budget` in turn, each under a
 spinner, and shows every saved node by hostname: its topology status and
 issues, available memory (GB10 shares it between the GPU and the host), disk

@@ -43,8 +43,9 @@ cd pulsar-inference-stack
 The interactive menu offers read-only catalog browsing before cluster setup.
 Browsing reads saved information; it does not download files or check whether a
 model is running. When you are ready to operate a recipe, choose **Set up cluster
-membership and SSH trust**, then use **Catalog and storage** after setup.
-Archive storage is optional.
+membership and SSH trust**. After setup, the menu opens with **Cluster overview
+(checks nodes now)**, which shows what runs on each node, then **Catalog and
+storage** for operating a recipe. Archive storage is optional.
 **Model files and disk space (checks nodes now)** on the home menu lists managed
 downloads and prepared copies across all confirmed nodes, including uncataloged
 downloads. Use `./pulsar model files` for the read-only report; cleanup keeps its
