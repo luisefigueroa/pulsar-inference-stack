@@ -500,6 +500,23 @@ publishing a home without replacing another directory. Matching verified
 bytes can be reused. Missing files or a different revision do not trigger
 an alternate download path.
 
+Before fetching anything, acquisition looks on every confirmed node for a home
+folder of the same snapshot. When it finds one, `acquire --plan` shows
+`reuse matching existing files`, and `--yes` verifies the folder against the
+spec manifest and records it as the home without downloading; the menu asks
+`Register the existing verified files of … Nothing is downloaded.` This
+discovery has limits:
+
+- It reads one home root on each node: the spec's home acquisition root (its
+  overlay `cache_root`, else `PULSAR_HOME_ROOT`, else the default). A folder
+  under another root, which the Model files page can still show, is not found,
+  and acquisition downloads instead.
+- When no record names the folder, it hashes every file, which can take many
+  minutes for a large model.
+- It refuses when the folder is on another node than the one chosen with
+  `--node`; choose the node that holds it.
+- It stops when a second matching folder exists on any node.
+
 ### Prepare all serving nodes
 
 ```sh
@@ -799,6 +816,34 @@ overhead or a reservation. Failure to observe free space leaves capacity
 unknown; it does not bypass or replace archive verification, home-absence checks
 or the explicit confirmation before restoration.
 
+The nodes' homes can outlive the controller's records: a separate controller
+machine, a deleted checkout, or control moved to another node. When they
+survived, **Download** registers them without fetching anything: its plan
+finds the home folder, and `--yes` verifies it against the spec manifest and
+records it, offline. **Restore** always copies the whole snapshot from the
+archive, so try Download's preview first. Download's discovery has the
+[limits listed under acquisition](#acquire-or-restore-every-required-snapshot):
+one home root per node, every file hashed when no record names the folder, a
+refusal when the folder is on another node than the one chosen, and a stop at
+a second matching folder.
+
+```sh
+./pulsar model acquire <spec-id> --snapshot target --node <node> --plan
+```
+
+In the catalog menu, choose **Model files and disk space (checks nodes now)**
+in the catalog list first. When that scan found the home folder of a
+required snapshot with no recorded home, the recipe's Files field reads `files
+found on <host>, not in Pulsar's records; Download checks them`, and the
+suggestion is **Download**, ahead of **Restore**. It needs no saved or current
+check, since **Check now** reads homes from records only and cannot see that
+folder; an outcome from this session, such as an interrupted operation, still
+comes first.
+Download's machine question then starts on that machine, labelled `files found
+here, not in Pulsar's records`. The choice stays **Download**: its preview
+says whether the files are reused. Only a scan from this catalog session
+counts; the same choice on the home menu runs on its own.
+
 ### Check archive integrity
 
 The catalog's last archive-verification time is saved information, not current
@@ -891,7 +936,9 @@ shared copies in details are explicitly labeled as saved records.
 Discovery reads immediate children of the configured home and prepared-copy
 namespaces, explicitly configured overlay home roots, and locations named by
 saved records. It does not search the filesystem broadly, follow internal
-symlinks, register discovered files, or change model-library records. A download
+symlinks, register discovered files, or change model-library records; a home
+folder no record names is a reason to try **Download**, whose plan registers it
+(see [Restore after controller loss](#restore-after-controller-loss)). A download
 or preparation that has not finished (still running, or interrupted) appears as
 an **Unfinished copy** under its node, and an unidentified managed path as
 **Not recognized**; this page changes neither. When the node recorded an
@@ -1261,7 +1308,10 @@ restoration or preparation even when it recorded blockers. A check that found
 the files prepared, with no blocker, suggests **Start** at any age, because
 Start rechecks the files, image, nodes and memory before launching; the Files
 line shows how old that check is. Unknown file observations, and missing,
-changed or blocked ones more than a day old, still suggest **Check now**. A
+changed or blocked ones more than a day old, still suggest **Check now**,
+except where this session's Model files scan found the home folder of a
+snapshot with no recorded home: that suggests **Download** with or without a
+check (see [Restore after controller loss](#restore-after-controller-loss)). A
 check that records a result clears the previous operation's pending check; one
 that could not record a result does not turn earlier readiness into a new
 Start suggestion.

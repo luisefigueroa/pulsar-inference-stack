@@ -21,6 +21,7 @@ import argparse
 from datetime import datetime, timezone
 import io
 import json
+from pathlib import Path
 import re
 import sys
 from typing import Any, NamedTuple
@@ -228,7 +229,53 @@ def members(row: dict) -> dict[str | None, dict]:
     if isinstance(row.get("snapshots"), dict):
         return row["snapshots"]
     return {None: {"home": row.get("home"), "archive": row.get("archive"),
-                   "model_id": row["model_id"], "model_commit": row["snapshot_revision"]}}
+                   "model_id": row["model_id"], "model_commit": row["snapshot_revision"],
+                   "snapshot_manifest_id": row.get("snapshot_manifest_id")}}
+
+
+def found_files(path: str | None) -> dict[str, list[str]]:
+    """Homes the Model files scan saw on a node with no record naming them.
+
+    PATH is the scan this menu session saved (``model files --json``). The
+    result maps each snapshot_manifest_id to the node_ids holding such a
+    home folder, in scan order. A missing, failed or unreadable scan maps
+    nothing: it is a hint for the menu, never a gate.
+    """
+    if not path:
+        return {}
+    from .file_inventory import read_inventory
+    from .integrity import StorageError
+    found: dict[str, list[str]] = {}
+    try:
+        for snapshot in read_inventory(Path(path)).get("snapshots") or []:
+            for location in snapshot.get("locations") or []:
+                if (location.get("kind") == "home" and location.get("state") == "present"
+                        and not location.get("registered_home") and location.get("node_id")):
+                    nodes = found.setdefault(str(snapshot["snapshot_manifest_id"]), [])
+                    if str(location["node_id"]) not in nodes:
+                        nodes.append(str(location["node_id"]))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, StorageError):
+        return {}
+    return found
+
+
+def unrecorded_files(row: dict, files: dict[str, list[str]] | None,
+                     snapshot: str | None = None) -> list[str]:
+    """Node_ids where the scan found files of SNAPSHOT while no home is
+    recorded for it. Without SNAPSHOT, the first required snapshot without a
+    home: the one the suggestion names, as Download acts on one snapshot."""
+    snapshots = members(row)
+    if not files:
+        return []
+    if snapshot not in snapshots:
+        missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
+        if not missing:
+            return []
+        snapshot = missing[0]
+    member = snapshots[snapshot]
+    if member.get("home"):
+        return []
+    return list(files.get(str(member.get("snapshot_manifest_id")), []))
 
 
 def recovery_snapshots(row: dict) -> list[str | None]:
@@ -311,7 +358,8 @@ def operations(row: dict, archive_location: str) -> tuple[list[str], dict[str, s
 
 
 def suggestion(row: dict, offered: list[str], archive_location: str, after: str | None = None,
-               names: NodeNames | None = None, *, now=None, live: dict | None = None) -> tuple[str, str] | None:
+               names: NodeNames | None = None, *, now=None, live: dict | None = None,
+               files: dict[str, list[str]] | None = None) -> tuple[str, str] | None:
     """One suggested next step from saved state; the first matching rule wins.
 
     ``after`` is the last relevant outcome in this menu session. A recorded
@@ -324,6 +372,8 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     observation also replaces a remembered Start or service interruption. For a
     spec this Stack cannot start, nothing after the Check, Download and
     Restore rules is suggested: Prepare and Start would only lead to a start.
+    ``files`` is this session's Model files scan (see found_files); files it
+    found for a snapshot without a home lead to Download (see _next_home).
     """
     names = names or NodeNames()
     age = row.get("observation_age_seconds")
@@ -352,9 +402,11 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         # Both verify the files before recording the home (a reused home is
         # checked as Check now would), so the next step is the next snapshot
         # without a home, then Prepare.
-        found = _next_home(row, offered, archive_location, now)
+        found = _next_home(row, offered, archive_location, now, files=files, names=names)
         if found and found[1]:
-            name, action, detail = found
+            name, action, detail = found[:3]
+            if found[3:]:
+                return action, detail
             return action, (f"{name} has no home yet" if name is not None else "no home recorded yet") + f"; {detail}"
         if found is None and "prepare" in offered and not start_unsupported(row):
             return "prepare", f"{LABELS[after].lower()} finished; every required snapshot has a verified home"
@@ -365,6 +417,12 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "start", "prepared on every serving rank just now; start rechecks prerequisites"
     if after in MUTATIONS:
         return "check", f"{LABELS[after].lower()} ran after the last check"
+    # Check now reads homes from records only, so it cannot see a home the
+    # session's Model files scan found with no record naming it; no saved or
+    # current check is needed before Download looks for it.
+    found = _next_home(row, offered, archive_location, now, files=files, names=names)
+    if found and found[3:]:
+        return found[1], found[2]
     if row.get("checked_at") is None:
         return "check", "no saved check"
     local = row.get("local_state", "unknown")
@@ -376,11 +434,13 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", "last check " + age_text(age)
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
-    found = _next_home(row, offered, archive_location, now)
+    found = _next_home(row, offered, archive_location, now, files=files, names=names)
     if found:
-        name, action, detail = found
+        name, action, detail = found[:3]
         if action is None:
             return None
+        if found[3:]:
+            return action, detail
         return action, "no home recorded" + (f" for snapshot {name}" if name is not None else "") + f"; {detail}"
     if start_unsupported(row):
         return None
@@ -396,17 +456,30 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     return None
 
 
-def _next_home(row: dict, offered: list[str], archive_location: str, now=None) -> tuple | None:
-    """The first required snapshot without a home, the operation that records one, and why.
+def _next_home(row: dict, offered: list[str], archive_location: str, now=None, *,
+               files: dict[str, list[str]] | None = None, names: NodeNames | None = None) -> tuple | None:
+    """The first required snapshot without a home, the operation that records one, and why,
+    as (NAME, ACTION, DETAIL), or (NAME, ACTION, REASON, True) when REASON is the whole reason.
 
     Home operations act on one snapshot. Use that snapshot's reconciled
     archive fact, not the aggregate state or the existence of a record.
+    Files this session's Model files scan found for it on a node come first:
+    Download's own plan reuses them when it finds them, and copies nothing
+    (Restore always copies). The scan sees more folders than Download's
+    discovery, so the reason says Download checks them, not that it reuses.
     """
     snapshots = members(row)
     missing = [name for name in recovery_snapshots(row) if not snapshots[name].get("home")]
     if not missing:
         return None
     name = missing[0]
+    holders = unrecorded_files(row, files, name)
+    if holders and "acquire" in offered:
+        found = FILES_FOUND.format(hosts=_node_list(holders, names or NodeNames()))
+        if name is not None:
+            found = found.replace("files", f"files of snapshot {name}", 1)
+        # The whole reason: no "no home recorded" before it.
+        return name, "acquire", found + FILES_REASON, True
     if archive_location == "configured":
         kind, _, wording = archive_facts(row, now)[name]
         detail = f"archive: {wording}"
@@ -467,6 +540,12 @@ LABEL_FILES = {"ready": "files prepared", "missing": "files not prepared", "chan
                "unknown": "files unknown"}
 # The frame's hint after a Files value that no check has established yet.
 CHECK_HINT = "choose Check now (read-only)"
+# Home folders this session's Model files scan found where no record names
+# them: Download's plan registers them when its discovery finds them.
+FILES_FOUND = "files found on {hosts}"
+FILES_REASON = " but not in Pulsar's records; Download checks them before fetching anything"
+FILES_HINT = FILES_FOUND + ", not in Pulsar's records; Download checks them"
+FILES_FOUND_HERE = "files found here, not in Pulsar's records"
 
 
 def state_parts(row: dict) -> list[str]:
@@ -820,12 +899,15 @@ FRAME_LABEL_WIDTH = 10
 
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
            published=None, live: dict | None = None, read_only: bool = False,
-           after: str | None = None, after_age: int | None = None) -> tuple[list[str], list[str]]:
+           after: str | None = None, after_age: int | None = None,
+           found_on: str | None = None) -> tuple[list[str], list[str]]:
     """The recipe frame as (body lines, Next lines).
 
     The body starts with the model and spec; saved facts follow as aligned
     fields. Next is kept apart so it stays the frame's last line, and so a
-    short terminal can show only the first line and Next.
+    short terminal can show only the first line and Next. FOUND_ON names the
+    machines where this session's Model files scan found files that no
+    record names (see unrecorded_files).
     """
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
@@ -845,7 +927,11 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     if review.get("status") and review["status"] != "withdrawn":
         field("Review", f"{review['status']} · {review.get('reviewed_at') or 'date not recorded'} (advisory)")
     files = files_text(row)
-    if not row.get("checked_at") and not read_only:
+    if found_on and not read_only:
+        # Check now reads homes from records only, so it cannot find these;
+        # Download's plan looks for them.
+        files = f"{files}; {FILES_HINT.format(hosts=found_on)}"
+    elif not row.get("checked_at") and not read_only:
         # Say what establishes the files, as Running? does; read-only views offer no check.
         files = f"{files}; {CHECK_HINT}"
     if after == "prepare" and after_age is not None:
@@ -941,19 +1027,23 @@ def seen_node(row: dict, live: dict | None, node_ids: list[str]) -> str | None:
 
 
 def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str | None = None,
-               seen: str | None = None) -> str:
+               seen: str | None = None, found: list[str] | None = None) -> str:
     """HOSTNAME — what saved records place there: the home, a prepared copy.
 
     The home is the selected snapshot's, or any required snapshot's. SEEN is
     the node_id where a service inventory taken just now saw the service; it
-    is named first. The records are shown only where the whole label fits,
-    the home first.
+    is named first. FOUND lists the node_ids where this session's Model files
+    scan found the snapshot's files with no record naming them; that comes
+    next. The records are shown only where the whole label fits, the home
+    first.
     """
     snapshots = members(row)
     holders = [snapshots[snapshot]] if snapshot in snapshots else list(snapshots.values())
     parts = []
     if seen is not None and seen == node_id:
         parts.append("service seen here just now")
+    if found and node_id in found:
+        parts.append(FILES_FOUND_HERE)
     if any((member.get("home") or {}).get("node_id") == node_id for member in holders):
         parts.append("home recorded here")
     if any(copy.get("node_id") == node_id for copy in row.get("prepared_copies") or []):
@@ -1005,13 +1095,16 @@ def frame_line(text: object) -> str:
 def view_lines(row: dict, archive_location: str, *, after: str | None = None,
                width: int | None = None, names: NodeNames | None = None, now=None,
                published=None, read_only=False, live: dict | None = None,
-               after_age: int | None = None) -> list[str]:
+               after_age: int | None = None, files: dict[str, list[str]] | None = None) -> list[str]:
     offered, hidden, eligible = ([], {}, {}) if read_only else operations(row, archive_location)
-    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live)
+    suggested = None if read_only else suggestion(row, offered, archive_location, after, names, now=now, live=live,
+                                                  files=files)
+    holders = unrecorded_files(row, files) if "acquire" in offered else []
+    found_on = _node_list(holders, names or NodeNames()) if holders else None
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
     body, next_lines = header(row, hidden, suggested, frame_width, now=now, published=published, live=live,
-                              read_only=read_only, after=after, after_age=after_age)
+                              read_only=read_only, after=after, after_age=after_age, found_on=found_on)
     lines += ["header\t" + frame_line(line) for line in body]
     lines += ["next\t" + frame_line(line) for line in next_lines]
     list_width = (width or terminal_width()) - 2
@@ -1822,8 +1915,11 @@ def main(argv: list[str] | None = None) -> int:
     labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
     live_help = "service inventory JSON this menu session captured"
     outcome_help = "SPEC:ACTION:STATUS:EPOCH for a Live status, Start or Stop in this session"
+    files_help = "model files --json this menu session saved; an unreadable or failed scan is ignored"
     labels.add_argument("--live", help=live_help)
     labels.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
+    # Accepted with the session's other observations; a list label adds no word for found files.
+    labels.add_argument("--files", help=files_help)
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
     choices = sub.add_parser("start-choices", help="a title, then one menu choice per line for recorded start "
@@ -1851,6 +1947,7 @@ def main(argv: list[str] | None = None) -> int:
     nodes.add_argument("--snapshot")
     nodes.add_argument("--node-name", action="append", default=[], help="NODE_ID=HOSTNAME, in topology order")
     nodes.add_argument("--live", help="with --action stop: a service inventory captured just now")
+    nodes.add_argument("--files", help=files_help)
     image = sub.add_parser("image-plan", help="render an existing public image stage preview")
     image.add_argument("--spec-id", required=True)
     image.add_argument("--plan-file", required=True)
@@ -1863,6 +1960,7 @@ def main(argv: list[str] | None = None) -> int:
     view.add_argument("--read-only", action="store_true")
     view.add_argument("--live", help=live_help)
     view.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
+    view.add_argument("--files", help=files_help)
     view.add_argument("--after", choices=sorted(MUTATIONS | INTERRUPTIONS
                                                 | {"start", "stop", "check", "check-failed", "storage-failed"}))
     view.add_argument("--after-at", type=int, help="when --after happened, as a Unix time")
@@ -1882,6 +1980,8 @@ def main(argv: list[str] | None = None) -> int:
     confirm.add_argument("--node")
     confirm.add_argument("--live", help=live_help)
     confirm.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
+    # Accepted with the session's other observations; no question names found files.
+    confirm.add_argument("--files", help=files_help)
     args = parser.parse_args(argv)
     try:
         if args.command == "memory-warning":
@@ -1970,14 +2070,21 @@ def main(argv: list[str] | None = None) -> int:
                 nodes.append((node_id, hostname))
             ids = [node_id for node_id, _ in nodes]
             seen = seen_node(row, load_live(args.live, [row]), ids) if args.action == "stop" else None
+            # Files the session's scan found with no record naming them: one
+            # confirmed node holding them is where Download would reuse them.
+            found = [node_id for node_id in unrecorded_files(row, found_files(args.files), args.snapshot)
+                     if node_id in ids]
             print(f"title\t{clean(NODE_QUESTIONS.get(args.action, NODE_QUESTION))}")
             if seen is not None:
                 print(f"seen\t{seen}")
+            elif len(found) == 1:
+                print(f"default\t{found[0]}")
             elif args.action not in NODE_UNSELECTED and recorded_node(row) in ids:
                 print(f"default\t{recorded_node(row)}")
             width = terminal_width() - 2
             for node_id, hostname in nodes:
-                print(f"node\t{node_id}\t{clean(node_label(row, node_id, hostname, width, args.snapshot, seen))}")
+                label = node_label(row, node_id, hostname, width, args.snapshot, seen, found)
+                print(f"node\t{node_id}\t{clean(label)}")
             return 0
         names = NodeNames.saved()
         if args.command == "image-plan":
@@ -2000,7 +2107,7 @@ def main(argv: list[str] | None = None) -> int:
                          if args.after_at is not None else None)
             print("\n".join(view_lines(row, args.archive_location, after=args.after, names=names,
                                       published=published, read_only=args.read_only, live=fact,
-                                      after_age=after_age)))
+                                      after_age=after_age, files=found_files(args.files))))
             return 0
         if args.command == "preview":
             with open(args.plan_file, encoding="utf-8") as handle:

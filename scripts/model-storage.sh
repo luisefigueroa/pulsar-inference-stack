@@ -28,12 +28,14 @@ archive_location() {
   else echo configured; fi
 }
 
-# select_node ACTION SPEC [--live FILE] — asks which confirmed machine to use
-# and prints its node_id. Each choice names the machine by hostname and what
-# saved records place there (the home, a prepared copy); nothing is probed.
-# The cursor starts on the recorded node, except where the files go (Download,
-# Restore, Move home). A Stop given an inventory captured just now that saw
-# the service on one confirmed node uses that node without asking.
+# select_node ACTION SPEC [--live FILE] [--files FILE] — asks which confirmed
+# machine to use and prints its node_id. Each choice names the machine by
+# hostname and what saved records place there (the home, a prepared copy);
+# nothing is probed. The cursor starts on the recorded node, except where the
+# files go (Download, Restore, Move home). A Stop given an inventory captured
+# just now that saw the service on one confirmed node uses that node without
+# asking. A Download given this session's Model files scan starts on the one
+# machine where it found the snapshot's files with no record naming them.
 select_node() {
   local action="$1" spec="$2" index rc kind first second title="Which machine?" seen="" default="" start=""
   shift 2
@@ -85,15 +87,23 @@ hold_screen() {
 
 # What this session observed about services: a service inventory captured only
 # on request, and each spec's latest Live status, Start or Stop outcome as
-# ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age.
+# ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age. FILES_ARGS
+# names the catalog's own Model files scan (Model files and disk space), which
+# the frame and Download's machine question read for files no record names. A
+# failed scan leaves its error in that file; catalog_menu also ignores what it
+# cannot read.
 LIVE_FILE="" CATALOG_WORK=""
 declare -A SERVICE_OUTCOME=()
-LIVE_ARGS=()
+LIVE_ARGS=() FILES_ARGS=()
 live_args() {
-  local spec
-  LIVE_ARGS=()
+  local spec files="${CATALOG_WORK:+$CATALOG_WORK/files.json}"
+  LIVE_ARGS=() FILES_ARGS=()
   [ -z "$LIVE_FILE" ] || LIVE_ARGS+=(--live "$LIVE_FILE")
   for spec in "${!SERVICE_OUTCOME[@]}"; do LIVE_ARGS+=(--service-outcome "$spec:${SERVICE_OUTCOME[$spec]}"); done
+  if [ -n "$files" ] && [ -s "$files" ] && grep -q '"pulsar-model-file-inventory"' "$files" 2>/dev/null; then
+    FILES_ARGS=(--files "$files")
+    LIVE_ARGS+=("${FILES_ARGS[@]}")
+  fi
 }
 
 catalog_work() {
@@ -629,7 +639,10 @@ perform_action() {
   fi
   # Live status asks no machine: status uses the service's recorded node.
   case "$action" in
-    acquire|restore|move) MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; } ;;
+    acquire)
+      live_args
+      MENU_NODE=$(select_node "$action" "$spec" "${FILES_ARGS[@]}") || { rc=$?; return "$rc"; } ;;
+    restore|move) MENU_NODE=$(select_node "$action" "$spec") || { rc=$?; return "$rc"; } ;;
     prepare|start|stop|observe|audit|check|readiness|image-check|image-stage)
       if [ "$RECIPE_NODES" -eq 1 ]; then
         MENU_NODE=$(select_node "$action" "$spec" "${seen_in[@]}") || { rc=$?; return "$rc"; }
