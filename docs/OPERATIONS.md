@@ -1028,7 +1028,12 @@ still apply to all operational actions after setup.
 `./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
 a page returns to Help; **Back** or Esc returns to the home menu.
 
-After setup, **Cluster overview (checks nodes now)** runs `./pulsar topology
+After setup, the home menu offers **Cluster overview (checks nodes now)**,
+**Catalog and storage**, **Model files and disk space (checks nodes now)**,
+**Live service inventory**, **Host diagnostics**, **Archive storage
+configuration**, **Cluster topology**, **Help** and **Exit**, in that order.
+
+**Cluster overview (checks nodes now)**, the first choice, runs `./pulsar topology
 check`, `./pulsar inventory` and `./pulsar model budget` in turn, each under a
 spinner, and shows every saved node by hostname: its topology status and
 issues, available memory (GB10 shares it between the GPU and the host), disk
