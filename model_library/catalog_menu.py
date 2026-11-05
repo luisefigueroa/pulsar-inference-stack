@@ -1553,8 +1553,14 @@ def plan_effect(action: str, plan: dict) -> dict:
     return {"nothing": False}
 
 
-def _short_ids(text: str) -> str:
-    """Shorten each full 64-character spec ID to its 12-character prefix."""
+def _short_ids(text: str, keep: str | None = None) -> str:
+    """Shorten each full 64-character spec ID to its 12-character prefix.
+
+    KEEP is a path to show whole, such as a folder the operator must inspect,
+    whose name can be a full spec ID.
+    """
+    if keep:
+        return keep.join(_short_ids(part) for part in text.split(keep))
     return SPEC_ID.sub(lambda match: match.group(0)[:12], text)
 
 
@@ -1574,6 +1580,8 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     Stop for each catalog spec whose Pulsar container mounts the files, then
     Live service inventory. A container that Pulsar did not start gets no
     choice: its fix is to remove it or its mount, which the menu never does.
+    Neither does a folder at a prepared copy's path that no record names: the
+    operator inspects it and removes it outside Pulsar.
     """
     specs: list[str] = []
     for item in _plan_document(plan).get("blocker_details") or []:
@@ -1608,15 +1616,16 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     if plan_blocked(plan):
         details = [item for item in document.get("blocker_details") or [] if isinstance(item, dict)]
         if details:
-            causes = [blocker_detail_text(item, names) + (f"; {item['fix']}" if item.get("fix") else "")
+            causes = [_short_ids(blocker_detail_text(item, names) + (f"; {item['fix']}" if item.get("fix") else ""),
+                                 keep=item.get("path") if item.get("code") == "unrecorded-destination" else None)
                       for item in details]
         else:
-            causes = [blocker_message(str(item), names) for item in document.get("blockers") or []
+            causes = [_short_ids(blocker_message(str(item), names)) for item in document.get("blockers") or []
                       if isinstance(item, str)]
         # One mount over several copies repeats the same cause; show it once.
         causes = list(dict.fromkeys(causes))
         shown = causes if len(causes) <= 3 else causes[:2]
-        lines = [f"Blocked: {_short_ids(text).rstrip('.')}." for text in shown] \
+        lines = [f"Blocked: {text.rstrip('.')}." for text in shown] \
             or ["Blocked; the full preview has details."]
         if len(causes) > len(shown):
             lines.append(f"{_count(len(causes) - len(shown), 'more blocker')} in the full preview.")

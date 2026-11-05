@@ -13,7 +13,7 @@ from model_library import node
 from model_library.integrity import StorageError, verify_tree
 from model_library.local import begin_staging, copy_files, finish_staging, home_record, payload, prepared_record
 from model_library.planning import preparation_candidates, purge_plan
-from model_library.state import Store, reconcile_views, shared_view, view_record_key
+from model_library.state import Store, reconcile_views, shared_view, view_key, view_record_key
 
 
 def competing_operation(request, ready, done, result):
@@ -226,6 +226,71 @@ class PreparedContent(unittest.TestCase):
             'fixture',str(helper),str(data),'literal\n$()\\value'],capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(json.loads(result.stdout),{'views':value,'label':'literal\n$()\\value'})
+
+
+
+class UnrecordedDestination(unittest.TestCase):
+    """A folder at a rank's prepared copy path that no node record names (no adoption, no deletion)."""
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.view_root = self.root/'views'; self.view_root.mkdir()
+        self.manifest = build_snapshot_manifest(model_id='fixture/model', snapshot_revision='a'*40,
+            files=[{'path':'weights.bin','size':4,'sha256':hashlib.sha256(b'data').hexdigest()}])
+        self.patch = patch.object(node,'require_serving_filesystem'); self.patch.start(); self.addCleanup(self.patch.stop)
+
+    def request(self, operation, view_schema=1, **values):
+        return dict(operation=operation,manifest=self.manifest,view_root=str(self.view_root),
+                    home_root=str(self.root/'homes'),view_schema=view_schema,spec_id='b'*64,
+                    node_id='fixture-worker',rank=1,topology_id='d'*64,**values)
+
+    def leftover(self, view_schema=1):
+        """The folder a lost record left at the destination begin-view computes."""
+        dest = self.view_root/('b'*64 if view_schema == 1 else view_key('b'*64,'fixture-worker',self.manifest['manifest_id']))
+        payload(dest,self.manifest).mkdir(parents=True)
+        (payload(dest,self.manifest)/'weights.bin').write_bytes(b'data')
+        return dest
+
+    def test_missing_destination_is_reported_without_creating_node_state(self):
+        result = node.run(self.request('view-destination'))
+        self.assertEqual(result, {'path':str(self.view_root/('b'*64)),'state':'missing','recorded':False})
+        self.assertFalse((self.view_root/'.pulsar-node').exists())
+
+    def test_unrecorded_folder_is_present_for_both_destination_names(self):
+        for schema in (1, 2):
+            with self.subTest(view_schema=schema):
+                dest = self.leftover(schema)
+                result = node.run(self.request('view-destination', view_schema=schema))
+                self.assertEqual(result, {'path':str(dest),'state':'present','recorded':False})
+                self.assertFalse((self.view_root/'.pulsar-node').exists())
+
+    def test_a_file_or_symlink_at_the_destination_is_present_not_an_error(self):
+        dest = self.view_root/('b'*64)
+        dest.symlink_to(self.root)
+        self.assertEqual(node.run(self.request('view-destination'))['state'], 'present')
+        dest.unlink(); dest.write_text('not a folder')
+        self.assertEqual(node.run(self.request('view-destination'))['state'], 'present')
+
+    def test_a_node_record_naming_the_folder_counts_as_recorded(self):
+        dest = self.leftover()
+        store = Store(self.view_root/'.pulsar-node')
+        record = prepared_record(home_record(self.manifest,'fixture-worker',dest,verify_tree(payload(dest,self.manifest),self.manifest,full=True)),
+            spec_id='c'*64,topology_id='d'*64,rank=1)
+        store.put('views',view_record_key(record),record)
+        self.assertTrue(node.run(self.request('view-destination'))['recorded'])
+
+    def test_begin_view_refuses_with_advice_that_does_not_name_purge(self):
+        dest = self.leftover()
+        with self.assertRaises(StorageError) as raised:
+            node.run(self.request('begin-view'))
+        message = str(raised.exception)
+        self.assertEqual(message, f'a folder already exists where Prepare would place the prepared copy: {dest}. '
+                         'Pulsar has no record of this folder and never deletes files it did not record. '
+                         'Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
+        self.assertNotIn('purge', message.lower())
+        self.assertEqual(sorted(p.name for p in self.view_root.iterdir() if p.name != '.pulsar-node'), ['b'*64])
+        self.assertEqual((payload(dest,self.manifest)/'weights.bin').read_bytes(), b'data')
+        self.assertEqual(Store(self.view_root/'.pulsar-node').records('transactions'), [])
 
 
 if __name__=='__main__': unittest.main()

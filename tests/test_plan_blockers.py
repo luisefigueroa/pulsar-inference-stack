@@ -20,7 +20,7 @@ SPEC = "b" * 64
 MANAGED = "io.pulsar.gb10.managed"
 SELECTED, CONF, SPEC_LABEL = "io.pulsar.gb10.selected-spec-id", "io.pulsar.gb10.conf", "io.pulsar.gb10.spec-id"
 CODES = {"container-reference", "pinned", "changed-copy", "insufficient-space", "reuse-unverified",
-         "dependent-copies", "incomplete-preparations", "archive-required", "discard-required", "catalog-snapshot"}
+         "unrecorded-destination", "dependent-copies", "incomplete-preparations", "archive-required", "discard-required", "catalog-snapshot"}
 
 
 def home(node="n0", manifest=MANIFEST["manifest_id"], name="target"):
@@ -237,6 +237,56 @@ class Preparation(Details):
         self.assert_paired(plan)
         self.assertEqual([(item["code"], item["node_id"]) for item in plan["blocker_details"]],
                          [("reuse-unverified", "n1")])
+
+    def test_an_unrecorded_folder_at_the_copy_path_blocks_without_naming_purge(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        observations = observed("n0", "n1", n1={"destination": {"path": path, "state": "present", "recorded": False}})
+        plan = self.plan(observations=observations)
+        self.assert_paired(plan)
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "copy"])
+        self.assertEqual(plan["blocker_details"], [{
+            "code": "unrecorded-destination",
+            "message": f"n1: a folder already exists at the prepared copy path {path} and no Pulsar record names it",
+            "node_id": "n1",
+            "fix": "Pulsar has no record of this folder and never deletes files it did not record. "
+                   "Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.",
+            "path": path}])
+        self.assertNotIn("purge", plan["blocker_details"][0]["fix"].lower())
+
+    def test_a_recorded_or_missing_destination_does_not_add_the_blocker(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        other = view(spec_id="cd" * 32)
+        other = {**other, "hub_path": path, "path": path + "/snapshots/" + "a" * 40}
+        for name, destination, views in (
+                ("missing", {"path": path, "state": "missing", "recorded": False}, []),
+                ("node record", {"path": path, "state": "present", "recorded": True}, []),
+                ("controller record", {"path": path, "state": "present", "recorded": False}, [other]),
+                ("not asked", None, [])):
+            with self.subTest(name):
+                plan = self.plan(views=views, observations=observed("n0", "n1", n1={"destination": destination}))
+                self.assertNotIn("unrecorded-destination", [item["code"] for item in plan["blocker_details"]])
+
+    def test_another_nodes_record_at_the_same_path_does_not_name_this_folder(self):
+        # A home outside the serving nodes: both ranks copy, and destinations share one path string.
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        def at_path(record):
+            return {**record, "hub_path": path, "path": path + "/snapshots/" + "a" * 40}
+        present = {"path": path, "state": "present", "recorded": False}
+        for name, views, blocked in (("other node's record", [at_path(view(node="n2", rank=1))], True),
+                                     ("own record", [at_path(view(node="n1", rank=0, spec_id="cd" * 32))], False)):
+            with self.subTest(name):
+                plan = preparation_plan(spec=self.spec, home=home(node="n0"), node_ids=["n1", "n2"],
+                                        confirmed_node_ids=["n0", "n1", "n2"], topology_id=TOPOLOGY,
+                                        observations=observed("n1", "n2", n1={"destination": present}),
+                                        views=views, budgets={"n1": budget(), "n2": budget()})
+                found = [(d["code"], d["node_id"], d["path"]) for d in plan["blocker_details"]
+                         if d["code"] == "unrecorded-destination"]
+                self.assertEqual(found, [("unrecorded-destination", "n1", path)] if blocked else [])
+
+    def test_only_a_planned_copy_checks_its_destination(self):
+        present = {"destination": {"path": "/fixture/views/x", "state": "present", "recorded": False}}
+        plan = self.plan(observations=observed("n0", "n1", n0=present))
+        self.assertEqual((plan["actions"][0]["action"], plan["eligible"]), ("home-view", True))
 
     def test_a_set_plan_repeats_member_details_with_their_snapshot(self):
         spec = spec_fixture(snapshots=2)

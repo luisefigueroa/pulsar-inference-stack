@@ -296,4 +296,20 @@ class StorageRendering(unittest.TestCase):
         self.assertEqual(blocker_detail_text(dict(code='future-code',message='node-1: something new'),names),
                          'spark-b: something new')
 
+    def test_an_unrecorded_folder_names_its_path_and_a_fix_without_purge(self):
+        names=NodeNames({'node-1':'spark-b'})
+        path='/var/tmp/views/'+SPEC
+        detail=dict(code='unrecorded-destination',node_id='node-1',path=path,
+                    message=f'node-1: a folder already exists at the prepared copy path {path} and no Pulsar record names it',
+                    fix='Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
+        document=dict(kind='pulsar-preparation-plan',eligible=False,blockers=[detail['message']],blocker_details=[detail],
+                      actions=[dict(rank=0,node_id='node-0',action='home-view'),dict(rank=1,node_id='node-1',action='copy')],
+                      total_bytes=44,file_count=1,budgets={})
+        output,flat=self.display(document,'prepare',names)
+        self.assertIn('Result blocked',flat)
+        self.assertIn('Blocker a folder already exists where Prepare would place the prepared copy on spark-b: ',flat)
+        self.assertIn(path,output.replace('\n','').replace(' ',''))
+        self.assertIn('Fix Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.',flat)
+        self.assertNotIn('purge',flat.lower())
+
 if __name__=='__main__':unittest.main()

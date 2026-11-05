@@ -270,6 +270,7 @@ BLOCKER_TEXT = {
     'changed-copy': 'the prepared copy on {node} changed since it was prepared',
     'insufficient-space': 'not enough copy budget or disk space on {node}',
     'reuse-unverified': 'a shared prepared copy on {node} failed verification',
+    'unrecorded-destination': 'a folder already exists where Prepare would place the prepared copy on {node}: {path}',
     'dependent-copies': 'prepared copies still depend on this home',
     'incomplete-preparations': 'incomplete preparations still depend on this snapshot',
     # Retain rendering for plans saved by older Stack installations.
@@ -296,8 +297,9 @@ def blocker_detail_text(detail: dict, names: NodeNames) -> str:
         else:
             covers = f'mounts {mount}, inside these files'
         text = f"{state} {owner} {container.get('name') or 'unnamed'}{spec}{where} {covers}"
-    elif detail.get('code') in BLOCKER_TEXT and (node or '{node}' not in BLOCKER_TEXT[detail['code']]):
-        text = BLOCKER_TEXT[detail['code']].format(node=node)
+    elif (detail.get('code') in BLOCKER_TEXT and (node or '{node}' not in BLOCKER_TEXT[detail['code']])
+          and (detail.get('path') or '{path}' not in BLOCKER_TEXT[detail['code']])):
+        text = BLOCKER_TEXT[detail['code']].format(node=node, path=detail.get('path'))
         if detail['code'] == 'insufficient-space' and 'combined' in str(detail.get('message')):
             text = text.replace('not enough', 'not enough combined', 1)
     else:
