@@ -173,6 +173,91 @@ UNFINISHED_PREPARATION = ("a preparation for {spec} that has not finished: still
 FOOTER = ("Size per copy is the model's listed size. Shared copies are stored once, so it is not what "
           "deleting would free.")
 NODE_LABEL_WIDTH = 16
+# The words a snapshot page uses for what Purge through one spec would free;
+# docs/OPERATIONS.md#catalog-labels has the "Model files: would free" row.
+WOULD_FREE = "would free"
+
+
+def purge_estimate(entry: dict, spec_id: str, nodes: list[dict]) -> dict:
+    """What Purge through SPEC_ID would delete from this snapshot, from the observed locations.
+
+    bytes_by_node counts the listed size of each present prepared copy that only this spec uses,
+    with observed pins and no container mounting it: the copies Purge deletes. A home used as a
+    prepared copy and a shared copy are only released, so they free nothing. Purge refuses while
+    any of the spec's copies is pinned or mounted, so pinned_on and in_use_on name those nodes;
+    unknown_on names nodes where pins, container use or the files could not be read.
+    """
+    order = [node["node_id"] for node in nodes]
+    found = {"bytes_by_node": {}, "pinned_on": [], "in_use_on": [], "unknown_on": []}
+    size = entry.get("payload_bytes")
+    for location in entry["locations"]:
+        bindings = location.get("bindings") or []
+        own = [binding for binding in bindings if binding.get("spec_id") == spec_id]
+        if not own:
+            continue
+        node = location["node_id"]
+        references = location.get("container_references")
+        if any(binding.get("pinned") for binding in own):
+            found["pinned_on"].append(node)
+        if references:
+            found["in_use_on"].append(node)
+        if not location.get("bindings_observed") or references is None or location.get("state") == "unknown":
+            found["unknown_on"].append(node)
+            continue
+        if (location["kind"] == "prepared" and location.get("state") == "present" and not references
+                and not any(binding.get("pinned") for binding in own)
+                and {binding.get("spec_id") for binding in bindings} == {spec_id}):
+            previous = found["bytes_by_node"].get(node, 0)
+            found["bytes_by_node"][node] = (previous + size if type(size) is int and previous is not None
+                                            else None)
+    def ordered(values):
+        return sorted(dict.fromkeys(values), key=lambda node: order.index(node) if node in order else len(order))
+    for key in ("pinned_on", "in_use_on", "unknown_on"):
+        found[key] = ordered(found[key])
+    found["bytes_by_node"] = {node: found["bytes_by_node"][node] for node in ordered(found["bytes_by_node"])}
+    return found
+
+
+def _freed(estimate: dict) -> int | None:
+    """The total Purge would free when it can run and every node was read; else None."""
+    if estimate["pinned_on"] or estimate["in_use_on"] or estimate["unknown_on"]:
+        return None
+    values = list(estimate["bytes_by_node"].values())
+    return sum(values) if all(type(value) is int for value in values) else None
+
+
+def purge_line(entry: dict, spec_id: str, nodes: list[dict]) -> str:
+    """One sentence on what Purge through SPEC_ID would free from this snapshot, or why it would not run."""
+    from .render import short_size
+    hostnames = {node["node_id"]: node["hostname"] for node in nodes}
+    def named(identities):
+        return ", ".join(hostnames.get(node, node) for node in identities)
+    estimate = purge_estimate(entry, spec_id, nodes)
+    subject = "Purge via [" + spec_id[:12] + "]"
+    # Purge refuses the whole spec while any copy is mounted or pinned: say so, and the choice that clears it.
+    causes = [(word + named(estimate[key]), fix) for key, word, fix in
+              (("in_use_on", "in use on ", "Stop"), ("pinned_on", "pinned on ", "Unpin prepared copies"))
+              if estimate[key]]
+    if causes:
+        fixes = [fix for _, fix in causes]
+        return (subject + " is blocked: " + "; ".join(cause for cause, _ in causes) + ". Choose " + fixes[0]
+                + " first" + "".join(", then " + fix for fix in fixes[1:]) + ".")
+    freeing = estimate["bytes_by_node"]
+    values = list(freeing.values())
+    total = sum(values) if values and all(type(value) is int for value in values) else None
+    amount = (short_size(total) + (" in all" if len(freeing) > 1 else "")) if total is not None else "an unknown amount"
+    if estimate["unknown_on"]:
+        unknown = "not known on " + named(estimate["unknown_on"]) + ", which could not be fully checked"
+        if freeing:
+            return subject + " " + WOULD_FREE + " at least " + amount + " on " + named(freeing) + "; " + unknown + "."
+        return subject + ": what it " + WOULD_FREE + " is " + unknown + "."
+    if freeing:
+        return subject + " " + WOULD_FREE + " " + amount + " on " + named(freeing) + "."
+    if not any(binding.get("spec_id") == spec_id for location in entry["locations"]
+               for binding in location.get("bindings") or []):
+        return subject + ": no prepared copies of this snapshot are recorded for it."
+    return (subject + " " + WOULD_FREE + " no space: it only releases the home or copies other specs share, "
+            "and their files stay.")
 
 
 def _words(location: dict) -> str:
@@ -308,7 +393,30 @@ def _free_space(node: dict) -> list[str]:
     return [*lines, *errors]
 
 
-def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bool = False) -> None:
+def _budget(out, budget: tuple[list | None, str | None], nodes: list[dict]) -> None:
+    """The storage budget table from model budget, or why it was not observed."""
+    from .render import budget_table
+    budgets, reason = budget
+    out.blank()
+    if budgets is None:
+        out.field("Storage budget", "not observed; " + (reason or "model budget returned no result"))
+        return
+    out.emit("Storage budget", role="heading")
+    if not budgets:
+        out.emit("No node reported a storage budget.")
+        return
+    hostnames = {node["node_id"]: node["hostname"] for node in nodes}
+    lines = budget_table(budgets, lambda node_id: hostnames.get(node_id, str(node_id)), out.width)
+    # The table rows stay aligned; the notes after them wrap.
+    for index, text in enumerate(lines[:len(budgets) + 1]):
+        out.emit(text, role="heading" if index == 0 else None)
+    for text in lines[len(budgets) + 1:]:
+        out.emit(text, subsequent_indent="  ")
+    out.emit("Observed prepared-copy storage only; space is not reserved.")
+
+
+def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bool = False,
+           budget: tuple[list | None, str | None] | None = None) -> None:
     from scripts.terminal_format import TerminalWriter
     from .render import short_size
     from .catalog import age_seconds, age_text
@@ -351,6 +459,8 @@ def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bo
                          + (UNFINISHED_PREPARATION.format(spec=spec) if spec else UNFINISHED))
                 else:
                     line("Not recognized", item["path"] + " — " + item["reason"])
+        if budget is not None:
+            _budget(out, budget, nodes)
     entries = [entry for entry in document["snapshots"] if snapshot is None or entry["snapshot_manifest_id"] == snapshot]
     if not entries:
         out.blank()
@@ -394,10 +504,13 @@ def render(document: dict, *, writer=None, snapshot: str | None = None, menu: bo
         if snapshot is not None and entry["cleanup_spec_ids"]:
             out.emit("Cleanup opens a spec's own menu: Purge removes its prepared copies, and Remove home "
                      "removes this snapshot's home.")
+            for spec_id in sorted(entry["cleanup_spec_ids"]):
+                out.emit(purge_line(entry, spec_id, nodes), subsequent_indent="  ")
         if not entry["cleanup_spec_ids"]:
             out.emit("No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed.")
     out.blank()
-    out.emit(FOOTER)
+    purge_shown = snapshot is not None and any(entry["cleanup_spec_ids"] for entry in entries)
+    out.emit(FOOTER + (" The Purge lines above say what it would free." if purge_shown else ""))
 
 
 def read_inventory(path: Path) -> dict:
@@ -407,6 +520,28 @@ def read_inventory(path: Path) -> dict:
     if document.get("kind") != "pulsar-model-file-inventory":
         raise StorageError((document.get("error") or {}).get("message") or "model files returned no inventory")
     return document
+
+
+def read_budget(path: Path) -> tuple[list | None, str | None]:
+    """A model budget --json result's nodes, or why it gave none: the JSON error, else the last
+    line of its stderr saved beside it as NAME.err, as the cluster overview keeps its sources."""
+    try:
+        document = json.loads(path.read_text() or "null")
+    except (OSError, ValueError):
+        document = None
+    if isinstance(document, dict):
+        result = document.get("result") if document.get("ok") is True else document
+        if (isinstance(result, dict) and result.get("kind") == "pulsar-storage-budget"
+                and isinstance(result.get("nodes"), list)):
+            return result["nodes"], None
+        error = document.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return None, str(error["message"])
+    try:
+        lines = path.with_suffix(".err").read_text(errors="replace").strip().splitlines()
+    except OSError:
+        lines = []
+    return None, lines[-1].removeprefix("error: ") if lines else "model budget returned no result"
 
 
 def main(argv=None) -> int:
@@ -421,6 +556,7 @@ def main(argv=None) -> int:
     parser.add_argument("--node-id")
     parser.add_argument("--snapshot")
     parser.add_argument("--menu", action="store_true", help="name the menu choice that opens a snapshot")
+    parser.add_argument("--budget", type=Path, help="model budget --json output to show under the nodes")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":
@@ -433,13 +569,22 @@ def main(argv=None) -> int:
         else:
             document = read_inventory(args.file)
             if args.command == "render":
-                render(document, snapshot=args.snapshot, menu=args.menu)
+                render(document, snapshot=args.snapshot, menu=args.menu,
+                       budget=read_budget(args.budget) if args.budget else None)
             elif args.command == "choices":
                 from scripts.terminal_format import terminal_width
+                from .render import short_size
                 for entry in document["snapshots"]:
                     label = entry["model_id"] + " @ " + (entry["model_commit"] or "unknown")[:8]
                     if not entry["cleanup_spec_ids"]:
                         label += " — view only"
+                    elif len(entry["cleanup_spec_ids"]) == 1:
+                        # Several specs each need their own Purge, so only one spec's total is shown.
+                        freed = _freed(purge_estimate(entry, entry["cleanup_spec_ids"][0], document["nodes"]))
+                        suffix = " — frees " + short_size(freed) if freed else ""
+                        # A cut size would misread, so the suffix shows whole or not at all.
+                        if len(" ".join((label + suffix).split())) <= terminal_width() - 2:
+                            label += suffix
                     label = " ".join(label.split())
                     print(entry["snapshot_manifest_id"] + "\t" + label[:terminal_width() - 2])
             else:

@@ -169,6 +169,8 @@ below are for reading.
 | Model files: Not recognized | An item in a Pulsar folder that is not a model snapshot Pulsar can identify; the reason follows its path. Pulsar changes nothing. |
 | Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
 | Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
+| Model files: would free | On a snapshot's page, for each spec that can clean it up: the listed size of the prepared copies that spec's **Purge** deletes, added up across nodes. A shared copy and a home used as a prepared copy are only released, so they free nothing. Purge removes nothing while any of the spec's copies is pinned or in use, so the line then says it is blocked and names the choice that clears it. A node that could not be fully checked makes the figure a minimum. A snapshot choice shows `frees N GiB` when one spec can clean it up and the whole figure is known. |
+| Model files: Storage budget | Under the nodes, one row per node from `./pulsar model budget`: disk free, the reserve, Pulsar files, and what the node can still copy. **not observed** gives the reason the budget could not be read; the files above are still current. |
 
 ## Configure topology and storage
 
@@ -845,9 +847,9 @@ In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
 
 ### Model files across the nodes
 
-Choose **Model files and disk space (checks nodes now)** beside **Catalog and
-storage** on the home menu. The catalog's **Free disk space (checks nodes now)**
-opens the same overview. It lists model snapshots across every confirmed node,
+Choose **Model files and disk space (checks nodes now)** on the home menu, or
+the choice of the same name in the catalog list; both open the same page. It
+lists model snapshots across every confirmed node,
 including managed downloads that have no catalog recipe. You do not need to open
 each recipe to see placement. Entering this menu always checks nodes and their
 managed filesystems now; it does not present saved placement as current. The equivalent commands are:
@@ -858,8 +860,12 @@ managed filesystems now; it does not present saved placement as current. The equ
 ./pulsar model files --json
 ```
 
-The overview shows each node's free space and folders, then one model-by-node
-table when it fits; narrow screens use stacked entries. The cells use words
+The overview shows each node's free space and folders, then the storage budget
+table (see [prepared copies and storage estimates](#prepared-copies-and-storage-estimates)),
+then one model-by-node table when it fits; narrow screens use stacked entries.
+The budget is read after the file scan because it takes the shared storage lock,
+as the cluster overview does; when it cannot be read, its line says **not
+observed** with the reason and the files stay shown. The cells use words
 (`home`, `copy`, `shared`, `pinned`, `in use`). Only when the words do not fit
 do short codes (`H`, `P`, `used`) take their place, with a key under the table
 that explains just what is shown. Pins, shared copies and container use are
@@ -894,7 +900,13 @@ prepared copy shared by several specs each remain one physical location.
 Archive information comes from saved verification records, with its time; archive
 storage is not scanned by this overview and is never a cleanup target.
 
-Close the page, then choose a snapshot for its paths and cleanup. A registered
+Close the page, then choose a snapshot for its paths and cleanup. That page
+says, for each spec that can clean it up, what its Purge would free: the listed
+size of the copies it deletes, leaving out shared copies and the home; or that
+Purge is blocked, with **Stop** or **Unpin prepared copies** to clear it; or that
+the figure is a minimum because a node could not be fully checked. The snapshot
+choice adds `frees N GiB` when one spec can clean it up and the figure is
+complete. Purge's own preview rechecks every node before anything is deleted. A registered
 snapshot with one catalog spec opens that spec's existing **Stop**, **Unpin
 prepared copies**, **Purge prepared copies** and **Remove home** menu. With
 several specs, **Clean up through which spec?** asks first. Purge still covers
@@ -1320,18 +1332,17 @@ overhead and do not reserve space. Existing preparation checks remain authoritat
 Copy amounts cover full snapshot payloads; already written partial staging is
 not deducted from this conservative estimate.
 
-**Storage and archive → Storage budget (all nodes)** runs the existing
-`./pulsar model budget` inspection for every confirmed node. It shows one row
+The **Model files and disk space** page shows the `./pulsar model budget`
+inspection for every confirmed node under the nodes. It shows one row
 per node in human units: disk free, the reserve, Pulsar files, and what the
 node can still copy, which is the smaller of disk free after the reserve and the
 copy budget left. A node past either limit is named with the amount. Narrow
 terminals drop the reserve column first. The command uses the same reserve and
-allowance settings as preparation, requires no confirmation, and does not
-change the selected recipe's saved file-check state. This budget describes
-prepared-copy storage; home and archive locations may use other filesystems.
-For placement and disk free space across nodes, including uncataloged managed
-downloads, use [Model files and disk space](#model-files-across-the-nodes).
-Its payload estimates are separate from this prepared-copy budget.
+allowance settings as preparation, requires no confirmation, and changes no
+spec's saved file-check state. This budget describes prepared-copy storage;
+home and archive locations may use other filesystems. The page's payload
+estimates for [model files](#model-files-across-the-nodes) are separate from
+this prepared-copy budget.
 
 ### Verification reuse and full audits
 

@@ -749,18 +749,6 @@ raise SystemExit(rc)
         self.assertIn("No other catalog spec supports comparison", result.stdout)
         self.assertEqual(choices.count("Catalog spec (read-only)\n"), 2)
 
-    def test_storage_budget_inspects_all_nodes_without_confirming_or_changing_suggestion(self):
-        _, result, actions, choices, questions = self.run_menu(
-            ["#0", "Storage and archive…", "Storage budget (all nodes)", "Back", "Back"])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "budget"]])
-        self.assertEqual(questions, "")
-        self.assertEqual(choices.count("Check now (suggested) — "), 2)
-        self.assertNotIn('Which machine', choices)
-        self.assertIn('Inspect storage budget finished for all confirmed nodes', result.stdout)
-        self.assertEqual(choices.count("[continue]"), 1)
-        self.assertLess(choices.index("[continue]"), choices.rindex("Choose one operation"))
-
     @staticmethod
     def budget(rc=0):
         """A model budget --json double: one node with 150 GiB left to copy."""
@@ -799,12 +787,43 @@ raise SystemExit(rc)
             return {"FILES_FIXTURE": json.dumps({"ok": True, "result": document})}
         return environment
 
+    # R5: the storage budget is on the files page, not in each spec's Storage and archive menu.
+    def test_the_files_page_shows_the_storage_budget_under_the_nodes(self):
+        both = lambda spec: {**self.file_inventory()(spec), **self.budget()(spec)}
+        _, result, actions, choices, questions = self.run_menu(
+            ["Model files and disk space (checks nodes now)", "Back", "Back"], env_extra=both)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]])
+        self.assertEqual(questions, "")
+        flat = " ".join(result.stdout.split())
+        self.assertIn("Storage budget Node Disk free Reserve Pulsar files Can still copy "
+                      "fixture-host 300 GiB 100 GiB 50.0 GiB 150 GiB", flat)
+        # The budget follows the node block and comes before the model table.
+        self.assertLess(flat.index("Free space"), flat.index("Storage budget"))
+        self.assertLess(flat.index("Storage budget"), flat.index("Model snapshot"))
+        self.assertNotIn("not observed;", flat)
+        self.assertIn("Model files and disk space\nexample/model @ aaaaaaaa\nRefresh (checks nodes now)\nBack\n",
+                      choices)
+        self.setUp()
+        storage = self.run_menu(["#0", "Storage and archive…", "Back", "Back", "Back"])[3]
+        self.assertNotIn("Storage budget", storage)
+        self.assertNotIn("disk headroom", storage)
+
+    def test_a_failed_budget_keeps_the_files_page_and_says_why(self):
+        both = lambda spec: {**self.file_inventory()(spec), **self.budget(rc=1)(spec)}
+        _, result, actions, _, _ = self.run_menu(
+            ["Model files and disk space (checks nodes now)", "Back", "Back"], env_extra=both)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        flat = " ".join(result.stdout.split())
+        self.assertIn("Storage budget not observed; node storage is unobservable", flat)
+        self.assertIn("model @aaaaaaaa 1.00 KiB home", flat)
+
     def test_empty_catalog_still_offers_model_file_discovery(self):
         _, result, actions, choices, questions = self.run_menu(
-            ["Free disk space (checks nodes now)", "Back", "Back"], empty_catalog=True,
+            ["Model files and disk space (checks nodes now)", "Back", "Back"], empty_catalog=True,
             env_extra=self.file_inventory(with_model=False))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]])
         self.assertEqual(questions, "")
         self.assertIn("150 GiB", " ".join(result.stdout.split()))
         self.assertIn("No model files were found in Pulsar's folders", " ".join(result.stdout.split()))
@@ -815,11 +834,12 @@ raise SystemExit(rc)
                          "actions": [{"rank": 0, "node_id": "fixture-node", "action": "remove-copy",
                                       "retained_bindings": 0}]}, "incomplete_preparations": []}
         spec, result, actions, choices, questions = self.run_menu(
-            ["Free disk space (checks nodes now)", "#0", "Purge prepared copies", "Back", "Back", "Back"],
+            ["Model files and disk space (checks nodes now)", "#0", "Purge prepared copies", "Back", "Back", "Back"],
             with_home=True, plan=plan, confirms=["no"], env_extra=self.file_inventory())
         self.assertEqual(result.returncode, 0, result.stderr)
-        files = ["pulsar", "model", "files", "--json"]
-        self.assertEqual(actions, [files, ["model-library.sh", "purge", spec, "--plan", "--json"], files])
+        files, budget = ["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]
+        self.assertEqual(actions, [files, budget, ["model-library.sh", "purge", spec, "--plan", "--json"],
+                                   files, budget])
         block = choices.split("Free disk space from this spec\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual([label.split(" — ")[0] for label in block],
                          ["Stop", "Unpin prepared copies", "Purge prepared copies", "Remove home", "Back"])
@@ -829,10 +849,10 @@ raise SystemExit(rc)
     def test_uncataloged_discovery_is_visible_but_offers_no_cleanup(self):
         # No spec uses the files, so the page is the whole answer: no empty chooser follows it.
         _, result, actions, choices, questions = self.run_menu(
-            ["Free disk space (checks nodes now)", "#0", "Back", "Back"],
+            ["Model files and disk space (checks nodes now)", "#0", "Back", "Back"],
             empty_catalog=True, env_extra=self.file_inventory(unregistered=True))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]])
         self.assertEqual(questions, "")
         self.assertIn("— view only", choices)
         self.assertNotIn("inspect only", choices)
@@ -848,10 +868,10 @@ raise SystemExit(rc)
 
     def test_files_that_two_specs_share_ask_which_spec_to_clean_up_through(self):
         _, result, actions, choices, questions = self.run_menu(
-            ["Free disk space (checks nodes now)", "#0", "Back", "Back", "Back"],
+            ["Model files and disk space (checks nodes now)", "#0", "Back", "Back", "Back"],
             env_extra=self.file_inventory(extra_specs=1))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]])
         self.assertEqual(questions, "")
         block = choices.split("Clean up through which spec?\n", 1)[1].split("\n\n", 1)[0].splitlines()
         self.assertEqual(len(block), 3, block)
@@ -885,12 +905,12 @@ raise SystemExit(rc)
 
     def test_unreachable_node_keeps_saved_model_visible_as_unknown(self):
         _, result, actions, choices, _ = self.run_menu(
-            ["Free disk space (checks nodes now)", "Back", "Back"], with_home=True,
+            ["Model files and disk space (checks nodes now)", "Back", "Back"], with_home=True,
             env_extra=self.file_inventory(unavailable=True))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("node unavailable", " ".join(result.stdout.split()))
         self.assertIn("example/model", choices)
-        self.assertEqual(actions, [["pulsar", "model", "files", "--json"]])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"], ["pulsar", "model", "budget", "--json"]])
 
     def test_esc_from_read_only_details_returns_to_catalog(self):
         _, result, actions, choices, questions = self.run_menu(

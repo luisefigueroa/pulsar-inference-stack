@@ -213,7 +213,7 @@ class Help(unittest.TestCase):
         words = {*file_inventory.FOLDER_STATES.values(), *file_inventory.CELL_WORDS.values(),
                  *file_inventory.CELL_CODES.values(), *file_inventory.PLACEMENT_WORDS.values(),
                  "home not found", "prepared copy not found", "Unfinished copy", "Not recognized", "view only",
-                 "Size per copy"}
+                 "Size per copy", file_inventory.WOULD_FREE, "Storage budget"}
         # A code is explained by the key beside the table, not by the legend; only the words need rows.
         words -= set(file_inventory.CELL_CODES.values()) - set(file_inventory.CELL_WORDS.values())
         rows = " ".join(label.split(": ", 1)[1] for label, _ in help_pages.labels() if label.startswith("Model files: "))

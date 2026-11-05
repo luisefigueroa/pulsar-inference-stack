@@ -185,7 +185,7 @@ run_operation() {
   else
     if [ "$rc" -eq 0 ]; then
       case "$action" in
-        status|verify|check|readiness|image-check|image-stage|budget) ;;
+        status|verify|check|readiness|image-check|image-stage) ;;
         *) LAST_RESULT[$spec]="$action" LAST_AT[$spec]=$(date +%s) ;;
       esac
     elif [ "$rc" -ne 2 ]; then
@@ -513,7 +513,6 @@ perform_action() {
   esac
   [ -z "$MENU_NODE" ] || args+=(--node "$MENU_NODE")
   case "$action" in
-    budget) run_operation budget 'Inspect storage budget' "$spec" 'all confirmed nodes' "$REPO_DIR/pulsar" model budget ;;
     check) run_operation check "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" check "$spec" "${args[@]}" ;;
     status) run_operation status "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/status.sh" "$spec" "${args[@]}" ;;
     verify) run_operation verify "$label" "$spec" "$RECIPE_MODEL" "$REPO_DIR/scripts/model-library.sh" archive verify "$spec" ;;
@@ -694,7 +693,7 @@ browse() {
       [ "$read_only" = 0 ] || return 0
     fi
     # Before setup the catalog stays saved records only: nothing probes nodes.
-    [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Free disk space (checks nodes now)")
+    [ "$read_only" = 1 ] || labels+=("Check running services (service inventory)" "Model files and disk space (checks nodes now)")
     # The legend reads only the docs, so read-only browsing offers it too.
     labels+=("What the labels mean")
     [ -z "$observed" ] || printf '\n%s\n' "$observed" | python3 -m scripts.terminal_format
@@ -708,7 +707,7 @@ browse() {
       "Check running services (service inventory)")
         check_running_services "$result" || return $?
         hold_screen || return $? ;;
-      "Free disk space (checks nodes now)")
+      "Model files and disk space (checks nodes now)")
         free_disk_space || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       "What the labels mean")
         page_output "" "$REPO_DIR/pulsar" help labels || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
@@ -749,8 +748,8 @@ reclaim_menu() {
   done
 }
 
-# The same overview opens directly from Home or from the catalog's Free disk
-# space choice. Files are discovered only after entering this explicit action.
+# The same page opens from Home and from the catalog, both named Model files
+# and disk space. Files are discovered only after entering this explicit action.
 file_inventory() {
   local columns
   if columns=$(_ui_terminal_columns); then
@@ -800,8 +799,16 @@ free_disk_space() {
       wait_continue "Model files error" || return $?
       return 0
     fi
+    # Read-only, but it takes the shared storage lock, so it runs after the
+    # file scan, as the cluster overview does. A failure shows its reason on
+    # the page; the files stay visible. Its stderr is kept out of the spinner.
+    rc=0
+    spin "Reading storage budgets…" bash -c '"$@" 2>"$0"' "$CATALOG_WORK/budget.err" \
+      "$REPO_DIR/pulsar" model budget --json >"$CATALOG_WORK/budget.json" || rc=$?
+    [ "$rc" -ne 130 ] || return 130
     while true; do
       page_output "" python3 -m model_library.file_inventory render --file "$CATALOG_WORK/files.json" --menu \
+        --budget "$CATALOG_WORK/budget.json" \
         || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
       ids=(); labels=()
       while IFS=$'\t' read -r snapshot label; do

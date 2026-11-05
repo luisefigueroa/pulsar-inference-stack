@@ -35,14 +35,14 @@ from scripts.terminal_format import TerminalWriter, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
-STORAGE = ("budget", "audit", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
+STORAGE = ("audit", "move", "archive", "verify", "pin", "unpin", "purge", "remove")
 LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status", "observe": "Verify running service",
     "logs": "Service logs",
     "readiness": "Check launch prerequisites", "image-check": "Check serving image",
     "image-stage": "Stage serving image",
-    "budget": "Storage budget (all nodes)", "audit": "Full file audit (slow; hashes every file)",
+    "audit": "Full file audit (slow; hashes every file)",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -56,7 +56,7 @@ EFFECTS = {
     "stop": "remove it if running; files are kept",
     "readiness": "dry run of Start's checks", "image-check": "is the exact digest on every node?",
     "image-stage": "pull or copy the exact digest",
-    "budget": "disk headroom on every node", "audit": "read-only; can take many minutes",
+    "audit": "read-only; can take many minutes",
     "move": "move the home to another node",
     "archive": "save a verified recovery copy", "verify": "recheck the archive's contents",
     "pin": "protect from purge", "unpin": "allow purge again",

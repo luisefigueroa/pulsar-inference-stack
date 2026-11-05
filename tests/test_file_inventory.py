@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from model_library.file_discovery import inspect_files
 from model_library.file_inventory import (FOLDER_STATES, UNFINISHED, UNFINISHED_PREPARATION, _elide, _labels, _table, combine, context,
-                                          main, placement, render)
+                                          main, placement, purge_estimate, purge_line, read_budget, render)
 from model_library.local import home_record, prepared_record
 from model_library.state import Store, now, shared_view
 from release_spec import build_snapshot_manifest
@@ -512,3 +512,152 @@ class Page(unittest.TestCase):
             self.assertTrue(all(len(line) <= width for line in outputs["plain"].splitlines()), width)
             codes = {code for match in self.ANSI.findall(outputs["no-color"]) for code in match[2:-1].split(";")}
             self.assertLessEqual(codes, {"0", "1", "4"})
+
+
+class PurgeEstimate(unittest.TestCase):
+    """What Purge through one spec would free on the snapshot page and in the snapshot choices."""
+    SPEC, OTHER = "1" * 64, "2" * 64
+    G = 1024**3
+
+    def binding(self, spec=None, pinned=False):
+        return {"spec_id": spec or self.SPEC, "pinned": pinned}
+
+    def copy(self, node, *bindings, kind="prepared", **fields):
+        return Page.location(node, kind, bindings=list(bindings) or [self.binding()], **fields)
+
+    def entry(self, *locations, size=102 * 1024**3):
+        entry = Page.entry("fixture/Model", "a" * 40, list(locations), size=size)
+        entry.update(catalog_specs=[{"spec_id": self.SPEC, "snapshot": "target", "model_id": "fixture/Model"}],
+                     cleanup_spec_ids=[self.SPEC])
+        return entry
+
+    def nodes(self):
+        return [Page.node("1"), Page.node("2"), Page.node("3")]
+
+    def estimate(self, entry):
+        return purge_estimate(entry, self.SPEC, self.nodes())
+
+    def line(self, entry):
+        return purge_line(entry, self.SPEC, self.nodes())
+
+    def test_only_this_specs_unshared_unpinned_unused_copies_count(self):
+        entry = self.entry(self.copy("1", kind="home"), self.copy("2"), self.copy("3"))
+        self.assertEqual(self.estimate(entry), {"bytes_by_node": {"2": 102 * self.G, "3": 102 * self.G},
+                                                "pinned_on": [], "in_use_on": [], "unknown_on": []})
+        self.assertEqual(self.line(entry), "Purge via [111111111111] would free 204 GiB in all on alpha-2, alpha-3.")
+
+    def test_a_shared_copy_or_the_home_frees_nothing(self):
+        entry = self.entry(self.copy("1", kind="home"),
+                           self.copy("2", self.binding(), self.binding(self.OTHER), shared=True))
+        self.assertEqual(self.estimate(entry)["bytes_by_node"], {})
+        self.assertIn("would free no space: it only releases the home or copies other specs share", self.line(entry))
+
+    def test_a_pin_of_this_spec_blocks_purge_and_another_specs_pin_does_not(self):
+        entry = self.entry(self.copy("1", self.binding(pinned=True), pinned=True), self.copy("2"))
+        estimate = self.estimate(entry)
+        self.assertEqual((estimate["pinned_on"], estimate["bytes_by_node"]), (["1"], {"2": 102 * self.G}))
+        self.assertEqual(self.line(entry),
+                         "Purge via [111111111111] is blocked: pinned on alpha-1. Choose Unpin prepared copies first.")
+        other = self.entry(self.copy("1", self.binding(), self.binding(self.OTHER, pinned=True),
+                                     pinned=True, shared=True))
+        self.assertEqual(self.estimate(other)["pinned_on"], [])
+
+    def test_a_mounted_home_this_spec_uses_blocks_purge_and_frees_nothing(self):
+        entry = self.entry(self.copy("1", kind="home", container_references=[{"id": "c"}]),
+                           self.copy("2", self.binding(pinned=True), pinned=True))
+        estimate = self.estimate(entry)
+        self.assertEqual((estimate["in_use_on"], estimate["pinned_on"], estimate["bytes_by_node"]), (["1"], ["2"], {}))
+        self.assertEqual(self.line(entry), "Purge via [111111111111] is blocked: in use on alpha-1; pinned on alpha-2. "
+                                           "Choose Stop first, then Unpin prepared copies.")
+
+    def test_unread_container_use_or_pins_make_the_estimate_partial(self):
+        entry = self.entry(self.copy("1", container_references=None), self.copy("2"),
+                           self.copy("3", bindings_observed=False))
+        estimate = self.estimate(entry)
+        self.assertEqual((estimate["unknown_on"], estimate["bytes_by_node"]), (["1", "3"], {"2": 102 * self.G}))
+        self.assertEqual(self.line(entry), "Purge via [111111111111] would free at least 102 GiB on alpha-2; "
+                                           "not known on alpha-1, alpha-3, which could not be fully checked.")
+        only = self.entry(self.copy("1", container_references=None))
+        self.assertIn("what it would free is not known on alpha-1", self.line(only))
+
+    def test_a_missing_copy_frees_nothing_and_a_spec_without_copies_says_so(self):
+        self.assertEqual(self.estimate(self.entry(self.copy("2", state="missing")))["bytes_by_node"], {})
+        self.assertIn("no prepared copies of this snapshot are recorded for it", self.line(self.entry(Page.location("1"))))
+
+    def run_main(self, document, command, *arguments, columns=100):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "files.json"
+            path.write_text(json.dumps({"ok": True, "result": document}))
+            output = io.StringIO()
+            with patch.dict(os.environ, {"COLUMNS": str(columns), "PULSAR_COLOR": "never"}), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(main([command, "--file", str(path), *arguments]), 0)
+        return output.getvalue()
+
+    def test_snapshot_page_and_choice_say_what_purge_would_free(self):
+        entry = self.entry(self.copy("1", kind="home"), self.copy("2"))
+        document = Page.document(self.nodes(), [entry])
+        page = " ".join(self.run_main(document, "render", "--snapshot", entry["snapshot_manifest_id"]).split())
+        self.assertIn("Purge via [111111111111] would free 102 GiB on alpha-2.", page)
+        self.assertIn("fixture/Model @ aaaaaaaa — frees 102 GiB", self.run_main(document, "choices"))
+        # Too narrow for the whole size: the suffix is left off rather than cut.
+        self.assertNotIn("frees", self.run_main(document, "choices", columns=36))
+        # A blocked or partly unknown purge, or several specs, give the choice no size.
+        entry["locations"][1]["container_references"] = None
+        self.assertNotIn("frees", self.run_main(document, "choices"))
+        entry["locations"][1]["container_references"] = []
+        entry["cleanup_spec_ids"] = [self.SPEC, self.OTHER]
+        self.assertNotIn("frees", self.run_main(document, "choices"))
+
+
+class Budget(unittest.TestCase):
+    """The storage budget table on the overview page, read from model budget --json."""
+    G = 1024**3
+
+    def budget_file(self, folder, envelope=None, err=""):
+        path = Path(folder) / "budget.json"
+        path.write_text("" if envelope is None else json.dumps(envelope))
+        if err:
+            path.with_suffix(".err").write_text(err)
+        return path
+
+    def nodes(self):
+        return [{"node_id": "1", "available": 1900 * self.G, "used": 450 * self.G, "total": 4000 * self.G,
+                 "reserve": 100 * self.G, "limit": 2250 * self.G, "path": "/fixture/views"},
+                {"node_id": "2", "available": 200 * self.G, "used": 300 * self.G, "total": 4000 * self.G,
+                 "reserve": 205 * self.G, "limit": 400 * self.G, "path": "/fixture/views"}]
+
+    def test_read_budget_takes_the_result_or_the_reason(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ok = {"schema_version": 1, "ok": True, "result": {"kind": "pulsar-storage-budget", "nodes": self.nodes()}}
+            self.assertEqual(read_budget(self.budget_file(folder, ok)), (self.nodes(), None))
+            failed = {"schema_version": 1, "ok": False, "error": {"message": "node storage is unobservable"}}
+            self.assertEqual(read_budget(self.budget_file(folder, failed)), (None, "node storage is unobservable"))
+            err = "warning: slow\nerror: budget inspection requires confirmed topology\n"
+            self.assertEqual(read_budget(self.budget_file(folder, None, err)),
+                             (None, "budget inspection requires confirmed topology"))
+        with tempfile.TemporaryDirectory() as folder:
+            self.assertEqual(read_budget(self.budget_file(folder)), (None, "model budget returned no result"))
+
+    def page(self, document, width, **options):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"PULSAR_COLOR": "never"}, clear=True):
+            render(document, writer=TerminalWriter(width=width, stream=output), **options)
+        return output.getvalue()
+
+    def test_the_table_sits_under_the_nodes_and_fits_every_width(self):
+        document = Page().two_node_model()
+        for width in (80, 60, 44):
+            text = self.page(document, width, budget=(self.nodes(), None))
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+            flat = " ".join(text.split())
+            self.assertIn("Storage budget Node", flat)
+            self.assertIn("alpha-2 is 5.00 GiB past its reserve or copy budget.", flat)
+            self.assertLess(flat.index("alpha-2 Free space"), flat.index("Storage budget"))
+            self.assertIn("Observed prepared-copy storage only; space is not reserved.", flat)
+        failed = self.page(document, 80, budget=(None, "node storage is unobservable"))
+        self.assertIn("Storage budget not observed; node storage is unobservable", " ".join(failed.split()))
+        # The snapshot page shows no budget, and neither does a page rendered without one.
+        snapshot = document["snapshots"][0]["snapshot_manifest_id"]
+        self.assertNotIn("Storage budget", self.page(document, 80, snapshot=snapshot, budget=(self.nodes(), None)))
+        self.assertNotIn("Storage budget", self.page(document, 80))
