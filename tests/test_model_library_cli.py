@@ -1221,5 +1221,72 @@ class ModelLibraryCLI(unittest.TestCase):
         self.failure(f.run("purge", "--yes", spec=True))
         self.assertTrue(Path(acquired["home"]["path"]).exists())
 
+    def prepared_then_records_lost(self):
+        """Two nodes prepared, then the controller's records lost; returns the fixture and rank 1's copy."""
+        f = self.fixture(nodes=2)
+        self.acquire_candidate(f, nodes=2)
+        self.success(f.run("prepare", "--yes", spec=True))
+        rank1 = next(v for v in Store(f.state).views(spec_id=f.spec["spec_id"]) if v["rank"] == 1)
+        shutil.rmtree(f.state)
+        return f, Path(rank1["hub_path"])
+
+    def reregister_home(self, f):
+        self.assertEqual(self.success(f.run("acquire", "--plan", spec=True))["action"], "reuse")
+        self.assertTrue(self.success(f.run("acquire", "--yes", spec=True))["reused"])
+
+    def test_prepare_after_controller_records_loss_reuses_node_records(self):
+        f, _ = self.prepared_then_records_lost()
+        self.reregister_home(f)
+        plan = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual([a["action"] for a in plan["actions"]], ["reuse", "reuse"])
+        self.success(f.run("prepare", "--yes", spec=True))
+
+    def test_prepare_blocks_on_unrecorded_folder_after_node_records_loss(self):
+        f, destination = self.prepared_then_records_lost()
+        node_state = [Path(n["view_root"]) / ".pulsar-node" for n in f.cfg["nodes"]]
+        for path in node_state:
+            shutil.rmtree(path)
+        files = self.success(f.run("files"))
+        prepared = [loc for snap in files["snapshots"] for loc in snap["locations"] if loc["kind"] == "prepared"]
+        self.assertEqual([(Path(loc["hub_path"]), loc["bindings"]) for loc in prepared], [(destination, [])])
+        self.reregister_home(f)
+        self.assertEqual(self.success(f.run("purge", "--plan", spec=True))["plan"]["actions"], [])
+        fix = ("Pulsar has no record of this folder and never deletes files it did not record. "
+               "Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.")
+        plan = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertFalse(plan["eligible"])
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "copy"])
+        self.assertEqual([(d["code"], d["node_id"], d["path"], d["fix"]) for d in plan["blocker_details"]],
+                         [("unrecorded-destination", "node-1", str(destination), fix)])
+        before = destination.stat()
+        transfers = len(f.events("transfer"))
+        result = f.run("prepare", "--yes", spec=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        refused = json.loads(result.stdout)  # Disk readings differ between the two observations.
+        self.assertEqual({k: refused[k] for k in ("eligible", "actions", "blockers", "blocker_details")},
+                         {k: plan[k] for k in ("eligible", "actions", "blockers", "blocker_details")})
+        # Stopped before any rank: no copy, no staging, no record on either node, folder untouched.
+        self.assertEqual(len(f.events("transfer")), transfers)
+        self.assertEqual([path.exists() for path in node_state], [False, False])
+        self.assertEqual([p.name for p in destination.parent.iterdir()], [destination.name])
+        self.assertEqual((destination.stat().st_ino, destination.stat().st_mtime_ns), (before.st_ino, before.st_mtime_ns))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec["spec_id"]), [])
+        human = subprocess.run([sys.executable, str(f.repo / "scripts/public_cli.py"), "model", "prepare",
+                                f.spec["spec_id"], "--spec-file", str(f.spec_path), "--yes"],
+                               cwd=f.repo, env={**f.env, "NO_COLOR": "1", "COLUMNS": "80"},
+                               text=True, capture_output=True, timeout=120)
+        self.assertEqual(human.returncode, 1, human.stderr)
+        text = " ".join((human.stdout + human.stderr).split())
+        self.assertIn("Result blocked", text)
+        # The node is named by its hostname; the long path may wrap.
+        self.assertIn("Blocker a folder already exists where Prepare would place the prepared copy on rank-1: ", text)
+        self.assertIn(str(destination), text.replace(" ", ""))
+        self.assertIn(f"Fix {fix}", text)
+        self.assertNotIn("purge", text.lower())
+        # Removing the folder outside Pulsar is the way forward; Prepare then copies again.
+        shutil.rmtree(destination)
+        self.success(f.run("prepare", "--yes", spec=True))
+        self.assertGreater(len(f.events("transfer")), transfers)
+
 
 if __name__ == "__main__": unittest.main()
