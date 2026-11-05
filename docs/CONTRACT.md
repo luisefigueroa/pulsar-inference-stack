@@ -281,7 +281,9 @@ Preparation, purge and home-removal plans keep `blockers` as messages and add
 explains, `node_id` when one node is involved, and `fix`, a sentence for
 people. A `container-reference` record also has `container` (`id`, `name`,
 `state` of `running`, `stopped` or `unknown`, and `spec_id`, the selected catalog
-spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. Other
+spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. An
+`unrecorded-destination` record has the `path` of a folder that is already
+where Prepare would place a rank's prepared copy and that no record names. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
 `dependent-copies` and `incomplete-preparations`. Older plans may contain
 `archive-required`, `discard-required` and `catalog-snapshot`; current home
@@ -293,6 +295,9 @@ for people.
 
 Change note, 2026-10-17: plans gained `blocker_details` beside the unchanged
 `blockers` messages.
+
+Change note, 2026-11-04: preparation plans gained the `unrecorded-destination`
+code; `prepare --yes` with such a plan exits 1 before it copies or records anything.
 
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;

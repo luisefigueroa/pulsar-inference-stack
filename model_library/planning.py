@@ -6,11 +6,14 @@ interprets a missing observation as absence and never modifies files.
 A plan's ``blockers`` are messages. ``blocker_details`` adds one entry per
 cause, alongside them: a ``code``, the ``message`` it explains, the
 ``node_id`` when one node is involved, and a ``fix``. A container blocker also
-names the container, its state, and the mount that covers the files.
+names the container, its state, and the mount that covers the files. An
+``unrecorded-destination`` blocker names the ``path`` of a folder that is
+already where Prepare would copy and that no record names.
 """
 from __future__ import annotations
 
 from .integrity import StorageError
+from .node import UNRECORDED_DESTINATION_FIX
 from .state import checked_id, validate_home, validate_view, view_record_key, copy_references
 
 
@@ -74,6 +77,12 @@ def container_references(record: dict, observations: dict[str, dict]) -> list[di
         if _covering_mount(record, mounts) is not None:
             references.append(container)
     return references
+
+
+def _nested(one: str, other: str) -> bool:
+    """Whether two absolute paths are the same, or one lies inside the other."""
+    a, b = one.rstrip('/') + '/', other.rstrip('/') + '/'
+    return a.startswith(b) or b.startswith(a)
 
 
 def detail(code: str, message: str, fix: str, node_id: str | None = None, **fields) -> dict:
@@ -223,6 +232,19 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
             else:
                 blockers.append(f'{node_id}: explicitly purge the changed prepared copy before preparing')
                 details.append(detail('changed-copy', blockers[-1], 'purge the prepared copies, then prepare', node_id))
+        destination = obs.get('destination')
+        if action == 'copy' and isinstance(destination, dict) and destination.get('state') == 'present':
+            # The node reports its own records; the merged views add the controller's.
+            path = destination.get('path')
+            if not isinstance(path, str) or not path:
+                raise StorageError('prepared copy destination observation has no path')
+            named = destination.get('recorded') is True or any(
+                _nested(path, v[field]) for v in views for field in ('hub_path', 'path'))
+            if not named:
+                blockers.append(f'{node_id}: a folder already exists at the prepared copy path {path} '
+                                'and no Pulsar record names it')
+                details.append(detail('unrecorded-destination', blockers[-1], UNRECORDED_DESTINATION_FIX,
+                                      node_id, path=path))
         budget = budgets.get(node_id)
         if action == 'copy':
             if not isinstance(budget, dict) or any(not isinstance(budget.get(k), int) or isinstance(budget[k], bool) or budget[k] < 0 for k in ('available', 'reserve', 'used', 'limit')):
