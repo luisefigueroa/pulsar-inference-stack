@@ -679,9 +679,11 @@ of all detected workloads, including those outside the catalog.
 Stop refreshes the inventory and shows the current scope before confirmation.
 The catalog menu's **Stop** does the same, and both ask one question that names
 the nodes the service was seen on and says model files, pins and archives are
-kept. For a one-node recipe the catalog menu stops on the machine chosen
-first, so its question names that machine, and adds where the inventory saw
-the service when that is elsewhere. Outcomes name the model and its spec.
+kept. For a one-node recipe the catalog menu stops on one machine: where the
+refreshed inventory saw the service, without asking, when it saw it on exactly
+one confirmed machine; otherwise the machine chosen next. Its question names
+that machine, and adds where the inventory saw the service when that is
+elsewhere. Outcomes name the model and its spec.
 It is unavailable when inventory has not established safe ownership and
 observability, or a one-node service has ambiguous placement. The stop command
 still rechecks ownership and can refuse; the menu does not bypass its guards.
@@ -1078,6 +1080,13 @@ node), while the menu asks for a node. Its question says what the machine is
 for, such as "Which machine should hold the model files?", and each machine
 is named by hostname with what saved records place there: "home recorded
 here" or "prepared copy recorded here". Nothing is probed to build the list.
+For a one-node recipe the cursor starts on the machine saved records name
+(the home, else a prepared copy); **Download**, **Restore** and **Move home**
+start on no machine, because choosing where the files go is the decision.
+**Live status** asks no machine question: status uses the service's recorded
+node. **Stop** takes its service inventory first and asks only when that
+inventory did not see the one-node service on exactly one confirmed machine,
+because Stop without a node removes the service's containers on every node.
 The recipe list labels show the same short saved state; where the whole label
 fits (60 columns or wider), they also name the node count and the spec's state,
 as `models list` does. State is metadata, never a gate. Storage mutations run the

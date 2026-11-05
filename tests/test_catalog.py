@@ -531,6 +531,8 @@ _pop() { local n; n=$(cat "$1.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$1.n"
 choose_index() {
   local header="$1" answer i=0 option; shift
   { printf '%s\n' "$header" "$@"; printf '\n'; } >>"$CHOICES_LOG"
+  # Where the cursor starts, kept apart so the menu blocks above stay exact.
+  printf '%s\t%s\n' "$header" "${PULSAR_CHOOSE_DEFAULT:-}" >>"$CHOICES_LOG.defaults"
   answer=$(_pop "$MENU_ANSWERS")
   case "$answer" in "") return 99 ;; "<esc>") return 1 ;; "<ctrl-c>") return 130 ;; "#"*) echo "${answer#\#}"; return 0 ;; esac
   # An answer names a choice with or without the effect after " — ".
@@ -918,6 +920,61 @@ raise SystemExit(rc)
         # The node picker names machines by hostname and passes the stable node_id.
         self.assertIn("Which machine's files should be checked?\nfixture-host\n", choices)
         self.assertNotIn("fixture-node", choices)
+        # A home on another node is not preselected here.
+        self.assertEqual(self.cursor("Which machine's files should be checked?"), [""])
+
+    def cursor(self, header):
+        """Where each choose_index call with HEADER started its cursor ("" for the first choice, unset)."""
+        lines = (self.root / "choices.log.defaults").read_text().splitlines()
+        return [line.split("\t", 1)[1] for line in lines if line.split("\t", 1)[0] == header]
+
+    # R6: the question stays, and the cursor starts on the recorded node.
+    def test_the_machine_question_starts_on_the_recorded_node(self):
+        spec, result, actions, choices, _ = self.run_menu(
+            ["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], with_home=True, home_node="fixture-node",
+            check_observation={"local_state": "ready", "archive_state": "unknown", "blockers": []})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["model-library.sh", "check", spec, "--node", "fixture-node", "--json"]])
+        self.assertIn("Which machine's files should be checked?\nfixture-host — home recorded here\n", choices)
+        self.assertEqual(self.cursor("Which machine's files should be checked?"), ["0"])
+        # Restore chooses where the files go, so nothing is preselected.
+        self.setUp()
+        _, result, _, choices, _ = self.run_menu(
+            ["#0", "Restore", "fixture-host", "Back", "Back"], with_home=True, home_node="fixture-node",
+            confirms=["no"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.cursor("Which machine should hold the model files?"), [""])
+
+    # R6: Live status uses the recorded node, so no machine question.
+    def test_live_status_asks_no_machine_question(self):
+        spec, result, actions, choices, _ = self.run_menu(["#0", "Live status", "Back", "Back"], action_rc=1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["status.sh", spec]])
+        self.assertNotIn("Which machine", choices)
+
+    # R6: a Stop whose fresh inventory saw the one-node service on one confirmed
+    # node stops it there without the machine question; the Stop question stays.
+    def test_stop_of_a_service_seen_on_one_node_skips_the_machine_question(self):
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Stop", "Back", "Back"], confirms=["yes"], inventory=self.live_inventory(node_id="fixture-node"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"], ["down.sh", spec, "--node", "fixture-node"]])
+        self.assertNotIn("Which machine", choices)
+        self.assertEqual(questions, f"Stop and remove the service containers of example/model [{spec[:12]}] on "
+                                    "fixture-node (not in saved topology)? Model files, pins and archives are kept.\n")
+        # Seen on a node that is not confirmed here: the question stays.
+        self.setUp()
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["no"], inventory=self.live_inventory())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Which machine runs the service?\nfixture-host\n", choices)
+        # A failed refresh never skips the question.
+        self.setUp()
+        _, result, actions, choices, _ = self.run_menu(
+            ["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["no"], inventory="", inventory_rc=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(actions, [["pulsar", "inventory", "--json"]])
+        self.assertIn("Which machine runs the service?\nfixture-host\n", choices)
 
     def test_failed_action_keeps_the_session(self):
         _, result, actions, choices, _ = self.run_menu(["#0", "Check now (suggested)", "fixture-host", "Back", "Back"], action_rc=1)
@@ -936,7 +993,7 @@ raise SystemExit(rc)
         self.assertNotIn("rejected", outcome)
 
     def test_live_status_not_running_reads_as_safe_to_start(self):
-        _, result, actions, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=1)
+        _, result, actions, _, _ = self.run_menu(["#0", "Live status", "Back", "Back"], action_rc=1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(actions[0][0], "status.sh")
         outcome = " ".join(result.stdout.split())
@@ -944,18 +1001,21 @@ raise SystemExit(rc)
         self.assertNotIn("✗", outcome)
 
     def test_live_status_that_could_not_observe_a_node_says_not_to_start(self):
-        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=3)
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "Back", "Back"], action_rc=3)
         self.assertEqual(result.returncode, 0, result.stderr)
         outcome = " ".join(result.stdout.split())
         self.assertRegex(outcome, r"\? Whether \S+ is running is unknown: a node could not be observed\.")
         self.assertIn("don't start it until Live status observes every node", outcome)
 
     @staticmethod
-    def live_inventory(state="running", *, age_minutes=0, unobserved=False):
-        """A service inventory double for one spec, observed age_minutes ago."""
+    def live_inventory(state="running", *, age_minutes=0, unobserved=False, node_id=None):
+        """A service inventory double for one spec, observed age_minutes ago,
+        running on the worker (node-1, or NODE_ID)."""
         from tests.test_inventory_menu import snapshot
         def build(spec_id):
             document = snapshot(spec_id, state=state)
+            if node_id:
+                document["nodes"]["worker"]["node_id"] = node_id
             document["generated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=age_minutes)).isoformat()
             if unobserved:
                 document["services"] = []
@@ -1028,18 +1088,18 @@ raise SystemExit(rc)
         self.assertNotIn("Check running services", choices)
 
     def test_live_status_and_stop_outcomes_date_the_frame(self):
-        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=1)
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "Back", "Back"], action_rc=1)
         text = " ".join(result.stdout.split())
         self.assertIn("Running? not running on any node (Live status, less than a minute ago)", text)
         self.setUp()
-        _, result, _, _, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"], action_rc=0)
+        _, result, _, _, _ = self.run_menu(["#0", "Live status", "Back", "Back"], action_rc=0)
         text = " ".join(result.stdout.split())
         self.assertIn("Running? a service exists (Live status, less than a minute ago)", text)
         self.assertIn("Live status (suggested)", text + self.root.joinpath("choices.log").read_text())
 
     def test_live_status_after_start_replaces_the_started_suggestion(self):
         _, result, actions, _, _ = self.run_menu(
-            ["#0", "Start", "fixture-host", "Live status (suggested)", "fixture-host", "Back", "Back"],
+            ["#0", "Start", "fixture-host", "Live status (suggested)", "Back", "Back"],
             confirms=["yes"], action_rc=1, launch={"start_rc": 0})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([action[:2] for action in actions], [["pulsar", "start"], ["status.sh", actions[1][1]]])
@@ -1267,7 +1327,7 @@ raise SystemExit(rc)
         self.assertIn("Next Start — prepared on every serving rank just now", last_frame)
 
     def test_operations_run_under_their_name_without_the_effect(self):
-        _, result, _, choices, _ = self.run_menu(["#0", "Live status", "fixture-host", "Back", "Back"])
+        _, result, _, choices, _ = self.run_menu(["#0", "Live status", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Live status — check every node for it now", choices)
         self.assertIn("→ Live status example/model", " ".join(result.stdout.split()))
