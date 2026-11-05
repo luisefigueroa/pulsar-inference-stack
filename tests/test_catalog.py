@@ -773,7 +773,7 @@ raise SystemExit(rc)
         return lambda _: {"BUDGET_FIXTURE": json.dumps(envelope), "BUDGET_RC": str(rc)}
 
     @staticmethod
-    def file_inventory(with_model=True, unregistered=False, unavailable=False, extra_specs=0):
+    def file_inventory(with_model=True, unregistered=False, unavailable=False, extra_specs=0, manifest="c" * 64):
         def environment(spec):
             node = {"node_id": "fixture-node", "hostname": "fixture-host",
                     "observed_at": None if unavailable else "2026-09-05T00:00:00Z",
@@ -787,7 +787,7 @@ raise SystemExit(rc)
                         "bindings": [], "bindings_observed": not unavailable, "pinned": False, "shared": False,
                         "container_references": None if unavailable else []}
             others = [chr(ord("d") + number) * 64 for number in range(extra_specs)]
-            entry = {"snapshot_manifest_id": "c" * 64, "model_id": "example/model", "model_commit": "a" * 40,
+            entry = {"snapshot_manifest_id": manifest, "model_id": "example/model", "model_commit": "a" * 40,
                      "payload_bytes": 1024, "locations": [location], "archive": None,
                      "catalog_specs": [] if unregistered else [{"spec_id": value, "snapshot": "target",
                                                                 "model_id": "example/model"}
@@ -858,6 +858,57 @@ raise SystemExit(rc)
         self.assertTrue(all(label.startswith("Spec [") and label.endswith(" — target") for label in block[:2]), block)
         self.assertEqual(block[2], "Back")
         self.assertNotIn("Cleanup recipe", choices)
+
+    # R8a: after a records loss, the catalog's own Model files scan sees the
+    # recipe's home on a node. Download, whose plan registers such a folder
+    # without fetching anything, comes before Restore, which copies.
+    def test_files_the_scan_found_lead_to_download_on_their_machine(self):
+        def scan(spec_id):
+            release = json.loads((self.repo / "releases" / f"{spec_id}.json").read_text())
+            manifest = release["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+            return self.file_inventory(unregistered=True, manifest=manifest)(spec_id)
+        plan = {"kind": "pulsar-acquisition-plan", "action": "reuse", "selected_node": "fixture-node",
+                "home": {"node_id": "fixture-node"}}
+        # The frame names machines from the saved topology, which run_menu points here.
+        (self.root / "no-topology.json").write_text(json.dumps(
+            {"nodes": [{"node_id": "fixture-node", "hostname": "fixture-host"}]}))
+        spec, result, actions, choices, questions = self.run_menu(
+            ["#0", "Back", "Free disk space (checks nodes now)", "Back", "#0", "Download (suggested)",
+             "#0", "Back", "Back"],
+            observation={"local_state": "missing", "archive_state": "verified", "blockers": []},
+            plan=plan, confirms=["no"], env_extra=scan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        frames = " ".join(result.stdout.split()).split(f"[{spec[:12]}]")
+        # Before the scan, the archive; after it, the files found on the node.
+        self.assertIn("Next Restore", frames[1])
+        self.assertNotIn("files found", frames[1])
+        self.assertIn("Files not prepared on every serving node", frames[-1])
+        self.assertIn("files found on fixture-host, not in Pulsar's records; Download checks them", frames[-1])
+        self.assertIn("Next Download — files found on fixture-host but not in Pulsar's records; "
+                      "Download checks them before fetching anything", frames[-1])
+        self.assertIn("Which machine should hold the model files?\n"
+                      "fixture-host — files found here, not in Pulsar's records\n\n", choices)
+        self.assertEqual(self.cursor("Which machine should hold the model files?"), ["0"])
+        self.assertEqual(actions, [["pulsar", "model", "files", "--json"],
+                                   ["model-library.sh", "acquire", spec, "--node", "fixture-node", "--plan",
+                                    "--json"]])
+        self.assertIn("Nothing is downloaded.", questions)
+        self.assertIn("Nothing changed.", result.stdout)
+
+    def test_a_failed_scan_leaves_the_suggestion_and_question_unchanged(self):
+        spec, result, actions, choices, _ = self.run_menu(
+            ["Free disk space (checks nodes now)", "#0", "Download", "#0", "Back", "Back"],
+            observation={"local_state": "missing", "archive_state": "verified", "blockers": []},
+            confirms=["no"], env_extra=lambda _: {
+                "FILES_FIXTURE": json.dumps({"schema_version": 1, "ok": False,
+                                             "error": {"code": "prerequisite_failed", "message": "no topology"}}),
+                "FILES_RC": "2"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        shown = " ".join(result.stdout.split())
+        self.assertIn("Next Restore", shown)
+        self.assertNotIn("files found", shown + choices)
+        self.assertIn("Which machine should hold the model files?\nfixture-host\n\n", choices)
+        self.assertEqual(self.cursor("Which machine should hold the model files?"), [""])
 
     # TUI-42: both run read-only in the pager, with no question.
     def test_verify_running_service_and_full_file_audit_ask_nothing(self):
