@@ -272,7 +272,7 @@ START_AGAIN=4
 ask_start() {
   local label="$1" spec="$2" question rc
   shift 2
-  question=$(printf '%s' "$ROW_JSON" | catalog_menu confirm --spec-id "$spec" --action start \
+  question=$(start_question_document | catalog_menu confirm --spec-id "$spec" --action start \
     ${MENU_NODE:+--node "$MENU_NODE"}) || return 0
   confirm "$question" no || { rc=$?; echo 'Nothing changed.'; return "$rc"; }
   start_catalog_spec "$label" "$spec" "$@"
