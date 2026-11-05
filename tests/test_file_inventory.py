@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 from model_library.file_discovery import inspect_files
 from model_library.file_inventory import (FOLDER_STATES, UNFINISHED, UNFINISHED_PREPARATION, _elide, _labels, _table, combine, context,
-                                          main, placement, purge_estimate, purge_line, read_budget, render)
+                                          OUTSIDE_MEMBERSHIP, main, placement, purge_estimate, purge_line, read_budget,
+                                          render)
 from model_library.local import home_record, prepared_record
 from model_library.state import Store, now, shared_view
 from release_spec import build_snapshot_manifest
@@ -625,6 +626,64 @@ class PurgeEstimate(unittest.TestCase):
                              "alpha-1, which could not be fully checked.")
         document = Page.document([Page.node("1", status="unknown", error="node unavailable"), Page.node("2")], [entry])
         self.assertNotIn("frees", self.run_main(document, "choices"))
+
+    def test_a_node_whose_records_could_not_be_read_makes_the_figure_a_minimum(self):
+        # combine() keeps such a node observed with no error; its records field says what failed.
+        case = FileInventory("setUp")
+        case.setUp()
+        self.addCleanup(case.temp.cleanup)
+        broken = case.view_root / ".pulsar-node" / "views"
+        broken.mkdir(parents=True)
+        (broken / ("f" * 64 + ".json")).write_text("{not json")
+        manifest = case.manifest["manifest_id"]
+        copy = {"kind": "prepared", "hub_path": "/fixture/views/copy", "path": "/fixture/views/copy/snapshot",
+                "state": "present", "snapshot_manifest_id": manifest, "registered_home": False,
+                "verified_at": None, "bindings": [self.binding()]}
+        healthy = {"observed_at": now(), "locations": [copy], "scopes": [], "disks": [], "issues": [],
+                   "unidentified": [], "bindings_observed": True}
+        saved = case.saved(specs={manifest: [{"spec_id": self.SPEC, "model_id": "fixture/model", "snapshot": "target"}]})
+        document = combine(saved, [case.observation(files=case.scan()), case.observation("n1", healthy)])
+        nodes = document["nodes"]
+        self.assertEqual([(node["status"], node["error"], node["records"]) for node in nodes],
+                         [("observed", "", "unreadable"), ("observed", "", "observed")])
+        entry = document["snapshots"][0]
+        self.assertEqual(purge_estimate(entry, self.SPEC, nodes)["unknown_on"], ["n0"])
+        self.assertEqual(purge_line(entry, self.SPEC, nodes),
+                         f"Purge via [111111111111] would free at least {len(case.data)} bytes on fixture-n1; "
+                         "not known on fixture-n0, which could not be fully checked.")
+
+    def test_a_pin_in_another_snapshot_of_the_spec_blocks_this_snapshots_purge(self):
+        # Purge covers every snapshot the spec has copies of, so the draft's pin blocks the target page.
+        target = self.entry(self.copy("1", kind="home"), self.copy("2"))
+        draft = Page.entry("fixture/Draft", "b" * 40, [self.copy("3", self.binding(pinned=True), pinned=True)])
+        draft.update(catalog_specs=[{"spec_id": self.SPEC, "snapshot": "draft", "model_id": "fixture/Model"}],
+                     cleanup_spec_ids=[self.SPEC])
+        snapshots = [target, draft]
+        estimate = purge_estimate(target, self.SPEC, self.nodes(), snapshots)
+        self.assertEqual((estimate["pinned_on"], estimate["bytes_by_node"]), (["3"], {"2": 102 * self.G}))
+        self.assertEqual(purge_line(target, self.SPEC, self.nodes(), snapshots=snapshots),
+                         "Purge via [111111111111] is blocked: pinned on alpha-3 (its draft snapshot). "
+                         "Choose Unpin prepared copies first.")
+        document = Page.document(self.nodes(), snapshots)
+        self.assertNotIn("frees", self.run_main(document, "choices"))
+        page = " ".join(self.run_main(document, "render", "--snapshot", target["snapshot_manifest_id"]).split())
+        self.assertIn("is blocked: pinned on alpha-3 (its draft snapshot).", page)
+        # Without the draft's pin the target's figure stands.
+        draft["locations"][0]["bindings"], draft["locations"][0]["pinned"] = [self.binding()], False
+        self.assertIn("— frees 102 GiB", self.run_main(document, "choices"))
+
+    def test_a_node_outside_confirmed_membership_counts_only_where_it_holds_the_specs_copy(self):
+        departed = Page.node("9", status="unknown", error=OUTSIDE_MEMBERSHIP, observed_at=None, scopes=[], disks=[])
+        nodes = [*self.nodes(), departed]
+        entry = self.entry(self.copy("2"), Page.location("9", bindings=[], state="unknown",
+                                                         bindings_observed=False, container_references=None))
+        self.assertEqual(purge_estimate(entry, self.SPEC, nodes)["unknown_on"], [])
+        self.assertEqual(purge_line(entry, self.SPEC, nodes), "Purge via [111111111111] would free 102 GiB on alpha-2.")
+        entry["locations"].append(self.copy("9", state="unknown", bindings_observed=False, container_references=None))
+        self.assertEqual(purge_estimate(entry, self.SPEC, nodes)["unknown_on"], ["9"])
+        self.assertEqual(purge_line(entry, self.SPEC, nodes),
+                         "Purge via [111111111111] would free at least 102 GiB on alpha-2; not known on alpha-9, "
+                         "which could not be fully checked.")
 
     def test_a_missing_copy_frees_nothing_and_a_spec_without_copies_says_so(self):
         self.assertEqual(self.estimate(self.entry(self.copy("2", state="missing")))["bytes_by_node"], {})

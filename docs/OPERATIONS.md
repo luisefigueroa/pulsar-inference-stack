@@ -169,7 +169,7 @@ below are for reading.
 | Model files: Not recognized | An item in a Pulsar folder that is not a model snapshot Pulsar can identify; the reason follows its path. Pulsar changes nothing. |
 | Model files: view only | No catalog spec uses these files, so Pulsar has no cleanup for them. Nothing was changed. |
 | Model files: Size per copy | The model's listed size for one complete copy. Shared copies are stored once, so it is not what deleting would free. |
-| Model files: would free | On a snapshot's page, for each spec that can clean it up: the listed size of the prepared copies that spec's **Purge** deletes, added up across nodes. A shared copy and a home used as a prepared copy are only released, so they free nothing. Purge removes nothing while any of the spec's copies is pinned or in use, so the line then says it is blocked and names the choice that clears it. A node that could not be fully checked makes the figure a minimum. A snapshot choice shows `frees N GiB` when one spec can clean it up and the whole figure is known. |
+| Model files: would free | On a snapshot's page, for each spec that can clean it up: the listed size of the prepared copies that spec's **Purge** deletes, added up across nodes. A shared copy and a home used as a prepared copy are only released, so they free nothing. Purge removes nothing while any of the spec's copies, in any of its snapshots, is pinned or in use, so the line then says it is blocked and names what clears it. A confirmed node whose files, records or containers could not be read makes the figure a minimum; a node outside confirmed membership counts only where it holds the spec's copies. A snapshot choice shows `frees N GiB` when one spec can clean it up and the whole figure is known. |
 | Model files: Storage budget | Under the nodes, one row per node from `./pulsar model budget`: disk free, the reserve, Pulsar files, and what the node can still copy. **not observed** gives the reason the budget could not be read; the files above are still current. |
 
 ## Configure topology and storage
@@ -906,8 +906,11 @@ size of the copies it deletes, leaving out shared copies and the home; or that
 Purge is blocked, with what clears it: **Stop** for this spec's own service,
 stopping another service from its own recipe or **Live service inventory**,
 removing a container Pulsar did not start outside Pulsar, or **Unpin prepared
-copies**; or that the figure is a minimum because a confirmed node, or its
-records or containers, could not be fully checked. The snapshot
+copies**. Purge covers every snapshot the spec has copies of, so a pin or a
+container on another of its snapshots blocks it too, and the line names that
+snapshot. The figure is a minimum when a confirmed node, or its records or
+containers, could not be fully checked; a node outside confirmed membership
+counts only where it holds the spec's copies. The snapshot
 choice adds `frees N GiB` when one spec can clean it up and the figure is
 complete. Purge's own preview rechecks every node before anything is deleted. A registered
 snapshot with one catalog spec opens that spec's existing **Stop**, **Unpin
