@@ -85,11 +85,15 @@ if [ "$complete" = 1 ]; then
   # budget, with their ages; nothing here probes a node. It prints again only
   # when a new observation was saved or the saved inventory became "last seen",
   # so its ages do not tick while the menu is open.
+  # The block and its key take their ages at one instant, so they agree on
+  # "last seen".
   running="" running_key=""
   if [ -n "$catalog_json" ]; then
-    running=$(printf '%s' "$catalog_json" \
-      | with_width python3 -m scripts.saved_observations home --repo-root "$REPO_DIR" 2>/dev/null) || running=""
-    running_key=$(python3 -m scripts.saved_observations key --repo-root "$REPO_DIR" 2>/dev/null) || running_key=""
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    running=$(printf '%s' "$catalog_json" | with_width python3 -m scripts.saved_observations home \
+      --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) || running=""
+    running_key=$(python3 -m scripts.saved_observations key --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) \
+      || running_key=""
   fi
   status_key="$status_text"$'\n'"$running_key"
   [ -z "$running" ] || status_text+=$'\n\n'"$running"

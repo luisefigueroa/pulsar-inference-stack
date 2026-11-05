@@ -202,6 +202,59 @@ class Command(unittest.TestCase):
         key = self.run_command("key")
         self.assertEqual(key.stdout, "none 2026-09-04T22:00:00Z\n")
 
+    def test_a_save_waits_for_the_record_lock(self):
+        (self.root / ".pulsar").mkdir()
+        for command, name, document in (("save-inventory", "service-inventory.json", observed()),
+                                        ("save-budget", "storage-budget.json", [budget_node("node-1")])):
+            with self.subTest(command=command):
+                path = self.root / ".pulsar" / name
+                with saved.record_lock(path):
+                    process = subprocess.Popen(
+                        [sys.executable, "-m", "scripts.saved_observations", command, "--repo-root", str(self.root)],
+                        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=self.env,
+                        cwd=ROOT, text=True)
+                    process.stdin.write(json.dumps(document))
+                    process.stdin.close()
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        process.wait(timeout=1.5)
+                    self.assertFalse(path.exists())
+                process.wait(timeout=60)
+                with process.stdout, process.stderr:
+                    output = (process.returncode, process.stdout.read(), process.stderr.read())
+                self.assertEqual(output, (0, "", ""))
+                self.assertTrue(path.exists())
+                lock = path.with_name(name + ".lock")
+                self.assertTrue(stat.S_ISREG(lock.lstat().st_mode))
+                self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
+
+    def test_a_lock_that_is_not_a_regular_file_refuses_the_save(self):
+        (self.root / ".pulsar").mkdir()
+        (self.root / ".pulsar/service-inventory.json.lock").symlink_to(self.root / "elsewhere")
+        result = self.run_command("save-inventory", stdin=json.dumps(observed()))
+        self.assertEqual((result.returncode, result.stdout), (0, ""))
+        self.assertRegex(result.stderr, r"\Awarning: the service inventory was not saved to \S+: ")
+        self.assertFalse((self.root / ".pulsar/service-inventory.json").exists())
+        self.assertFalse((self.root / "elsewhere").exists())
+
+    def test_home_and_key_agree_on_last_seen_at_one_instant(self):
+        (self.root / ".pulsar").mkdir()
+        (self.root / ".pulsar/service-inventory.json").write_text(json.dumps(observed()))
+        catalog = json.dumps({"entries": ENTRIES})
+        for minutes, state in ((9, "fresh"), (11, "last-seen")):
+            with self.subTest(minutes=minutes):
+                now = f"2026-09-05T00:{minutes:02d}:00Z"
+                block = " ".join(self.run_command("home", "--now", now, "--width", "80", stdin=catalog).stdout.split())
+                key = self.run_command("key", "--now", now).stdout
+                self.assertEqual(key, f"2026-09-05T00:00:00Z {state} none\n")
+                self.assertEqual("last seen running on fixture-remote" in block, state == "last-seen", block)
+                self.assertEqual("last seen, not current" in block, state == "last-seen", block)
+                self.assertIn(f"services {minutes} minutes ago (00:00 UTC)", block)
+        for value in ("2026-09-05T00:09:00", "yesterday"):
+            with self.subTest(value=value):
+                result = self.run_command("key", "--now", value)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("2026-11-05T22:00:00Z", result.stderr)
+
 
 class RunningBlock(unittest.TestCase):
     def block(self, inventory, budget=None, *, width=80, now=NOW, entries=ENTRIES, **options):
@@ -212,7 +265,7 @@ class RunningBlock(unittest.TestCase):
             # or after a separator.
             self.assertNotRegex(line, r"(\bport|\bof|·)$", line)
             self.assertNotRegex(line, r"^\s+(GiB|TiB|MiB|KiB|UTC\))", line)
-            self.assertNotIn(" ", line)
+            self.assertNotIn("\u00a0", line)
         return text
 
     def flat(self, text):
@@ -236,6 +289,21 @@ class RunningBlock(unittest.TestCase):
                 self.assertNotIn("GPU work", flat)
                 # Rows in the setup status's layout: labels at 2, values at 12.
                 self.assertRegex(text, r"(?m)^  Memory    fixture-local ")
+
+    def test_a_service_with_execution_overrides_reads_modified_recipe(self):
+        data = observed()
+        data["services"][0]["matches_selected_spec"] = False
+        data["services"].append(outside())
+        data["services"][1]["matches_selected_spec"] = False
+        for width in (80, 44):
+            with self.subTest(width=width):
+                flat = self.flat(self.block(data, width=width))
+                self.assertIn("example/model · running on fixture-remote · modified recipe · port 8000", flat)
+                # A service outside the catalog has no selected spec to differ from.
+                self.assertIn("experiment-model · running on fixture-local · port 8001 · outside the catalog", flat)
+                self.assertEqual(flat.count("modified recipe"), 1)
+        data["services"][0]["matches_selected_spec"] = True
+        self.assertNotIn("modified recipe", self.flat(self.block(data)))
 
     def test_an_inventory_older_than_ten_minutes_reads_last_seen(self):
         flat = self.flat(self.block(observed(), now=NOW + timedelta(minutes=11), width=44))

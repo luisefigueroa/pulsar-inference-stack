@@ -137,6 +137,11 @@ wait_continue() {
                           '  shift 2; printf "%s\\n" "$*" >> "$CATALOG_LOG"\n'
                           '  [ "${CATALOG_RC:-0}" = 0 ] || { echo "error: fixture catalog" >&2; exit "$CATALOG_RC"; }\n'
                           '  exec cat "$CATALOG_FILE"\n'
+                          'fi\n'
+                          # The saved observations run for real; their arguments are recorded.
+                          'if [ "${1:-}" = -m ] && [ "${2:-}" = scripts.saved_observations ] '
+                          '&& [ -n "${OBSERVATIONS_LOG:-}" ]; then\n'
+                          '  printf "%s\\n" "${*:3}" >> "$OBSERVATIONS_LOG"\n'
                           f'fi\nexec {sys.executable} "$@"\n')
         python.chmod(0o755)
         for name in ("ssh", "docker", "curl", "nvidia-smi"):
@@ -537,6 +542,30 @@ class RunningBlock(MenuHarness):
         self.assertEqual(self.commands(), [])
         self.assertNotIn("probe:", self.pulsar_log.read_text() if self.pulsar_log.exists() else "")
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
+
+    def test_the_block_and_its_key_take_their_ages_at_one_instant(self):
+        # Ten minutes and a few seconds old: the instant decides "last seen" for both.
+        old = datetime.now(timezone.utc) - timedelta(minutes=10, seconds=2)
+        self.saved_inventory.write_text(saved_inventory(f"{old:%Y-%m-%dT%H:%M:%SZ}"))
+        log = self.root / "observations.log"
+        result = self.run_home(["Exit"], OBSERVATIONS_LOG=str(log))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [line.split() for line in log.read_text().splitlines()]
+        self.assertEqual([call[0] for call in calls], ["home", "key"])
+        instants = [call[call.index("--now") + 1] for call in calls]
+        self.assertEqual(instants[0], instants[1])
+        now = datetime.fromisoformat(instants[0].replace("Z", "+00:00"))
+        self.assertEqual(now.tzinfo, timezone.utc)
+        stale = (now - old).total_seconds() > 600
+        # The key the block was compared by says what the block printed.
+        key = subprocess.run([sys.executable, "-m", "scripts.saved_observations", "key", "--now", instants[0],
+                              "--repo-root", str(self.root)], text=True, capture_output=True, timeout=60, cwd=ROOT,
+                             env={**os.environ, "PYTHONPATH": str(ROOT),
+                                  "PULSAR_SERVICE_INVENTORY_FILE": str(self.saved_inventory),
+                                  "PULSAR_STORAGE_BUDGET_FILE": str(self.saved_budget)}).stdout
+        self.assertEqual(key.split()[1], "last-seen" if stale else "fresh")
+        text = " ".join(result.stdout.split())
+        self.assertEqual("last seen running on fixture-remote" in text, stale, text)
 
     def test_the_block_prints_again_only_when_a_saved_record_changes(self):
         self.saved_inventory.write_text(saved_inventory())

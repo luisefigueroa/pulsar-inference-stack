@@ -9,8 +9,8 @@ before it is saved. Nothing here contacts a node.
 
     python3 -m scripts.saved_observations save-inventory < INVENTORY_JSON
     python3 -m scripts.saved_observations save-budget < BUDGET_NODES_JSON
-    python3 -m scripts.saved_observations home < CATALOG_JSON
-    python3 -m scripts.saved_observations key
+    python3 -m scripts.saved_observations home [--now TIME] < CATALOG_JSON
+    python3 -m scripts.saved_observations key [--now TIME]
 
 The records live under the checkout's `.pulsar/` directory, which is never
 tracked; PULSAR_SERVICE_INVENTORY_FILE and PULSAR_STORAGE_BUDGET_FILE name
@@ -20,13 +20,16 @@ saved prints one warning on stderr and exits 0.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import fcntl
 import io
 import json
 import os
 from pathlib import Path
+import stat
 import sys
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,7 +37,7 @@ if str(ROOT) not in sys.path:
 
 from model_library.catalog import age_seconds, age_text  # noqa: E402
 from model_library.catalog_menu import LIVE_FRESH_SECONDS, SERVICE_STATES, live_inventory  # noqa: E402
-from model_library.integrity import StorageError, atomic_json, read_json  # noqa: E402
+from model_library.integrity import StorageError, atomic_json, directory, read_json  # noqa: E402
 from model_library.node_names import NodeNames  # noqa: E402
 from model_library.render import can_still_copy, short_size  # noqa: E402
 from model_library.state import ensure_directory, now as utc_now  # noqa: E402
@@ -75,6 +78,7 @@ HOME_WORDS = {
     "free": "free",
     "past": "past its reserve or copy budget",
     "headroom": "headroom not observed",
+    "modified": "modified recipe",
 }
 
 # A no-break space keeps a number with its unit, and a " · " separator with
@@ -154,34 +158,60 @@ def load_budget(path: Path) -> dict | None:
     return check_budget_record(read_json(path))
 
 
+@contextmanager
+def record_lock(path: Path) -> Iterator[None]:
+    """Hold the record's own lock, `<record>.lock` beside it, exclusively.
+
+    Saves of one record take turns, so the compare and the write of one save
+    are never interleaved with another's. The directory must exist.
+    """
+    path = Path(path)
+    with directory(path.parent) as parent:
+        descriptor = os.open(f"{path.name}.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=parent)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                raise StorageError(f"{path.name}.lock is not a regular file")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(descriptor)
+
+
 def save_inventory(document: Any, path: Path) -> bool:
     """Save DOCUMENT unless the saved one is valid and strictly newer; True when written.
 
-    Two inventories can overlap, so the newer observation is kept. A saved
-    file that is unreadable or invalid is replaced, never compared, so it can
-    never block saving.
+    Two inventories can overlap, so the newer observation is kept; the
+    record's lock covers the compare and the write. A saved file that is
+    unreadable or invalid is replaced, never compared, so it can never block
+    saving.
     """
     check_inventory_document(document)
     path = Path(path)
     ensure_directory(path.parent)
-    try:
-        saved = load_inventory(path)
-    except (ValueError, OSError):
-        saved = None
-    if saved is not None and _stamp(saved["generated_at"], "saved") > _stamp(document["generated_at"], "new"):
-        return False
-    atomic_json(path, document)
+    with record_lock(path):
+        try:
+            saved = load_inventory(path)
+        except (ValueError, OSError):
+            saved = None
+        if saved is not None and _stamp(saved["generated_at"], "saved") > _stamp(document["generated_at"], "new"):
+            return False
+        atomic_json(path, document)
     return True
 
 
 def save_budget(nodes: Any, path: Path, *, clock: Callable[[], str] = utc_now) -> bool:
-    """Save the budget NODES with the time the probe finished, taken now."""
+    """Save the budget NODES with the time the probe finished, taken now.
+
+    The stamp is taken under the record's lock, right before the write, so
+    the last budget saved is also the newest.
+    """
     check_budget_nodes(nodes)
     path = Path(path)
-    record = {"schema_version": SCHEMA_VERSION, "kind": BUDGET_KIND, "saved_at": clock(), "nodes": nodes}
-    check_budget_record(record)
     ensure_directory(path.parent)
-    atomic_json(path, record)
+    with record_lock(path):
+        record = {"schema_version": SCHEMA_VERSION, "kind": BUDGET_KIND, "saved_at": clock(), "nodes": nodes}
+        check_budget_record(record)
+        atomic_json(path, record)
     return True
 
 
@@ -191,7 +221,11 @@ def _fresh(inventory: dict, now=None) -> bool:
 
 
 def change_key(inventory: dict | None, budget: dict | None, now=None) -> str:
-    """Changes only with a new observation or the inventory turning "last seen"."""
+    """Changes only with a new observation or the inventory turning "last seen".
+
+    Pass the NOW the block was rendered at, so the two agree on "last seen".
+    """
+    now = now or datetime.now(timezone.utc)
     inventory_key = "none" if inventory is None else (
         f"{inventory['generated_at']} {'fresh' if _fresh(inventory, now) else 'last-seen'}")
     budget_key = "none" if budget is None else budget["saved_at"]
@@ -260,6 +294,10 @@ def _service_rows(inventory: dict, entries: list[dict], room: int, now=None) -> 
             where = ", ".join(service["hosts"]) or "nodes not identified"
             text = cut_middle(service["model_id"], room)
             text += _part(f"{'' if fresh else 'last seen '}{state} on {where}")
+            # A catalog service started with execution overrides runs a
+            # modified recipe; one outside the catalog has no spec to differ from.
+            if not outside and service.get("modified"):
+                text += _part(_kept("modified", "recipe"))
             if service.get("port"):
                 text += _part(_kept("port", service["port"]))
             mib = _gpu_mib(by_conf.get(spec_id) or {})
@@ -342,8 +380,10 @@ def home_block(inventory: dict | None, budget: dict | None, entries: list[dict],
 
     UNREADABLE names a record ("inventory", "budget") whose file could not
     be read; its row says so. HOSTNAMES names budget nodes the inventory does
-    not, from the saved topology. Nothing here probes a node.
+    not, from the saved topology. Every age is taken at one NOW, the current
+    time by default. Nothing here probes a node.
     """
+    now = now or datetime.now(timezone.utc)
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
     hostnames = hostnames or {}
@@ -424,6 +464,17 @@ def _read(loader: Callable[[Path], dict | None], repo_root: Path, name: str) -> 
         return None, True
 
 
+def _instant(value: str) -> datetime:
+    """A --now value: an ISO 8601 time with its timezone, such as 2026-11-05T22:00:00Z."""
+    try:
+        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid time {value!r}; use UTC, such as 2026-11-05T22:00:00Z") from exc
+    if stamp.tzinfo is None:
+        raise argparse.ArgumentTypeError(f"time {value!r} has no timezone; use UTC, such as 2026-11-05T22:00:00Z")
+    return stamp.astimezone(timezone.utc)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -433,7 +484,11 @@ def main(argv: list[str] | None = None) -> int:
         save.add_argument("--path", help="save here instead of the default path")
     home = sub.add_parser("home", help="the Running block; catalog JSON on stdin")
     home.add_argument("--width", type=int)
-    sub.add_parser("key", help="what changes when a new observation is saved")
+    key = sub.add_parser("key", help="what changes when a new observation is saved")
+    # The home menu gives home and key one instant, so the block and its key
+    # agree on "last seen"; without it each uses the current time.
+    for command in (home, key):
+        command.add_argument("--now", type=_instant, help="the time ages are taken at (UTC)")
     for command in sub.choices.values():
         command.add_argument("--repo-root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
@@ -441,16 +496,17 @@ def main(argv: list[str] | None = None) -> int:
         return _save(args, INVENTORY_NAME, "the service inventory", save_inventory)
     if args.command == "save-budget":
         return _save(args, BUDGET_NAME, "the storage budget", save_budget)
+    now = args.now or datetime.now(timezone.utc)
     inventory, inventory_unreadable = _read(load_inventory, args.repo_root, INVENTORY_NAME)
     budget, budget_unreadable = _read(load_budget, args.repo_root, BUDGET_NAME)
     if args.command == "key":
-        print(change_key(inventory, budget))
+        print(change_key(inventory, budget, now))
         return 0
     try:
         entries = json.load(sys.stdin).get("entries") or []
         unreadable = {name for name, flag in (("inventory", inventory_unreadable), ("budget", budget_unreadable))
                       if flag}
-        sys.stdout.write(home_block(inventory, budget, entries, width=args.width, unreadable=unreadable,
+        sys.stdout.write(home_block(inventory, budget, entries, width=args.width, now=now, unreadable=unreadable,
                                     hostnames=NodeNames.saved(args.repo_root).hostnames))
         return 0
     except (ValueError, KeyError, TypeError, AttributeError) as exc:

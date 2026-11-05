@@ -152,6 +152,7 @@ below are for reading.
 | Running: last seen … | The saved service inventory is older than ten minutes, so the service may have started, stopped or changed since. **Cluster overview (checks nodes now)** rechecks. |
 | Running: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. |
 | Running: unknown, others unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. The **Memory** row gives the reason. |
+| Running: modified recipe | The service runs with execution overrides, so its recipe differs from the selected catalog spec. **Live service inventory** opens the service, and **Verify running service** in its catalog menu rechecks the recipe. |
 | Running: outside the catalog | A Pulsar-managed service whose spec this checkout does not publish, for example one an experiment started or one started with `--spec-file`. **Live service inventory** shows it and offers Stop. |
 | Running: saved inventory unreadable, saved budget unreadable | The saved file could not be read, so its rows are left out. The next check replaces it; the choice on the line runs one. |
 | Memory: … GiB available of … | Each node's available memory and its total, in GiB, from the last saved service inventory. GB10 shares this memory between the GPU and the host. |
@@ -1133,7 +1134,8 @@ is left out when no spec has a suggested step or the catalog cannot be read.
 
 After the Next line, the Running block shows the last saved
 [service inventory](#terms) and [storage budget](#terms): each Pulsar service
-with its state, nodes, port and GPU memory; each node's available memory, GPU
+with its state, nodes, port and GPU memory, and whether it runs a modified
+recipe; each node's available memory, GPU
 work Pulsar did not start, and disk headroom; and when each was observed (see
 the [Running, Memory, GPU work, Disk and Observed labels](#catalog-labels)).
 Every `./pulsar inventory` and `./pulsar model budget` run, including those
@@ -1145,7 +1147,9 @@ and an inventory older than ten minutes reads `last seen`. The ages do not
 tick while the menu stays open, as the Next line's do not; the block prints
 again when a new observation is saved or the inventory turns `last seen`. A
 saved file that cannot be read says so on its row and is replaced by the next
-check. The block is left out when the catalog cannot be read.
+check. Saves of one record take turns under a lock file beside it, so an older
+inventory never replaces a newer one. The block is left out when the catalog
+cannot be read.
 
 An unset archive location is optional configuration, not an incomplete cluster
 setup. **Archive storage configuration** is available when archive actions are
