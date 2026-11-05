@@ -143,7 +143,7 @@ below are for reading.
 | Lifecycle: running | The service was seen running in this menu session. |
 | Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Open **Catalog and storage** and choose **Check now** on each. |
 | Next: needs Download, needs Restore or needs Prepare | The step the saved records suggest for those specs. The operation rechecks everything before it changes files. |
-| Next: ready to Start | The last saved check found every file prepared. **Start** rechecks the files, image, nodes and memory before launching. |
+| Next: ready to Start | The last saved check found every file prepared, however long ago. **Start** rechecks the files, image, nodes and memory before launching. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -1174,10 +1174,14 @@ findings, rather than an execution failure. Missing or changed files can be a
 completed check's result; an interrupted or unrecorded check still needs a retry.
 
 A recent check that found missing or changed files suggests acquisition,
-restoration or preparation even when it recorded blockers. Unknown or stale
-file observations still suggest **Check now**. A check that records a result
-clears the previous operation's pending check; one that could not record a
-result does not turn earlier readiness into a new Start suggestion.
+restoration or preparation even when it recorded blockers. A check that found
+the files prepared, with no blocker, suggests **Start** at any age, because
+Start rechecks the files, image, nodes and memory before launching; the Files
+line shows how old that check is. Unknown file observations, and missing,
+changed or blocked ones more than a day old, still suggest **Check now**. A
+check that records a result clears the previous operation's pending check; one
+that could not record a result does not turn earlier readiness into a new
+Start suggestion.
 
 Operations that verify what they record move straight to the next step. After
 a successful **Download** or **Restore**, which verify the files before

@@ -154,12 +154,29 @@ class Suggestion(unittest.TestCase):
     def test_rules_in_order(self):
         self.assertEqual(self.suggest(row())[0], "check")
         self.assertEqual(self.suggest(checked(observation_age_seconds=3 * 86400)), ("check", "last check 3 days ago"))
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="missing", observation_age_seconds=3 * 86400)),
+                         ("check", "last check 3 days ago"))
         self.assertEqual(self.suggest(checked(blockers=["n1: disk full"])), ("check", "saved blocker: spark-2: disk full"))
         self.assertEqual(self.suggest(checked(local_state="missing"))[0], "acquire")
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"))[0], "restore")
         self.assertEqual(self.suggest(checked(home=HOME, local_state="changed")),
                          ("prepare", "files changed since they were verified (checked 2 hours ago)"))
-        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready"))[0], "start")
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready")),
+                         ("start", "files prepared as of the last check (2 hours ago); Start rechecks them"))
+
+    def test_prepared_files_suggest_start_at_any_age(self):
+        # Start rechecks the files, so an old check that found them prepared
+        # still leads to Start; any other old observation is checked again.
+        old = 30 * 86400
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", observation_age_seconds=old)),
+                         ("start", "files prepared as of the last check (30 days ago); Start rechecks them"))
+        for state in (checked(home=HOME, local_state=local, observation_age_seconds=old)
+                      for local in ("unknown", "missing", "changed")):
+            with self.subTest(local=state["local_state"]):
+                self.assertEqual(self.suggest(state), ("check", "last check 30 days ago"))
+        blocked = checked(home=HOME, local_state="ready", observation_age_seconds=old, blockers=["n1: disk full"])
+        self.assertEqual(self.suggest(blocked), ("check", "last check 30 days ago"))
+        self.assertEqual(self.suggest(checked(home=HOME, local_state="ready", observation_age_seconds=None))[0], "check")
 
     def test_restore_needs_a_configured_archive_location(self):
         self.assertEqual(self.suggest(checked(local_state="missing", archive_state="verified"), location="disabled")[0], "acquire")
@@ -181,9 +198,14 @@ class Suggestion(unittest.TestCase):
             for after in (None, "stop", "check"):
                 with self.subTest(local=local, after=after):
                     self.assertIsNone(self.suggest(checked(home=HOME, local_state=local, **GUARDED), after))
+        old_ready = checked(home=HOME, local_state="ready", observation_age_seconds=9 * 86400, **GUARDED)
+        for after in (None, "stop", "check"):
+            with self.subTest(after=after, age="9 days"):
+                self.assertIsNone(self.suggest(old_ready, after))
 
     def test_suggestion_never_starts_a_guarded_spec(self):
         for state in (row(**GUARDED), checked(**GUARDED), checked(home=HOME, local_state="ready", **GUARDED),
+                      checked(home=HOME, local_state="ready", observation_age_seconds=9 * 86400, **GUARDED),
                       checked(home=HOME, local_state="changed", **GUARDED)):
             for after in (None, "stop", "check", "prepare", "restore"):
                 result = self.suggest(state, after)
@@ -1067,8 +1089,8 @@ class Question(unittest.TestCase):
 class HomeNext(unittest.TestCase):
     """The home screen's Next line, from saved records only (TUI-26)."""
     def specs(self):
-        return [row(spec_id="a" * 64), row(spec_id="b" * 64),
-                checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
+        return [row(spec_id="a" * 64, home=HOME), row(spec_id="b" * 64, home=HOME),
+                checked(spec_id="c" * 64, home=HOME, observation_age_seconds=3 * 86400),
                 checked(spec_id="d" * 64, local_state="missing"),
                 checked(spec_id="e" * 64, local_state="missing", archive_state="verified"),
                 checked(spec_id="f" * 64, home=HOME, local_state="changed", observation_age_seconds=600),
@@ -1079,6 +1101,13 @@ class HomeNext(unittest.TestCase):
                          "Next: 2 specs not checked yet · 1 spec needs a check · 1 spec needs Download · "
                          "1 spec needs Restore · 1 spec needs Prepare · 1 spec ready to Start — open Catalog "
                          "and storage. Newest saved check: 10 minutes ago.")
+
+    def test_an_old_check_that_found_prepared_files_counts_as_ready_to_start(self):
+        old = [checked(spec_id="a" * 64, home=HOME, local_state="ready", observation_age_seconds=9 * 86400),
+               checked(spec_id="b" * 64, home=HOME, local_state="missing", observation_age_seconds=9 * 86400)]
+        self.assertEqual(menu.home_next(old, "configured"),
+                         "Next: 1 spec needs a check · 1 spec ready to Start — open Catalog and storage. "
+                         "Newest saved check: 9 days ago.")
 
     def test_counts_use_singular_and_plural_wording(self):
         ready = [checked(spec_id=c * 64, home=HOME, local_state="ready") for c in "ab"]

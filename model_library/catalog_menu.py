@@ -367,10 +367,13 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return "check", f"{LABELS[after].lower()} ran after the last check"
     if row.get("checked_at") is None:
         return "check", "no saved check"
-    if age is None or age > STALE_SECONDS:
-        return "check", "last check " + age_text(age)
     local = row.get("local_state", "unknown")
     blocker = "saved blocker: " + str(blocker_text(row["blockers"][0], row, names)) if row.get("blockers") else None
+    # Start rechecks prepared files before launching, so a saved check that
+    # found them prepared stays usable at any age; every other state is
+    # checked again once its observation is out of date.
+    if age is None or (age > STALE_SECONDS and (local != "ready" or blocker)):
+        return "check", "last check " + age_text(age)
     if local == "unknown":
         return "check", blocker or "file state was not established by the last check"
     found = _next_home(row, offered, archive_location, now)
@@ -389,7 +392,7 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
     if local == "ready":
         if live and live["kind"] in ("unknown", "changed") and "status" in offered:
             return "status", live_value(live) + "; check before starting"
-        return "start", "files prepared as of the last check; start rechecks prerequisites"
+        return "start", f"files prepared as of the last check ({age_text(age)}); Start rechecks them"
     return None
 
 
