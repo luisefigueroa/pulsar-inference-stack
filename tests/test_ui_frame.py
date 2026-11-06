@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -199,12 +200,33 @@ class UiFrame(unittest.TestCase):
         cards = " ".join(f"$'  org/model-{number:02d}\\n    {number:012d} · 3 nodes\\n'" for number in range(13))
         # Gum's --height counts options and pages in blocks of that many: every
         # block of three-line cards fits rows - 5 on one page, else rows - 6.
-        for lines, height in (("", 14), ("40", 11), ("24", 6), ("12", 2), ("50", 14)):
+        # Of the sizes that fit, the fewest pages, then the most even: on 40
+        # rows 11 would fit, but 7 makes the same two pages.
+        for lines, height in (("", 14), ("40", 7), ("24", 5), ("12", 2), ("50", 14)):
             with self.subTest(lines=lines):
-                self.gum_log.unlink(missing_ok=True)
-                result = self.run_ui(f"choose_index Pick {cards} Back", GUM_CHOICE="13", LINES=lines)
-                self.assertEqual(result.stdout, "13\n", result.stderr)
-                self.assertIn(f"--height={height} ", self.gum_calls()[0])
+                self.assertEqual(self.card_page(f"{cards} Back", lines), height)
+
+    def card_page(self, options, lines):
+        """The --height choose_index passes Gum for OPTIONS (shell words) on LINES rows."""
+        self.gum_log.unlink(missing_ok=True)
+        result = self.run_ui(f"choose_index Pick {options}", GUM_CHOICE="0", LINES=lines)
+        self.assertEqual(result.stdout, "0\n", result.stderr)
+        return int(re.search(r"--height=(\d+) ", self.gum_calls()[0]).group(1))
+
+    def test_a_page_never_starts_with_a_models_later_spec(self):
+        three = " ".join(f"$'  org/m-{number}\\n    spec-{number}\\n'" for number in range(3))
+        # Four options fit 17 rows, but page 2 would start with org/a's second
+        # spec, away from its model name; three keep org/a on one page.
+        group = "$'  org/a\\n    spec-a1' $'    spec-a2\\n'"
+        self.assertEqual(self.card_page(f"{three} {group} Back", "17"), 3)
+        # A model taller than a page cannot stay whole: the largest size that fits.
+        tall = "$'  org/a\\n    s1' '    s2' '    s3' '    s4' $'    s5\\n' Back"
+        self.assertEqual(self.card_page(tall, "12"), 4)
+
+    def test_pages_are_even_rather_than_one_option_alone(self):
+        # Five fit 16 rows as 5, 5 and Back alone; four give the same three pages.
+        cards = " ".join(f"$'  org/m-{number:02d}\\n    spec-{number:02d}'" for number in range(10))
+        self.assertEqual(self.card_page(f"{cards} Back", "16"), 4)
 
     def test_escape_and_ctrl_c_keep_their_meaning(self):
         for rc, expected in (("1", 1), ("130", 130)):

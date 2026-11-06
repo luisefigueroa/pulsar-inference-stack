@@ -1126,21 +1126,23 @@ class SameFilesPrepared(CardChecks, unittest.TestCase):
                       self.files_value(menu.view_lines(outside, "configured", width=80, names=NAMES)))
         self.assertEqual(menu.state_parts(outside)[-1], "same files prepared for 2 specs outside the catalog")
 
-    def test_cards_always_show_the_part_whole_after_the_saved_state(self):
+    def test_cards_always_show_the_part_whole_and_last(self):
         running = {"kind": "service", "state": "running", "hosts": ["spark-2"], "modified": False,
                    "age": 30, "source": "inventory"}
         self.assertEqual(menu.card_parts(sharing()), ["3 nodes", "files not prepared", SAME_PART])
         # A service on 1 node of a 3-node spec does not name its node count.
         self.assertEqual(menu.card_parts(sharing(state="candidate"), running, told(["context 500K"])),
-                         ["context 500K", "3 nodes", "running on 1 node", "files not prepared", SAME_PART, "candidate"])
+                         ["context 500K", "3 nodes", "running on 1 node", "files not prepared", "candidate", SAME_PART])
         for width in (100, 80, 60, 44, 32):
             for live in (None, running):
-                parts = menu.card_parts(sharing(), live)
-                lines = menu.card_lines(sharing()["spec_id"], parts, width)
+                parts = menu.card_parts(sharing(state="candidate"), live)
+                lines = menu.card_lines("ab" * 32, parts, width)
                 with self.subTest(width=width, live=bool(live), lines=lines):
                     self.assert_spec_lines(lines, "ab" * 32, width)
                     self.assert_in_order(lines, parts)
-                    # Longer than its line at 32 columns, it wraps at its spaces, whole.
+                    # Last, after the spec state; longer than its line at 32
+                    # columns, it wraps at its spaces, whole.
+                    self.assertEqual(parts[-2:], ["candidate", SAME_PART])
                     self.assertTrue(flat(lines).endswith(SAME_PART), lines)
         for model in ("ab/m", "org/model", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8):
             for width in (100, 80, 60, 44, 32):
@@ -1432,7 +1434,7 @@ class Cards(CardChecks, unittest.TestCase):
     def test_the_80_column_list_reads_as_planned(self):
         mimo = checked(spec_id="11" * 32, model_id="XiaomiMiMo/MiMo-V2.6-Flash-RL", local_state="missing",
                        geometry={"nodes": 2, "tp": 2, "pp": 1})
-        short = dict(recipe("15", "500000"), local_state="missing", snapshot_manifest_id=SHARED,
+        short = dict(recipe("15", "500000"), local_state="missing", state="candidate", snapshot_manifest_id=SHARED,
                      other_specs_prepared_copies=[copy_of("e5" * 32, node, rank) for rank, node in
                                                   enumerate(("n0", "n1", "n2"))])
         long = recipe("e5", "1048576")
@@ -1444,7 +1446,7 @@ class Cards(CardChecks, unittest.TestCase):
             "    111111111111 · 2 nodes · files not prepared",
             "",
             "  deepseek-ai/DeepSeek-V4.1-Flash-1017",
-            "    151515151515 · context 500K · 3 nodes · files not prepared",
+            "    151515151515 · context 500K · 3 nodes · files not prepared · candidate",
             "      same files prepared for e5e5e5e5e5e5",
             "    e5e5e5e5e5e5 · context 1M · running on 3 nodes · files prepared",
             "",
@@ -1465,7 +1467,7 @@ class Cards(CardChecks, unittest.TestCase):
             "everything": (sharing(review={"status": "experimental"}, state="measured"), partial,
                            told(["context 500K", "max sequences 8"]),
                            ["context 500K", "max sequences 8", "3 nodes", "partly running on 2 nodes (modified recipe)",
-                            "files not prepared", "experimental", SAME_PART, "measured"]),
+                            "files not prepared", "experimental", "measured", SAME_PART]),
         }
         for name, (state, live, facts, expected) in cases.items():
             parts = menu.card_parts(state, live, facts)

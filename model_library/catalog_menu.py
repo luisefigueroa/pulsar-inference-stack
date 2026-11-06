@@ -677,7 +677,9 @@ def card_parts(row: dict, live: dict | None = None, recipe_facts: RecipeFacts | 
     warning, the recipe facts that tell recipes of one model apart (see
     distinguishing_facts), the node count unless a fact or the live words name
     it, the service seen in this session (see live_label), the saved state
-    (see state_parts) and the spec's state. Nothing is left out."""
+    (see state_parts), the spec's state, and last another spec's prepared
+    copies of the same files, the longest part, so a short one never wraps
+    onto a line of its own after it. Nothing is left out."""
     seen = live_label(live)
     critical = ["withdrawn"] if (row.get("review") or {}).get("status") == "withdrawn" else []
     if start_unsupported(row):
@@ -692,10 +694,13 @@ def card_parts(row: dict, live: dict | None = None, recipe_facts: RecipeFacts | 
     if seen:
         parts.append(seen)
     # The warnings already lead the line; state_parts also names them.
-    parts.extend(part for part in state_parts(row) if part not in critical)
+    state = [part for part in state_parts(row) if part not in critical]
+    # state_parts names the same files last, where they are prepared.
+    same = [state.pop()] if same_files_prepared(row) else []
+    parts.extend(state)
     if row.get("state") and str(row["state"]) not in parts:
         parts.append(str(row["state"]))
-    return [clean(part) for part in parts]
+    return [clean(part) for part in parts + same]
 
 
 def card_lines(spec_id: str, parts: list[str], width: int) -> list[str]:

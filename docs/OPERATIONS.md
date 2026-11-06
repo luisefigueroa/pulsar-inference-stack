@@ -53,9 +53,10 @@ package manager or point `GUM_BIN` at it. `NO_COLOR` or
 page when the terminal has room for it, and its labels use the whole row after
 the cursor; a repeated label gets a numbered suffix such as `(2)`. The
 catalog's spec list gives each spec several lines and one cursor stop; when the
-specs do not fit, it pages so the menu title stays on screen. A key line
-under the menu title reads `↑/↓ move · enter choose · esc back`; on the home
-menu Esc exits. Without Gum
+specs do not fit, it pages so the menu title stays on screen, into pages of
+even length that each start with a model's name where the models allow it. A
+key line under the menu title reads `↑/↓ move · enter choose · esc back`; on
+the home menu Esc exits. Without Gum
 or an interactive terminal, a menu opens nothing: it lists the equivalent
 commands, one `./pulsar …` command per line with a `#` comment saying what it
 does, and exits with status 2. A command that would ask for confirmation names
@@ -137,7 +138,7 @@ below are for reading.
 | Archive: unknown | The last check could not establish anything about the archive. |
 | List: not checked yet | The short form of **Files: not checked yet** in the catalog list. |
 | List: start unsupported | This Stack cannot start the spec, for example because it needs a serving guard or is a historical schema-1 spec. The spec's **Not shown** line says why. |
-| List: candidate, measured or released | The spec's **State**, last on its line. See the State rows. |
+| List: candidate, measured or released | The spec's **State**, after the saved state. See the State rows. |
 | Running?: not checked here | This menu has not looked for a running *service* of the spec. **Live status** looks. |
 | Running?: running, partly running or degraded | A service was seen with all, some, or unhealthy containers. **Live status** shows each node; **Service logs** shows output. |
 | Running?: exited containers or stopped containers | The service's containers exist but are not running. **Stop** removes them; model files are kept. |
@@ -1241,21 +1242,25 @@ because Stop without a node removes the service's containers on every node.
 The catalog list groups the specs by model, in catalog order: the model's
 name once, in bold, then a line for each spec that starts with its 12-character
 prefix, and a blank line after each model. A withdrawn spec stays at the end,
-under a second heading of its model. A spec's line names any warning
-(`withdrawn`, `start unsupported`), the facts that tell recipes of one model
-apart, the node count, a service seen in this menu session, the same short
-saved state as `models list`, and the spec's state, in that order. State is
-metadata, never a gate. Nothing is left out: a part that does not fit on the
-line starts the next one, two columns further in. With the cursor on a model's
+under a second heading of its model. A spec's line names, in this order, any
+warning (`withdrawn`, `start unsupported`), the facts that tell recipes of one
+model apart, the spec's node count, a service seen in this menu session, the
+same short saved state as `models list` and the spec's state; another spec's
+prepared copies of the same files come last. The node count is left out only
+where a fact or the service's words give the same count: a 3-node spec seen on
+all its nodes reads `running on 3 nodes`, and one seen on a single node reads
+`3 nodes · running on 1 node`. State is metadata, never a gate. Nothing is
+left out: a part that does not fit on the line starts the next one, two
+columns further in. With the cursor on a model's
 first spec, the model name belongs to that choice and is selected with it.
 When the catalog has several recipes of one model, each of their lines names,
 after the spec prefix, the first recorded fact that differs: the node count
 (`2 nodes`), the context (`context 1M` for `--max-model-len 1048576`, `context
 500K`), `max sequences`, `quantization`, or else a short image digest; where
 that leaves recipes alike, the next fact that differs is added. No fact is ever
-cut, and the node count is named once. Only a model name longer than its line
-is cut: without its organization where no other model reads the same, then in
-the middle so its end stays. The Start question names the same fact after the model,
+cut. Only a model name longer than its line is cut: without its organization
+where no other model reads the same, then in the middle so its end stays. The
+Start question names the same fact after the model,
 such as "Start deepseek-ai/DeepSeek-V4.1-Flash-1017 (context 1M) on …?", except
 a node count, since it already names the nodes. Any other model name that does
 not fit is cut the same way. Storage mutations run the

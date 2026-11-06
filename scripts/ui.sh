@@ -289,29 +289,45 @@ _ui_terminal_columns() {
 # all, else in ROWS - 6, since Gum then adds a blank line and the page dots.
 # Gum cuts a taller view from the top, padding and title first; the limits
 # were measured with the bundled Gum (tests/test_ui_confirm.py checks them).
+# A page must also not start with a model's later spec, whose model name would
+# be on the page before: given after the gutter strip, only such an option
+# starts with a space. Of the sizes that fit and keep groups whole, the one
+# with the fewest pages and then the fewest options per page wins, so pages
+# come out even and a last page rarely holds one option alone. When no size
+# keeps every group whole, as for a model taller than a page, the largest
+# size that fits wins.
 _ui_card_page() {
-  local rows="$1" option newlines total=0 size start end sum i fits
+  local rows="$1" option newlines total=0 size start end sum i fits whole pages
+  local largest=1 best=0 fewest=0
   shift
-  local -a heights=()
+  local -a heights=() later=()
   for option in "$@"; do
     newlines=${option//[!$'\n']/}
     heights+=($((${#newlines} + 1)))
     total=$((total + ${#newlines} + 1))
+    if [[ "$option" == " "* ]]; then later+=(1); else later+=(0); fi
   done
   if [ "$total" -le $((rows - 5)) ]; then
     printf '%s\n' "$#"
     return 0
   fi
-  for ((size = $#; size > 1; size--)); do
-    fits=1
+  for ((size = 1; size <= $#; size++)); do
+    fits=1 whole=1
     for ((start = 0; start < $# && fits; start += size)); do
       sum=0 end=$((start + size < $# ? start + size : $#))
       for ((i = start; i < end; i++)); do sum=$((sum + heights[i])); done
       [ "$sum" -le $((rows - 6)) ] || fits=0
+      [ "$start" -eq 0 ] || [ "${later[start]}" = 0 ] || whole=0
     done
-    [ "$fits" = 0 ] || break
+    [ "$fits" = 1 ] || continue
+    largest=$size
+    [ "$whole" = 1 ] || continue
+    pages=$((($# + size - 1) / size))
+    if [ "$best" = 0 ] || [ "$pages" -lt "$fewest" ]; then
+      best=$size fewest=$pages
+    fi
   done
-  printf '%s\n' "$size"
+  printf '%s\n' "$((best > 0 ? best : largest))"
 }
 
 # choose_index HEADER OPTION...
@@ -323,7 +339,8 @@ _ui_card_page() {
 # An option with several lines, a card such as a spec under its model's name
 # in the catalog list, is one cursor stop. Card lines come at their screen
 # columns and may carry styles; a menu with cards pages so its title stays on
-# screen (see _ui_card_page). Single-line menus are drawn as before.
+# screen and each page starts with a model's name or a single-line choice
+# where it can (see _ui_card_page). Single-line menus are drawn as before.
 # PULSAR_CHOOSE_DEFAULT=N starts the cursor on option N, except in a menu with
 # cards. Returns 1 on Esc or cancel and 130 on Ctrl-C, so a nested menu can
 # step back on Esc and leave entirely on Ctrl-C.
