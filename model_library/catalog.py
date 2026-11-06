@@ -146,16 +146,32 @@ def start_support(spec):
     return True, None
 
 
-def project(spec, store, *, now=None):
+def project(spec, store, *, now=None, catalog_spec_ids=None):
+    """One catalog row from the spec and saved records.
+
+    CATALOG_SPEC_IDS are the spec IDs published under releases/; with them,
+    other_prepared_specs_in_catalog lists the other specs with prepared copies
+    of this spec's snapshots that are catalog members. Without them it is
+    None: membership is unknown, not absent.
+    """
     spec_id = spec["spec_id"]
     manifest_id = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
     home = store.home(manifest_id)
-    views = store.views(spec_id=spec_id)
+    records = store.views()
+    views = [view for view in records if view["spec_id"] == spec_id]
     archive = store.get("archives", manifest_id)
     snapshots=required_snapshots(spec)
     manifest_ids={m["snapshot_manifest"]["manifest_id"] for m in snapshots.values()}
     if any(view["snapshot_manifest_id"] not in manifest_ids for view in views):
         raise StorageError("prepared-copy record differs from the selected snapshot")
+    # Prepared copies other specs recorded for this spec's snapshots: Prepare
+    # can bind this spec to those files instead of copying them again.
+    others = sorted((view for view in records
+                     if view["spec_id"] != spec_id and view["snapshot_manifest_id"] in manifest_ids),
+                    key=lambda view: (view["spec_id"], view["rank"], view["node_id"]))
+    # Experiments started from spec files outside releases/ hold bindings too.
+    in_catalog = (sorted({view["spec_id"] for view in others} & set(catalog_spec_ids))
+                  if catalog_spec_ids is not None else None)
     if archive is not None and (archive.get("snapshot_manifest_id") != manifest_id or archive.get("verified") is not True):
         raise StorageError("archive record differs from the selected snapshot")
     observation = store.get("observations", spec_id)
@@ -208,13 +224,17 @@ def project(spec, store, *, now=None):
         "start_supported": start_supported, "start_unsupported_reason": start_unsupported_reason,
         "local_state": local_state, "archive_state": archive_state,
         "checked_at": checked_at, "observation_age_seconds": age_seconds(checked_at, now),
-        "blockers": blockers, "home": home, "prepared_copies": views,
+        "blockers": blockers, "home": home, "prepared_copies": views, "other_specs_prepared_copies": others,
+        "other_prepared_specs_in_catalog": in_catalog,
         **({"snapshots":members} if spec.get("schema_version")==3 else {}),
         "archive": archive, "archive_age_seconds": age_seconds((archive or {}).get("verified_at"), now)}
 
 
 def entries(repo, store, *, spec_id=None, now=None):
     repo = Path(repo)
+    # Every catalog member, also when one spec is selected: a row names other
+    # specs as catalog members or not.
+    catalog_spec_ids = {path.stem for path in (repo / "releases").glob("*.json")}
     if spec_id:
         paths = [repo / "releases" / f"{checked_id(spec_id)}.json"]
     else:
@@ -224,7 +244,7 @@ def entries(repo, store, *, spec_id=None, now=None):
         spec = load_spec(path)
         if path.name != f"{spec['spec_id']}.json":
             raise StorageError("catalog contains an incorrectly named spec")
-        result.append(project(spec, store, now=now))
+        result.append(project(spec, store, now=now, catalog_spec_ids=catalog_spec_ids))
     return sorted(result, key=lambda row: (
         (row.get("review") or {}).get("status") == "withdrawn",
         row["model_id"], row["spec_id"],

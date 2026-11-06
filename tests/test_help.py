@@ -195,7 +195,9 @@ class Help(unittest.TestCase):
                  *(one for one, _ in catalog_menu.HOME_NEXT.values()),
                  *(state for state in schema.STATES if state), *schema.REVIEW_STATUSES,
                  "start unsupported", "start blocked", "not checked here", "service exists", "service seen",
-                 "last seen", "files not checked", "not offered here", "✓"}
+                 "last seen", "files not checked", "not offered here", "✓",
+                 catalog_menu.SAME_FILES.format(spec="…"), catalog_menu.SAME_FILES_ON.format(spec="…", hosts="…"),
+                 catalog_menu.OUTSIDE_THE_CATALOG}
         for state in ("verified", "present", "missing", "unavailable", "not-configured", "unknown"):
             for checked in (True, False):
                 wording = catalog.archive_fact(state, 3600, None, None, checked=checked)[2]

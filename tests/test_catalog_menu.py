@@ -947,6 +947,332 @@ class FilesFound(unittest.TestCase):
         self.assertTrue(output.getvalue().startswith("Stop and remove"), output.getvalue())
 
 
+# Another spec's prepared copies of this spec's snapshot: the files Prepare can bind.
+SHARED = "d" * 64
+OTHER, THIRD = "cd" * 32, "ef" * 32
+SAME_PART = "same files prepared for cdcdcdcdcdcd"
+SAME_FILES_HERE = "same files prepared here for cdcdcdcdcdcd"
+SAME_FRAME = ("the same files are prepared for cdcdcdcdcdcd on spark-2, spark-3; "
+              "Prepare binds them there without copying")
+
+
+def copy_of(spec_id, node_id, rank=0, manifest=SHARED):
+    return {"spec_id": spec_id, "rank": rank, "node_id": node_id, "snapshot_manifest_id": manifest,
+            "path": f"/fixture/{node_id}/copy", "pinned": False}
+
+
+def sharing(**fields):
+    """A recipe with a home whose own files are not prepared, while another
+    spec has prepared copies of the same snapshot on n1 and n2."""
+    return checked(**{"home": HOME, "local_state": "missing", "snapshot_manifest_id": SHARED,
+                      "other_specs_prepared_copies": [copy_of(OTHER, "n1"), copy_of(OTHER, "n2", rank=1)],
+                      **fields})
+
+
+def without_others(state):
+    return {key: value for key, value in state.items() if key != "other_specs_prepared_copies"}
+
+
+class SameFilesPrepared(unittest.TestCase):
+    """Another spec's prepared copies count only for a whole required set and
+    only while this spec's saved check has not found its own copies prepared."""
+
+    def test_the_claim_needs_every_required_snapshot_and_no_prepared_own_files(self):
+        records = sharing()["other_specs_prepared_copies"]
+        cases = {"missing": sharing(), "unknown": sharing(local_state="unknown"),
+                 "not checked yet": sharing(checked_at=None, observation_age_seconds=None),
+                 "no home": sharing(home=None)}
+        for name, state in cases.items():
+            with self.subTest(name):
+                self.assertEqual(menu.same_files_prepared(state), records)
+        empty = {"ready": sharing(local_state="ready"), "changed": sharing(local_state="changed"),
+                 "no field": without_others(sharing()),
+                 # A row that does not name its snapshot claims nothing.
+                 "no manifest": sharing(snapshot_manifest_id=None),
+                 "another snapshot": sharing(other_specs_prepared_copies=[copy_of(OTHER, "n1", manifest="f" * 64)]),
+                 "its own records": sharing(other_specs_prepared_copies=[copy_of("ab" * 32, "n1")])}
+        for name, state in empty.items():
+            with self.subTest(name):
+                self.assertEqual(menu.same_files_prepared(state), [])
+
+    def test_a_schema3_recipe_needs_copies_of_every_required_snapshot(self):
+        snapshots = two_snapshots(HOME, HOME)
+        snapshots["target"]["snapshot_manifest_id"] = SHARED
+        snapshots["draft"]["snapshot_manifest_id"] = "f" * 64
+        target, draft = copy_of(OTHER, "n1"), copy_of(THIRD, "n2", manifest="f" * 64)
+        state = checked(local_state="missing", snapshots=snapshots, other_specs_prepared_copies=[target])
+        # All or nothing: a partial set is never claimed.
+        self.assertEqual(menu.same_files_prepared(state), [])
+        self.assertNotIn("same files", menu.short_state(state))
+        whole = dict(state, other_specs_prepared_copies=[target, draft])
+        self.assertEqual(menu.same_files_prepared(whole), [target, draft])
+        self.assertEqual(menu.state_parts(whole)[-1], "same files prepared for cdcdcdcdcdcd and 1 more")
+
+    def test_the_list_part_comes_last_and_counts_the_other_specs(self):
+        for name, state in {"missing": sharing(), "unknown": sharing(local_state="unknown"),
+                            "not checked yet": sharing(checked_at=None)}.items():
+            with self.subTest(name):
+                self.assertEqual(menu.state_parts(state)[-1], SAME_PART)
+        self.assertEqual(menu.state_parts(sharing(review={"status": "experimental"})),
+                         ["files not prepared", "experimental", SAME_PART])
+        for name, state in {"ready": sharing(local_state="ready"), "changed": sharing(local_state="changed")}.items():
+            with self.subTest(name):
+                self.assertNotIn("same files", menu.short_state(state))
+        several = sharing(other_specs_prepared_copies=[copy_of(THIRD, "n0"), copy_of(OTHER, "n1"),
+                                                       copy_of(OTHER, "n2", rank=1)])
+        self.assertEqual(menu.state_parts(several)[-1], "same files prepared for cdcdcdcdcdcd and 1 more")
+
+    def test_catalog_specs_are_named_first_and_specs_outside_it_only_counted(self):
+        # Experiment specs started from spec files sort before the catalog spec here.
+        outside = ["11" * 32, "22" * 32, "33" * 32]
+        copies = [copy_of(spec, f"n{index % 3}", rank=index) for index, spec in enumerate(outside + [THIRD, OTHER])]
+
+        def words(records, in_catalog):
+            return menu._other_specs(records, sharing(other_prepared_specs_in_catalog=in_catalog))
+
+        self.assertEqual(words(copies[3:], [OTHER, THIRD]), "cdcdcdcdcdcd and 1 more")
+        self.assertEqual(words(copies[4:], [OTHER]), "cdcdcdcdcdcd")
+        self.assertEqual(words(copies, [THIRD]), "efefefefefef and 4 more (4 outside the catalog)")
+        self.assertEqual(words(copies, [OTHER, THIRD]), "cdcdcdcdcdcd and 4 more (3 outside the catalog)")
+        self.assertEqual(words(copies[:1], []), "a spec outside the catalog")
+        self.assertEqual(words(copies[:3], []), "3 specs outside the catalog")
+        # A catalog spec without a record here is not named; the records' own specs are.
+        self.assertEqual(words(copies[:2], [OTHER]), "2 specs outside the catalog")
+        # Membership unknown (a row projected without the catalog): the first spec ID, as before.
+        self.assertEqual(words(copies, None), "111111111111 and 4 more")
+
+    def test_a_spec_outside_the_catalog_is_counted_wherever_the_spec_is_named(self):
+        mixed = sharing(other_specs_prepared_copies=[copy_of("11" * 32, "n1"), copy_of(OTHER, "n2", rank=1)],
+                        other_prepared_specs_in_catalog=[OTHER])
+        lines = menu.view_lines(mixed, "configured", width=80, names=NAMES)
+        self.assertEqual(self.files_value(lines),
+                         "not prepared on every serving node (checked 2 hours ago); the same files are prepared "
+                         "for cdcdcdcdcdcd and 1 more (1 outside the catalog) on spark-2, spark-3; "
+                         "Prepare binds them there without copying")
+        frame = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
+        self.assertTrue(all(len(line) <= 76 for line in frame), frame)
+        self.assertIn("Prepare binds the same files prepared for cdcdcdcdcdcd and 1 more (1 outside the catalog) "
+                      "without copying", frame_text(lines))
+        self.assertEqual(menu.state_parts(mixed)[-1],
+                         "same files prepared for cdcdcdcdcdcd and 1 more (1 outside the catalog)")
+        self.assertEqual(menu.node_label(mixed, "n1", "spark-2", 78),
+                         "spark-2 — same files prepared here for a spec outside the catalog")
+        self.assertEqual(menu.node_label(mixed, "n2", "spark-3", 78), "spark-3 — " + SAME_FILES_HERE)
+        outside = dict(mixed, other_prepared_specs_in_catalog=[])
+        self.assertIn("the same files are prepared for 2 specs outside the catalog on spark-2, spark-3;",
+                      self.files_value(menu.view_lines(outside, "configured", width=80, names=NAMES)))
+        self.assertEqual(menu.state_parts(outside)[-1], "same files prepared for 2 specs outside the catalog")
+
+    def test_list_labels_keep_the_part_whole_or_leave_it_out(self):
+        self.assertEqual(menu.menu_label(sharing(), 100),
+                         "org/model [abababababab] 3 nodes · files not prepared · " + SAME_PART)
+        # The part goes before the node count and spec state, never before the name is cut.
+        self.assertEqual(menu.menu_label(sharing(model_id="ab/m"), 80),
+                         "ab/m [abababababab] files not prepared · " + SAME_PART)
+        self.assertEqual(menu.menu_label(sharing(), 80), "org/model [abababababab] 3 nodes · files not prepared")
+        self.assertEqual(menu.menu_label(sharing(model_id="ab/m"), 44), "ab/m [abababababab] files not prepared")
+        # Beside a seen service the part yields before the files state.
+        running = {"kind": "service", "state": "running", "hosts": ["spark-2"], "modified": False,
+                   "age": 30, "source": "inventory"}
+        self.assertEqual(menu.menu_label(sharing(), 80, running),
+                         "org/model [abababababab] running on 1 node · files not prepared")
+        facts = told(["context 500K"])
+        self.assertEqual(menu.menu_label(sharing(), 100, None, facts),
+                         "org/model [abababababab] context 500K · files not prepared · " + SAME_PART)
+        models = ("ab/m", "org/model", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8)
+        for model in models:
+            for width in (100, 80, 60, 44):
+                for fact, short in ((None, None), (facts, "DeepSeek-V4.1-Flash-1017")):
+                    for live in (None, running):
+                        state = sharing(model_id=model)
+                        label = menu.menu_label(state, width, live, fact, short)
+                        with self.subTest(model=model, width=width, facts=bool(fact), live=bool(live), label=label):
+                            self.assertLessEqual(len(label), width - 2)
+                            self.assertIn("[abababababab]" if width >= 60 else "[abababab", label)
+                            if "same files" in label:
+                                self.assertTrue(label.endswith(SAME_PART), label)
+                            else:
+                                # Left out, the label reads as it would without the other spec's copies.
+                                self.assertEqual(label, menu.menu_label(without_others(state), width, live, fact, short))
+
+    def test_cli_labels_show_the_part_where_it_fits(self):
+        document = json.dumps({"entries": [sharing(model_id="ab/m"), without_others(sharing(spec_id="cd" * 32))]})
+        output = io.StringIO()
+        with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
+                patch.dict("os.environ", {"COLUMNS": "80"}):
+            self.assertEqual(menu.main(["labels"]), 0)
+        self.assertEqual(output.getvalue().splitlines(),
+                         ["ab" * 32 + "\tab/m [abababababab] files not prepared · " + SAME_PART,
+                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] 3 nodes · files not prepared"])
+
+    def files_value(self, lines):
+        """The frame's Files value, whitespace collapsed."""
+        text = frame_text(lines)
+        return text.split(" Files ", 1)[1].split(" Archive ", 1)[0]
+
+    def test_the_files_field_names_the_spec_and_its_machines(self):
+        for width in (80, 60, 44):
+            with self.subTest(width=width):
+                lines = menu.view_lines(sharing(), "configured", width=width, names=NAMES)
+                frame = [line.split("\t", 1)[1] for line in lines if line.startswith(("header\t", "next\t"))]
+                self.assertTrue(all(len(line) <= width - 4 for line in frame), frame)
+                self.assertEqual(self.files_value(lines),
+                                 "not prepared on every serving node (checked 2 hours ago); " + SAME_FRAME)
+                self.assertIn("suggest\tprepare", lines)
+        # Not checked yet: the check hint stays with its value, and the claim follows.
+        lines = menu.view_lines(sharing(checked_at=None, observation_age_seconds=None), "configured", width=80,
+                                names=NAMES)
+        self.assertEqual(self.files_value(lines), f"not checked yet; {menu.CHECK_HINT}; {SAME_FRAME}")
+        # Several specs: the first is named; hosts in record order, each once.
+        several = sharing(other_specs_prepared_copies=[copy_of(OTHER, "n2"), copy_of(OTHER, "n1", rank=1),
+                                                       copy_of(THIRD, "n2"), copy_of(THIRD, "n0", rank=1)])
+        self.assertIn("the same files are prepared for cdcdcdcdcdcd and 1 more on spark-3, spark-2, spark-1; "
+                      "Prepare binds them there without copying",
+                      self.files_value(menu.view_lines(several, "configured", width=80, names=NAMES)))
+        # Unknown machines keep their node ID, marked as such.
+        self.assertIn("on n1, n2;", self.files_value(menu.view_lines(sharing(), "configured", width=80,
+                                                                     names=NodeNames())))
+
+    def test_read_only_and_unoffered_prepare_keep_the_fact_only(self):
+        fact = "the same files are prepared for cdcdcdcdcdcd on spark-2, spark-3"
+        read_only = self.files_value(menu.view_lines(sharing(), "configured", width=80, names=NAMES, read_only=True))
+        self.assertEqual(read_only, "not prepared on every serving node (checked 2 hours ago); " + fact)
+        # Without a home Prepare is not offered: the fact stays, the Prepare clause goes.
+        no_home = self.files_value(menu.view_lines(sharing(home=None), "configured", width=80, names=NAMES))
+        self.assertTrue(no_home.endswith(fact), no_home)
+        self.assertNotIn("Prepare binds", no_home)
+
+    def test_no_claim_when_ready_changed_or_just_prepared(self):
+        for name, state, after in (("ready", sharing(local_state="ready"), None),
+                                   ("changed", sharing(local_state="changed"), None),
+                                   ("prepared here", sharing(), "prepare")):
+            with self.subTest(name):
+                lines = menu.view_lines(state, "configured", width=80, names=NAMES, after=after, after_age=60)
+                self.assertNotIn("same files", frame_text(lines))
+
+    def test_the_suggestion_says_prepare_binds_the_files(self):
+        def suggest(state):
+            offered, _, _ = menu.operations(state, "configured")
+            return menu.suggestion(state, offered, "configured", None, NAMES)
+
+        self.assertEqual(suggest(sharing()), ("prepare", "files not prepared on every serving node (checked 2 hours "
+                                                         "ago); Prepare binds the same files prepared for cdcdcdcdcdcd "
+                                                         "without copying"))
+        self.assertEqual(suggest(without_others(sharing())),
+                         ("prepare", "files not prepared on every serving node (checked 2 hours ago)"))
+        self.assertEqual(suggest(sharing(local_state="changed")),
+                         ("prepare", "files changed since they were verified (checked 2 hours ago)"))
+        # Not checked yet or unknown: Check now comes first, as without the other spec's copies.
+        for state in (sharing(checked_at=None), sharing(local_state="unknown")):
+            self.assertEqual(suggest(state), suggest(without_others(state)))
+        self.assertEqual(menu.suggested_command(sharing(), "configured", NAMES),
+                         ["./pulsar", "model", "prepare", "abababababab", "--yes"])
+
+    def test_the_machine_question_names_the_other_specs_copy(self):
+        state = sharing()
+        self.assertEqual(menu.node_label(state, "n1", "spark-2", 78), "spark-2 — " + SAME_FILES_HERE)
+        self.assertEqual(menu.node_label(state, "n0", "spark-1", 78), "spark-1 — home recorded here")
+        # Records show only where the whole label fits.
+        self.assertEqual(menu.node_label(state, "n1", "spark-2", 40), "spark-2")
+        own = sharing(prepared_copies=[{"rank": 0, "node_id": "n1"}])
+        self.assertEqual(menu.node_label(own, "n1", "spark-2", 100),
+                         "spark-2 — prepared copy recorded here, " + SAME_FILES_HERE)
+        self.assertEqual(menu.node_label(own, "n1", "spark-2", 60), "spark-2 — prepared copy recorded here")
+        self.assertEqual(menu.node_label(sharing(local_state="ready"), "n1", "spark-2", 78), "spark-2")
+        # A schema-3 machine question for one snapshot names that snapshot's copies only.
+        snapshots = two_snapshots(HOME, HOME)
+        snapshots["target"]["snapshot_manifest_id"] = SHARED
+        snapshots["draft"]["snapshot_manifest_id"] = "f" * 64
+        schema3 = checked(local_state="missing", snapshots=snapshots,
+                          other_specs_prepared_copies=[copy_of(OTHER, "n1"),
+                                                       copy_of(OTHER, "n2", manifest="f" * 64)])
+        self.assertEqual(menu.node_label(schema3, "n1", "spark-2", 78, "target"), "spark-2 — " + SAME_FILES_HERE)
+        self.assertEqual(menu.node_label(schema3, "n1", "spark-2", 78, "draft"), "spark-2")
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
+                patch.dict("os.environ", {"COLUMNS": "80"}), \
+                patch("subprocess.run", side_effect=AssertionError("node choices must not probe")):
+            self.assertEqual(menu.main(["node-choices", "--spec-id", state["spec_id"], "--action", "prepare",
+                                        "--node-name", "n0=spark-1", "--node-name", "n1=spark-2"]), 0)
+        self.assertEqual([line.split("\t") for line in out.getvalue().splitlines()],
+                         [["title", "Which machine should serve the model?"], ["default", "n0"],
+                          ["node", "n0", "spark-1 — home recorded here"],
+                          ["node", "n1", "spark-2 — " + SAME_FILES_HERE]])
+
+
+class SameFilesAndFoundFiles(unittest.TestCase):
+    """A folder another spec's record names is in Pulsar's records, so the
+    frame never says both "files found on" and "the same files are prepared
+    for" about one machine."""
+
+    scan_file = FilesFound.scan_file
+
+    @staticmethod
+    def without_home(**fields):
+        """No home recorded, a verified archive, the scan's manifest."""
+        return checked(**{"local_state": "missing", "archive_state": "verified",
+                          "snapshot_manifest_id": MANIFEST_FOUND, **fields})
+
+    @staticmethod
+    def named(lines):
+        """(machines "files found" names, machines "the same files" names) in a frame."""
+        text = frame_text(lines)
+        found = re.search(r"files found on (.+?),? (?:not in|but not in) Pulsar's records", text)
+        same = re.search(r"the same files are prepared for [0-9a-f]{12}(?: and \d+ more)? on (.+?)(?:;| Archive )",
+                         text)
+        return ({host.strip() for host in found.group(1).split(",")} if found else set(),
+                {host.strip() for host in same.group(1).split(",")} if same else set())
+
+    def test_a_folder_another_specs_binding_names_is_not_found_files(self):
+        # The scan saw the home folder on n1 with another spec's binding, and no home record.
+        manifest, location = scan_location("n1")
+        location["bindings"] = [copy_of(OTHER, "n1", manifest=MANIFEST_FOUND)]
+        bound = self.scan_file(scan((manifest, location)))
+        self.assertEqual(menu.found_files(bound), {})
+        # The Model files page's "not in Pulsar's records" needs both: no home record and no binding.
+        found = menu.found_files(self.scan_file(scan(scan_location("n1"), scan_location("n2"))))
+        self.assertEqual(found, {MANIFEST_FOUND: ["n1", "n2"]})
+
+    def test_the_two_clauses_never_name_one_machine(self):
+        records = {"none": [], "n1": [copy_of(OTHER, "n1", manifest=MANIFEST_FOUND)],
+                   "n1 and n2": [copy_of(OTHER, "n1", manifest=MANIFEST_FOUND),
+                                 copy_of(OTHER, "n2", rank=1, manifest=MANIFEST_FOUND)],
+                   "n0": [copy_of(OTHER, "n0", manifest=MANIFEST_FOUND)]}
+        scans = {"none": None, "n1": {MANIFEST_FOUND: ["n1"]}, "n1 and n2": {MANIFEST_FOUND: ["n1", "n2"]}}
+        seen = set()
+        for record_name, copies in records.items():
+            for scan_name, files in scans.items():
+                for read_only in (False, True):
+                    state = self.without_home(other_specs_prepared_copies=copies)
+                    lines = menu.view_lines(state, "configured", width=80, names=NAMES, files=files,
+                                            read_only=read_only)
+                    found, same = self.named(lines)
+                    with self.subTest(records=record_name, scan=scan_name, read_only=read_only):
+                        self.assertFalse(found & same, frame_text(lines))
+                        seen.add((bool(found), bool(same)))
+                        holders = {node for node in (files or {}).get(MANIFEST_FOUND, [])
+                                   if node not in {copy["node_id"] for copy in copies}}
+                        if not read_only:
+                            self.assertEqual(found, {NAMES(node) for node in holders})
+                        self.assertEqual(same, {NAMES(copy["node_id"]) for copy in copies})
+        # Each clause was shown alone and together, on different machines.
+        self.assertTrue({(True, False), (False, True), (True, True)} <= seen, seen)
+        # The machine question follows the same rule, and starts on the one machine with found files.
+        state = self.without_home(other_specs_prepared_copies=records["n1"])
+        out = io.StringIO()
+        with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", out), \
+                patch.dict("os.environ", {"COLUMNS": "80"}), \
+                patch("subprocess.run", side_effect=AssertionError("node choices must not probe")):
+            self.assertEqual(menu.main(["node-choices", "--spec-id", state["spec_id"], "--action", "acquire",
+                                        "--files", self.scan_file(scan(scan_location("n1"), scan_location("n2"))),
+                                        "--node-name", "n0=spark-1", "--node-name", "n1=spark-2",
+                                        "--node-name", "n2=spark-3"]), 0)
+        self.assertEqual([line.split("\t") for line in out.getvalue().splitlines()],
+                         [["title", "Which machine should hold the model files?"], ["default", "n2"],
+                          ["node", "n0", "spark-1"], ["node", "n1", "spark-2 — " + SAME_FILES_HERE],
+                          ["node", "n2", "spark-3 — " + menu.FILES_FOUND_HERE]])
+
+
 class SuggestedCommand(unittest.TestCase):
     def command(self, state, location="configured"):
         return menu.suggested_command(state, location, NAMES)

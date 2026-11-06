@@ -239,6 +239,81 @@ class Catalog(unittest.TestCase):
         self.assertTrue(row["prepared_copies"][0]["pinned"])
         self.assertEqual(row["archive_age_seconds"], 86400)
 
+    def put_view(self, spec_id, node_id, rank, manifest, home_view=False):
+        """A validated prepared-copy record of SPEC_ID for MANIFEST on NODE_ID."""
+        hub = f"/fixture/{node_id}/{spec_id[:8]}-{manifest[:8]}"
+        record = {"schema_version": 1, "kind": "pulsar-prepared-view", "snapshot_manifest_id": manifest,
+                  "node_id": node_id, "hub_path": hub, "path": hub + "/snapshot",
+                  "verification": {"snapshot_manifest_id": manifest}, "verified_at": "2026-09-05T00:00:00Z",
+                  "spec_id": spec_id, "topology_id": "c" * 64, "rank": rank, "pinned": False,
+                  "is_home_view": home_view}
+        self.store.put("views", view_key(spec_id, node_id, manifest), record)
+        return record
+
+    def test_other_specs_prepared_copies_of_the_same_snapshot_are_listed_apart(self):
+        from release_spec.serving import identity_fields
+        spec = self.add_spec()
+        manifest = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
+        own = self.put_view(spec["spec_id"], "node-a", 0, manifest, home_view=True)
+        # Another spec's copies of this snapshot, saved out of order, and of another snapshot.
+        later = self.put_view("f" * 64, "node-a", 0, manifest)
+        first_b = self.put_view("0" * 64, "node-b", 1, manifest)
+        first_a = self.put_view("0" * 64, "node-a", 1, manifest)
+        first_rank0 = self.put_view("0" * 64, "node-c", 0, manifest)
+        self.put_view("f" * 64, "node-b", 0, "9" * 64)
+        with patch("subprocess.run", side_effect=AssertionError("catalog must not probe")):
+            row = entries(self.repo, self.store, now=self.now)[0]
+        self.assertEqual(row["prepared_copies"], [own])
+        self.assertEqual(row["other_specs_prepared_copies"], [first_rank0, first_a, first_b, later])
+        # Neither other spec is published under releases/.
+        self.assertEqual(row["other_prepared_specs_in_catalog"], [])
+        # The spec's own record of another snapshot is still refused.
+        self.put_view(spec["spec_id"], "node-b", 0, "9" * 64)
+        with self.assertRaisesRegex(StorageError, "prepared-copy record differs"):
+            entries(self.repo, self.store, now=self.now)
+
+    def test_other_specs_in_the_catalog_are_told_from_specs_outside_it(self):
+        from model_library.catalog import project
+        from release_spec.serving import identity_fields
+        spec, guarded = self.add_spec(), self.add_spec(guarded=True)
+        manifest = identity_fields(spec)["snapshot_manifest"]["manifest_id"]
+        self.assertEqual(identity_fields(guarded)["snapshot_manifest"]["manifest_id"], manifest)
+        # A catalog spec and two specs started from spec files outside releases/.
+        self.put_view(guarded["spec_id"], "node-a", 0, manifest)
+        self.put_view("0" * 64, "node-b", 0, manifest)
+        self.put_view("f" * 64, "node-c", 0, manifest)
+        rows = {row["spec_id"]: row for row in entries(self.repo, self.store, now=self.now)}
+        self.assertEqual(rows[spec["spec_id"]]["other_prepared_specs_in_catalog"], [guarded["spec_id"]])
+        self.assertEqual(rows[guarded["spec_id"]]["other_prepared_specs_in_catalog"], [])
+        self.assertEqual(len(rows[spec["spec_id"]]["other_specs_prepared_copies"]), 3)
+        # One selected spec is still judged against the whole catalog.
+        selected = entries(self.repo, self.store, spec_id=spec["spec_id"], now=self.now)[0]
+        self.assertEqual(selected["other_prepared_specs_in_catalog"], [guarded["spec_id"]])
+        # Without the catalog's spec IDs, membership is unknown, not absent.
+        self.assertIsNone(project(spec, self.store, now=self.now)["other_prepared_specs_in_catalog"])
+        self.assertEqual(project(spec, self.store, now=self.now, catalog_spec_ids={"f" * 64, "0" * 64, spec["spec_id"]})
+                         ["other_prepared_specs_in_catalog"], ["0" * 64, "f" * 64])
+
+    def test_other_specs_copies_of_any_required_snapshot_are_listed(self):
+        from release_spec.serving import required_snapshots
+        spec = self.add_spec(speculative=True)
+        manifests = {name: model["snapshot_manifest"]["manifest_id"]
+                     for name, model in required_snapshots(spec).items()}
+        target = self.put_view("0" * 64, "node-a", 0, manifests["target"])
+        draft = self.put_view("0" * 64, "node-b", 0, manifests["draft"])
+        self.put_view("0" * 64, "node-c", 0, "9" * 64)
+        row = entries(self.repo, self.store, now=self.now)[0]
+        self.assertEqual(row["prepared_copies"], [])
+        self.assertEqual(row["other_specs_prepared_copies"], [target, draft])
+        self.assertEqual([member["prepared_copies"] for member in row["snapshots"].values()], [[], []])
+        # JSON readers of the catalog get the field too.
+        output = io.StringIO()
+        from model_library import catalog
+        with patch("sys.stdout", output):
+            self.assertEqual(catalog.main(["show", spec["spec_id"], "--json", "--repo-root", str(self.repo),
+                                           "--state-root", str(self.store.root)]), 0)
+        self.assertEqual(json.loads(output.getvalue())["entries"][0]["other_specs_prepared_copies"], [target, draft])
+
     def test_withdrawal_reason_visible_without_hiding_recipe(self):
         spec = self.add_spec()
         spec["review"] = {"status": "withdrawn", "reviewer": "example-reviewer",
