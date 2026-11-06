@@ -112,6 +112,9 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
 - Styles go in free text only. Shell parses Gum labels and prefixes such as
   `header\t`, and parses captured stderr (`lib.sh` strips `error: `). So error
   and warning labels are styled only on a real terminal, never for `always`.
+  The one exception is the catalog list's model name (`catalog_menu cards`),
+  bold in the `choice` role: the shell passes it to Gum without parsing it, and
+  Gum keeps it with `--no-strip-ansi`.
 
 ## Verify
 

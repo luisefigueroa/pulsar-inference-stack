@@ -316,9 +316,11 @@ class PublishedResults(unittest.TestCase):
                    "local_state": "unknown", "start_supported": False, "start_unsupported_reason": "guard_unsupported"}
         output = io.StringIO()
         with patch("sys.stdin", io.StringIO(json.dumps({"entries": [selected, historical, guarded]}))), redirect_stdout(output):
-            self.assertEqual(catalog_menu.main(["labels", "--compare-with", selected["spec_id"]]), 0)
-        self.assertEqual(len(output.getvalue().splitlines()), 1)
-        self.assertTrue(output.getvalue().startswith(guarded["spec_id"] + "\t"))
+            self.assertEqual(catalog_menu.main(["cards", "--compare-with", selected["spec_id"]]), 0)
+        lines = output.getvalue().splitlines()
+        self.assertEqual([line.split("\t")[0] for line in lines], ["heading", "spec", "gap"])
+        self.assertEqual(lines[0], "heading\t  example/model")
+        self.assertTrue(lines[1].startswith(f"spec\t{guarded['spec_id']}\t    {'c' * 12} · start unsupported"), lines)
 
 
 if __name__ == "__main__":

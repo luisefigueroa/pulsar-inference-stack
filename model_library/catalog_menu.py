@@ -2,7 +2,7 @@
 
 Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
-it), the recipe list labels, the required-snapshot choices, the summary that
+it), the catalog list's cards, the required-snapshot choices, the summary that
 leads each storage preview, the wording of confirmation questions, and the
 home screen's Next line. Input
 is the catalog projection (``pulsar models show --json``) and the
@@ -24,6 +24,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import textwrap
 from typing import Any, NamedTuple
 
 from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, archive_text, blocker_text, files_text,
@@ -32,7 +33,7 @@ from .published_results import collect as published_results, frame_line as publi
 from .node_names import NodeNames
 from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
                      projected_headroom, short_size, size_text)
-from scripts.terminal_format import TerminalWriter, cut_middle, terminal_width
+from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, cut_middle, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
 LAUNCH = ("readiness", "image-check", "image-stage")
@@ -613,9 +614,9 @@ def _other_specs(records: list[dict], row: dict) -> str:
 
 
 def state_parts(row: dict) -> list[str]:
-    """Saved state for a recipe label, files first; review status only when the
-    spec sets one. Other specs' prepared copies of the same files come last, so
-    they are the first part to yield when the label runs short."""
+    """Saved state for a spec's card in the catalog list, files first; review
+    status only when the spec sets one. Other specs' prepared copies of the same
+    files come last."""
     parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED]
     if start_unsupported(row):
         parts.append("start unsupported")
@@ -649,115 +650,103 @@ def withdrawal_notice(row: dict) -> list[str]:
 RECLAIM = ("stop", "unpin", "purge", "remove")
 
 
-def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: RecipeFacts | None = None,
-               short_name: str | None = None) -> str:
-    """One recipe list entry that fits the menu: model [spec] state.
+# The catalog list shows a card per spec, grouped by model: the model's name
+# once, then each spec's line starting with its 12-character prefix, and a
+# part that does not fit on the line wraps whole two columns further in. The
+# columns are where each line starts on screen: Gum draws its two-column
+# cursor before an option's first line only, and choose_index (scripts/ui.sh)
+# gives a card's first line's two leading spaces to that cursor.
+CARD_NAME_COLUMN, CARD_SPEC_COLUMN, CARD_WRAP_COLUMN = 2, 4, 6
 
-    Critical warnings take space before optional model/file context. Ordinary
-    entries retain their model-first layout. A service seen in this session
-    leads the state; the saved files state yields to it when space runs out,
-    since the recipe frame repeats it. Gum's two-column cursor is the only
-    text drawn before the label.
 
-    When the catalog has other recipes of the same model, RECIPE_FACTS (see
-    distinguishing_facts) follow the spec, and no fact is ever cut. As room
-    runs short the model name is cut, then the saved state yields, then facts
-    this recipe does not need to be told apart, then the spec prefix shortens
-    to 8, then the model name goes and the facts that do not fit whole. A
-    label always keeps at least the 8-character spec prefix, after any
-    critical warning. SHORT_NAME is the model name without
-    its organization, given where no other model would read the same; a cut
-    name uses it. Names are cut in the middle and keep their end, where
-    recipes and models of one organization differ.
+class Card(NamedTuple):
+    """One spec of the catalog list, its lines at their screen columns.
 
-    Another spec's prepared copies of the same files (see same_files_prepared)
-    are the last state part: shown whole or not at all, ahead of the node count
-    and spec state only. Where they fit nowhere, the label reads as it would
-    without them.
+    HEADING is the model's name line, given for the first spec of a group of
+    adjacent specs of one model; LINES are the spec's own lines; GAP ends the
+    group with a blank line.
     """
+    heading: str | None
+    spec_id: str
+    lines: list[str]
+    gap: bool
+
+
+def card_parts(row: dict, live: dict | None = None, recipe_facts: RecipeFacts | None = None) -> list[str]:
+    """Every part of a spec's line after its prefix, in order: a critical
+    warning, the recipe facts that tell recipes of one model apart (see
+    distinguishing_facts), the node count unless a fact or the live words name
+    it, the service seen in this session (see live_label), the saved state
+    (see state_parts) and the spec's state. Nothing is left out."""
     seen = live_label(live)
-    budget = max(32, min(100, width)) - 2
-    model = clean(row["model_id"])
-    short = clean(short_name) if short_name else None
-    review = (row.get("review") or {}).get("status")
-    critical = (["withdrawn"] if review == "withdrawn" else [])
+    critical = ["withdrawn"] if (row.get("review") or {}).get("status") == "withdrawn" else []
     if start_unsupported(row):
         critical.append("start unsupported")
-    if critical:
-        files = seen or (LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED)
-        rest = [files] + ([review] if review and review != "withdrawn" else [])
-        if recipe_facts:
-            return _critical_label_with_facts(critical, model, short, row["spec_id"], recipe_facts, rest, budget)
-        warning = " · ".join(critical)
-        identity = f" [{row['spec_id'][:12]}]"
-        if len(warning + identity) > budget:
-            warning = warning.replace("start unsupported", "start blocked")
-        if len(warning + identity) > budget:
-            # At the narrowest widths the warning outranks the copyable prefix;
-            # the selected view shows the complete spec ID.
-            identity = f" [{row['spec_id'][:8]}]"
-        if len(warning + identity) > budget:
-            # At the minimum width the withdrawal warning has priority; the
-            # selected view still explains every launch restriction in full.
-            warning = critical[0]
-        heading = warning + identity
-        room = budget - len(heading) - 1
-        if room < 4:
-            return heading
-        tail = " · " + " · ".join(rest)
-        context = _fit_name(model, short, max(MIN_NAME, room - len(tail))) + tail
-        if len(context) > room:
-            context = context[:room - 3] + "..."
-        return heading + " " + context
-    parts = state_parts(row)
-    # Other specs' copies of the same files are the last state part and the
-    # first to yield, always whole: a cut spec prefix could name another spec.
-    same = bool(same_files_prepared(row))
+    parts = critical + (list(recipe_facts.sets[0]) if recipe_facts else [])
+    nodes = (row.get("geometry") or {}).get("nodes")
+    if nodes is not None:
+        count = node_count(nodes)
+        # "running on 3 nodes" names the count; "partly running on 2 nodes" of a 3-node spec does not.
+        if count not in parts and not (seen and re.search(rf"(?<![0-9]){re.escape(count)}\b", seen)):
+            parts.append(count)
     if seen:
-        parts.insert(0, seen)
-    # Where the whole label fits (60 columns or wider), it also names the node
-    # count (unless a seen service or a fact already does) and the spec's
-    # state, as models list does. State is metadata only.
-    nodes = node_count(row["geometry"]["nodes"])
-    lead = recipe_facts.sets[0] if recipe_facts else []
-    identity = f" [{row['spec_id'][:12]}] "
-
-    def wide(kept: list[str]) -> str:
-        wider = lead + ([] if seen or nodes in lead else [nodes]) + kept
-        if row.get("state") and row["state"] not in kept:
-            wider.append(str(row["state"]))
-        return model + identity + " · ".join(wider)
-
-    def whole(kept: list[str]) -> bool:
-        return len(model) + len(identity + " · ".join(lead + kept)) <= budget
-
-    def narrow(kept: list[str]) -> str:
-        kept = list(kept)
-        # Without facts the name is cut and then the label truncated, so the
-        # part goes before the name is cut; beside a seen service, before the
-        # files state.
-        if same and (seen or not recipe_facts) and not whole(kept):
-            kept.pop()
-        if seen and not whole(kept):
-            kept.pop(1)
-        if recipe_facts:
-            return _label_with_facts(model, short, row["spec_id"], recipe_facts, kept, budget)
-        suffix = identity + " · ".join(kept)
-        text = _fit_name(model, short, max(MIN_NAME, budget - len(suffix))) + suffix
-        return text if len(text) <= budget else text[:budget - 3] + "..."
-
-    if width >= 60 and len(wide(parts)) <= budget:
-        return wide(parts)
-    label = narrow(parts)
-    if same and width >= 60 and parts[-1] not in label and len(wide(parts[:-1])) <= budget:
-        # The part did not fit anywhere: the label reads as it would without it.
-        return wide(parts[:-1])
-    return label
+        parts.append(seen)
+    # The warnings already lead the line; state_parts also names them.
+    parts.extend(part for part in state_parts(row) if part not in critical)
+    if row.get("state") and str(row["state"]) not in parts:
+        parts.append(str(row["state"]))
+    return [clean(part) for part in parts]
 
 
-# A model name cut to fit a list label keeps at least this many characters
-# while other parts of the label can still yield.
-MIN_NAME = 11
+def card_lines(spec_id: str, parts: list[str], width: int) -> list[str]:
+    """The spec's line at column 4, starting with its 12-character prefix,
+    then each part after " · " where it fits whole within WIDTH; a part that
+    does not fit starts a line at column 6, and a part longer than that line
+    wraps at its spaces there."""
+    hang = " " * CARD_WRAP_COLUMN
+    lines = [" " * CARD_SPEC_COLUMN + spec_id[:12]]
+    for part in parts:
+        if len(lines[-1]) + 3 + len(part) <= width:
+            lines[-1] += " · " + part
+        else:
+            lines.extend(textwrap.wrap(part, width, initial_indent=hang, subsequent_indent=hang,
+                                       break_long_words=True, break_on_hyphens=False))
+    return lines
+
+
+def list_cards(entries: list[dict], width: int, *, leave_out: frozenset[str] | set[str] = frozenset(),
+               live: dict | None = None, outcomes: dict[str, tuple] | None = None,
+               writer: TerminalWriter | None = None) -> list[Card]:
+    """The catalog list: a card per spec of ENTRIES, in catalog order, except
+    the spec IDs in LEAVE_OUT. Adjacent specs of one model share one heading,
+    the model's name at column 2, so a withdrawn spec, sorted last, has a
+    heading of its own. WRITER, where given, paints the name in the choice
+    role, bold, when its stream takes styles; it is the only styled text.
+
+    No screen line is wider than WIDTH (32 to 100 columns), cursor included.
+    Only the model name is ever cut, in the middle so its end stays, and only
+    where it is longer than its line. LIVE and OUTCOMES are this menu
+    session's service observations (see live_fact). Facts and short names come
+    from every entry, so a card reads the same whichever entries are left out.
+    """
+    width = max(MIN_WIDTH, min(MAX_WIDTH, width))
+    facts, short_names = distinguishing_facts(entries), short_model_names(entries)
+    shown = [row for row in entries if row["spec_id"] not in leave_out]
+    cards = []
+    for index, row in enumerate(shown):
+        spec = row["spec_id"]
+        heading = None
+        if index == 0 or shown[index - 1].get("model_id") != row.get("model_id"):
+            short = short_names.get(spec)
+            name = _fit_name(clean(row["model_id"]), clean(short) if short else None, width - CARD_NAME_COLUMN)
+            if writer is not None:
+                name = writer.paint(name, ["choice"] * len(name))
+            heading = " " * CARD_NAME_COLUMN + name
+        service = live_fact(row, live, (outcomes or {}).get(spec))
+        lines = card_lines(spec, card_parts(row, service, facts.get(spec)), width)
+        gap = index == len(shown) - 1 or shown[index + 1].get("model_id") != row.get("model_id")
+        cards.append(Card(heading, spec, lines, gap))
+    return cards
 
 
 def _fit_name(model: str, short: str | None, room: int) -> str:
@@ -765,76 +754,6 @@ def _fit_name(model: str, short: str | None, room: int) -> str:
     if len(model) <= room:
         return model
     return cut_middle(short or model, room)
-
-
-def _fact_layouts(facts: RecipeFacts, parts: list[str]):
-    """(facts, state parts) for a label, most first: the state yields from its
-    end, then the facts shorten as far as they still tell the recipe apart."""
-    for count in range(len(parts), -1, -1):
-        yield facts.sets[0], parts[:count]
-    for shorter in facts.sets[1:]:
-        yield shorter, []
-
-
-def _lead_and_facts(lead: str, facts: RecipeFacts, budget: int) -> str:
-    """LEAD (a spec prefix, after any warning) and the fullest fact set that
-    fits whole; else the whole facts of the shortest set that fit, the later
-    ones first since they separate the closest recipes; else LEAD alone. A
-    label never loses its identity, and a fact is never cut."""
-    for told in facts.sets:
-        text = f"{lead} " + " · ".join(told)
-        if len(text) <= budget:
-            return text
-    room, kept = budget - len(lead) - 1, []
-    for fact in reversed(facts.sets[-1]):
-        if len(fact) + 3 * bool(kept) <= room:
-            kept.insert(0, fact)
-            room -= len(fact) + 3 * (len(kept) > 1)
-    return f"{lead} " + " · ".join(kept) if kept else lead
-
-
-def _label_with_facts(model: str, short: str | None, spec_id: str, facts: RecipeFacts, parts: list[str],
-                      budget: int) -> str:
-    """model [spec] facts · state, giving way in the order menu_label describes."""
-    for prefix, layouts in ((12, list(_fact_layouts(facts, parts))), (8, [(facts.sets[-1], [])])):
-        for told, shown in layouts:
-            suffix = f" [{spec_id[:prefix]}] " + " · ".join(told + shown)
-            room = budget - len(suffix)
-            if room >= min(MIN_NAME, len(model)):
-                return _fit_name(model, short, room) + suffix
-    # The model name gives way; the 8-character spec prefix always stays.
-    suffix = f" [{spec_id[:8]}] " + " · ".join(facts.sets[-1])
-    if budget - len(suffix) >= min(5, len(model)):
-        return _fit_name(model, short, budget - len(suffix)) + suffix
-    return _lead_and_facts(f"[{spec_id[:8]}]", facts, budget)
-
-
-def _critical_label_with_facts(critical: list[str], model: str, short: str | None, spec_id: str,
-                               facts: RecipeFacts, rest: list[str], budget: int) -> str:
-    """warning [spec] model · facts · state. The warning and at least the
-    8-character spec prefix are placed first; facts take what is left."""
-    joined = " · ".join(critical)
-    blocked = joined.replace("start unsupported", "start blocked")
-    for warning, prefix in ((joined, 12), (blocked, 12), (blocked, 8), (critical[0], 8)):
-        heading = f"{warning} [{spec_id[:prefix]}] "
-        room = budget - len(heading)
-        if room < 0:
-            continue
-        for told, shown in _fact_layouts(facts, rest):
-            tail = " · " + " · ".join(told + shown)
-            if room - len(tail) >= min(MIN_NAME, len(model)):
-                return heading + _fit_name(model, short, room - len(tail)) + tail
-        # The model name gives way.
-        tail = " · " + " · ".join(facts.sets[-1])
-        if room - len(tail) >= min(5, len(model)):
-            return heading + _fit_name(model, short, room - len(tail)) + tail
-        if len(tail) - 3 <= room:
-            return heading + tail[3:]
-    # Lead with the blocker: the shortest warning that keeps every critical
-    # word, else the first, and the spec prefix; facts take what is left.
-    leads = [f"{warning} [{spec_id[:8]}]" for warning in (blocked, critical[0])]
-    lead = next((text for text in leads if len(text) <= budget), leads[-1])
-    return _lead_and_facts(lead, facts, budget)
 
 
 def node_count(nodes: object) -> str:
@@ -858,7 +777,7 @@ def short_count(value: object) -> str:
 
 def _recipe_facts(row: dict) -> list[tuple[object, str, str]]:
     """(recorded value, short words, exact words) for each fact that can tell
-    recipes of one model apart, in the order a list label names them."""
+    recipes of one model apart, in the order a card names them."""
     nodes = (row.get("geometry") or {}).get("nodes")
     facts: list[tuple[object, str, str]] = [(nodes, node_count(nodes), node_count(nodes))]
     arguments = row.get("engine_args")
@@ -953,7 +872,7 @@ def distinguishing_facts(rows: list[dict]) -> dict[str, RecipeFacts]:
 
 def short_model_names(rows: list[dict]) -> dict[str, str]:
     """Model names without the organization, by spec ID, where no other model
-    in ROWS has the same name; a list label cut to fit uses them."""
+    in ROWS has the same name; a model name cut to fit its card uses them."""
     models: dict[str, set[str]] = {}
     for model in {row.get("model_id") for row in rows} - {None}:
         models.setdefault(model.rpartition("/")[2], set()).add(model)
@@ -2032,15 +1951,16 @@ def read_row(stream, spec_id: str) -> tuple[dict, list[dict]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    labels = sub.add_parser("labels", help="spec ID and menu label per line; catalog JSON on stdin")
-    labels.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
+    cards = sub.add_parser("cards", help="the catalog list, a card per spec grouped by model, as KIND<TAB>TEXT "
+                           "lines; catalog JSON on stdin")
+    cards.add_argument("--compare-with", help="only other catalog specs supported by spec compare")
     live_help = "service inventory JSON this menu session captured"
     outcome_help = "SPEC:ACTION:STATUS:EPOCH for a Live status, Start or Stop in this session"
     files_help = "model files --json this menu session saved; an unreadable or failed scan is ignored"
-    labels.add_argument("--live", help=live_help)
-    labels.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
-    # Accepted with the session's other observations; a list label adds no word for found files.
-    labels.add_argument("--files", help=files_help)
+    cards.add_argument("--live", help=live_help)
+    cards.add_argument("--service-outcome", action="append", default=[], help=outcome_help)
+    # Accepted with the session's other observations; a card adds no word for found files.
+    cards.add_argument("--files", help=files_help)
     warning = sub.add_parser("memory-warning", help="whether start reported only an acknowledgeable memory warning")
     warning.add_argument("--blockers-file", required=True)
     choices = sub.add_parser("start-choices", help="a title, then one menu choice per line for recorded start "
@@ -2121,7 +2041,13 @@ def main(argv: list[str] | None = None) -> int:
                     inventory = json.load(handle)
             print(clean(other_stop_question(args.conf, args.served_name, inventory)))
             return 0
-        if args.command == "labels":
+        if args.command == "cards":
+            # Lines, each KIND<TAB>TEXT at its screen columns: "observed" dates
+            # the captured inventory (first, if any); "heading" is a model's
+            # name, waiting for the next spec; "spec" adds the spec ID before
+            # its first line; "line" is a further line of the last spec; "gap"
+            # ends a model's group. Only a heading's text carries styles
+            # (PULSAR_COLOR=always in menus); the shell parses the rest.
             width = terminal_width()
             entries = json.load(sys.stdin).get("entries") or []
             if args.compare_with and any(entry["spec_id"] == args.compare_with and entry.get("historical") for entry in entries):
@@ -2130,16 +2056,17 @@ def main(argv: list[str] | None = None) -> int:
             outcomes = service_outcomes(args.service_outcome, names=NodeNames.saved())
             if live:
                 print(f"observed\t{clean(inventory_line(live))}")
-            # Facts and short names come from every entry, so a label reads the
-            # same whichever entries this list leaves out.
-            facts, short_names = distinguishing_facts(entries), short_model_names(entries)
-            for entry in entries:
-                if args.compare_with and (entry["spec_id"] == args.compare_with or entry.get("historical")):
-                    continue
-                service = live_fact(entry, live, outcomes.get(entry["spec_id"]))
-                spec = entry["spec_id"]
-                label = menu_label(entry, width, service, facts.get(spec), short_names.get(spec))
-                print(f"{spec}\t{label}")
+            leave_out = ({entry["spec_id"] for entry in entries if entry.get("historical")} | {args.compare_with}
+                         if args.compare_with else set())
+            for card in list_cards(entries, width, leave_out=leave_out, live=live, outcomes=outcomes,
+                                   writer=TerminalWriter(width=width)):
+                if card.heading is not None:
+                    print(f"heading\t{card.heading}")
+                print(f"spec\t{card.spec_id}\t{card.lines[0]}")
+                for line in card.lines[1:]:
+                    print(f"line\t{line}")
+                if card.gap:
+                    print("gap")
             return 0
         if args.command == "blocked-choices":
             with open(args.plan_file, encoding="utf-8") as handle:

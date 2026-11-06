@@ -282,15 +282,51 @@ _ui_terminal_columns() {
   printf '%s\n' "$columns"
 }
 
+# _ui_card_page ROWS OPTION... — how many options of a card menu one page
+# shows. Gum's --height counts options, not lines, and pages in fixed blocks
+# (page 2 holds options N+1 to 2N), so every block of N options must fit: in
+# ROWS - 5 lines (padding and the two-line header) when one page holds them
+# all, else in ROWS - 6, since Gum then adds a blank line and the page dots.
+# Gum cuts a taller view from the top, padding and title first; the limits
+# were measured with the bundled Gum (tests/test_ui_confirm.py checks them).
+_ui_card_page() {
+  local rows="$1" option newlines total=0 size start end sum i fits
+  shift
+  local -a heights=()
+  for option in "$@"; do
+    newlines=${option//[!$'\n']/}
+    heights+=($((${#newlines} + 1)))
+    total=$((total + ${#newlines} + 1))
+  done
+  if [ "$total" -le $((rows - 5)) ]; then
+    printf '%s\n' "$#"
+    return 0
+  fi
+  for ((size = $#; size > 1; size--)); do
+    fits=1
+    for ((start = 0; start < $# && fits; start += size)); do
+      sum=0 end=$((start + size < $# ? start + size : $#))
+      for ((i = start; i < end; i++)); do sum=$((sum + heights[i])); done
+      [ "$sum" -le $((rows - 6)) ] || fits=0
+    done
+    [ "$fits" = 0 ] || break
+  done
+  printf '%s\n' "$size"
+}
+
 # choose_index HEADER OPTION...
 # Prints the selected zero-based option index. Gum shows each label and
 # returns its hidden index, so a label's whole row is available to its text.
 # Gum maps each label to one value, so a repeated label gets a " (2)" suffix
 # and stays selectable. The list is as tall as its options and the terminal
 # allow, so no option waits on a second page.
-# PULSAR_CHOOSE_DEFAULT=N starts the cursor on option N. Returns 1 on Esc or
-# cancel and 130 on Ctrl-C, so a nested menu can step back on Esc and leave
-# entirely on Ctrl-C.
+# An option with several lines, a card such as a spec under its model's name
+# in the catalog list, is one cursor stop. Card lines come at their screen
+# columns and may carry styles; a menu with cards pages so its title stays on
+# screen (see _ui_card_page). Single-line menus are drawn as before.
+# PULSAR_CHOOSE_DEFAULT=N starts the cursor on option N, except in a menu with
+# cards. Returns 1 on Esc or cancel and 130 on Ctrl-C, so a nested menu can
+# step back on Esc and leave entirely on Ctrl-C.
 choose_index() {
   local header="$1"
   shift
@@ -298,39 +334,62 @@ choose_index() {
     return 1
   fi
   _ui_require_gum || return
-  local entries=() labels=() option label candidate suffix out rc selected rows
-  local index=1 height=$# default="${PULSAR_CHOOSE_DEFAULT:-}"
-  local -a initial=()
+  local entries=() labels=() option label candidate suffix out rc selected rows gap input=""
+  local index=1 height=$# default="${PULSAR_CHOOSE_DEFAULT:-}" cards=0
+  local -a initial=() card_args=()
   local -A seen=()
   for option in "$@"; do
-    label=${option//$'\t'/ }
+    [[ "$option" != *$'\n'* ]] || cards=1
+  done
+  for option in "$@"; do
+    label=${option//$'\t'/ } gap=""
+    if [ "$cards" = 1 ]; then
+      # Gum draws its two-column cursor gutter before an option's first line
+      # only and prints later lines as given, so a first line given at screen
+      # columns gives its two leading spaces to the gutter.
+      [[ "$label" != "  "* ]] || label=${label:2}
+      # A card that ends a group ends with a newline, a blank line on screen;
+      # a " (2)" suffix goes on its last line of text.
+      [[ "$label" != *$'\n' ]] || { gap=$'\n'; label=${label%$'\n'}; }
+    fi
     candidate=$label suffix=2
     while [ -n "${seen["x$candidate"]+x}" ]; do
       candidate="$label ($suffix)"
       suffix=$((suffix + 1))
     done
     seen["x$candidate"]=1
-    labels+=("$candidate")
-    entries+=("$candidate"$'\t'"$index")
+    labels+=("$candidate$gap")
+    entries+=("$candidate$gap"$'\t'"$index")
     index=$((index + 1))
   done
   # Gum's own key hint names neither Esc nor what it does, so it is replaced by
   # Pulsar's under the title. PULSAR_CHOOSE_ESC says what Esc does (default back).
   local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}"
-  if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
-    # Gum splits --selected at commas; a backslash keeps one in the label.
-    initial=(--selected="${labels[$default]//,/\\,}")
-  fi
-  # Gum adds 5 rows around the list: padding and the two-line header.
-  if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
-    height=$((rows - 5))
+  if [ "$cards" = 1 ]; then
+    # Options are separated by the record separator, so they may hold
+    # newlines; a trailing separator would be an empty option, which Gum
+    # rejects. Gum strips styles from options unless told not to.
+    card_args=(--input-delimiter=$'\x1e' --no-strip-ansi)
+    for option in "${entries[@]}"; do input+="${input:+$'\x1e'}$option"; done
+    if rows=$(_ui_terminal_rows); then
+      height=$(_ui_card_page "$rows" "${labels[@]}")
+    fi
+  else
+    if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
+      # Gum splits --selected at commas; a backslash keeps one in the label.
+      initial=(--selected="${labels[$default]//,/\\,}")
+    fi
+    # Gum adds 5 rows around the list: padding and the two-line header.
+    if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
+      height=$((rows - 5))
+    fi
   fi
   _ui_gum_choose_style_args
   set +e
   # Capture the selection on stdout only. Do NOT redirect Gum stderr: the
   # interactive TUI is drawn on stderr; silencing it makes the menu invisible.
-  out=$(printf '%s\n' "${entries[@]}" | _ui_gum choose \
-    "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" \
+  out=$(if [ "$cards" = 1 ]; then printf '%s' "$input"; else printf '%s\n' "${entries[@]}"; fi | _ui_gum choose \
+    "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" "${card_args[@]}" \
     --label-delimiter=$'\t' --height="$height" --no-show-help --header "$header"$'\n'"$hint")
   rc=$?
   set -e
