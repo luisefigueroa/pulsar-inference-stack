@@ -242,21 +242,29 @@ def read_only_line(service):
     return f"{clean(name or service.get('service_id') or 'unnamed')} · {SERVICE_STATES.get(state, state)} · {owner} · read-only"
 
 
-def gpu_process_text(inventory):
-    """How many GPU processes Pulsar did not start, and their memory on each node."""
+def gpu_process_parts(inventory):
+    """How many GPU processes Pulsar did not start, and their memory in bytes on
+    each node that reported some, as (hostname, bytes) in the processes' order."""
     processes = [process for process in inventory.get("unmanaged_gpu_processes") or [] if isinstance(process, dict)]
     by_node = {}
     for process in processes:
         mib = process.get("used_memory_mib")
         if type(mib) is int and mib >= 0:
             by_node[process.get("node")] = by_node.get(process.get("node"), 0) + mib
-    parts = [str(len(processes))]
+    hosts = []
     for key, mib in by_node.items():
         if not mib:
             continue
         host = clean((inventory["nodes"].get(key) or {}).get("hostname") or key or "unknown node")
-        parts.append(f"{short_size(mib * 1024 ** 2)} on {host}")
-    return " · ".join(parts) + (" · read-only" if processes else "")
+        hosts.append((host, mib * 1024 ** 2))
+    return len(processes), hosts
+
+
+def gpu_process_text(inventory):
+    """How many GPU processes Pulsar did not start, and their memory on each node."""
+    count, hosts = gpu_process_parts(inventory)
+    parts = [str(count)] + [f"{short_size(size)} on {host}" for host, size in hosts]
+    return " · ".join(parts) + (" · read-only" if count else "")
 
 
 def view(inventory, catalog, spec_id=None, *, width=None, now=None):

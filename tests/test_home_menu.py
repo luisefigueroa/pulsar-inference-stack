@@ -1,4 +1,5 @@
 """Interactive ./pulsar menu: cluster setup and optional archive configuration."""
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -39,7 +40,9 @@ def ready(prefix):
             "home": {"node_id": "n0", "path": "/fixture/home", "verified_at": "2026-09-05T00:00:00Z"}}
 
 
-class HomeMenu(unittest.TestCase):
+class MenuHarness(unittest.TestCase):
+    """The home menu with doubles for ui.sh, pulsar, the catalog and node tools."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -56,6 +59,7 @@ class HomeMenu(unittest.TestCase):
         # option index, "esc" or "ctrl-c"; a menu past the answers is an error.
         (scripts / "ui.sh").write_text(r'''
 emit_frame() { cat; }
+_ui_terminal_columns() { return 1; }
 require_gum() { :; }
 ui_keep_styles() { :; }
 choose_index() {
@@ -97,11 +101,19 @@ wait_continue() {
                           '  if [ "${rc:-0}" = 0 ] && [ -n "${SETUP_TOPOLOGY:-}" ]; then\n'
                           '    cp "$SETUP_TOPOLOGY" .cluster-topology.json\n'
                           '  fi ;;\n'
-                          '  "models menu") [ -z "${CATALOG_AFTER:-}" ] || cp "$CATALOG_AFTER" "$CATALOG_FILE" ;; esac\n'
+                          '  "models menu") [ -z "${CATALOG_AFTER:-}" ] || cp "$CATALOG_AFTER" "$CATALOG_FILE" ;;\n'
+                          # Each inventory and budget run saves its observation.
+                          '  "inventory menu") [ -z "${INVENTORY_AFTER:-}" ] \\\n'
+                          '    || cp "$INVENTORY_AFTER" "$PULSAR_SERVICE_INVENTORY_FILE" ;;\n'
+                          '  "models files") [ -z "${BUDGET_AFTER:-}" ] \\\n'
+                          '    || cp "$BUDGET_AFTER" "$PULSAR_STORAGE_BUDGET_FILE" ;; esac\n'
                           'exit "${rc:-0}"\n')
         pulsar.chmod(0o755)
         overview = scripts / "cluster-overview.sh"
-        overview.write_text('#!/usr/bin/env bash\necho "cluster overview" >> "$PULSAR_LOG"\nexit "${OVERVIEW_RC:-0}"\n')
+        overview.write_text('#!/usr/bin/env bash\necho "cluster overview" >> "$PULSAR_LOG"\n'
+                            '[ -z "${INVENTORY_AFTER:-}" ] || cp "$INVENTORY_AFTER" "$PULSAR_SERVICE_INVENTORY_FILE"\n'
+                            '[ -z "${BUDGET_AFTER:-}" ] || cp "$BUDGET_AFTER" "$PULSAR_STORAGE_BUDGET_FILE"\n'
+                            'exit "${OVERVIEW_RC:-0}"\n')
         overview.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh"):
             probe = scripts / name
@@ -116,12 +128,20 @@ wait_continue() {
         self.catalog_log = self.root / "catalog.log"
         self.catalog = self.root / "catalog.json"
         self.catalog.write_text(json.dumps({"entries": []}))
+        (self.root / "saved").mkdir()
+        self.saved_inventory = self.root / "saved/service-inventory.json"
+        self.saved_budget = self.root / "saved/storage-budget.json"
         python = binary / "python3"
         python.write_text('#!/usr/bin/env bash\n'
                           'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
                           '  shift 2; printf "%s\\n" "$*" >> "$CATALOG_LOG"\n'
                           '  [ "${CATALOG_RC:-0}" = 0 ] || { echo "error: fixture catalog" >&2; exit "$CATALOG_RC"; }\n'
                           '  exec cat "$CATALOG_FILE"\n'
+                          'fi\n'
+                          # The saved observations run for real; their arguments are recorded.
+                          'if [ "${1:-}" = -m ] && [ "${2:-}" = scripts.saved_observations ] '
+                          '&& [ -n "${OBSERVATIONS_LOG:-}" ]; then\n'
+                          '  printf "%s\\n" "${*:3}" >> "$OBSERVATIONS_LOG"\n'
                           f'fi\nexec {sys.executable} "$@"\n')
         python.chmod(0o755)
         for name in ("ssh", "docker", "curl", "nvidia-smi"):
@@ -142,6 +162,9 @@ wait_continue() {
             "PATH": f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}",
             "CATALOG_LOG": str(self.catalog_log),
             "CATALOG_FILE": str(self.catalog),
+            # The saved service inventory and storage budget; absent until a test writes them.
+            "PULSAR_SERVICE_INVENTORY_FILE": str(self.saved_inventory),
+            "PULSAR_STORAGE_BUDGET_FILE": str(self.saved_budget),
         }
         env.pop("PULSAR_COLD_ROOT", None)
         env.pop("CLUSTER_TOPOLOGY_FILE", None)
@@ -160,6 +183,8 @@ wait_continue() {
     def commands(self):
         return self.pulsar_log.read_text().splitlines() if self.pulsar_log.exists() else []
 
+
+class HomeMenu(MenuHarness):
     def test_first_run_offers_setup_read_only_inspection_and_help(self):
         result = self.run_home(["5"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -400,6 +425,8 @@ wait_continue() {
         self.assertNotIn("Next:", text)
         self.assertNotIn("not configured", text)
         self.assertEqual(self.commands(), [])
+        # The Running block does not depend on the archive setting.
+        self.assertIn("Running not observed yet;", text)
 
     def test_next_line_prints_again_only_when_saved_records_change(self):
         (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
@@ -446,6 +473,136 @@ wait_continue() {
         self.assertEqual(result.stdout.count("open Catalog and storage"), 1)
         self.assertLess(result.stdout.index("Topology  not confirmed"), result.stdout.index("Topology  2 nodes"))
         self.assertLess(result.stdout.index("Topology  2 nodes"), result.stdout.index("1 spec not checked yet"))
+
+
+def saved_inventory(generated_at=None):
+    """A saved service inventory: example/model runs on fixture-remote, taken now."""
+    from tests.test_inventory_menu import snapshot
+    document = snapshot()
+    document["generated_at"] = generated_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document["nodes"]["head"].update(mem_available_gib=15.2, mem_total_gib=121.7)
+    document["nodes"]["worker"].update(mem_available_gib=19.4, mem_total_gib=121.7)
+    document["services"][0]["ranks"][0]["observed_api_port"] = 8000
+    return json.dumps(document)
+
+
+def saved_budget(saved_at=None):
+    """A saved storage budget for both fixture nodes, saved now."""
+    G = 1024 ** 3
+    nodes = [{"node_id": f"node-{index}", "available": 300 * G, "used": 50 * G, "total": 1000 * G,
+              "reserve": 100 * G, "limit": 200 * G, "path": "/fixture/views"} for index in (0, 1)]
+    return json.dumps({"schema_version": 1, "kind": "pulsar-saved-storage-budget",
+                       "saved_at": saved_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                       "nodes": nodes})
+
+
+class RunningBlock(MenuHarness):
+    """The Running block: the last saved service inventory and storage budget, without a probe."""
+
+    def setUp(self):
+        super().setUp()
+        (self.root / ".cluster-topology.json").write_text(json.dumps(enrolled_two_node()))
+        self.catalog.write_text(json.dumps({"entries": [{**never_checked("a"), "model_id": "example/model"}]}))
+
+    def running_count(self, stdout):
+        return len([line for line in stdout.splitlines() if line.startswith("Running")])
+
+    def test_the_block_waits_for_cluster_setup(self):
+        (self.root / ".cluster-topology.json").unlink()
+        self.saved_inventory.write_text(saved_inventory())
+        result = self.run_home(["5"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running_count(result.stdout), 0)
+        self.assertNotIn("example/model", result.stdout)
+
+    def test_before_any_observation_the_block_names_the_choice_that_makes_one(self):
+        result = self.run_home(["Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Running not observed yet; Cluster overview (checks nodes now) probes the nodes and saves "
+                      "what it sees", text)
+        self.assertLess(result.stdout.index("Next:"), result.stdout.index("Running"))
+        # The catalog is listed once for both lines, and nothing is probed or saved.
+        self.assertEqual(self.catalog_log.read_text(), "list --json\n")
+        self.assertEqual(self.commands(), [])
+        self.assertEqual(list((self.root / "saved").iterdir()), [])
+
+    def test_saved_records_show_services_memory_disk_and_their_ages_without_a_probe(self):
+        self.saved_inventory.write_text(saved_inventory())
+        self.saved_budget.write_text(saved_budget())
+        result = self.run_home(["Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Running Services example/model · running on fixture-remote · port 8000 "
+                      "Memory fixture-local 15 GiB available of 122 fixture-remote 19 GiB available of 122 "
+                      "Disk fixture-local can still copy 150 GiB · 300 GiB free "
+                      "fixture-remote can still copy 150 GiB · 300 GiB free "
+                      "Observed services less than a minute ago (", text)
+        self.assertIn("UTC) · disk less than a minute ago; Cluster overview (checks nodes now) rechecks", text)
+        self.assertEqual(self.commands(), [])
+        self.assertNotIn("probe:", self.pulsar_log.read_text() if self.pulsar_log.exists() else "")
+        self.assertEqual(self.catalog_log.read_text(), "list --json\n")
+
+    def test_one_read_gives_the_block_and_its_key_at_one_instant(self):
+        # Ten minutes and a few seconds old: the instant decides "last seen".
+        old = datetime.now(timezone.utc) - timedelta(minutes=10, seconds=2)
+        self.saved_inventory.write_text(saved_inventory(f"{old:%Y-%m-%dT%H:%M:%SZ}"))
+        log = self.root / "observations.log"
+        result = self.run_home(["Exit"], OBSERVATIONS_LOG=str(log))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # One call reads the records for both the block and its key.
+        calls = [line.split() for line in log.read_text().splitlines()]
+        self.assertEqual([call[0] for call in calls], ["home"])
+        instant = calls[0][calls[0].index("--now") + 1]
+        now = datetime.fromisoformat(instant.replace("Z", "+00:00"))
+        self.assertEqual(now.tzinfo, timezone.utc)
+        stale = (now - old).total_seconds() > 600
+        # The key line is the menu's own; the block it belongs to prints alone.
+        self.assertNotIn("key\t", result.stdout)
+        self.assertNotIn(old.strftime("%Y-%m-%dT%H:%M:%SZ"), result.stdout)
+        self.assertEqual(self.running_count(result.stdout), 1)
+        text = " ".join(result.stdout.split())
+        self.assertEqual("last seen running on fixture-remote" in text, stale, text)
+
+    def test_the_block_prints_again_only_when_a_saved_record_changes(self):
+        self.saved_inventory.write_text(saved_inventory())
+        self.saved_budget.write_text(saved_budget())
+        result = self.run_home(["Host diagnostics", "Help", "3", "4", "Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running_count(result.stdout), 1)
+        self.assertEqual(result.stdout.count("Topology"), 1)
+        later = datetime.now(timezone.utc) + timedelta(seconds=5)
+        for choice, name, content in (
+                ("Live service inventory", "INVENTORY_AFTER", saved_inventory(f"{later:%Y-%m-%dT%H:%M:%SZ}")),
+                ("Model files and disk space (checks nodes now)", "BUDGET_AFTER", saved_budget("2030-01-01T00:00:00Z")),
+                ("Cluster overview (checks nodes now)", "INVENTORY_AFTER", saved_inventory("2030-01-01T00:00:00Z"))):
+            with self.subTest(choice=choice):
+                after = self.root / "after.json"
+                after.write_text(content)
+                self.answers.with_suffix(".n").unlink()
+                self.choose_log.unlink()
+                result = self.run_home([choice, "Exit"], **{name: str(after)})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.running_count(result.stdout), 2, result.stdout)
+                # The setup status above it prints again with it.
+                self.assertEqual(result.stdout.count("Topology"), 2)
+
+    def test_an_inventory_older_than_ten_minutes_reads_last_seen(self):
+        old = datetime.now(timezone.utc) - timedelta(minutes=30)
+        self.saved_inventory.write_text(saved_inventory(f"{old:%Y-%m-%dT%H:%M:%SZ}"))
+        result = self.run_home(["Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("example/model · last seen running on fixture-remote", text)
+        self.assertIn("last seen, not current; Cluster overview (checks nodes now) rechecks", text)
+
+    def test_an_unreadable_catalog_leaves_the_block_out(self):
+        self.saved_inventory.write_text(saved_inventory())
+        result = self.run_home(["Exit"], CATALOG_RC="2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.running_count(result.stdout), 0)
+        self.assertIn("Topology", result.stdout)
+        self.assertNotIn("fixture catalog", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

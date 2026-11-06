@@ -64,6 +64,9 @@ show_budget() {
     space=$(model_node "$rank" "$(model_node_request space path "$(json_fields "$roots" view_root)")") || die "node storage usage is unobservable"
     result=$(printf '%s' "$result" | python3 -c 'import json,sys; from model_library.planning import storage_budget; a=json.load(sys.stdin); a.append({"node_id":sys.argv[1],**storage_budget(json.loads(sys.argv[2]),sys.argv[3],sys.argv[4],path=sys.argv[5])}); print(json.dumps(a))' "${CLUSTER_NODE_IDS[$rank]}" "$space" "${PULSAR_HOT_RESERVE_BYTES:-}" "${PULSAR_HOT_BUDGET_BYTES:-}" "$(json_fields "$roots" view_root)") || die "invalid disk budget"
   done
+  # The budget is saved for the home menu with the time this probe finished
+  # (scripts/saved_observations.py); saving never changes the output or exit status.
+  printf '%s' "$result" | python3 -m scripts.saved_observations save-budget --repo-root "$REPO_DIR" >&2 || true
   emit_result "$(model_json kind pulsar-storage-budget nodes: "$result")"
 }
 
