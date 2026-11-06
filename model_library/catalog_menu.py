@@ -238,8 +238,10 @@ def found_files(path: str | None) -> dict[str, list[str]]:
 
     PATH is the scan this menu session saved (``model files --json``). The
     result maps each snapshot_manifest_id to the node_ids holding such a
-    home folder, in scan order. A missing, failed or unreadable scan maps
-    nothing: it is a hint for the menu, never a gate.
+    home folder, in scan order. A folder a home record or any spec's
+    prepared-copy binding names is in Pulsar's records, as on the Model files
+    page. A missing, failed or unreadable scan maps nothing: it is a hint for
+    the menu, never a gate.
     """
     if not path:
         return {}
@@ -250,7 +252,8 @@ def found_files(path: str | None) -> dict[str, list[str]]:
         for snapshot in read_inventory(Path(path)).get("snapshots") or []:
             for location in snapshot.get("locations") or []:
                 if (location.get("kind") == "home" and location.get("state") == "present"
-                        and not location.get("registered_home") and location.get("node_id")):
+                        and not location.get("registered_home") and not location.get("bindings")
+                        and location.get("node_id")):
                     nodes = found.setdefault(str(snapshot["snapshot_manifest_id"]), [])
                     if str(location["node_id"]) not in nodes:
                         nodes.append(str(location["node_id"]))
@@ -263,7 +266,10 @@ def unrecorded_files(row: dict, files: dict[str, list[str]] | None,
                      snapshot: str | None = None) -> list[str]:
     """Node_ids where the scan found files of SNAPSHOT while no home is
     recorded for it. Without SNAPSHOT, the first required snapshot without a
-    home: the one the suggestion names, as Download acts on one snapshot."""
+    home: the one the suggestion names, as Download acts on one snapshot.
+    found_files already leaves out each folder a record names; another
+    spec's prepared copy on the same node is a different folder, under the
+    prepared-copy root, so the node stays."""
     snapshots = members(row)
     if not files:
         return []
@@ -446,7 +452,9 @@ def suggestion(row: dict, offered: list[str], archive_location: str, after: str 
         return None
     if local in ("missing", "changed") and "prepare" in offered:
         reason = "files changed since they were verified" if local == "changed" else "files not prepared on every serving node"
-        return "prepare", f"{reason} (checked {age_text(age)})"
+        same = same_files_prepared(row)
+        bind = f"; {SAME_FILES_REASON.format(spec=_other_specs(same, row))}" if same else ""
+        return "prepare", f"{reason} (checked {age_text(age)}){bind}"
     if blocker:
         return "check", blocker
     if local == "ready":
@@ -546,16 +554,77 @@ FILES_FOUND = "files found on {hosts}"
 FILES_REASON = " but not in Pulsar's records; Download checks them before fetching anything"
 FILES_HINT = FILES_FOUND + ", not in Pulsar's records; Download checks them"
 FILES_FOUND_HERE = "files found here, not in Pulsar's records"
+# Another spec's prepared copies of this spec's snapshots (see
+# same_files_prepared): Prepare binds this spec to them without copying.
+# {spec} is that spec's 12-character prefix, or the first one's and "and N more"
+# (see _other_specs). A spec this checkout does not publish is "outside the
+# catalog", the words the Running labels use for a service of such a spec.
+OUTSIDE_THE_CATALOG = "outside the catalog"
+SAME_FILES = "same files prepared for {spec}"
+SAME_FILES_ON = "the same files are prepared for {spec} on {hosts}"
+SAME_FILES_BIND = "Prepare binds them there without copying"
+SAME_FILES_REASON = "Prepare binds the same files prepared for {spec} without copying"
+SAME_FILES_HERE = "same files prepared here for {spec}"
+
+
+def same_files_prepared(row: dict) -> list[dict]:
+    """Other specs' prepared-copy records that this spec's Prepare can bind to, or [].
+
+    Prepare plans each snapshot on each node apart and binds only where that
+    node holds another spec's prepared copy of that snapshot; elsewhere it
+    copies. So a node counts only when the records on it, of any other specs,
+    cover every required snapshot, and only those nodes' records are returned.
+    They count only while this spec's own saved state is missing, unknown or
+    not checked yet: a ready spec has its own bindings, and a changed folder
+    is changed for the other spec too.
+    """
+    others = [copy for copy in row.get("other_specs_prepared_copies") or [] if copy.get("spec_id") != row["spec_id"]]
+    if not others or (row.get("checked_at") and row.get("local_state") not in ("missing", "unknown")):
+        return []
+    required = [member.get("snapshot_manifest_id") for member in members(row).values()]
+    if not required or not all(required):
+        return []
+    held: dict[str, set] = {}
+    for copy in others:
+        held.setdefault(str(copy.get("node_id")), set()).add(copy.get("snapshot_manifest_id"))
+    whole = {node_id for node_id, manifests in held.items() if set(required) <= manifests}
+    return [copy for copy in others if str(copy.get("node_id")) in whole]
+
+
+def _other_specs(records: list[dict], row: dict) -> str:
+    """The specs RECORDS belong to: the first catalog member by its 12-character
+    prefix and how many more, with how many of them are outside the catalog.
+
+    Specs started from spec files outside releases/ hold bindings too, and
+    people cannot find them in the catalog, so a catalog member is named
+    first. Where the row does not know membership
+    (other_prepared_specs_in_catalog is None), every spec counts as one.
+    """
+    specs = sorted({str(record["spec_id"]) for record in records})
+    known = row.get("other_prepared_specs_in_catalog")
+    listed = [spec for spec in specs if known is None or spec in known]
+    outside = len(specs) - len(listed)
+    if not listed:
+        return f"a spec {OUTSIDE_THE_CATALOG}" if outside == 1 else f"{outside} specs {OUTSIDE_THE_CATALOG}"
+    more = len(specs) - 1
+    if not more:
+        return listed[0][:12]
+    return f"{listed[0][:12]} and {more} more" + (f" ({outside} {OUTSIDE_THE_CATALOG})" if outside else "")
 
 
 def state_parts(row: dict) -> list[str]:
-    """Saved state for a recipe label, files first; review status only when the spec sets one."""
+    """Saved state for a recipe label, files first; review status only when the
+    spec sets one. Other specs' prepared copies of the same files come last, so
+    they are the first part to yield when the label runs short."""
     parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED]
     if start_unsupported(row):
         parts.append("start unsupported")
     status = (row.get("review") or {}).get("status")
     if status:
         parts.append(str(status))
+    same = same_files_prepared(row)
+    if same:
+        parts.append(SAME_FILES.format(spec=_other_specs(same, row)))
     return parts
 
 
@@ -600,6 +669,11 @@ def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: Re
     its organization, given where no other model would read the same; a cut
     name uses it. Names are cut in the middle and keep their end, where
     recipes and models of one organization differ.
+
+    Another spec's prepared copies of the same files (see same_files_prepared)
+    are the last state part: shown whole or not at all, ahead of the node count
+    and spec state only. Where they fit nowhere, the label reads as it would
+    without them.
     """
     seen = live_label(live)
     budget = max(32, min(100, width)) - 2
@@ -636,6 +710,9 @@ def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: Re
             context = context[:room - 3] + "..."
         return heading + " " + context
     parts = state_parts(row)
+    # Other specs' copies of the same files are the last state part and the
+    # first to yield, always whole: a cut spec prefix could name another spec.
+    same = bool(same_files_prepared(row))
     if seen:
         parts.insert(0, seen)
     # Where the whole label fits (60 columns or wider), it also names the node
@@ -643,20 +720,39 @@ def menu_label(row: dict, width: int, live: dict | None = None, recipe_facts: Re
     # state, as models list does. State is metadata only.
     nodes = node_count(row["geometry"]["nodes"])
     lead = recipe_facts.sets[0] if recipe_facts else []
-    wider = lead + ([] if seen or nodes in lead else [nodes]) + parts
-    if row.get("state") and row["state"] not in parts:
-        wider.append(str(row["state"]))
     identity = f" [{row['spec_id'][:12]}] "
-    text = model + identity + " · ".join(wider)
-    if width >= 60 and len(text) <= budget:
-        return text
-    if seen and len(model) + len(identity + " · ".join(lead + parts)) > budget:
-        parts.pop(1)
-    if recipe_facts:
-        return _label_with_facts(model, short, row["spec_id"], recipe_facts, parts, budget)
-    suffix = identity + " · ".join(parts)
-    text = _fit_name(model, short, max(MIN_NAME, budget - len(suffix))) + suffix
-    return text if len(text) <= budget else text[:budget - 3] + "..."
+
+    def wide(kept: list[str]) -> str:
+        wider = lead + ([] if seen or nodes in lead else [nodes]) + kept
+        if row.get("state") and row["state"] not in kept:
+            wider.append(str(row["state"]))
+        return model + identity + " · ".join(wider)
+
+    def whole(kept: list[str]) -> bool:
+        return len(model) + len(identity + " · ".join(lead + kept)) <= budget
+
+    def narrow(kept: list[str]) -> str:
+        kept = list(kept)
+        # Without facts the name is cut and then the label truncated, so the
+        # part goes before the name is cut; beside a seen service, before the
+        # files state.
+        if same and (seen or not recipe_facts) and not whole(kept):
+            kept.pop()
+        if seen and not whole(kept):
+            kept.pop(1)
+        if recipe_facts:
+            return _label_with_facts(model, short, row["spec_id"], recipe_facts, kept, budget)
+        suffix = identity + " · ".join(kept)
+        text = _fit_name(model, short, max(MIN_NAME, budget - len(suffix))) + suffix
+        return text if len(text) <= budget else text[:budget - 3] + "..."
+
+    if width >= 60 and len(wide(parts)) <= budget:
+        return wide(parts)
+    label = narrow(parts)
+    if same and width >= 60 and parts[-1] not in label and len(wide(parts[:-1])) <= budget:
+        # The part did not fit anywhere: the label reads as it would without it.
+        return wide(parts[:-1])
+    return label
 
 
 # A model name cut to fit a list label keeps at least this many characters
@@ -900,14 +996,15 @@ FRAME_LABEL_WIDTH = 10
 def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None, width: int, *, now=None,
            published=None, live: dict | None = None, read_only: bool = False,
            after: str | None = None, after_age: int | None = None,
-           found_on: str | None = None) -> tuple[list[str], list[str]]:
+           found_on: str | None = None, same_files: str | None = None) -> tuple[list[str], list[str]]:
     """The recipe frame as (body lines, Next lines).
 
     The body starts with the model and spec; saved facts follow as aligned
     fields. Next is kept apart so it stays the frame's last line, and so a
     short terminal can show only the first line and Next. FOUND_ON names the
     machines where this session's Model files scan found files that no
-    record names (see unrecorded_files).
+    record names (see unrecorded_files). SAME_FILES says where another spec's
+    prepared copies of the same files are (see same_files_prepared).
     """
     buffer = io.StringIO()
     out = TerminalWriter(width=width, stream=buffer)
@@ -934,6 +1031,8 @@ def header(row: dict, hidden: dict[str, str], suggested: tuple[str, str] | None,
     elif not row.get("checked_at") and not read_only:
         # Say what establishes the files, as Running? does; read-only views offer no check.
         files = f"{files}; {CHECK_HINT}"
+    if same_files:
+        files = f"{files}; {same_files}"
     if after == "prepare" and after_age is not None:
         # Prepare saves no observation; keep the old check visible as such.
         files = f"prepared in this session ({age_text(after_age)}); saved check: {files}"
@@ -1035,7 +1134,8 @@ def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str
     is named first. FOUND lists the node_ids where this session's Model files
     scan found the snapshot's files with no record naming them; that comes
     next. The records are shown only where the whole label fits, the home
-    first.
+    first; another spec's prepared copy of the same files comes last (see
+    same_files_prepared).
     """
     snapshots = members(row)
     holders = [snapshots[snapshot]] if snapshot in snapshots else list(snapshots.values())
@@ -1048,6 +1148,12 @@ def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str
         parts.append("home recorded here")
     if any(copy.get("node_id") == node_id for copy in row.get("prepared_copies") or []):
         parts.append("prepared copy recorded here")
+    manifests = {member.get("snapshot_manifest_id") for member in holders}
+    here = [copy for copy in same_files_prepared(row)
+            if copy.get("node_id") == node_id and copy.get("snapshot_manifest_id") in manifests]
+    # Found files come first and alone, as in the recipe frame.
+    if here and not (found and node_id in found):
+        parts.append(SAME_FILES_HERE.format(spec=_other_specs(here, row)))
     for text in ([f"{hostname} — {', '.join(parts)}", f"{hostname} — {parts[0]}"] if parts else []):
         if len(text) <= width:
             return text
@@ -1101,10 +1207,25 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
                                                   files=files)
     holders = unrecorded_files(row, files) if "acquire" in offered else []
     found_on = _node_list(holders, names or NodeNames()) if holders else None
+    # After a Prepare in this session the spec has bindings of its own; the
+    # saved check that left it unprepared is older than they are. A machine
+    # the found-files clause names is left out of this one, so the two never
+    # name one machine: a snapshot has no home then, so Prepare is not
+    # offered, and Download checking that folder is the next step.
+    same = [copy for copy in (same_files_prepared(row) if after != "prepare" else [])
+            if str(copy["node_id"]) not in holders]
+    same_files = None
+    if same:
+        same_files = SAME_FILES_ON.format(spec=_other_specs(same, row),
+                                          hosts=_node_list([str(copy["node_id"]) for copy in same],
+                                                           names or NodeNames()))
+        if "prepare" in offered:
+            same_files += f"; {SAME_FILES_BIND}"
     frame_width = max(32, (width or terminal_width()) - 4)
     lines = [f"recipe\t{row['geometry']['nodes']}\t{clean(row['model_id'])}"]
     body, next_lines = header(row, hidden, suggested, frame_width, now=now, published=published, live=live,
-                              read_only=read_only, after=after, after_age=after_age, found_on=found_on)
+                              read_only=read_only, after=after, after_age=after_age, found_on=found_on,
+                              same_files=same_files)
     lines += ["header\t" + frame_line(line) for line in body]
     lines += ["next\t" + frame_line(line) for line in next_lines]
     list_width = (width or terminal_width()) - 2
