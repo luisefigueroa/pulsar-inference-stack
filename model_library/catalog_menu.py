@@ -267,9 +267,9 @@ def unrecorded_files(row: dict, files: dict[str, list[str]] | None,
     """Node_ids where the scan found files of SNAPSHOT while no home is
     recorded for it. Without SNAPSHOT, the first required snapshot without a
     home: the one the suggestion names, as Download acts on one snapshot.
-    A node where another spec's prepared copy of SNAPSHOT is recorded is left
-    out: a record names its files, and the frame names that spec there (see
-    same_files_prepared)."""
+    found_files already leaves out each folder a record names; another
+    spec's prepared copy on the same node is a different folder, under the
+    prepared-copy root, so the node stays."""
     snapshots = members(row)
     if not files:
         return []
@@ -281,10 +281,7 @@ def unrecorded_files(row: dict, files: dict[str, list[str]] | None,
     member = snapshots[snapshot]
     if member.get("home"):
         return []
-    manifest = str(member.get("snapshot_manifest_id"))
-    recorded = {str(copy.get("node_id")) for copy in row.get("other_specs_prepared_copies") or []
-                if copy.get("snapshot_manifest_id") == manifest}
-    return [node_id for node_id in files.get(manifest, []) if node_id not in recorded]
+    return list(files.get(str(member.get("snapshot_manifest_id")), []))
 
 
 def recovery_snapshots(row: dict) -> list[str | None]:
@@ -573,10 +570,13 @@ SAME_FILES_HERE = "same files prepared here for {spec}"
 def same_files_prepared(row: dict) -> list[dict]:
     """Other specs' prepared-copy records that this spec's Prepare can bind to, or [].
 
-    They count only when every required snapshot has at least one, since
-    Prepare needs the complete set, and only while this spec's own saved
-    state is missing, unknown or not checked yet: a ready spec has its own
-    bindings, and a changed folder is changed for the other spec too.
+    Prepare plans each snapshot on each node apart and binds only where that
+    node holds another spec's prepared copy of that snapshot; elsewhere it
+    copies. So a node counts only when the records on it, of any other specs,
+    cover every required snapshot, and only those nodes' records are returned.
+    They count only while this spec's own saved state is missing, unknown or
+    not checked yet: a ready spec has its own bindings, and a changed folder
+    is changed for the other spec too.
     """
     others = [copy for copy in row.get("other_specs_prepared_copies") or [] if copy.get("spec_id") != row["spec_id"]]
     if not others or (row.get("checked_at") and row.get("local_state") not in ("missing", "unknown")):
@@ -584,8 +584,11 @@ def same_files_prepared(row: dict) -> list[dict]:
     required = [member.get("snapshot_manifest_id") for member in members(row).values()]
     if not required or not all(required):
         return []
-    held = {copy.get("snapshot_manifest_id") for copy in others}
-    return others if all(manifest in held for manifest in required) else []
+    held: dict[str, set] = {}
+    for copy in others:
+        held.setdefault(str(copy.get("node_id")), set()).add(copy.get("snapshot_manifest_id"))
+    whole = {node_id for node_id, manifests in held.items() if set(required) <= manifests}
+    return [copy for copy in others if str(copy.get("node_id")) in whole]
 
 
 def _other_specs(records: list[dict], row: dict) -> str:
@@ -1148,7 +1151,8 @@ def node_label(row: dict, node_id: str, hostname: str, width: int, snapshot: str
     manifests = {member.get("snapshot_manifest_id") for member in holders}
     here = [copy for copy in same_files_prepared(row)
             if copy.get("node_id") == node_id and copy.get("snapshot_manifest_id") in manifests]
-    if here:
+    # Found files come first and alone, as in the recipe frame.
+    if here and not (found and node_id in found):
         parts.append(SAME_FILES_HERE.format(spec=_other_specs(here, row)))
     for text in ([f"{hostname} — {', '.join(parts)}", f"{hostname} — {parts[0]}"] if parts else []):
         if len(text) <= width:
@@ -1204,8 +1208,12 @@ def view_lines(row: dict, archive_location: str, *, after: str | None = None,
     holders = unrecorded_files(row, files) if "acquire" in offered else []
     found_on = _node_list(holders, names or NodeNames()) if holders else None
     # After a Prepare in this session the spec has bindings of its own; the
-    # saved check that left it unprepared is older than they are.
-    same = same_files_prepared(row) if after != "prepare" else []
+    # saved check that left it unprepared is older than they are. A machine
+    # the found-files clause names is left out of this one, so the two never
+    # name one machine: a snapshot has no home then, so Prepare is not
+    # offered, and Download checking that folder is the next step.
+    same = [copy for copy in (same_files_prepared(row) if after != "prepare" else [])
+            if str(copy["node_id"]) not in holders]
     same_files = None
     if same:
         same_files = SAME_FILES_ON.format(spec=_other_specs(same, row),
