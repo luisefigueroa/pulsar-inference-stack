@@ -51,6 +51,55 @@ def two_snapshots(target_home, draft_home):
     return {"target": {**member, "home": target_home}, "draft": {**member, "model_id": "org/draft", "home": draft_home}}
 
 
+def screen(cards):
+    """The catalog list as Gum draws it, cursor gutter included: an option's
+    first line gives its two leading spaces to the gutter (scripts/ui.sh) and
+    later lines print as given."""
+    lines = []
+    for card in cards:
+        option = ([card.heading] if card.heading is not None else []) + card.lines + ([""] if card.gap else [])
+        first = option[0][2:] if option[0].startswith("  ") else option[0]
+        lines.extend(["  " + first, *option[1:]])
+    return lines
+
+
+def flat(lines):
+    """The words of LINES, whitespace collapsed."""
+    return " ".join(" ".join(lines).split())
+
+
+def tokens(lines):
+    """The parts of a spec's lines, each line split at " · "."""
+    return [token for line in lines for token in line.strip().split(" · ")]
+
+
+class CardChecks:
+    def assert_spec_lines(self, lines, spec_id, width):
+        """A spec's line starts at column 4 with its 12-character prefix, each
+        further line at column 6, and no line is wider than WIDTH."""
+        self.assertTrue(lines[0] == "    " + spec_id[:12] or lines[0].startswith("    " + spec_id[:12] + " · "), lines)
+        for line in lines[1:]:
+            self.assertRegex(line, r"^ {6}\S")
+        self.assertTrue(all(len(line) <= width for line in lines), lines)
+
+    def assert_cards(self, cards, width):
+        """Headings at column 2, spec lines as assert_spec_lines says, and every
+        line Gum draws within WIDTH."""
+        for card in cards:
+            if card.heading is not None:
+                self.assertRegex(card.heading, r"^  \S")
+            self.assert_spec_lines(card.lines, card.spec_id, width)
+        self.assertTrue(all(len(line) <= width for line in screen(cards)), screen(cards))
+
+    def assert_in_order(self, lines, parts):
+        """Each part shown whole, wrapped at its spaces at most, in order."""
+        shown, at = flat(lines), 0
+        for part in parts:
+            found = shown.find(" ".join(part.split()), at)
+            self.assertGreaterEqual(found, at, (part, shown))
+            at = found + len(part)
+
+
 class Operations(unittest.TestCase):
     def test_recovery_available_with_a_recorded_home(self):
         for state in ("unknown", "missing", "changed", "ready"):
@@ -912,20 +961,20 @@ class FilesFound(unittest.TestCase):
         self.assertIn(["default", "n1"], self.node_choices(state, path, snapshot="draft"))
         self.assertNotIn("files found", json.dumps(self.node_choices(state, path, snapshot="target")))
 
-    def test_labels_and_view_take_the_scan_and_ignore_a_failed_one(self):
+    def test_cards_and_view_take_the_scan_and_ignore_a_failed_one(self):
         state = self.missing()
         good, bad = self.scan_file(scan(scan_location("n1"))), self.scan_file("error: no topology\n")
         document = json.dumps({"entries": [state]})
-        labels = []
+        cards = []
         for args in ([], ["--files", good], ["--files", bad]):
             output = io.StringIO()
             with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
                     patch.dict("os.environ", {"COLUMNS": "80"}):
-                self.assertEqual(menu.main(["labels", *args]), 0)
-            labels.append(output.getvalue())
-        # A list label adds no word for found files; the frame says it.
-        self.assertEqual(labels[0], labels[1])
-        self.assertEqual(labels[0], labels[2])
+                self.assertEqual(menu.main(["cards", *args]), 0)
+            cards.append(output.getvalue())
+        # A card adds no word for found files; the frame says it.
+        self.assertEqual(cards[0], cards[1])
+        self.assertEqual(cards[0], cards[2])
         frames = {}
         for name, path in (("good", good), ("bad", bad)):
             output = io.StringIO()
@@ -973,7 +1022,7 @@ def without_others(state):
     return {key: value for key, value in state.items() if key != "other_specs_prepared_copies"}
 
 
-class SameFilesPrepared(unittest.TestCase):
+class SameFilesPrepared(CardChecks, unittest.TestCase):
     """Another spec's prepared copies count only for a whole required set and
     only while this spec's saved check has not found its own copies prepared."""
 
@@ -1077,47 +1126,45 @@ class SameFilesPrepared(unittest.TestCase):
                       self.files_value(menu.view_lines(outside, "configured", width=80, names=NAMES)))
         self.assertEqual(menu.state_parts(outside)[-1], "same files prepared for 2 specs outside the catalog")
 
-    def test_list_labels_keep_the_part_whole_or_leave_it_out(self):
-        self.assertEqual(menu.menu_label(sharing(), 100),
-                         "org/model [abababababab] 3 nodes · files not prepared · " + SAME_PART)
-        # The part goes before the node count and spec state, never before the name is cut.
-        self.assertEqual(menu.menu_label(sharing(model_id="ab/m"), 80),
-                         "ab/m [abababababab] files not prepared · " + SAME_PART)
-        self.assertEqual(menu.menu_label(sharing(), 80), "org/model [abababababab] 3 nodes · files not prepared")
-        self.assertEqual(menu.menu_label(sharing(model_id="ab/m"), 44), "ab/m [abababababab] files not prepared")
-        # Beside a seen service the part yields before the files state.
+    def test_cards_always_show_the_part_whole_and_last(self):
         running = {"kind": "service", "state": "running", "hosts": ["spark-2"], "modified": False,
                    "age": 30, "source": "inventory"}
-        self.assertEqual(menu.menu_label(sharing(), 80, running),
-                         "org/model [abababababab] running on 1 node · files not prepared")
-        facts = told(["context 500K"])
-        self.assertEqual(menu.menu_label(sharing(), 100, None, facts),
-                         "org/model [abababababab] context 500K · files not prepared · " + SAME_PART)
-        models = ("ab/m", "org/model", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8)
-        for model in models:
-            for width in (100, 80, 60, 44):
-                for fact, short in ((None, None), (facts, "DeepSeek-V4.1-Flash-1017")):
-                    for live in (None, running):
-                        state = sharing(model_id=model)
-                        label = menu.menu_label(state, width, live, fact, short)
-                        with self.subTest(model=model, width=width, facts=bool(fact), live=bool(live), label=label):
-                            self.assertLessEqual(len(label), width - 2)
-                            self.assertIn("[abababababab]" if width >= 60 else "[abababab", label)
-                            if "same files" in label:
-                                self.assertTrue(label.endswith(SAME_PART), label)
-                            else:
-                                # Left out, the label reads as it would without the other spec's copies.
-                                self.assertEqual(label, menu.menu_label(without_others(state), width, live, fact, short))
+        self.assertEqual(menu.card_parts(sharing()), ["3 nodes", "files not prepared", SAME_PART])
+        # A service on 1 node of a 3-node spec does not name its node count.
+        self.assertEqual(menu.card_parts(sharing(state="candidate"), running, told(["context 500K"])),
+                         ["context 500K", "3 nodes", "running on 1 node", "files not prepared", "candidate", SAME_PART])
+        for width in (100, 80, 60, 44, 32):
+            for live in (None, running):
+                parts = menu.card_parts(sharing(state="candidate"), live)
+                lines = menu.card_lines("ab" * 32, parts, width)
+                with self.subTest(width=width, live=bool(live), lines=lines):
+                    self.assert_spec_lines(lines, "ab" * 32, width)
+                    self.assert_in_order(lines, parts)
+                    # Last, after the spec state; longer than its line at 32
+                    # columns, it wraps at its spaces, whole.
+                    self.assertEqual(parts[-2:], ["candidate", SAME_PART])
+                    self.assertTrue(flat(lines).endswith(SAME_PART), lines)
+        for model in ("ab/m", "org/model", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8):
+            for width in (100, 80, 60, 44, 32):
+                with self.subTest(model=model, width=width):
+                    card, = menu.list_cards([sharing(model_id=model)], width)
+                    self.assert_cards([card], width)
+                    self.assertIn(SAME_PART, flat(card.lines))
 
-    def test_cli_labels_show_the_part_where_it_fits(self):
+    def test_cli_cards_show_the_part_on_a_line_of_its_own_where_it_does_not_fit(self):
         document = json.dumps({"entries": [sharing(model_id="ab/m"), without_others(sharing(spec_id="cd" * 32))]})
         output = io.StringIO()
         with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
                 patch.dict("os.environ", {"COLUMNS": "80"}):
-            self.assertEqual(menu.main(["labels"]), 0)
+            self.assertEqual(menu.main(["cards"]), 0)
         self.assertEqual(output.getvalue().splitlines(),
-                         ["ab" * 32 + "\tab/m [abababababab] files not prepared · " + SAME_PART,
-                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] 3 nodes · files not prepared"])
+                         ["heading\t  ab/m",
+                          "spec\t" + "ab" * 32 + "\t    abababababab · 3 nodes · files not prepared",
+                          "line\t      " + SAME_PART,
+                          "gap",
+                          "heading\t  org/model",
+                          "spec\t" + "cd" * 32 + "\t    cdcdcdcdcdcd · 3 nodes · files not prepared",
+                          "gap"])
 
     def files_value(self, lines):
         """The frame's Files value, whitespace collapsed."""
@@ -1359,64 +1406,145 @@ class SuggestedCommand(unittest.TestCase):
                          ["./pulsar", "models", "check", "abababababab"])
 
 
-class Labels(unittest.TestCase):
-    def test_critical_warnings_survive_long_models_and_narrow_widths(self):
-        for width in (32, 44, 80):
-            for withdrawn, unsupported in ((True, False), (False, True), (True, True)):
-                with self.subTest(width=width, withdrawn=withdrawn, unsupported=unsupported):
-                    state = checked(home=HOME, local_state="ready", model_id="org/" + "long-model-" * 12,
-                                    review={"status": "withdrawn"} if withdrawn else None,
-                                    **(GUARDED if unsupported else {}))
-                    label = menu.menu_label(state, width)
-                    self.assertLessEqual(len(label), width - 2)  # Gum draws a two-column cursor before the label.
-                    # 12 characters where they fit; a narrow label with two warnings keeps 8.
-                    self.assertIn("[abababababab]" if width == 80 else "[abababab", label)
-                    if withdrawn:
-                        self.assertIn("withdrawn", label)
-                    if unsupported and (not withdrawn or width >= 44):
-                        self.assertTrue("start unsupported" in label or "start blocked" in label, label)
+class Cards(CardChecks, unittest.TestCase):
+    """The catalog list: a card per spec, grouped by model, with every part."""
 
-    def test_labels_show_saved_state_and_fit_80_and_44_columns(self):
-        long_model = "org/" + "very-long-model-name-" * 4
-        states = {
-            "not checked yet": row(model_id=long_model),
-            "files prepared · start unsupported": checked(home=HOME, local_state="ready", **GUARDED),
-            "not prepared": checked(local_state="missing"),
-            "files changed · withdrawn": checked(home=HOME, local_state="changed",
-                                                 review={"status": "withdrawn", "reason": "Superseded."}),
+    def test_adjacent_specs_of_one_model_share_one_heading(self):
+        rows = [checked(spec_id="aa" * 32, model_id="org/alpha", local_state="ready", home=HOME),
+                checked(spec_id="bb" * 32, model_id="org/alpha"),
+                row(spec_id="cc" * 32, model_id="org/beta"),
+                checked(spec_id="dd" * 32, model_id="org/alpha", review={"status": "withdrawn"})]
+        cards = menu.list_cards(rows, 80)
+        self.assertEqual([(card.heading, card.spec_id[:2], card.gap) for card in cards],
+                         [("  org/alpha", "aa", False), (None, "bb", True), ("  org/beta", "cc", True),
+                          ("  org/alpha", "dd", True)])
+        self.assertEqual(screen(cards), [
+            "  org/alpha",
+            "    aaaaaaaaaaaa · 3 nodes · files prepared",
+            "    bbbbbbbbbbbb · 3 nodes · files unknown",
+            "",
+            "  org/beta",
+            "    cccccccccccc · 3 nodes · not checked yet",
+            "",
+            # A withdrawn spec sorts last (catalog.entries), under a second heading.
+            "  org/alpha",
+            "    dddddddddddd · withdrawn · 3 nodes · files unknown",
+            ""])
+
+    def test_the_80_column_list_reads_as_planned(self):
+        mimo = checked(spec_id="11" * 32, model_id="XiaomiMiMo/MiMo-V2.6-Flash-RL", local_state="missing",
+                       geometry={"nodes": 2, "tp": 2, "pp": 1})
+        short = dict(recipe("15", "500000"), local_state="missing", state="candidate", snapshot_manifest_id=SHARED,
+                     other_specs_prepared_copies=[copy_of("e5" * 32, node, rank) for rank, node in
+                                                  enumerate(("n0", "n1", "n2"))])
+        long = recipe("e5", "1048576")
+        glm = row(spec_id="b1" * 32, model_id="nvidia/GLM-5.3-Flash-NVFP4", state="candidate")
+        rows = [mimo, short, long, glm]
+        live = menu.live_inventory(inventory(("e5" * 32, "running", ["head", "w1", "w2"])), rows, now=LIVE_NOW)
+        self.assertEqual(screen(menu.list_cards(rows, 80, live=live)), [
+            "  XiaomiMiMo/MiMo-V2.6-Flash-RL",
+            "    111111111111 · 2 nodes · files not prepared",
+            "",
+            "  deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "    151515151515 · context 500K · 3 nodes · files not prepared · candidate",
+            "      same files prepared for e5e5e5e5e5e5",
+            "    e5e5e5e5e5e5 · context 1M · running on 3 nodes · files prepared",
+            "",
+            "  nvidia/GLM-5.3-Flash-NVFP4",
+            "    b1b1b1b1b1b1 · 3 nodes · not checked yet · candidate",
+            ""])
+
+    def test_every_part_is_shown_whole_at_every_width(self):
+        partial = {"kind": "service", "state": "partial", "hosts": ["spark-1", "spark-2"], "modified": True,
+                   "age": 30, "source": "inventory"}
+        cases = {
+            "plain": (checked(home=HOME, local_state="ready", state="candidate"), None, None,
+                      ["3 nodes", "files prepared", "candidate"]),
+            "not checked": (row(model_id="org/" + "very-long-model-name-" * 4), None, None,
+                            ["3 nodes", "not checked yet"]),
+            "warnings": (checked(home=HOME, local_state="changed", review={"status": "withdrawn"}, **GUARDED),
+                         None, None, ["withdrawn", "start unsupported", "3 nodes", "files changed"]),
+            "everything": (sharing(review={"status": "experimental"}, state="measured"), partial,
+                           told(["context 500K", "max sequences 8"]),
+                           ["context 500K", "max sequences 8", "3 nodes", "partly running on 2 nodes (modified recipe)",
+                            "files not prepared", "experimental", "measured", SAME_PART]),
         }
-        for width in (80, 44):
-            for expected, state in states.items():
-                with self.subTest(width=width, state=expected):
-                    text = menu.menu_label(state, width)
-                    self.assertLessEqual(len(text), width - 2)
-                    self.assertIn("[abababababab]", text)
-                    self.assertNotIn("not specified", text)
-                    if width == 80:
-                        for part in expected.split(" · "):
-                            self.assertIn(part, text)
-        self.assertEqual(menu.short_state(checked(home=HOME, local_state="ready")), "files prepared")
+        for name, (state, live, facts, expected) in cases.items():
+            parts = menu.card_parts(state, live, facts)
+            self.assertEqual(parts, expected, name)
+            for width in (100, 80, 60, 44, 32):
+                lines = menu.card_lines(state["spec_id"], parts, width)
+                with self.subTest(name, width=width, lines=lines):
+                    self.assert_spec_lines(lines, state["spec_id"], width)
+                    self.assert_in_order(lines, parts)
+                    self.assertNotIn("…", flat(lines))
 
-    def test_cli_prints_the_spec_id_and_label_per_entry(self):
-        document = json.dumps({"entries": [row(), checked(spec_id="cd" * 32, local_state="ready", home=HOME)]})
+    def test_warnings_lead_the_spec_line_once(self):
+        state = checked(home=HOME, local_state="ready", review={"status": "withdrawn"}, **GUARDED)
+        for width in (100, 80, 60, 44, 32):
+            lines = menu.card_lines(state["spec_id"], menu.card_parts(state), width)
+            with self.subTest(width=width, lines=lines):
+                self.assertEqual(tokens(lines)[:3], ["abababababab", "withdrawn", "start unsupported"])
+                self.assertEqual(flat(lines).count("withdrawn"), 1)
+                self.assertEqual(flat(lines).count("start unsupported"), 1)
+        self.assertEqual(menu.card_lines(state["spec_id"], menu.card_parts(state), 32),
+                         ["    abababababab · withdrawn", "      start unsupported", "      3 nodes · files prepared"])
+        self.assertNotIn("start blocked", flat(menu.card_lines(state["spec_id"], menu.card_parts(state), 32)))
+
+    def test_the_model_name_is_cut_in_the_middle_only_when_longer_than_its_line(self):
+        nemotron = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4"
+        rows = [checked(spec_id="aa" * 32, model_id=nemotron), checked(spec_id="bb" * 32, model_id="org/" + "m" * 40)]
+        for width in (100, 80, 60, 44, 32):
+            cards = menu.list_cards(rows, width)
+            with self.subTest(width=width, headings=[card.heading for card in cards]):
+                self.assert_cards(cards, width)
+                for card, model in zip(cards, (nemotron, "org/" + "m" * 40)):
+                    name = card.heading[2:]
+                    if len(model) <= width - 2:
+                        self.assertEqual(name, model)
+                    else:
+                        # Without the organization, then cut in the middle so the end stays.
+                        head, cut, tail = name.partition("…")
+                        short = model.partition("/")[2]
+                        self.assertTrue(short.startswith(head) and short.endswith(tail), name)
+                        self.assertEqual(len(name), min(width - 2, len(short)))
+        self.assertEqual(menu.list_cards(rows, 44)[0].heading, "  NVIDIA-Nemotron-3.5-…er-VL-120B-A12B-NVFP4")
+        self.assertEqual(menu.list_cards(rows, 44)[1].heading, "  " + "m" * 40)
+
+    def test_cli_prints_the_card_protocol(self):
+        document = json.dumps({"entries": [row(), checked(spec_id="cd" * 32, local_state="ready", home=HOME),
+                                           checked(spec_id="ef" * 32, model_id="org/other", local_state="missing")]})
         output = io.StringIO()
         with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
-                patch.dict("os.environ", {"COLUMNS": "80"}):
-            self.assertEqual(menu.main(["labels"]), 0)
+                patch.dict("os.environ", {"COLUMNS": "44"}):
+            self.assertEqual(menu.main(["cards"]), 0)
         self.assertEqual(output.getvalue().splitlines(),
-                         ["ab" * 32 + "\torg/model [abababababab] 3 nodes · not checked yet",
-                          "cd" * 32 + "\torg/model [cdcdcdcdcdcd] 3 nodes · files prepared"])
+                         ["heading\t  org/model",
+                          "spec\t" + "ab" * 32 + "\t    abababababab · 3 nodes · not checked yet",
+                          "spec\t" + "cd" * 32 + "\t    cdcdcdcdcdcd · 3 nodes · files prepared",
+                          "gap",
+                          "heading\t  org/other",
+                          "spec\t" + "ef" * 32 + "\t    efefefefefef · 3 nodes",
+                          "line\t      files not prepared",
+                          "gap"])
+        self.assertNotIn("\x1b", output.getvalue())
 
-    # TUI-23: at 60 columns or wider, the label also names the node count and
-    # the spec's state, where the whole label fits; state is metadata only.
-    def test_wide_labels_name_the_node_count_and_state(self):
-        state = checked(home=HOME, local_state="ready", state="candidate", geometry={"nodes": 1, "tp": 1, "pp": 1})
-        self.assertEqual(menu.menu_label(state, 80), "org/model [abababababab] 1 node · files prepared · candidate")
-        self.assertEqual(menu.menu_label(state, 44), "org/model [abababababab] files prepared")
-        long_model = dict(state, model_id="org/" + "m" * 40)
-        self.assertNotIn("candidate", menu.menu_label(long_model, 60))
-        offered, hidden, _ = menu.operations(state, "configured")
-        self.assertIn("start", offered)
+    def test_compare_with_leaves_out_the_compared_spec_and_its_emptied_group(self):
+        rows = [checked(spec_id="aa" * 32, model_id="org/alpha"), checked(spec_id="bb" * 32, model_id="org/beta"),
+                checked(spec_id="cc" * 32, model_id="org/beta"),
+                dict(checked(spec_id="dd" * 32, model_id="org/gamma"), historical=True)]
+
+        def kinds(compared):
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(json.dumps({"entries": rows}))), patch("sys.stdout", output), \
+                    patch.dict("os.environ", {"COLUMNS": "80"}):
+                self.assertEqual(menu.main(["cards", "--compare-with", compared]), 0)
+            return [line.split("\t")[1][:2] if line.startswith("spec\t") else line.strip()
+                    for line in output.getvalue().splitlines()]
+
+        # The historical spec is left out too; a group left empty has no heading.
+        self.assertEqual(kinds("aa" * 32), ["heading\t  org/beta", "bb", "cc", "gap"])
+        self.assertEqual(kinds("bb" * 32), ["heading\t  org/alpha", "aa", "gap", "heading\t  org/beta", "cc", "gap"])
 
 
 # R7: recipes of one model that differ in one setting read alike unless the
@@ -1439,7 +1567,7 @@ def told(*sets, unique=True):
     return menu.RecipeFacts([list(words) for words in sets], unique)
 
 
-class RecipesOfOneModel(unittest.TestCase):
+class RecipesOfOneModel(CardChecks, unittest.TestCase):
     def test_short_count_uses_k_and_m_only_for_round_values(self):
         for value, expected in ((1048576, "1M"), ("500000", "500K"), ("131072", "128K"), ("1000000", "1M"),
                                 ("8192", "8K"), ("8", "8"), ("1000", "1K"), ("123456", "123456"), ("0", "0"),
@@ -1482,57 +1610,57 @@ class RecipesOfOneModel(unittest.TestCase):
         self.assertEqual(menu.short_model_names(rows), {"aa" * 32: "DeepSeek-V4.1-Flash-1017",
                                                         "bb" * 32: "DeepSeek-V4.1-Flash-1017"})
 
-    def test_labels_keep_the_fact_and_cut_the_model_name_in_the_middle(self):
+    def test_cards_name_the_fact_and_keep_the_end_of_the_model_name(self):
         rows = [recipe("aa", "500000"), recipe("bb", "1048576")]
-        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
         for width in (100, 80, 60, 44, 32):
-            labels = [menu.menu_label(item, width, None, facts[item["spec_id"]], short[item["spec_id"]])
-                      for item in rows]
-            with self.subTest(width=width, labels=labels):
-                for label, fact in zip(labels, ("context 500K", "context 1M")):
-                    self.assertLessEqual(len(label), width - 2)
-                    self.assertIn(fact, label)
-                    self.assertIn("017", label)  # the end of the name, where recipes differ, stays
-                    if width >= 60:
-                        self.assertIn(f"[{label.split('[')[1][:12]}]", label)
-                        self.assertIn("files prepared", label)
-        self.assertEqual(menu.menu_label(rows[0], 80, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017"),
-                         "DeepSeek-V4.1-Flash-1017 [aaaaaaaaaaaa] context 500K · files prepared")
-        self.assertEqual(menu.menu_label(rows[1], 60, None, told(["context 1M"]), "DeepSeek-V4.1-Flash-1017"),
-                         "DeepSee…sh-1017 [bbbbbbbbbbbb] context 1M · files prepared")
-        # At 44 columns the saved state yields; the recipe frame repeats it.
-        self.assertEqual(menu.menu_label(rows[0], 44, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017"),
-                         "DeepSe…sh-1017 [aaaaaaaaaaaa] context 500K")
+            cards = menu.list_cards(rows, width)
+            with self.subTest(width=width, screen=screen(cards)):
+                self.assert_cards(cards, width)
+                self.assertEqual([card.heading is None for card in cards], [False, True])
+                self.assertTrue(cards[0].heading.endswith("017"))  # the end of the name, where recipes differ
+                for card, fact in zip(cards, ("context 500K", "context 1M")):
+                    self.assertEqual(tokens(card.lines)[:2], [card.spec_id[:12], fact])
+                    self.assertIn("files prepared", flat(card.lines))
+        self.assertEqual(screen(menu.list_cards(rows, 80)), [
+            "  deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            "    aaaaaaaaaaaa · context 500K · 3 nodes · files prepared",
+            "    bbbbbbbbbbbb · context 1M · 3 nodes · files prepared",
+            ""])
+        # Narrow, the name leaves out its organization and whole parts wrap.
+        self.assertEqual(screen(menu.list_cards(rows, 32)), [
+            "  DeepSeek-V4.1-Flash-1017",
+            "    aaaaaaaaaaaa · context 500K",
+            "      3 nodes · files prepared",
+            "    bbbbbbbbbbbb · context 1M",
+            "      3 nodes · files prepared",
+            ""])
 
     def test_a_node_count_fact_is_named_once(self):
         two = recipe("aa", nodes=2, model="org/model")
-        self.assertEqual(menu.menu_label(two, 80, None, told(["2 nodes"])),
-                         "org/model [aaaaaaaaaaaa] 2 nodes · files prepared")
-        self.assertEqual(menu.menu_label(two, 44, None, told(["2 nodes"])), "org/model [aaaaaaaaaaaa] 2 nodes")
+        self.assertEqual(menu.card_parts(two, None, told(["2 nodes"])), ["2 nodes", "files prepared"])
+        self.assertEqual(menu.card_parts(two, None, told(["context 500K"])), ["context 500K", "2 nodes", "files prepared"])
 
-    def test_seen_services_and_critical_warnings_keep_the_fact(self):
+    def test_critical_warnings_come_before_the_fact(self):
         state = recipe("aa", **GUARDED, review={"status": "withdrawn"})
-        for width in (80, 60):
-            with self.subTest(width=width):
-                label = menu.menu_label(state, width, None, told(["context 500K"]), "DeepSeek-V4.1-Flash-1017")
-                self.assertLessEqual(len(label), width - 2)
-                self.assertIn("withdrawn", label)
-                self.assertIn("context 500K", label)
+        self.assertEqual(menu.card_parts(state, None, told(["context 500K"])),
+                         ["withdrawn", "start unsupported", "context 500K", "3 nodes", "files prepared"])
 
-    def test_cli_labels_name_the_fact_for_every_recipe_of_a_repeated_model(self):
+    def test_cli_cards_name_the_fact_for_every_recipe_of_a_repeated_model(self):
         document = json.dumps({"entries": [recipe("aa", "500000"), recipe("bb", "1048576"),
                                            checked(spec_id="cc" * 32, local_state="ready", home=HOME)]})
         for columns in ("80", "60", "44"):
             output = io.StringIO()
             with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
                     patch.dict("os.environ", {"COLUMNS": columns}):
-                self.assertEqual(menu.main(["labels"]), 0)
-            labels = [line.split("\t")[1] for line in output.getvalue().splitlines()]
-            with self.subTest(columns=columns, labels=labels):
-                self.assertIn("context 500K", labels[0])
-                self.assertIn("context 1M", labels[1])
-                self.assertNotIn("context", labels[2])
-                self.assertTrue(all(len(label) <= int(columns) - 2 for label in labels))
+                self.assertEqual(menu.main(["cards"]), 0)
+            lines = output.getvalue().splitlines()
+            specs = [line.split("\t")[2] for line in lines if line.startswith("spec\t")]
+            with self.subTest(columns=columns, lines=lines):
+                self.assertEqual([kind.split("\t")[0] for kind in lines].count("heading"), 2)
+                self.assertEqual(specs[0].split(" · ")[1], "context 500K")
+                self.assertEqual(specs[1].split(" · ")[1], "context 1M")
+                self.assertNotIn("context", " ".join(lines[lines.index("heading\t  org/model"):]))
+                self.assertTrue(all(len(line.split("\t")[-1]) <= int(columns) for line in lines))
 
     def test_start_questions_name_the_fact_but_not_a_node_count_twice(self):
         state = recipe("aa", "1048576")
@@ -1571,26 +1699,21 @@ class RecipesOfOneModel(unittest.TestCase):
                              engine_args=["--max-model-len", context, "--max-num-seqs", sequences]))
         return rows
 
-    def labels(self, rows, width):
-        facts, short = menu.distinguishing_facts(rows), menu.short_model_names(rows)
-        return [menu.menu_label(item, width, None, facts[item["spec_id"]], short.get(item["spec_id"]))
-                for item in rows]
-
     def assert_told_apart(self, rows, widths):
+        facts = menu.distinguishing_facts(rows)
         for width in widths:
-            labels = self.labels(rows, width)
-            with self.subTest(width=width, labels=labels):
-                self.assertEqual(len(set(labels)), len(labels))
-                for item, label in zip(rows, labels):
-                    self.assertLessEqual(len(label), width - 2)
-                    self.assertNotIn("...", label)
-                    # Every label keeps its identity: at least the 8-character spec prefix.
-                    self.assertIn(f"[{item['spec_id'][:8]}", label)
-                    # Only the model name is ever cut; the facts are whole.
-                    for part in re.split(r"\] | · | \[", label):
-                        head, cut, tail = part.partition("…")
-                        if cut:
-                            self.assertTrue(item["model_id"].endswith(tail) and head in item["model_id"], part)
+            cards = menu.list_cards(rows, width)
+            with self.subTest(width=width, screen=screen(cards)):
+                self.assert_cards(cards, width)
+                told = {}
+                for item, card in zip(rows, cards):
+                    # Only the model name is ever cut; every fact is whole, in order.
+                    self.assertNotIn("…", flat(card.lines))
+                    named = [word for word in tokens(card.lines) if word in facts[item["spec_id"]].sets[0]]
+                    self.assertEqual(named, facts[item["spec_id"]].sets[0])
+                    told.setdefault(item["model_id"], []).append(tuple(named))
+                for model, sets in told.items():
+                    self.assertEqual(len(set(sets)), len(sets), model)
 
     def test_shorter_fact_sets_keep_only_facts_that_still_tell_a_recipe_apart(self):
         facts = menu.distinguishing_facts(self.four((1, "500000", "1")))
@@ -1606,13 +1729,15 @@ class RecipesOfOneModel(unittest.TestCase):
     def test_four_recipes_differ_and_fit_at_44_and_32_columns(self):
         for last in ((1, "1048576", "8"), (1, "500000", "1")):
             with self.subTest(last=last):
-                self.assert_told_apart(self.four(last), (80, 60, 44, 32))
-        rows = self.four((1, "1048576", "8"))
-        self.assertEqual(self.labels(rows, 44)[:2], ["[aaaaaaaa] context 500K · max sequences 1",
-                                                     "[bbbbbbbb] context 500K · max sequences 8"])
-        # Where a whole set does not fit, the later facts, which separate the
-        # closest recipes, come first.
-        self.assertEqual(self.labels(rows, 32)[:2], ["[aaaaaaaa] max sequences 1", "[bbbbbbbb] max sequences 8"])
+                self.assert_told_apart(self.four(last), (100, 80, 60, 44, 32))
+        cards = menu.list_cards(self.four((1, "1048576", "8")), 44)
+        self.assertEqual(cards[0].lines + cards[1].lines, ["    aaaaaaaaaaaa · 2 nodes · context 500K",
+                                                           "      max sequences 1 · files prepared",
+                                                           "    bbbbbbbbbbbb · 2 nodes · context 500K",
+                                                           "      max sequences 8 · files prepared"])
+        self.assertEqual(menu.list_cards(self.four((1, "1048576", "8")), 32)[0].lines,
+                         ["    aaaaaaaaaaaa · 2 nodes", "      context 500K", "      max sequences 1",
+                          "      files prepared"])
 
     # Second review of PR 97: facts alone could read the same for two models,
     # and a warning could give way to facts.
@@ -1621,21 +1746,25 @@ class RecipesOfOneModel(unittest.TestCase):
         second = [dict(item, spec_id=byte * 32, model_id="other-org/Other-Model-7B")
                   for item, byte in zip(self.four((1, "1048576", "8")), ("ee", "ff", "11", "22"))]
         self.assert_told_apart(first + second, (80, 60, 44, 32))
-        self.assertEqual(self.labels(first + second, 32)[4], "[eeeeeeee] max sequences 1")
+        cards = menu.list_cards(first + second, 32)
+        self.assertEqual([card.heading for card in cards if card.heading],
+                         ["  DeepSeek-V4.1-Flash-1017", "  other-org/Other-Model-7B"])
+        self.assertEqual(cards[4].lines[0], "    eeeeeeeeeeee · 2 nodes")
 
     def test_a_withdrawn_recipe_keeps_its_warning_and_prefix(self):
         rows = self.four((1, "1048576", "8"))
         rows[0] = dict(rows[0], review={"status": "withdrawn"})
         self.assert_told_apart(rows, (80, 60, 44, 32))
-        self.assertEqual(self.labels(rows, 44)[0], "withdrawn [aaaaaaaa] max sequences 1")
-        self.assertEqual(self.labels(rows, 32)[0], "withdrawn [aaaaaaaa]")
+        self.assertEqual(menu.list_cards(rows, 44)[0].lines, ["    aaaaaaaaaaaa · withdrawn · 2 nodes",
+                                                              "      context 500K · max sequences 1",
+                                                              "      files prepared"])
 
     def test_guarded_recipes_of_one_model_differ_at_32_columns(self):
         rows = [recipe("aa", "500000", **GUARDED), recipe("bb", "1048576", **GUARDED)]
-        self.assert_told_apart(rows, (80, 60, 44, 32))
-        self.assertEqual(self.labels(rows, 44), ["start blocked [aaaaaaaaaaaa] context 500K",
-                                                 "start blocked [bbbbbbbbbbbb] context 1M"])
-        self.assertEqual(self.labels(rows, 32), ["start blocked [aaaaaaaa]", "start blocked [bbbbbbbb]"])
+        self.assert_told_apart(rows, (100, 80, 60, 44, 32))
+        self.assertEqual(menu.list_cards(rows, 44)[0].lines, ["    aaaaaaaaaaaa · start unsupported",
+                                                              "      context 500K · 3 nodes",
+                                                              "      files prepared"])
         withdrawn = [dict(item, review={"status": "withdrawn"}) for item in rows]
         self.assert_told_apart(withdrawn, (80, 60, 44, 32))
 
@@ -1796,34 +1925,35 @@ class SessionServices(unittest.TestCase):
         guarded = checked(home=HOME, local_state="ready", **GUARDED)
         self.assertEqual(self.suggest(fact, state=guarded)[0], "status")
 
-    def test_labels_keep_the_spec_prefix_and_yield_files_state_first(self):
+    def test_cards_name_the_service_beside_the_saved_files_state(self):
         fact = self.fact(inventory((self.SPEC, "running", ["head", "w1", "w2"])))
         state = checked(home=HOME, local_state="ready", model_id="nvidia/GLM-5.3-Flash-NVFP4")
-        wide, narrow = menu.menu_label(state, 100, fact), menu.menu_label(state, 70, fact)
-        self.assertEqual(wide, "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] running on 3 nodes · files prepared")
-        self.assertEqual(narrow, "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] running on 3 nodes")
-        for width in (32, 44, 60, 80):
-            with self.subTest(width=width):
-                label = menu.menu_label(state, width, fact)
-                self.assertLessEqual(len(label), width - 2)
-                self.assertIn("[abababababab]", label)
+        # The live words name the node count, so it is not repeated.
+        self.assertEqual(menu.card_parts(state, fact), ["running on 3 nodes", "files prepared"])
+        self.assertEqual(menu.card_parts(state, fact, told(["context 1M"])),
+                         ["context 1M", "running on 3 nodes", "files prepared"])
+        partial = self.fact(inventory((self.SPEC, "partial", ["head", "w1"], False)))
+        self.assertEqual(menu.card_parts(state, partial),
+                         ["3 nodes", "partly running on 2 nodes (modified recipe)", "files prepared"])
+        old = self.fact(inventory((self.SPEC, "running", ["head", "w1", "w2"]), generated_at="2026-09-04T23:30:00Z"))
+        self.assertEqual(menu.card_parts(state, old), ["3 nodes", "last seen running 40 minutes ago", "files prepared"])
         withdrawn = checked(home=HOME, local_state="ready", review={"status": "withdrawn"})
-        self.assertIn("running on 3 nodes", menu.menu_label(withdrawn, 80, fact))
-        # A recipe told apart from others of its model keeps that fact first.
-        self.assertEqual(menu.menu_label(state, 80, fact, told(["context 1M"])),
-                         "nvidia/GLM-5.3-Flash-NVFP4 [abababababab] context 1M · running on 3 nodes")
-        for width in (32, 44, 60):
+        self.assertEqual(menu.card_parts(withdrawn, fact), ["withdrawn", "running on 3 nodes", "files prepared"])
+        one = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        self.assertEqual(menu.card_parts(one, self.fact(inventory((self.SPEC, "running", ["head"])), state=one)),
+                         ["running on 1 node", "files prepared"])
+        for width in (32, 44, 60, 80, 100):
             with self.subTest(width=width):
-                label = menu.menu_label(state, width, fact, told(["context 1M"]), "GLM-5.3-Flash-NVFP4")
-                self.assertLessEqual(len(label), width - 2)
-                self.assertIn("context 1M", label)
+                lines = menu.card_lines(self.SPEC, menu.card_parts(state, fact), width)
+                self.assertEqual(tokens(lines)[:2], ["abababababab", "running on 3 nodes"])
+                self.assertTrue(all(len(line) <= width for line in lines), lines)
 
     def test_malformed_outcomes_are_rejected(self):
         for value in ("x", f"{self.SPEC}:restart:0:1", f"{self.SPEC}:status:0:soon", f"{self.SPEC}:status::1"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 menu.service_outcomes([value])
 
-    def test_cli_labels_date_the_inventory_and_view_uses_it(self):
+    def test_cli_cards_date_the_inventory_and_view_uses_it(self):
         import tempfile
         state = checked(home=HOME, local_state="ready")
         with tempfile.NamedTemporaryFile("w", suffix=".json") as handle:
@@ -1833,10 +1963,12 @@ class SessionServices(unittest.TestCase):
             output = io.StringIO()
             with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", output), \
                     patch.dict("os.environ", {"COLUMNS": "100"}):
-                self.assertEqual(menu.main(["labels", "--live", handle.name]), 0)
+                self.assertEqual(menu.main(["cards", "--live", handle.name]), 0)
             self.assertEqual(output.getvalue().splitlines(), [
                 "observed\tRunning services: service inventory less than a minute ago; not observed: spark-3.",
-                self.SPEC + "\torg/model [abababababab] running on 1 node · files prepared"])
+                "heading\t  org/model",
+                "spec\t" + self.SPEC + "\t    abababababab · 3 nodes · running on 1 node · files prepared",
+                "gap"])
             output = io.StringIO()
             with patch("sys.stdin", io.StringIO(json.dumps({"entries": [state]}))), patch("sys.stdout", output), \
                     patch.object(menu.NodeNames, "saved", return_value=NAMES):

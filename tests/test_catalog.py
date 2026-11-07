@@ -603,8 +603,20 @@ spin() { shift; "$@"; }
 page_output() { printf '[page] %s | %s\n\n' "$1" "${*:2}" >>"$CHOICES_LOG"; shift; "$@"; }
 wait_continue() { printf '[continue] %s\n\n' "${1:-}" >>"$CHOICES_LOG"; [ "${CONTINUE_RC:-0}" != 130 ] || return 130; }
 _pop() { local n; n=$(cat "$1.n" 2>/dev/null || echo 0); echo $((n + 1)) >"$1.n"; sed -n "$((n + 1))p" "$1"; }
+# A card, an option of several lines, is logged and answered as one line: its
+# lines without styles or surrounding spaces, empty ones left out, joined by " | ".
+_one_line() {
+  case "$1" in
+    *$'\n'*) printf '%s\n' "$1" | sed -e 's/\x1b\[[0-9;]*m//g' -e 's/^ *//' -e 's/ *$//' -e '/^$/d' \
+               | awk 'NR > 1 { printf " | " } { printf "%s", $0 } END { print "" }' ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
 choose_index() {
   local header="$1" answer i=0 option; shift
+  local -a shown=()
+  for option in "$@"; do shown+=("$(_one_line "$option")"); done
+  set -- "${shown[@]}"
   { printf '%s\n' "$header" "$@"; printf '\n'; } >>"$CHOICES_LOG"
   # Where the cursor starts, kept apart so the menu blocks above stay exact.
   printf '%s\t%s\n' "$header" "${PULSAR_CHOOSE_DEFAULT:-}" >>"$CHOICES_LOG.defaults"
@@ -1301,7 +1313,7 @@ raise SystemExit(rc)
         self.assertEqual(actions, [])
         fact = "context 1M" if order[0] == longer["spec_id"] else "context not set"
         self.assertIn(f"Start example/model ({fact}) on fixture-node", questions)
-        self.assertIn(f"[{order[1][:12]}] context ", choices)
+        self.assertIn(f"{order[1][:12]} · context ", choices)
 
     def test_a_one_node_stop_does_not_claim_absence_everywhere(self):
         _, result, _, _, _ = self.run_menu(["#0", "Stop", "fixture-host", "Back", "Back"], confirms=["yes"])

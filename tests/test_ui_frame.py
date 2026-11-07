@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import pty
+import re
 import select
 import shutil
 import subprocess
@@ -26,8 +27,12 @@ class UiFrame(unittest.TestCase):
             "if [ \"$1\" = style ]; then cat; exit 0; fi\n"
             "if [ \"$1\" = input ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; printf '%s\\n' /var/tmp/archives; exit 0; fi\n"
             # choose prints the line GUM_CHOICE names (default: the first) or exits GUM_RC;
-            # GUM_CHOOSE_INPUT keeps the lines it was given.
+            # GUM_CHOOSE_INPUT keeps the lines it was given. With --input-delimiter
+            # its input is separated by the record separator instead of lines.
             "if [ \"$1\" = choose ]; then [ -z \"${GUM_RC:-}\" ] || exit \"$GUM_RC\"; "
+            "if [[ \"$*\" == *--input-delimiter=$'\\x1e'* ]]; then "
+            "tee \"${GUM_CHOOSE_INPUT:-/dev/null}\" | awk -v RS='\\036' -v n=\"$(( ${GUM_CHOICE:-0} + 1 ))\" "
+            "'NR == n { printf \"%s\", $0 }'; exit 0; fi; "
             "tee \"${GUM_CHOOSE_INPUT:-/dev/null}\" | sed -n \"$(( ${GUM_CHOICE:-0} + 1 ))p\"; exit 0; fi\n"
             "if [ \"$1\" = confirm ]; then exit \"${GUM_RC:-0}\"; fi\n"
             # Like Gum versions without --show-output: run the command, drop its output.
@@ -71,7 +76,8 @@ class UiFrame(unittest.TestCase):
         )
 
     def gum_calls(self):
-        return self.gum_log.read_text().splitlines() if self.gum_log.exists() else []
+        # Split at newlines only: splitlines() also splits at the record separator a card menu passes.
+        return self.gum_log.read_text().split("\n")[:-1] if self.gum_log.exists() else []
 
     def test_gum_spin_returns_output_and_status_even_when_gum_drops_it(self):
         result = self.run_ui('plan=$(spin "Planning" bash -c "echo plan-json; echo planning-error >&2; exit 3"); '
@@ -170,6 +176,57 @@ class UiFrame(unittest.TestCase):
         self.assertEqual(result.stdout, "1\n", result.stderr)
         self.assertEqual(given.read_text().splitlines(), ["a, b\t1", "a, b (2)\t2", "c d\t3"])
         self.assertIn("--selected=a\\, b (2) ", self.gum_calls()[0])
+
+    # Cards: options of several lines, each one cursor stop (the catalog list).
+    CARDS = ("PULSAR_CHOOSE_DEFAULT=1 choose_index Pick $'  \\e[1morg/model\\e[0m\\n    abababababab · 3 nodes' "
+             "$'    cdcdcdcdcdcd · 1 node\\n' $'    x\\n' $'    x\\n' Back")
+
+    def test_cards_are_separated_by_the_record_separator_and_keep_their_styles(self):
+        given = self.root / "choose.in"
+        result = self.run_ui(self.CARDS, GUM_CHOICE="1", GUM_CHOOSE_INPUT=str(given), LINES="24")
+        self.assertEqual(result.stdout, "1\n", result.stderr)
+        # A first line gives its two leading spaces to Gum's cursor gutter; later
+        # lines keep theirs. A card's last newline is a blank line on screen, and
+        # a repeated card's suffix goes before it. No separator ends the input.
+        self.assertEqual(given.read_text(), "\x1e".join([
+            "\x1b[1morg/model\x1b[0m\n    abababababab · 3 nodes\t1",
+            "  cdcdcdcdcdcd · 1 node\n\t2", "  x\n\t3", "  x (2)\n\t4", "Back\t5"]))
+        choose = self.gum_calls()[0]
+        self.assertIn("--input-delimiter=\x1e --no-strip-ansi --label-delimiter=\t --height=5 ", choose)
+        # No card caller passes a default, and Gum cannot select a card by its text.
+        self.assertNotIn("--selected=", choose)
+
+    def test_a_card_menu_pages_by_lines_so_the_title_stays(self):
+        cards = " ".join(f"$'  org/model-{number:02d}\\n    {number:012d} · 3 nodes\\n'" for number in range(13))
+        # Gum's --height counts options and pages in blocks of that many: every
+        # block of three-line cards fits rows - 5 on one page, else rows - 6.
+        # Of the sizes that fit, the fewest pages, then the most even: on 40
+        # rows 11 would fit, but 7 makes the same two pages.
+        for lines, height in (("", 14), ("40", 7), ("24", 5), ("12", 2), ("50", 14)):
+            with self.subTest(lines=lines):
+                self.assertEqual(self.card_page(f"{cards} Back", lines), height)
+
+    def card_page(self, options, lines):
+        """The --height choose_index passes Gum for OPTIONS (shell words) on LINES rows."""
+        self.gum_log.unlink(missing_ok=True)
+        result = self.run_ui(f"choose_index Pick {options}", GUM_CHOICE="0", LINES=lines)
+        self.assertEqual(result.stdout, "0\n", result.stderr)
+        return int(re.search(r"--height=(\d+) ", self.gum_calls()[0]).group(1))
+
+    def test_a_page_never_starts_with_a_models_later_spec(self):
+        three = " ".join(f"$'  org/m-{number}\\n    spec-{number}\\n'" for number in range(3))
+        # Four options fit 17 rows, but page 2 would start with org/a's second
+        # spec, away from its model name; three keep org/a on one page.
+        group = "$'  org/a\\n    spec-a1' $'    spec-a2\\n'"
+        self.assertEqual(self.card_page(f"{three} {group} Back", "17"), 3)
+        # A model taller than a page cannot stay whole: the largest size that fits.
+        tall = "$'  org/a\\n    s1' '    s2' '    s3' '    s4' $'    s5\\n' Back"
+        self.assertEqual(self.card_page(tall, "12"), 4)
+
+    def test_pages_are_even_rather_than_one_option_alone(self):
+        # Five fit 16 rows as 5, 5 and Back alone; four give the same three pages.
+        cards = " ".join(f"$'  org/m-{number:02d}\\n    spec-{number:02d}'" for number in range(10))
+        self.assertEqual(self.card_page(f"{cards} Back", "16"), 4)
 
     def test_escape_and_ctrl_c_keep_their_meaning(self):
         for rc, expected in (("1", 1), ("130", 130)):

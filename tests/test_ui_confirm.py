@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import platform
 import pty
+import re
 import select
 import signal
 import struct
@@ -203,6 +204,135 @@ if index=$(choose_index "Pick fixture option" "$@"); then printf '\\nPICKED=%s\\
         self.assertEqual(code, 0, output)
         self.assertIn("Same (2)", output)
         self.assertIn("PICKED=1", output)
+
+
+ESCAPE = re.compile(r"\x1b\[([?0-9;]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^\[\]]")
+
+
+def views(output, rows, columns):
+    """What a ROWS by COLUMNS terminal shows as Gum draws OUTPUT: the screen
+    when each view after the first starts, then the final screen. Enough of a
+    terminal for Gum's inline renderer, which redraws in place after moving
+    the cursor up to its view's first line; a line feed on the last row
+    scrolls. Styles are dropped. The last view before Gum exits is [-2]."""
+    screen = [[" "] * columns for _ in range(rows)]
+    row = column = 0
+    shots = []
+
+    def feed():
+        nonlocal row
+        if row == rows - 1:
+            screen.pop(0)
+            screen.append([" "] * columns)
+        else:
+            row += 1
+
+    position = 0
+    while position < len(output):
+        match = ESCAPE.match(output, position)
+        if match:
+            position = match.end()
+            params, final = match.group(1) or "", match.group(2)
+            count = int(params) if params.isdigit() else 1
+            if final == "A":
+                shots.append(["".join(line).rstrip() for line in screen])
+                row = max(0, row - count)
+            elif final == "B":
+                row = min(rows - 1, row + count)
+            elif final == "C":
+                column = min(columns - 1, column + count)
+            elif final == "D":
+                column = max(0, column - count)
+            elif final == "K":
+                start, end = {"": (column, columns), "0": (column, columns), "1": (0, column + 1),
+                              "2": (0, columns)}.get(params, (0, 0))
+                screen[row][start:end] = [" "] * (end - start)
+            elif final == "J" and params in ("", "0"):
+                screen[row][column:] = [" "] * (columns - column)
+                for line in screen[row + 1:]:
+                    line[:] = [" "] * columns
+            continue
+        char = output[position]
+        position += 1
+        if char == "\r":
+            column = 0
+        elif char == "\n":
+            feed()
+        elif char >= " ":
+            if column >= columns:
+                column = 0
+                feed()
+            screen[row][column] = char
+            column += 1
+    shots.append(["".join(line).rstrip() for line in screen])
+    return shots
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumCards(BundledGum):
+    """Options of several lines, such as the catalog list's specs under their
+    model's name: one cursor stop each, at the columns they were given."""
+    SCRIPT = BundledGumMenu.SCRIPT
+    HINT = "↑/↓ move · enter choose · esc back"
+    CARDS = ["  \x1b[1mfixture/model\x1b[0m\n    aaaaaaaaaaaa · 3 nodes", "    bbbbbbbbbbbb · 1 node\n", "Back"]
+
+    def choose(self, options, keys, *, ready, then=(), **terminal):
+        return self.drive(self.SCRIPT, keys, ready=ready.encode(), args=options, then=then, **terminal)
+
+    def test_down_moves_one_card_and_enter_returns_it(self):
+        code, output = self.choose(self.CARDS, b"\x1b[B\r", ready="bbbbbbbbbbbb")
+        self.assertEqual(code, 0, output)
+        self.assertIn("PICKED=1", output)
+
+    def test_card_lines_keep_their_columns_and_bold(self):
+        code, output = self.choose(self.CARDS, b"\x1b", ready="bbbbbbbbbbbb")
+        self.assertEqual(code, 1, output)
+        screen = views(output, 24, 80)[-2]
+        self.assertEqual(screen[:7], ["", "Pick fixture option", self.HINT, "> fixture/model",
+                                      "    aaaaaaaaaaaa · 3 nodes",
+                                      # The next card's first line, in the column of the line above.
+                                      "    bbbbbbbbbbbb · 1 node", ""])
+        self.assertEqual(screen[7], "  Back")
+        # Gum keeps the model name's bold, also under NO_COLOR (drive sets it).
+        self.assertRegex(output, r"\x1b\[1m[^\x1b]*fixture/model")
+
+    def test_three_line_cards_page_with_the_title_on_screen(self):
+        # With its wrapped part, the first card makes a page of six 19 lines,
+        # one more than fits under the title on 24 rows when the list pages.
+        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      same files prepared for spec-02\n"]
+        options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(2, 13)]
+        code, output = self.choose(options + ["Back"], b"\x1b[B" * 5, ready="spec-01",
+                                   then=[(b"> fixture/model-06", b"\x1b")])
+        self.assertEqual(code, 1, output)
+        shots = views(output, 24, 80)
+        first, second = shots[0], shots[-2]
+        for screen in (first, second):
+            with self.subTest(screen="\n".join(screen)):
+                self.assertEqual(screen[:3], ["", "Pick fixture option", self.HINT])
+                self.assertTrue(any(line.strip().startswith("••") for line in screen))
+        self.assertIn("> fixture/model-01", first)
+        self.assertIn("  fixture/model-05", first)
+        self.assertNotIn("  fixture/model-06", first)
+        self.assertEqual(second[3], "> fixture/model-06")
+
+    def test_the_next_page_starts_with_a_model_name(self):
+        # Two pages of five would fit 24 rows, but page 2 would start with the
+        # second spec of fixture/model-05, away from its model's name; three
+        # pages of four keep the model together.
+        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      same files prepared for spec-02\n      candidate\n"]
+        options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(2, 5)]
+        options += ["  fixture/model-05\n    spec-05a · 3 nodes",
+                    "    spec-05b · 1 node\n      same files prepared for spec-05a\n"]
+        options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(6, 9)]
+        code, output = self.choose(options + ["Back"], b"\x1b[B" * 4, ready="spec-01",
+                                   then=[(b"> fixture/model-05", b"\x1b")])
+        self.assertEqual(code, 1, output)
+        shots = views(output, 24, 80)
+        self.assertNotIn("  fixture/model-05", shots[0])
+        self.assertEqual(shots[-2][:8], ["", "Pick fixture option", self.HINT, "> fixture/model-05",
+                                         "    spec-05a · 3 nodes", "    spec-05b · 1 node",
+                                         "      same files prepared for spec-05a", ""])
 
 
 @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",

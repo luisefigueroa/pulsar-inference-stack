@@ -92,14 +92,40 @@ class Cards(unittest.TestCase):
 class ParsedOutput(unittest.TestCase):
     """Menus run under PULSAR_COLOR=always, and model-storage.sh parses these
     outputs (prefixes such as header and next, labels split at " — "), so
-    they never carry escape codes."""
+    they never carry escape codes, except in the catalog list's model names."""
+
+    def cards(self, **values):
+        from model_library import catalog_menu as menu
+        from tests.test_catalog_menu import HOME, checked, row
+        entries = [row(), checked(spec_id="cd" * 32, local_state="ready", home=HOME),
+                   checked(spec_id="ef" * 32, model_id="org/" + "other-model-" * 4, local_state="missing")]
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, environment(COLUMNS="44", **values), clear=True), \
+                mock.patch("sys.stdin", io.StringIO(json.dumps({"entries": entries}))), \
+                contextlib.redirect_stdout(out):
+            self.assertEqual(menu.main(["cards"]), 0)
+        return out.getvalue()
+
+    def test_catalog_cards_style_only_the_model_name(self):
+        plain = self.cards()
+        self.assertNotIn("\x1b", plain)
+        self.assertEqual(self.cards(PULSAR_COLOR="never"), plain)
+        for values in ({"PULSAR_COLOR": "always"}, {"PULSAR_COLOR": "always", "NO_COLOR": "1"}):
+            with self.subTest(**values):
+                styled = self.cards(**values)
+                self.assertEqual(ANSI.sub("", styled), plain)
+                for line in styled.splitlines():
+                    if "\x1b" in line:
+                        # The choice role, bold with and without color; the
+                        # leading spaces stay plain for the cursor gutter.
+                        self.assertRegex(line, r"^heading\t  \x1b\[1m[^\x1b]+\x1b\[0m$")
+                self.assertEqual(styled.count("\x1b[1m"), 2)
 
     def test_catalog_menu_protocol_output_stays_plain(self):
         from model_library import catalog_menu as menu
         from tests.test_catalog_menu import HOME, checked, row
         state = checked(local_state="ready", home=HOME)
         cases = {
-            "labels": (["labels"], [row(), state]),
             "view": (["view", "--spec-id", state["spec_id"], "--archive-location", "configured"], [state]),
             "confirm": (["confirm", "--spec-id", state["spec_id"], "--action", "start"], [state]),
             "next": (["next", "--archive-location", "configured"], [row()]),

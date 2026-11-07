@@ -87,7 +87,7 @@ hold_screen() {
 
 # What this session observed about services: a service inventory captured only
 # on request, and each spec's latest Live status, Start or Stop outcome as
-# ACTION:STATUS:EPOCH[:NODE]. The labels and frame show their age. FILES_ARGS
+# ACTION:STATUS:EPOCH[:NODE]. The cards and frame show their age. FILES_ARGS
 # names the catalog's own Model files scan (Model files and disk space), which
 # the frame and Download's machine question read for files no record names. A
 # failed scan leaves its error in that file; catalog_menu also ignores what it
@@ -123,7 +123,7 @@ check_running_services() {
   captured="$CATALOG_WORK/inventory.next.json"
   spin "Checking running services on every node…" "$REPO_DIR/pulsar" inventory --json >"$captured" || rc=$?
   [ "$rc" -ne 130 ] || { rm -f -- "$captured"; return 130; }
-  if [ "$rc" -eq 0 ] && printf '%s' "$catalog_json" | catalog_menu labels --live "$captured" >/dev/null; then
+  if [ "$rc" -eq 0 ] && printf '%s' "$catalog_json" | catalog_menu cards --live "$captured" >/dev/null; then
     mv -f -- "$captured" "$CATALOG_WORK/inventory.json"
     LIVE_FILE="$CATALOG_WORK/inventory.json" LIVE_REFRESHED=1
     return 0
@@ -697,16 +697,39 @@ perform_action() {
   esac
 }
 
+# read_cards — reads the catalog list (catalog_menu cards) on stdin into
+# CARD_IDS and CARD_OPTIONS, one menu option per spec, and CARD_OBSERVED, the
+# line dating a captured service inventory. A model's heading becomes the
+# first line of its next spec's option; a gap ends that model's last option
+# with an empty line. Lines keep their leading spaces: they are at their
+# screen columns.
+CARD_IDS=() CARD_OPTIONS=() CARD_OBSERVED=""
+read_cards() {
+  local line kind text heading=""
+  CARD_IDS=() CARD_OPTIONS=() CARD_OBSERVED=""
+  while IFS= read -r line; do
+    kind=${line%%$'\t'*} text=${line#*$'\t'}
+    case "$kind" in
+      observed) CARD_OBSERVED=$text ;;
+      heading) heading=$text ;;
+      spec)
+        CARD_IDS+=("${text%%$'\t'*}")
+        CARD_OPTIONS+=("${heading:+$heading$'\n'}${text#*$'\t'}")
+        heading="" ;;
+      line) [ "${#CARD_OPTIONS[@]}" -eq 0 ] || CARD_OPTIONS[-1]+=$'\n'"$text" ;;
+      gap) [ "${#CARD_OPTIONS[@]}" -eq 0 ] || CARD_OPTIONS[-1]+=$'\n' ;;
+    esac
+  done
+}
+
 # Compare two existing catalog specs through the canonical public comparator.
 compare_catalog_spec() {
-  local spec="$1" result rows entry index rc
+  local spec="$1" result rows index rc
   local -a ids=() labels=()
   result=$(catalog list --json) || return 0
-  rows=$(printf '%s' "$result" | catalog_menu labels --compare-with "$spec") || return 0
-  while IFS= read -r entry; do
-    [ -n "$entry" ] || continue
-    ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}")
-  done <<<"$rows"
+  rows=$(printf '%s' "$result" | catalog_menu cards --compare-with "$spec") || return 0
+  read_cards <<<"$rows"
+  ids=("${CARD_IDS[@]}") labels=("${CARD_OPTIONS[@]}")
   if [ "${#ids[@]}" -eq 0 ]; then
     printf 'No other catalog spec supports comparison. Show details remains available.\n'
     return 0
@@ -815,21 +838,17 @@ browse() {
   require_gum "the catalog menu" "./pulsar models list" "browse the catalog" \
     "./pulsar models show SPEC" "one spec's saved details" "./pulsar models check SPEC" "refresh its saved file records"
   ui_keep_styles
-  local read_only="${1:-0}" result index rc entry observed title="Select a catalog spec"
+  local read_only="${1:-0}" result index rc observed title="Select a catalog spec"
   [ "$read_only" = 0 ] || title+=" (read-only)"
-  local -a entries=() ids=() labels=()
+  local -a ids=() labels=()
   while true; do
     result=$(catalog list --json) || return $?
-    # Each entry is "SPEC_ID<tab>label"; labels show the same saved state as
-    # models list, plus services this session observed. An "observed" entry
-    # dates that observation.
+    # A card per spec, grouped by model: the same saved state as models list,
+    # plus services this session observed. The observed line dates that
+    # observation.
     live_args
-    mapfile -t entries < <(printf '%s' "$result" | catalog_menu labels "${LIVE_ARGS[@]}")
-    ids=(); labels=(); observed=""
-    for entry in "${entries[@]}"; do
-      if [ "${entry%%$'\t'*}" = observed ]; then observed="${entry#*$'\t'}"; continue; fi
-      ids+=("${entry%%$'\t'*}"); labels+=("${entry#*$'\t'}")
-    done
+    read_cards < <(printf '%s' "$result" | catalog_menu cards "${LIVE_ARGS[@]}")
+    ids=("${CARD_IDS[@]}") labels=("${CARD_OPTIONS[@]}") observed=$CARD_OBSERVED
     if [ "${#ids[@]}" -eq 0 ]; then
       catalog list
       [ "$read_only" = 0 ] || return 0
