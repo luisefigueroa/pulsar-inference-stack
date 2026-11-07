@@ -999,7 +999,6 @@ class FilesFound(unittest.TestCase):
 # Another spec's prepared copies of this spec's snapshot: the files Prepare can bind.
 SHARED = "d" * 64
 OTHER, THIRD = "cd" * 32, "ef" * 32
-SAME_PART = "same files prepared for cdcdcdcdcdcd"
 SAME_FILES_HERE = "same files prepared here for cdcdcdcdcdcd"
 SAME_FRAME = ("the same files are prepared for cdcdcdcdcdcd on spark-2, spark-3; "
               "Prepare binds them there without copying")
@@ -1052,13 +1051,11 @@ class SameFilesPrepared(CardChecks, unittest.TestCase):
         state = checked(local_state="missing", snapshots=snapshots, other_specs_prepared_copies=[target])
         # A partial set is never claimed.
         self.assertEqual(menu.same_files_prepared(state), [])
-        self.assertNotIn("same files", menu.short_state(state))
         # Each snapshot on another machine: Prepare plans each snapshot on each
         # machine apart, so it would still copy the draft to spark-2 and the
         # target to spark-3. Nothing is claimed.
         split = dict(state, other_specs_prepared_copies=[target, draft])
         self.assertEqual(menu.same_files_prepared(split), [])
-        self.assertNotIn("same files", menu.short_state(split))
         self.assertNotIn("same files", frame_text(menu.view_lines(split, "configured", width=80, names=NAMES)))
         offered, _, _ = menu.operations(split, "configured")
         self.assertNotIn("without copying", menu.suggestion(split, offered, "configured", None, NAMES)[1])
@@ -1066,24 +1063,16 @@ class SameFilesPrepared(CardChecks, unittest.TestCase):
         beside = copy_of(THIRD, "n1", manifest="f" * 64)
         whole = dict(state, other_specs_prepared_copies=[target, beside, draft])
         self.assertEqual(menu.same_files_prepared(whole), [target, beside])
-        self.assertEqual(menu.state_parts(whole)[-1], "same files prepared for cdcdcdcdcdcd and 1 more")
         self.assertIn("the same files are prepared for cdcdcdcdcdcd and 1 more on spark-2; "
                       "Prepare binds them there without copying",
                       frame_text(menu.view_lines(whole, "configured", width=80, names=NAMES)))
 
-    def test_the_list_part_comes_last_and_counts_the_other_specs(self):
-        for name, state in {"missing": sharing(), "unknown": sharing(local_state="unknown"),
-                            "not checked yet": sharing(checked_at=None)}.items():
-            with self.subTest(name):
-                self.assertEqual(menu.state_parts(state)[-1], SAME_PART)
-        self.assertEqual(menu.state_parts(sharing(review={"status": "experimental"})),
-                         ["files not prepared", "experimental", SAME_PART])
-        for name, state in {"ready": sharing(local_state="ready"), "changed": sharing(local_state="changed")}.items():
-            with self.subTest(name):
-                self.assertNotIn("same files", menu.short_state(state))
+    def test_the_suggestion_counts_the_other_specs(self):
         several = sharing(other_specs_prepared_copies=[copy_of(THIRD, "n0"), copy_of(OTHER, "n1"),
                                                        copy_of(OTHER, "n2", rank=1)])
-        self.assertEqual(menu.state_parts(several)[-1], "same files prepared for cdcdcdcdcdcd and 1 more")
+        offered, _, _ = menu.operations(several, "configured")
+        self.assertIn("Prepare binds the same files prepared for cdcdcdcdcdcd and 1 more without copying",
+                      menu.suggestion(several, offered, "configured", None, NAMES)[1])
 
     def test_catalog_specs_are_named_first_and_specs_outside_it_only_counted(self):
         # Experiment specs started from spec files sort before the catalog spec here.
@@ -1116,42 +1105,39 @@ class SameFilesPrepared(CardChecks, unittest.TestCase):
         self.assertTrue(all(len(line) <= 76 for line in frame), frame)
         self.assertIn("Prepare binds the same files prepared for cdcdcdcdcdcd and 1 more (1 outside the catalog) "
                       "without copying", frame_text(lines))
-        self.assertEqual(menu.state_parts(mixed)[-1],
-                         "same files prepared for cdcdcdcdcdcd and 1 more (1 outside the catalog)")
         self.assertEqual(menu.node_label(mixed, "n1", "spark-2", 78),
                          "spark-2 — same files prepared here for a spec outside the catalog")
         self.assertEqual(menu.node_label(mixed, "n2", "spark-3", 78), "spark-3 — " + SAME_FILES_HERE)
         outside = dict(mixed, other_prepared_specs_in_catalog=[])
         self.assertIn("the same files are prepared for 2 specs outside the catalog on spark-2, spark-3;",
                       self.files_value(menu.view_lines(outside, "configured", width=80, names=NAMES)))
-        self.assertEqual(menu.state_parts(outside)[-1], "same files prepared for 2 specs outside the catalog")
 
-    def test_cards_always_show_the_part_whole_and_last(self):
+    def test_the_list_leaves_the_same_files_to_the_recipe(self):
+        # The recipe frame, the Prepare suggestion and the machine question
+        # name the other spec and its machines; the list card reads as for a
+        # spec whose files no other spec holds.
         running = {"kind": "service", "state": "running", "hosts": ["spark-2"], "modified": False,
                    "age": 30, "source": "inventory"}
-        self.assertEqual(menu.card_parts(sharing()), ["3 nodes", "files not prepared", SAME_PART])
+        cases = {"missing": sharing(), "unknown": sharing(local_state="unknown"),
+                 "not checked yet": sharing(checked_at=None, observation_age_seconds=None),
+                 "review status": sharing(review={"status": "experimental"})}
+        for name, state in cases.items():
+            with self.subTest(name):
+                self.assertTrue(menu.same_files_prepared(state))
+                self.assertEqual(menu.state_parts(state), menu.state_parts(without_others(state)))
+                self.assertEqual(menu.card_parts(state, running), menu.card_parts(without_others(state), running))
+        self.assertEqual(menu.card_parts(sharing()), ["3 nodes", "files not prepared"])
         # A service on 1 node of a 3-node spec does not name its node count.
         self.assertEqual(menu.card_parts(sharing(state="candidate"), running, told(["context 500K"])),
-                         ["context 500K", "3 nodes", "running on 1 node", "files not prepared", "candidate", SAME_PART])
-        for width in (100, 80, 60, 44, 32):
-            for live in (None, running):
-                parts = menu.card_parts(sharing(state="candidate"), live)
-                lines = menu.card_lines("ab" * 32, parts, width)
-                with self.subTest(width=width, live=bool(live), lines=lines):
-                    self.assert_spec_lines(lines, "ab" * 32, width)
-                    self.assert_in_order(lines, parts)
-                    # Last, after the spec state; longer than its line at 32
-                    # columns, it wraps at its spaces, whole.
-                    self.assertEqual(parts[-2:], ["candidate", SAME_PART])
-                    self.assertTrue(flat(lines).endswith(SAME_PART), lines)
-        for model in ("ab/m", "org/model", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8):
+                         ["context 500K", "3 nodes", "running on 1 node", "files not prepared", "candidate"])
+        for model in ("ab/m", "deepseek-ai/DeepSeek-V4.1-Flash-1017", "org/" + "long-model-" * 8):
             for width in (100, 80, 60, 44, 32):
                 with self.subTest(model=model, width=width):
                     card, = menu.list_cards([sharing(model_id=model)], width)
                     self.assert_cards([card], width)
-                    self.assertIn(SAME_PART, flat(card.lines))
+                    self.assertNotIn("same files", flat(card.lines))
 
-    def test_cli_cards_show_the_part_on_a_line_of_its_own_where_it_does_not_fit(self):
+    def test_cli_cards_name_no_same_files(self):
         document = json.dumps({"entries": [sharing(model_id="ab/m"), without_others(sharing(spec_id="cd" * 32))]})
         output = io.StringIO()
         with patch("sys.stdin", io.StringIO(document)), patch("sys.stdout", output), \
@@ -1160,7 +1146,6 @@ class SameFilesPrepared(CardChecks, unittest.TestCase):
         self.assertEqual(output.getvalue().splitlines(),
                          ["heading\t  ab/m",
                           "spec\t" + "ab" * 32 + "\t    abababababab · 3 nodes · files not prepared",
-                          "line\t      " + SAME_PART,
                           "gap",
                           "heading\t  org/model",
                           "spec\t" + "cd" * 32 + "\t    cdcdcdcdcdcd · 3 nodes · files not prepared",
@@ -1447,7 +1432,6 @@ class Cards(CardChecks, unittest.TestCase):
             "",
             "  deepseek-ai/DeepSeek-V4.1-Flash-1017",
             "    151515151515 · context 500K · 3 nodes · files not prepared · candidate",
-            "      same files prepared for e5e5e5e5e5e5",
             "    e5e5e5e5e5e5 · context 1M · running on 3 nodes · files prepared",
             "",
             "  nvidia/GLM-5.3-Flash-NVFP4",
@@ -1467,7 +1451,7 @@ class Cards(CardChecks, unittest.TestCase):
             "everything": (sharing(review={"status": "experimental"}, state="measured"), partial,
                            told(["context 500K", "max sequences 8"]),
                            ["context 500K", "max sequences 8", "3 nodes", "partly running on 2 nodes (modified recipe)",
-                            "files not prepared", "experimental", "measured", SAME_PART]),
+                            "files not prepared", "experimental", "measured"]),
         }
         for name, (state, live, facts, expected) in cases.items():
             parts = menu.card_parts(state, live, facts)

@@ -124,7 +124,7 @@ below are for reading.
 | Files: not checked yet | Pulsar has no saved check of this spec's model files. It does not mean they are missing. Choose **Check now** to look; it only reads the nodes. |
 | Files: prepared on every serving node (list: files prepared) | The last saved check found the model files on every node the spec serves from. The age in brackets says when; **Check now** refreshes it. |
 | Files: not prepared on every serving node (list: files not prepared) | The last saved check found a serving node without its copy of the files. **Prepare** copies them from the *home*; **Download** comes first when there is no home. |
-| Files: the same files are prepared for … on … (list: same files prepared for …) | Each named node holds other specs' prepared copies of every snapshot this spec requires, and no saved check has found this spec prepared. A node holding only some of them is not named, because **Prepare** would still copy the rest there. Where this spec serves from the named nodes, **Prepare** binds it to those files and copies nothing there; serving nodes without them still receive a copy. A catalog spec is named first where one holds them, and `and … more` counts the rest; a spec this checkout does not publish, for example one an experiment started with `--spec-file`, is only counted, as `outside the catalog`. |
+| Files: the same files are prepared for … on … | Each named node holds other specs' prepared copies of every snapshot this spec requires, and no saved check has found this spec prepared. A node holding only some of them is not named, because **Prepare** would still copy the rest there. Where this spec serves from the named nodes, **Prepare** binds it to those files and copies nothing there; serving nodes without them still receive a copy. A catalog spec is named first where one holds them, and `and … more` counts the rest; a spec this checkout does not publish, for example one an experiment started with `--spec-file`, is only counted, as `outside the catalog`. |
 | Files: changed since they were verified (list: files changed) | The last saved check found files that differ from what was verified. **Prepare** replaces them with verified copies. |
 | Files: unknown (list: files unknown) | The last check could not see the files, for example because a node was unreachable. Fix the access, then choose **Check now**. |
 | Files: checked … ago | How old the saved check is. Files can change after a check; **Check now** replaces it. |
@@ -1245,13 +1245,14 @@ prefix, and a blank line after each model. A withdrawn spec stays at the end,
 under a second heading of its model. A spec's line names, in this order, any
 warning (`withdrawn`, `start unsupported`), the facts that tell recipes of one
 model apart, the spec's node count, a service seen in this menu session, the
-same short saved state as `models list` and the spec's state; another spec's
-prepared copies of the same files come last. The node count is left out only
-where a fact or the service's words give the same count: a 3-node spec seen on
-all its nodes reads `running on 3 nodes`, and one seen on a single node reads
-`3 nodes · running on 1 node`. State is metadata, never a gate. Nothing is
-left out: a part that does not fit on the line starts the next one, two
-columns further in. With the cursor on a model's
+same short saved state as `models list` and the spec's state. Another spec's
+prepared copies of the same files are named in the recipe instead, with the
+nodes that hold them. The node count is left out only where a fact or the
+service's words give the same count: a 3-node spec seen on all its nodes reads
+`running on 3 nodes`, and one seen on a single node reads
+`3 nodes · running on 1 node`. State is metadata, never a gate. No part is
+cut: a part that does not fit on the line starts the next one, two columns
+further in. With the cursor on a model's
 first spec, the model name belongs to that choice and is selected with it.
 When the catalog has several recipes of one model, each of their lines names,
 after the spec prefix, the first recorded fact that differs: the node count
@@ -1486,10 +1487,10 @@ need a transfer, and the complete required snapshot set must be ready.
 An owned incomplete transfer resumes its staging rather than silently discarding
 it to create a shared binding.
 `prepare --plan` reports which ranks will reuse a binding, bind existing files,
-or copy files. Before Prepare runs, the recipe's Files field and the catalog
-list say from saved records which nodes hold other specs'
-prepared copies of every required snapshot: `the same files are prepared for
-<spec> on <hosts>; Prepare binds them there without copying`. The named spec is a
+or copy files. Before Prepare runs, the recipe's Files field says from saved
+records which nodes hold other specs' prepared copies of every required
+snapshot: `the same files are prepared for <spec> on <hosts>; Prepare binds
+them there without copying`. The named spec is a
 catalog member where one holds the files; others may be outside the catalog,
 such as experiment specs started with `--spec-file`, and are only counted.
 A recipe change still requires preparation of its own bindings.

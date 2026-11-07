@@ -300,7 +300,7 @@ class BundledGumCards(BundledGum):
     def test_three_line_cards_page_with_the_title_on_screen(self):
         # With its wrapped part, the first card makes a page of six 19 lines,
         # one more than fits under the title on 24 rows when the list pages.
-        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      same files prepared for spec-02\n"]
+        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      partly running on 2 nodes (modified recipe)\n"]
         options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(2, 13)]
         code, output = self.choose(options + ["Back"], b"\x1b[B" * 5, ready="spec-01",
                                    then=[(b"> fixture/model-06", b"\x1b")])
@@ -320,10 +320,10 @@ class BundledGumCards(BundledGum):
         # Two pages of five would fit 24 rows, but page 2 would start with the
         # second spec of fixture/model-05, away from its model's name; three
         # pages of four keep the model together.
-        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      same files prepared for spec-02\n      candidate\n"]
+        options = ["  fixture/model-01\n    spec-01 · 3 nodes\n      partly running on 2 nodes (modified recipe)\n      candidate\n"]
         options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(2, 5)]
         options += ["  fixture/model-05\n    spec-05a · 3 nodes",
-                    "    spec-05b · 1 node\n      same files prepared for spec-05a\n"]
+                    "    spec-05b · 1 node\n      partly running on 2 nodes (modified recipe)\n"]
         options += [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(6, 9)]
         code, output = self.choose(options + ["Back"], b"\x1b[B" * 4, ready="spec-01",
                                    then=[(b"> fixture/model-05", b"\x1b")])
@@ -332,7 +332,7 @@ class BundledGumCards(BundledGum):
         self.assertNotIn("  fixture/model-05", shots[0])
         self.assertEqual(shots[-2][:8], ["", "Pick fixture option", self.HINT, "> fixture/model-05",
                                          "    spec-05a · 3 nodes", "    spec-05b · 1 node",
-                                         "      same files prepared for spec-05a", ""])
+                                         "      partly running on 2 nodes (modified recipe)", ""])
 
 
 @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
