@@ -561,7 +561,6 @@ FILES_FOUND_HERE = "files found here, not in Pulsar's records"
 # (see _other_specs). A spec this checkout does not publish is "outside the
 # catalog", the words the Running labels use for a service of such a spec.
 OUTSIDE_THE_CATALOG = "outside the catalog"
-SAME_FILES = "same files prepared for {spec}"
 SAME_FILES_ON = "the same files are prepared for {spec} on {hosts}"
 SAME_FILES_BIND = "Prepare binds them there without copying"
 SAME_FILES_REASON = "Prepare binds the same files prepared for {spec} without copying"
@@ -615,17 +614,15 @@ def _other_specs(records: list[dict], row: dict) -> str:
 
 def state_parts(row: dict) -> list[str]:
     """Saved state for a spec's card in the catalog list, files first; review
-    status only when the spec sets one. Other specs' prepared copies of the same
-    files come last."""
+    status only when the spec sets one. Other specs' prepared copies of the
+    same files are left to the recipe frame, the Prepare suggestion and the
+    machine question, which name the machines and what Prepare does there."""
     parts = [LABEL_FILES[row["local_state"]] if row.get("checked_at") else NOT_CHECKED]
     if start_unsupported(row):
         parts.append("start unsupported")
     status = (row.get("review") or {}).get("status")
     if status:
         parts.append(str(status))
-    same = same_files_prepared(row)
-    if same:
-        parts.append(SAME_FILES.format(spec=_other_specs(same, row)))
     return parts
 
 
@@ -677,9 +674,7 @@ def card_parts(row: dict, live: dict | None = None, recipe_facts: RecipeFacts | 
     warning, the recipe facts that tell recipes of one model apart (see
     distinguishing_facts), the node count unless a fact or the live words name
     it, the service seen in this session (see live_label), the saved state
-    (see state_parts), the spec's state, and last another spec's prepared
-    copies of the same files, the longest part, so a short one never wraps
-    onto a line of its own after it. Nothing is left out."""
+    (see state_parts) and the spec's state."""
     seen = live_label(live)
     critical = ["withdrawn"] if (row.get("review") or {}).get("status") == "withdrawn" else []
     if start_unsupported(row):
@@ -694,13 +689,10 @@ def card_parts(row: dict, live: dict | None = None, recipe_facts: RecipeFacts | 
     if seen:
         parts.append(seen)
     # The warnings already lead the line; state_parts also names them.
-    state = [part for part in state_parts(row) if part not in critical]
-    # state_parts names the same files last, where they are prepared.
-    same = [state.pop()] if same_files_prepared(row) else []
-    parts.extend(state)
+    parts.extend(part for part in state_parts(row) if part not in critical)
     if row.get("state") and str(row["state"]) not in parts:
         parts.append(str(row["state"]))
-    return [clean(part) for part in parts + same]
+    return [clean(part) for part in parts]
 
 
 def card_lines(spec_id: str, parts: list[str], width: int) -> list[str]:
