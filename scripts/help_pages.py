@@ -43,10 +43,14 @@ REFERENCE = [
                    "diagnostics and **Help**. Full operations follow membership and SSH setup; archives are optional."),
         ("pulsar topology setup", "First-use membership and SSH enrollment with separate confirmations."),
         ("pulsar topology show|check|detect|configure",
-         "Inspect saved membership, check nodes, discover or explicitly configure."),
+         "Inspect saved membership, check nodes, discover or explicitly configure; "
+         "`configure --remove-missing` saves without a node that did not answer."),
+        ("pulsar topology forget [--plan]",
+         "Start over: remove saved membership and cluster observations after a private backup copy."),
         ("pulsar ssh-trust --help", "Inspect or explicitly enroll SSH trust."),
         ("pulsar configure archive-root", "Select an existing archive location when archives are needed."),
-        ("pulsar doctor", "Run explicit host and topology diagnostics.")]),
+        ("pulsar doctor", "Run explicit host and topology diagnostics, with every node's prerequisites "
+                          "and its hf login.")]),
     ("Catalog and model files", [
         ("pulsar models", "Browse catalog and saved storage observations."),
         ("pulsar models menu --read-only",

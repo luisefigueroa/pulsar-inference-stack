@@ -40,6 +40,22 @@ that checkout. Catalog browsing and document commands need no configured cluster
 
 Pulsar enrolls SSH host identities; it does not install remote login keys.
 Choose a recipe whose hardware geometry matches the available confirmed nodes.
+
+`./pulsar doctor` checks these prerequisites on this machine and on every
+confirmed node, each in its node's section: Python 3.11 or newer, `flock`,
+`rsync`, and the `hf` CLI. It finds `hf` as Download does: `hf` on the login
+user's `PATH`, else `~/.hf-cli/venv/bin/hf`. It then asks the Hub, once and
+with a short timeout, whether that node's own `hf` login is accepted, using
+the Python of that `hf` installation; nothing is forwarded between nodes. The
+rows say only `hf logged in to the Hub`, not logged in, or rejected, each
+with its fix (`hf auth login` on that node), and never print the token or the
+account name. A Hub that cannot be reached is reported as not checked, never
+as failed. An `hf` that cannot load its library, or one whose library lacks
+what Download uses, fails with its fix; a node with only the older
+`huggingface-cli` is told to install the current `hf`. These facts are only
+reported: they never decide whether a machine can be a member, and
+discovery, `topology check` and start never contact the Hub. Pulsar installs
+nothing.
 Inspect storage with `./pulsar model budget` after setup and with each operation's
 preview before copying files.
 
@@ -104,6 +120,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | service inventory | What `./pulsar inventory` observed on every node: Pulsar services, their containers and memory, at one time. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Live service inventory save a new one. |
 | storage budget | What `./pulsar model budget` observed where each node keeps prepared copies: disk free, the reserve, Pulsar files and what it can still copy. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Model files and disk space (checks nodes now) save a new one. |
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
+| changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time; it changes nothing by itself. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
 
@@ -215,6 +232,8 @@ same actions are available directly:
 ./pulsar topology detect --json
 ./pulsar topology detect --candidate HOST
 ./pulsar topology configure
+./pulsar topology configure --remove-missing
+./pulsar topology forget --plan
 ```
 
 `show` and `check` name each node by hostname with its position, the saved
@@ -271,6 +290,27 @@ incomplete; a partial scan cannot silently remove them. Invalid saved state also
 blocks automatic replacement. Investigate identity, trust or connectivity before
 retrying. The saved configuration remains untouched.
 
+Every discovery that runs against valid saved membership (`detect`, `configure`
+and setup's review) saves what it noticed, so a later screen can show it
+without probing: the **changes noticed** record, `.pulsar/cluster-changes.json`
+beside the saved inventory and storage budget. It holds when it was observed,
+the saved membership's `topology_id`, and a result: `unchanged`, `changed`, or
+`not-checked` when discovery itself failed (with why). It lists machines found
+that are not members; members that did not answer, and members that answered
+but were rejected, with the reasons; members whose control address, links or
+position changed, old against new; and candidates that answered with a host key
+SSH on this machine does not trust yet. Such candidates are listed but do not
+make a change by themselves, since discovery cannot tell whether they are GB10
+machines. Pulsar identifies a node by its OS machine ID, so a reinstalled
+machine is one node gone and one new: a found machine or untrusted address with
+the hostname or address of a member that did not answer is marked
+`possible_reinstall`. A successful save rewrites the record as unchanged. SSH
+enrollment changes the `topology_id` too, so a record that names another
+`topology_id` than the saved membership describes an earlier membership.
+`detect --json` carries the same body as `changes_noticed`. Saving the record
+never changes discovery's output or exit status; it holds hostnames and
+addresses and stays private under the ignored `.pulsar/` folder.
+
 `configure` displays discovered membership and changes, then asks before saving.
 Noninteractive use requires explicit `--yes`. Active services or an unobservable
 required node block replacement; the check repeats after confirmation. It never
@@ -292,13 +332,56 @@ Before the prompt, configuration reports homes, prepared views, and pins affecte
 by the proposed topology. The report is advisory and read-only; saving membership
 does not silently move, purge, unpin, or rewrite model-library records.
 
-Show, check and detection support `--json`. `./pulsar topology menu` opens just
+Any save changes the membership's `topology_id`, and prepared-copy records bind
+the `topology_id` they were made under. `model prepare` alone does not bring
+them up to date: its plan reports each such copy as `changed-copy` (or
+`pinned`), so purge them (unpinning first where pinned), then prepare again. A
+save also writes membership without recorded SSH identities, so every node,
+not only a new one, is enrolled again with `./pulsar ssh-trust enroll`.
+
+A confirmed node that does not answer keeps membership from being saved, because
+Pulsar cannot tell a node that is down from one that is gone. When it is gone,
+`./pulsar topology configure --remove-missing` saves membership without it. The
+flag leaves out only confirmed nodes that did not answer discovery; a member
+that answered but no longer qualifies still blocks the save, and so does a
+left-out node that answers the running-service query: run discovery again.
+Nodes that answer are checked for running Pulsar services as before, and a
+running one still blocks. The output names each node left out and says that it
+could not be asked whether a Pulsar service runs there. The storage impact
+prints first, naming the homes recorded on the node left out and the prepared
+copies and pins to reconcile; then the question names what is left out and
+starts on No, such as `Save cluster membership with 2 machines, without
+<node-3>, which did not answer?`. `--yes` answers it for automation. The
+remaining nodes keep their relative order. Without the flag nothing changes,
+except that the refusal names it. There is no manual removal of a node that
+answers.
+
+`./pulsar topology forget` starts this checkout's cluster state over, for
+example when the nodes are gone, the checkout should point at another cluster,
+or the saved membership is invalid. `--plan` lists what it would remove and
+keep and changes nothing. It removes the saved membership, the generated SSH
+configuration and the saved observations that describe the cluster (service
+inventory, storage budget and changes noticed). It keeps `.env`, the site
+overlay, the model-library records, model files on the nodes, archives and
+OpenSSH's own `known_hosts`. The site overlay can name a node for placement;
+the plan says which nodes it names. Before removing anything, forget copies the
+files into a private folder under `.pulsar/` (owner-only permissions, named by
+time, such as `forgotten-cluster-20261109T120000Z`) and prints where. It
+refuses while a Pulsar service runs on a node that answers; a node that cannot
+be asked is named as not observed and does not block, since forget is the way
+out when a node is gone. With invalid saved membership, or an SSH configuration
+that cannot be used, it asks only this machine and says so. On a terminal it
+asks first, starting on No; off a terminal it needs `--yes`, and `--json`
+prints the plan or the result. Afterwards the setup status reads as before
+first use; run `./pulsar topology setup`.
+
+Show, check, detection and forget support `--json`. `./pulsar topology menu` opens just
 this menu; opening either menu performs no probes. The topology menu opens with
 a summary of saved membership, read from `topology show --json`: the nodes by
 hostname, when the discovery behind it ran and when enrolled host keys were
 read. Both are stamped before the save is confirmed. Setup and configuration
-never replace invalid saved membership, so the summary says to inspect it and
-repair the saved file by hand. The summary is drawn again only after an action
+never replace invalid saved membership, so the summary says to inspect it or
+start over with `./pulsar topology forget`. The summary is drawn again only after an action
 changes saved membership or SSH trust. Where the terminal is wide enough, each
 choice says what it does to the nodes: *(saved, no probes)* reads saved files,
 *(checks nodes now)* contacts the nodes, and *(asks before saving)* asks before
@@ -1055,6 +1138,9 @@ remain explicit decisions.
 | Symptom | First check | Next action |
 | --- | --- | --- |
 | Setup incomplete or a node unreachable | `./pulsar topology show`, then `./pulsar topology check` | Repair membership, SSH trust, or connectivity using [topology setup](#configure-topology-and-storage). |
+| A confirmed node is gone for good | `./pulsar topology detect`, which names it as missing | Save membership without it with `./pulsar topology configure --remove-missing`; see [Inspect or change membership](#inspect-or-change-membership). |
+| Saved membership is invalid, or this checkout should start over | `./pulsar topology forget --plan` | `./pulsar topology forget` keeps a private backup copy; then run `./pulsar topology setup`. |
+| `hf` missing, not logged in or rejected on a node | `./pulsar doctor`, in that node's section | Install the `hf` CLI, or run `hf auth login`, on that node as the login user. A Hub that could not be reached is not checked, not failed. |
 | Docker unavailable | `./pulsar doctor` | Resolve the reported Docker or GPU-access prerequisite on the affected node. |
 | Pinned image missing | `./pulsar image check <spec-id> --node <node>` | Review [image staging](#check-and-stage-the-image) for the same spec and nodes. |
 | Model files missing or not prepared | `./pulsar model info <spec-id> --node <node>` | Acquire or restore missing homes, then prepare every required snapshot and rank. |
@@ -1574,7 +1660,8 @@ formats, for `contract`, `resources` and contributor subcommands such as
 `warn` in yellow, `FAIL` and `NOT READY` in bold red, `READY` in bold green;
 `ok` stays plain. `./pulsar doctor` groups its checks under this node, cluster
 membership, each other node by hostname and the catalog, then counts warnings
-and blocking issues in its verdict; its `--json` output is unchanged. Every
+and blocking issues in its verdict; its `--json` output is unchanged. Each
+node's section ends with its [prerequisites](#installation-prerequisites). Every
 styled part also reads without color. `NO_COLOR` removes the colors and keeps
 bold and underline; `PULSAR_COLOR=never` prints no styles;
 `PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's

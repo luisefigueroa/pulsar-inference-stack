@@ -324,6 +324,61 @@ For non-streaming `--json` operations, stdout is one envelope with schema versio
 logging goes to stderr. Errors have nonzero exit status. Do not parse human
 messages to make lifecycle decisions.
 
+### Cluster readiness and membership
+
+`doctor --json` keeps `kind: "pulsar-doctor"` and schema version 1. Each check
+has `level` (`ok`, `warn` or `fail`), `id` and `message`, which is for people.
+The prerequisite checks run on this node with the ids `python`, `flock`,
+`rsync`, `hf_cli` and `hf_login`, and on every other confirmed node as
+`rank_N_<id>`, such as `rank_2_hf_login`. `hf_login` fails when the node has
+no `hf` login or the Hub rejected it, and warns when the Hub could not be
+reached or `hf` itself is not usable. A node that did not answer the
+prerequisite check has one `warn` row, `prerequisites` or
+`rank_N_prerequisites`, instead. No message carries a token or an account name.
+These facts never change what makes a machine a member.
+
+`topology detect --json` adds `changes_noticed`, the body of the saved changes
+record below without its `schema_version`, `kind` and `observed_at`, whenever
+valid saved membership exists. Each `rejected` entry adds `node_id`, and each
+`saved_membership.missing` entry adds `answered` (true when that member's
+identity answered but was rejected) and, when it answered, `reasons`.
+
+The saved changes record (`.pulsar/cluster-changes.json`, or
+`PULSAR_CLUSTER_CHANGES_FILE`) is private local state with
+`kind: "pulsar-cluster-changes"` and schema version 1: `observed_at`, stamped
+when saved; `topology_id` of the saved membership it was compared with;
+`result` (`unchanged`, `changed` or `not-checked`); `issues`, why discovery
+could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
+`possible_reinstall`); `missing` (`hostname`, `node_id`, `position`,
+`answered`, optional `reasons`); `changed` (`hostname`, `node_id`, and
+`changes` with `control`, `links` or `position`, each `old` and `new`); and
+`untrusted` (`address`, `possible_reinstall`).
+
+`topology configure --remove-missing` saves membership without confirmed nodes
+that did not answer discovery. It refuses with exit 1 when a missing member
+answered, or answers the running-service query, and when a node that answers
+runs a Pulsar service.
+
+`topology forget [--plan] [--yes] [--json]` removes the saved membership, the
+generated SSH configuration and the saved observations of the cluster after a
+private backup copy. It exits 0 when it planned (whatever the plan found),
+forgot, or found nothing to forget; 1 when a Pulsar service runs on a node
+that answered, or a file changed since its plan; and 2 for a usage mistake or
+when it would have to ask off a terminal without `--yes`. Its JSON is
+`kind: "pulsar-topology-forget"`, schema version 1: `result` (`planned`,
+`nothing` or `forgotten`), `membership` (`saved`, `invalid` or `missing`),
+`nodes`, `services` (`hostname` and `state`: `running`, `none` or
+`not-observed`), `checked_only_here`, `remove` (`name`, `label`, `path`,
+`present`, `sha256`), `keep`, `overlay` (`path`, `present`, and `names`, the
+nodes it names for placement, or null when it could not be read) and
+`backup_root`; a forgotten result adds `backup` and `removed`.
+
+Change note, 2026-11-09: doctor gained the prerequisite check ids above;
+`topology detect --json` gained `changes_noticed`, `rejected[].node_id` and
+`saved_membership.missing[].answered` and `reasons`; new `topology configure
+--remove-missing` and `topology forget`; new saved changes record. Nothing was
+removed or renamed.
+
 ### Error codes and exit statuses
 
 Branch on `ok` and `error.code`. Treat an unknown code as a failure: new, more
