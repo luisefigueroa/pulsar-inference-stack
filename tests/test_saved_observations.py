@@ -122,6 +122,31 @@ class Records(unittest.TestCase):
                     saved.save_budget(nodes, path)
                 self.assertFalse(path.exists())
 
+    def test_cluster_changes_are_stamped_privately_and_validated(self):
+        path = self.root / "state" / "cluster-changes.json"
+        self.assertIsNone(saved.load_changes(path))
+        body = {"topology_id": "c" * 64, "result": "changed", "issues": [], "found": [],
+                "missing": [{"hostname": "fixture-rank-1", "node_id": "fixture-node-1", "position": 1,
+                             "answered": False}], "changed": [], "untrusted": []}
+        self.assertTrue(saved.save_changes(body, path, clock=lambda: "2026-11-09T00:00:00Z"))
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(saved.load_changes(path), {**body, "schema_version": 1, "kind": "pulsar-cluster-changes",
+                                                    "observed_at": "2026-11-09T00:00:00Z"})
+        self.assertTrue((self.root / "state" / "cluster-changes.json.lock").exists())
+        for broken in ({**body, "result": "maybe"}, {**body, "topology_id": ""},
+                       {key: value for key, value in body.items() if key != "untrusted"}, [], None):
+            with self.subTest(broken=broken):
+                with self.assertRaises(ValueError):
+                    saved.save_changes(broken, path)
+        # The time is stamped at write and cannot come from the caller.
+        saved.save_changes({**body, "observed_at": "2020-01-01T00:00:00Z"}, path, clock=lambda: "2026-11-09T00:00:01Z")
+        self.assertEqual(saved.load_changes(path)["observed_at"], "2026-11-09T00:00:01Z")
+        with patch.dict(os.environ, {"PULSAR_CLUSTER_CHANGES_FILE": str(path)}):
+            self.assertEqual(saved.record_path(self.root, "cluster-changes"), path)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(saved.record_path(self.root, "cluster-changes"),
+                             self.root / ".pulsar" / "cluster-changes.json")
+
     def test_change_key_moves_only_with_a_new_observation_or_turning_last_seen(self):
         inventory, budget = observed(), budget_record()
         self.assertEqual(saved.change_key(None, None), "none none")

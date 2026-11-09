@@ -9,7 +9,14 @@ before it is saved. Nothing here contacts a node.
 
     python3 -m scripts.saved_observations save-inventory < INVENTORY_JSON
     python3 -m scripts.saved_observations save-budget < BUDGET_NODES_JSON
+    python3 -m scripts.saved_observations save-cluster-changes < CHANGES_BODY_JSON
     python3 -m scripts.saved_observations home [--now TIME] [--width N] < CATALOG_JSON
+
+The "changes noticed" record (`cluster-changes`) is what the last discovery
+against valid saved membership saw, compared with that membership's
+`topology_id` (scripts/topology_actions.py changes_noticed); it is stamped
+`observed_at` when saved. A record whose `topology_id` is not the saved
+membership's describes an earlier membership.
 
 `home` prints `key<TAB>KEY` on its first line, then the Running block. Both
 come from one read of each record at one instant, so the home menu compares
@@ -17,8 +24,8 @@ exactly the records it printed; KEY changes only with a new observation or the
 inventory turning "last seen".
 
 The records live under the checkout's `.pulsar/` directory, which is never
-tracked; PULSAR_SERVICE_INVENTORY_FILE and PULSAR_STORAGE_BUDGET_FILE name
-other absolute paths. Saving never fails its caller: a record that cannot be
+tracked; PULSAR_SERVICE_INVENTORY_FILE, PULSAR_STORAGE_BUDGET_FILE and
+PULSAR_CLUSTER_CHANGES_FILE name other absolute paths. Saving never fails its caller: a record that cannot be
 saved prints one warning on stderr and exits 0.
 """
 from __future__ import annotations
@@ -51,10 +58,15 @@ from scripts.terminal_format import TerminalWriter, cut_middle, error_line  # no
 
 INVENTORY_ENV = "PULSAR_SERVICE_INVENTORY_FILE"
 BUDGET_ENV = "PULSAR_STORAGE_BUDGET_FILE"
+CHANGES_ENV = "PULSAR_CLUSTER_CHANGES_FILE"
 INVENTORY_NAME = "service-inventory"
 BUDGET_NAME = "storage-budget"
-ENVIRONMENT = {INVENTORY_NAME: INVENTORY_ENV, BUDGET_NAME: BUDGET_ENV}
+CHANGES_NAME = "cluster-changes"
+ENVIRONMENT = {INVENTORY_NAME: INVENTORY_ENV, BUDGET_NAME: BUDGET_ENV, CHANGES_NAME: CHANGES_ENV}
 BUDGET_KIND = "pulsar-saved-storage-budget"
+CHANGES_KIND = "pulsar-cluster-changes"
+CHANGE_RESULTS = ("unchanged", "changed", "not-checked")
+CHANGE_LISTS = ("issues", "found", "missing", "changed", "untrusted")
 SCHEMA_VERSION = 1
 BUDGET_SIZES = ("available", "total", "used", "reserve", "limit")
 
@@ -146,6 +158,44 @@ def check_budget_record(record: Any) -> dict:
     _stamp(record.get("saved_at"), "the budget's saved_at")
     check_budget_nodes(record.get("nodes"))
     return record
+
+
+def check_changes_record(record: Any) -> dict:
+    """A saved "changes noticed" record: what one discovery saw against the
+    saved membership `topology_id`, stamped `observed_at` when it was saved."""
+    if (not isinstance(record, dict) or type(record.get("schema_version")) is not int
+            or record["schema_version"] != SCHEMA_VERSION or record.get("kind") != CHANGES_KIND):
+        raise ValueError(f"the saved cluster changes are not a schema-1 {CHANGES_KIND} record")
+    _stamp(record.get("observed_at"), "the changes' observed_at")
+    if not isinstance(record.get("topology_id"), str) or not record["topology_id"]:
+        raise ValueError("the saved cluster changes name no topology_id")
+    if record.get("result") not in CHANGE_RESULTS:
+        raise ValueError("the saved cluster changes have no valid result")
+    for key in CHANGE_LISTS:
+        if not isinstance(record.get(key), list):
+            raise ValueError(f"the saved cluster changes have no {key} list")
+    return record
+
+
+def load_changes(path: Path) -> dict | None:
+    """The saved changes record; None when none is saved. A present but unreadable file raises."""
+    if not os.path.lexists(path):
+        return None
+    return check_changes_record(read_json(path))
+
+
+def save_changes(body: Any, path: Path, *, clock: Callable[[], str] = utc_now) -> bool:
+    """Save one discovery's BODY (scripts/topology_actions.py changes_noticed),
+    stamped with the time it is saved, under the record's lock."""
+    if not isinstance(body, dict):
+        raise ValueError("the cluster changes must be an object")
+    path = Path(path)
+    ensure_directory(path.parent)
+    with record_lock(path):
+        record = {**body, "schema_version": SCHEMA_VERSION, "kind": CHANGES_KIND, "observed_at": clock()}
+        check_changes_record(record)
+        atomic_json(path, record)
+    return True
 
 
 def load_inventory(path: Path) -> dict | None:
@@ -483,7 +533,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for command, text in (("save-inventory", "save an inventory --json document from stdin"),
-                          ("save-budget", "save the model budget nodes list from stdin")):
+                          ("save-budget", "save the model budget nodes list from stdin"),
+                          ("save-cluster-changes", "save one discovery's changes noticed from stdin")):
         save = sub.add_parser(command, help=text)
         save.add_argument("--path", help="save here instead of the default path")
     home = sub.add_parser("home", help="a `key\\tKEY` line, then the Running block; catalog JSON on stdin")
@@ -496,6 +547,8 @@ def main(argv: list[str] | None = None) -> int:
         return _save(args, INVENTORY_NAME, "the service inventory", save_inventory)
     if args.command == "save-budget":
         return _save(args, BUDGET_NAME, "the storage budget", save_budget)
+    if args.command == "save-cluster-changes":
+        return _save(args, CHANGES_NAME, "the cluster changes noticed", save_changes)
     # One read of each record and one instant give both the block and its
     # change key, so a save while the menu draws can never split them.
     now = args.now or datetime.now(timezone.utc)

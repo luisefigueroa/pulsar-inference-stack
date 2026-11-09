@@ -86,6 +86,36 @@ if [ -e "$CLUSTER_TOPOLOGY_FILE" ]; then
 fi
 candidates_file="$tmpdir/candidates"
 : >"$candidates_file"
+# Candidates that answered but whose host key SSH on this machine does not trust.
+untrusted_file="$tmpdir/untrusted"
+: >"$untrusted_file"
+existing_valid=0
+
+# save_noticed_changes: a changes-noticed body on stdin becomes the saved
+# record (scripts/saved_observations.py). Tests save only where
+# PULSAR_CLUSTER_CHANGES_FILE points, so they never write into a checkout.
+# Saving never changes this command's output or exit status.
+save_noticed_changes() {
+  if [ "${PULSAR_SELFTEST:-0}" != 1 ] || [ -n "${PULSAR_CLUSTER_CHANGES_FILE:-}" ]; then
+    python3 "$REPO_DIR/scripts/saved_observations.py" save-cluster-changes --repo-root "$REPO_DIR" >&2 || true
+  else
+    cat >/dev/null
+  fi
+}
+
+# notice_changes DOCUMENT [ISSUE]: every discovery against valid saved
+# membership adds `changes_noticed` to its document and saves it. ISSUE says
+# why discovery itself failed (the result is then not-checked).
+notice_changes() {
+  local document="$1" issue="${2:-}" noticed="$tmpdir/noticed.json"
+  local -a args=(notice "$tmpdir/saved-before.json" --document "$document" --untrusted "$untrusted_file")
+  [ "$existing_valid" = 1 ] && [ -f "$tmpdir/saved-before.json" ] || return 0
+  [ -z "$issue" ] || args+=(--failure "$issue")
+  python3 "$REPO_DIR/scripts/topology_actions.py" "${args[@]}" >"$noticed" 2>/dev/null || return 0
+  mv "$noticed" "$document"
+  python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))["changes_noticed"]))' "$document" \
+    | save_noticed_changes || true
+}
 
 safe_candidate() {
   case "${1:-}" in
@@ -131,7 +161,6 @@ fi
 
 # Pin saved aliases to their confirmed control endpoints, even before enrollment.
 declare -A saved_controls=()
-existing_valid=0
 if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
   if saved_rows=$("$MANIFEST_TOOL" rows "$CLUSTER_TOPOLOGY_FILE" 2>/dev/null); then
     existing_valid=1
@@ -147,6 +176,8 @@ if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
       python3 "$REPO_DIR/scripts/topology_actions.py" discovery "$CLUSTER_TOPOLOGY_FILE" \
         --failure "Saved SSH configuration is unusable. Run pulsar ssh-trust check and repair enrollment before discovery." \
         >"$tmpdir/access-failure.json" || :
+      notice_changes "$tmpdir/access-failure.json" \
+        "Saved SSH configuration is unusable. Run pulsar ssh-trust check and repair enrollment before discovery."
       if [ "$JSON" = 1 ]; then
         cat "$tmpdir/access-failure.json"
       else
@@ -167,6 +198,7 @@ python3 "$PROBE" --local --ssh-host local "${local_probe_flags[@]}" \
 declare -a probe_files=("$local_probe")
 declare -a probe_pids=()
 declare -a probe_outputs=()
+declare -a probe_errors=()
 declare -a probe_hosts=()
 
 ssh_opts=(-o StrictHostKeyChecking=yes -o UpdateHostKeys=no "${PULSAR_SSH_OPTS[@]}")
@@ -192,6 +224,7 @@ while IFS= read -r candidate; do
   ) &
   probe_pids+=("$!")
   probe_outputs+=("$output")
+  probe_errors+=("$error_output")
   probe_hosts+=("$candidate")
 done <"$candidates_file"
 
@@ -203,6 +236,12 @@ for position in "${!probe_pids[@]}"; do
     fi
   else
     skipped_probe_count=$((skipped_probe_count + 1))
+    # OpenSSH refused the host key: the machine answered, but SSH on this
+    # machine does not trust it yet. Anything else is not told apart.
+    if grep -qE 'Host key verification failed|host key is known|REMOTE HOST IDENTIFICATION HAS CHANGED' \
+        "${probe_errors[$position]}" 2>/dev/null; then
+      printf '%s\n' "${probe_hosts[$position]}" >>"$untrusted_file"
+    fi
   fi
 done
 report_skipped_candidates() {
@@ -236,6 +275,7 @@ if [ "$JSON" != 1 ]; then
 fi
 
 if ! "$MANIFEST_TOOL" validate "$discovery" >/dev/null 2>&1; then
+  notice_changes "$discovery"
   if [ "$JSON" = 1 ]; then
     cat "$discovery"
   else
@@ -260,6 +300,7 @@ connectivity_ok=1
 topology_check_fabric "$discovery" || connectivity_ok=0
 
 if [ "$connectivity_ok" != 1 ]; then
+  notice_changes "$discovery" "Pairwise RoCE connectivity failed."
   if [ "$JSON" = 1 ]; then
     python3 - "$discovery" <<'PY'
 import json, sys
@@ -275,6 +316,7 @@ fi
 
 verified="$tmpdir/verified.json"
 "$MANIFEST_TOOL" mark-verified "$discovery" >"$verified"
+notice_changes "$verified"
 
 if [ "$JSON" = 1 ]; then
   cat "$verified"
@@ -353,6 +395,9 @@ else
 fi
 "$MANIFEST_TOOL" write "$verified" "$CLUSTER_TOPOLOGY_FILE"
 log "wrote $CLUSTER_TOPOLOGY_FILE"
+# The saved membership is now what discovery saw: the record reads unchanged.
+python3 "$REPO_DIR/scripts/topology_actions.py" notice-saved "$CLUSTER_TOPOLOGY_FILE" \
+  --untrusted "$untrusted_file" 2>/dev/null | save_noticed_changes || true
 if [ "$node_count" -gt 1 ]; then
   print_hanging "  Next      " "./pulsar ssh-trust enroll"
 else

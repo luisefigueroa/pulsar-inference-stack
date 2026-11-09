@@ -733,6 +733,156 @@ class TopologyCommands(unittest.TestCase):
         self.assertTrue(commands[0].endswith(' --prerequisites-only'), commands[0])
         self.assertEqual(commands[1], commands[0][:-len(' --prerequisites-only')])
 
+    # Phase 1.2: every discovery against valid saved membership saves what it saw.
+    def changes(self):
+        path = self.fixture.root/'state/cluster-changes.json'
+        record = json.loads(path.read_text())
+        self.assertEqual((record['schema_version'], record['kind']), (1, 'pulsar-cluster-changes'))
+        self.assertIsNotNone(datetime.fromisoformat(record['observed_at'].replace('Z', '+00:00')).tzinfo)
+        return record
+
+    def add_machine(self, rank, alias=None, probe=None):
+        """A qualified machine discovery can reach at ALIAS that is not a member."""
+        f = self.fixture
+        probe = probe or node_probe(rank)
+        (f.root/f'probe-{rank}.json').write_text(json.dumps(probe))
+        mapping = json.loads((f.root/'map.json').read_text())
+        mapping[alias or f'alias-{rank}'] = rank
+        (f.root/'map.json').write_text(json.dumps(mapping))
+
+    def test_unchanged_discovery_saves_an_unchanged_record_without_changing_its_output(self):
+        f = self.fixture
+        before = f.path.read_bytes()
+        result = f.run('topology', 'detect', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'unchanged')
+        self.assertEqual(record['topology_id'], f.topology['topology_id'])
+        self.assertEqual([record[key] for key in ('issues', 'found', 'missing', 'changed', 'untrusted')], [[]] * 5)
+        # detect --json carries the same body; nothing else changed.
+        document = json.loads(result.stdout)
+        self.assertEqual(document['changes_noticed'], {key: value for key, value in record.items()
+                                                       if key not in ('schema_version', 'kind', 'observed_at')})
+        self.assertEqual(document['membership_changes'], {'added': [], 'removed': [], 'changed': []})
+        self.assertEqual(f.path.read_bytes(), before)
+        self.assertFalse((ROOT/'.pulsar/cluster-changes.json').exists())
+
+    def test_added_missing_changed_and_untrusted_machines_are_recorded(self):
+        f = self.fixture
+        self.add_machine(2)
+        result = f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual(record['found'], [{'hostname': 'fixture-rank-2', 'node_id': 'fixture-node-2',
+                                            'ssh_host': 'alias-2', 'possible_reinstall': False}])
+        # A member's control address and links changed: old against new.
+        probe = dict(f.probes[1], control=dict(interface='mgmt1', ip='192.0.2.99'),
+                     rdma=[dict(hca='roce1', netdev='fabric1', cidrs=['198.51.100.11/24'])])
+        Path(f.files[1]).write_text(json.dumps(probe))
+        f.run('topology', 'detect', '--json')
+        changed = self.changes()['changed']
+        self.assertEqual([row['hostname'] for row in changed], ['fixture-rank-1'])
+        self.assertEqual(changed[0]['changes']['control'], {'old': {'interface': 'mgmt0', 'ip': '192.0.2.11'},
+                                                            'new': {'interface': 'mgmt1', 'ip': '192.0.2.99'}})
+        self.assertEqual(changed[0]['changes']['links']['new'],
+                         [{'hca': 'roce1', 'netdev': 'fabric1', 'cidrs': ['198.51.100.11/24']}])
+        self.assertNotIn('position', changed[0]['changes'])
+        # A member that did not answer, and a candidate SSH does not trust.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_UNTRUSTED='host-9.local')
+        result = f.run('topology', 'detect', '--json', '--candidate', 'host-9.local')
+        self.assertNotEqual(result.returncode, 0)
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual(record['missing'], [{'hostname': 'fixture-rank-1', 'node_id': 'fixture-node-1',
+                                              'position': 1, 'answered': False}])
+        self.assertEqual(record['untrusted'], [{'address': 'host-9.local', 'possible_reinstall': False}])
+        self.assertEqual(json.loads(result.stdout)['saved_membership']['missing'][0]['answered'], False)
+
+    def test_untrusted_candidates_alone_do_not_make_a_change(self):
+        f = self.fixture
+        f.env['TOPOLOGY_UNTRUSTED'] = 'printer.local'
+        result = f.run('topology', 'detect', '--candidate', 'printer.local', '--candidate', 'gone.local')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'unchanged')
+        # An address that did not answer at all is not listed: it was never seen.
+        self.assertEqual(record['untrusted'], [{'address': 'printer.local', 'possible_reinstall': False}])
+        # The human output is unchanged by the record.
+        self.assertIn('SSH 2 advertised addresses could not be checked with saved keys', ' '.join(result.stdout.split()))
+
+    def test_a_reinstalled_machine_is_one_node_gone_and_one_new(self):
+        f = self.fixture
+        # The member's machine ID changed: the old node did not answer, and a
+        # new node answers at its address with its hostname.
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        f.run('topology', 'detect', '--json')
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual([row['node_id'] for row in record['missing']], ['fixture-node-1'])
+        self.assertEqual(record['missing'][0]['answered'], False)
+        self.assertEqual(record['found'], [{'hostname': 'fixture-rank-1', 'node_id': 'fixture-node-1-reinstalled',
+                                            'ssh_host': 'alias-1', 'possible_reinstall': True}])
+        # Reinstalled with new host keys: SSH here refuses it under its mDNS name.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_UNTRUSTED='fixture-rank-1.local,192.0.2.11')
+        f.run('topology', 'detect', '--candidate', 'fixture-rank-1.local', '--candidate', '192.0.2.11')
+        self.assertEqual(self.changes()['untrusted'], [
+            {'address': '192.0.2.11', 'possible_reinstall': True},
+            {'address': 'fixture-rank-1.local', 'possible_reinstall': True}])
+
+    def test_failed_discovery_is_recorded_as_not_checked(self):
+        f = self.fixture
+        for mode in ('fabric', 'local', 'access'):
+            with self.subTest(mode=mode):
+                f.env.pop('TOPOLOGY_PING_RC', None)
+                Path(f.files[0]).write_text(json.dumps(f.probes[0]))
+                if mode == 'fabric':
+                    f.env['TOPOLOGY_PING_RC'] = '1'
+                    issue = 'Pairwise RoCE connectivity failed.'
+                elif mode == 'local':
+                    Path(f.files[0]).write_text(json.dumps(dict(f.probes[0], qualified=False,
+                                                                reject_reasons=['synthetic reason'])))
+                    issue = 'fixture-rank-0: synthetic reason'
+                else:
+                    f.config.write_text('# stale\n')
+                    issue = 'Saved SSH configuration is unusable.'
+                result = f.run('topology', 'detect', '--json')
+                self.assertNotEqual(result.returncode, 0)
+                record = self.changes()
+                self.assertEqual(record['result'], 'not-checked')
+                self.assertTrue(record['issues'][0].startswith(issue), record['issues'])
+                self.assertEqual(json.loads(result.stdout)['changes_noticed']['result'], 'not-checked')
+                if mode != 'fabric':
+                    # Nothing was compared, so no member is listed as missing.
+                    self.assertEqual(record['missing'], [])
+
+    def test_no_record_without_valid_saved_membership_and_a_save_rewrites_it_unchanged(self):
+        f = self.fixture
+        path = f.root/'state/cluster-changes.json'
+        for contents in (None, '{broken'):
+            if contents is None: f.path.unlink()
+            else: f.path.write_text(contents)
+            f.run('topology', 'detect', '--json')
+            self.assertFalse(path.exists())
+        f.path.write_text(json.dumps(f.topology))
+        self.add_machine(2)
+        f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(self.changes()['result'], 'changed')
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        saved = json.loads(f.path.read_text())
+        self.assertEqual((record['result'], record['topology_id']), ('unchanged', saved['topology_id']))
+        self.assertEqual(record['found'], [])
+        # A record that cannot be saved warns and changes nothing else.
+        path.unlink(); (f.root/'state/cluster-changes.json').mkdir()
+        result = f.run('topology', 'detect', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the cluster changes noticed was not saved', result.stderr)
+        self.assertEqual(json.loads(result.stdout)['changes_noticed']['result'], 'unchanged')
+
     def test_narrow_human_observation(self):
         f = self.fixture
         result = f.run('topology', 'show')

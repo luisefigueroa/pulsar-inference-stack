@@ -30,8 +30,15 @@ def discovery_membership(path, document):
             "Saved topology is invalid; discovery cannot replace it automatically.")
     else:
         found = {node["node_id"] for node in (document.get("topology") or {}).get("nodes", [])}
+        # A member that answered but was rejected (not qualified, outside the
+        # largest connected group, or a duplicate identity) answered; only a
+        # member whose identity no probe returned did not.
+        rejected = {item["node_id"]: item for item in document.get("rejected") or [] if item.get("node_id")}
         document["saved_membership"]["missing"] = [
-            {"rank": node["rank"], "node_id": node["node_id"], "hostname": node["hostname"]}
+            {"rank": node["rank"], "node_id": node["node_id"], "hostname": node["hostname"],
+             "answered": node["node_id"] in rejected,
+             **({"reasons": list(rejected[node["node_id"]].get("reasons") or [])}
+                if node["node_id"] in rejected else {})}
             for node in old["nodes"] if node["node_id"] not in found
         ]
         if document["saved_membership"]["missing"]:
@@ -48,6 +55,76 @@ def discovery_membership(path, document):
     if document["saved_membership"]["issues"]:
         document["result"] = "incomplete"
     return document
+
+
+def _links(node):
+    return sorted(({"hca": link["hca"], "netdev": link["netdev"], "cidrs": sorted(link.get("cidrs") or [])}
+                   for link in node.get("rdma") or []), key=lambda link: (link["hca"], link["netdev"]))
+
+
+def changes_noticed(old, document, untrusted=(), issue=None):
+    """What one discovery saw against the saved membership OLD.
+
+    The body of the saved "changes noticed" record (scripts/saved_observations.py)
+    and of `topology detect --json`'s `changes_noticed`. `result` is
+    `not-checked` when discovery itself failed (ISSUE says why), `changed` when
+    a machine was found that is not a member, a member did not answer or was
+    rejected, or a member's control address, links or position changed, and
+    `unchanged` otherwise. Candidates that SSH on this machine does not trust
+    are listed but do not make a change by themselves: discovery cannot tell
+    whether they are GB10 machines.
+    """
+    topology = document.get("topology") or {}
+    issues = [issue] if issue else []
+    if not issue and document.get("result") != "ok" and not topology:
+        issues.extend(document.get("discovery_issues") or [])
+        issues.extend(f"{item.get('hostname') or item.get('ssh_host') or 'a machine'}: "
+                      f"{'; '.join(item.get('reasons') or ['not qualified'])}"
+                      for item in document.get("rejected") or [] if item.get("ssh_host") == "local")
+        issues = issues or ["Discovery found no usable topology."]
+    saved_by_id = {node["node_id"]: node for node in old["nodes"]}
+    nodes = topology.get("nodes") or []
+    # Without a discovered topology no member was compared, so none is missing.
+    missing = (document.get("saved_membership") or {}).get("missing") or [] if nodes else []
+    gone = {item["hostname"] for item in missing if not item.get("answered")}
+    gone_addresses = {saved_by_id[item["node_id"]]["control"]["ip"] for item in missing
+                      if not item.get("answered") and item["node_id"] in saved_by_id}
+    found = [{"hostname": node["hostname"], "node_id": node["node_id"], "ssh_host": node["ssh_host"],
+              "possible_reinstall": node["hostname"] in gone}
+             for node in nodes if node["node_id"] not in saved_by_id]
+    changed = []
+    for node in nodes:
+        previous = saved_by_id.get(node["node_id"])
+        if previous is None:
+            continue
+        fields = {}
+        if previous.get("control") != node.get("control"):
+            fields["control"] = {"old": previous.get("control"), "new": node.get("control")}
+        if _links(previous) != _links(node):
+            fields["links"] = {"old": _links(previous), "new": _links(node)}
+        if previous["rank"] != node["rank"]:
+            fields["position"] = {"old": previous["rank"], "new": node["rank"]}
+        if fields:
+            changed.append({"hostname": node["hostname"], "node_id": node["node_id"], "changes": fields})
+    members = {node["ssh_host"] for node in old["nodes"]}
+    seen = []
+    for address in untrusted:
+        if address and address not in members and address not in seen:
+            seen.append(address)
+    untrusted_rows = [{"address": address,
+                       "possible_reinstall": address.removesuffix(".local") in gone or address in gone_addresses}
+                      for address in seen]
+    missing_rows = [{"hostname": item["hostname"], "node_id": item["node_id"], "position": item["rank"],
+                     "answered": bool(item.get("answered")),
+                     **({"reasons": item["reasons"]} if item.get("reasons") else {})} for item in missing]
+    if issues:
+        result = "not-checked"
+    elif found or missing_rows or changed:
+        result = "changed"
+    else:
+        result = "unchanged"
+    return {"topology_id": old["topology_id"], "result": result, "issues": issues, "found": found,
+            "missing": missing_rows, "changed": changed, "untrusted": untrusted_rows}
 
 
 def observation(path, directory=None):
@@ -172,13 +249,32 @@ def render_summary(document, now=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("show", "check", "discovery", "changes", "summary"))
+    parser.add_argument("operation", choices=("show", "check", "discovery", "changes", "summary",
+                                              "notice", "notice-saved"))
     parser.add_argument("path")
     parser.add_argument("--observations")
     parser.add_argument("--document")
     parser.add_argument("--failure")
+    parser.add_argument("--untrusted", help="a file of candidate addresses SSH does not trust, one per line")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.operation in ("notice", "notice-saved"):
+        # PATH is the saved membership the discovery is compared with. notice
+        # prints the discovery document with `changes_noticed` added;
+        # notice-saved prints the record body after a save: unchanged.
+        untrusted = []
+        if args.untrusted and Path(args.untrusted).exists():
+            untrusted = Path(args.untrusted).read_text(encoding="utf-8").split()
+        old = saved(args.path)
+        if args.operation == "notice-saved":
+            body = changes_noticed(old, {"result": "ok", "topology": old,
+                                         "saved_membership": {"missing": []}}, untrusted)
+            print(json.dumps(body, sort_keys=True))
+            return 0
+        document = manifest.load_json(args.document)
+        document["changes_noticed"] = changes_noticed(old, document, untrusted, args.failure)
+        print(json.dumps(document, sort_keys=True))
+        return 0
     if args.operation == "changes":
         document = manifest.load_json(args.document)
         writer = TerminalWriter()

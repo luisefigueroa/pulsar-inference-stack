@@ -56,6 +56,12 @@ class Fixture:
             PULSAR_DOCKER=str(binary/'docker'), PULSAR_SELFTEST='1',
             PULSAR_MODEL_LIBRARY_DIR=str(root/'model-library'),
             PULSAR_COLD_STORAGE_TEST_DOTENV=str(root/'absent-env'),
+            # Saved observations and backups stay in the fixture, never the checkout.
+            PULSAR_CLUSTER_CHANGES_FILE=str(root/'state/cluster-changes.json'),
+            PULSAR_SERVICE_INVENTORY_FILE=str(root/'state/service-inventory.json'),
+            PULSAR_STORAGE_BUDGET_FILE=str(root/'state/storage-budget.json'),
+            PULSAR_CLUSTER_BACKUP_DIR=str(root/'state/cluster-backups'),
+            PULSAR_OVERLAY_PATH=str(root/'overlay.json'),
             PYTHONDONTWRITEBYTECODE='1', COLUMNS='48', TERM='dumb')
 
     def run(self, *args, **kwargs):
@@ -132,10 +138,15 @@ def double_main():
     if tool == 'ssh':
         separator = args.index('--'); alias = args[separator+1]
         mapping = json.loads((root/'map.json').read_text())
+        # An address that answers with a host key SSH here does not trust.
+        if alias in os.environ.get('TOPOLOGY_UNTRUSTED', '').split(','):
+            print(f'No ED25519 host key is known for {alias} and you have requested strict checking.\n'
+                  'Host key verification failed.', file=sys.stderr)
+            return 255
         if alias not in mapping:
             return 255
         rank = mapping[alias]
-        if os.environ.get('TOPOLOGY_UNREACHABLE') == str(rank):
+        if str(rank) in os.environ.get('TOPOLOGY_UNREACHABLE', '').split(','):
             return 255
         command = args[-1]
         if command.startswith('python3 '): action = 'python3'

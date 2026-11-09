@@ -348,6 +348,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                 {
                     "ssh_host": local["ssh_host"],
                     "hostname": local["hostname"],
+                    "node_id": local["node_id"],
                     "reasons": local["reject_reasons"],
                 }
             ],
@@ -379,6 +380,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                 {
                     "ssh_host": probe["ssh_host"],
                     "hostname": probe["hostname"],
+                    "node_id": probe["node_id"],
                     "reasons": probe["reject_reasons"],
                 }
             )
@@ -392,6 +394,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                 {
                     "ssh_host": probe["ssh_host"],
                     "hostname": probe["hostname"],
+                    "node_id": probe["node_id"],
                     "reasons": ["duplicate node identity"],
                 }
             )
@@ -425,6 +428,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                 {
                     "ssh_host": node["ssh_host"],
                     "hostname": node["hostname"],
+                    "node_id": node["node_id"],
                     "reasons": [
                         "not part of the largest directly connected RoCE group containing this node"
                     ],
