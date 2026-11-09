@@ -14,6 +14,7 @@ for command, description in [
     ("check [--json]", "Check all saved nodes and fabric without saving."),
     ("detect [--json] [--candidate HOST ...]", "Discover without changing membership or SSH trust."),
     ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys] [--remove-missing]", "Review and explicitly save membership; no model actions. --remove-missing saves without confirmed nodes that did not answer; it never leaves out a node that answered."),
+    ("forget [--plan] [--yes] [--json]", "Start over: remove saved membership, the generated SSH configuration and the saved observations of the cluster, after a private backup copy. Refused while a Pulsar service runs on a node that answers; model files, archives and records are kept."),
     ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
     writer.emit(command, initial_indent="  ", subsequent_indent="    ", role="command")
@@ -219,7 +220,7 @@ case "$action" in
       "$0" show || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       echo 'Saved membership is invalid. Running diagnostic discovery without replacing it.'
       "$0" detect "${setup_detect_flags[@]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
-      echo 'Saved membership was not changed. Inspect it before explicit topology configure.'
+      echo 'Saved membership was not changed. To start over, run ./pulsar topology forget; it keeps a private backup copy.'
       exit 1
     fi
     # A cancelled configuration, invalid membership or failed enrollment cannot
@@ -302,6 +303,7 @@ case "$action" in
     done
     [ "$action" != configure ] || flags+=(--write-topology)
     exec "$REPO_DIR/scripts/detect-fabric.sh" "${flags[@]}" ;;
+  forget) exec "$REPO_DIR/scripts/topology-forget.sh" "$@" ;;
   show|check) ;;
   *) exec python3 "$REPO_DIR/scripts/topology_manifest.py" "$action" "$@" ;;
 esac

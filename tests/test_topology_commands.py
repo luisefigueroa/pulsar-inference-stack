@@ -5,11 +5,13 @@ import os
 import pty
 from pathlib import Path
 import select
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
@@ -276,11 +278,13 @@ class TopologyCommands(unittest.TestCase):
                 text = self.summary(Fixture(Path(temporary), nodes=nodes, enrolled=False))
                 self.assertIn('SSH trust not enrolled; choose Change membership… → Enroll SSH trust', text)
         f.path.write_text('{broken')
-        # Configure cannot replace invalid saved state, so it is not offered as the fix.
+        # Configure cannot replace invalid saved state, so it is not offered as the fix;
+        # forget is the way out.
         text = self.summary(f)
-        self.assertIn('Membership saved but invalid, and no menu choice replaces it; inspect it with '
-                      'Show saved membership and repair the saved file by hand', text)
+        self.assertIn('Membership saved but invalid, and setup cannot replace it; inspect it with '
+                      'Show saved membership, or start over with ./pulsar topology forget', text)
         self.assertNotIn('Configure', text)
+        self.assertNotIn('by hand', text)
         f.path.unlink()
         self.assertIn('Membership not saved; choose Change membership… → First-use setup', self.summary(f))
         self.assertEqual(f.calls(), [])
@@ -1012,6 +1016,173 @@ class TopologyCommands(unittest.TestCase):
         # the save now names an earlier membership.
         self.assertNotEqual(json.loads(f.path.read_text())['topology_id'], saved['topology_id'])
         self.assertEqual(self.changes()['topology_id'], saved['topology_id'])
+
+    # Phase 1.4: forget this cluster.
+    def cluster_state(self):
+        """Saved observations beside the fixture's membership and SSH config."""
+        f = self.fixture
+        state = f.root/'state'; state.mkdir(exist_ok=True)
+        for name in ('service-inventory', 'storage-budget', 'cluster-changes'):
+            (state/f'{name}.json').write_text(json.dumps({'fixture': name}))
+        (f.root/'model-library').mkdir(exist_ok=True)
+        (f.root/'model-library/record.json').write_text('{"kept": true}')
+        (f.root/'overlay.json').write_text(json.dumps({'schema_version': 1, 'kind': 'pulsar-deployment-overlay',
+            'defaults': {'port': 8000, 'placement': {'node_id': 'fixture-node-1'}}, 'specs': {}}))
+        return {path: path.read_bytes() for path in (f.path, f.config, *sorted(state.glob('*.json')))}
+
+    def assert_kept(self, files):
+        for path, contents in files.items():
+            self.assertEqual(path.read_bytes(), contents, path)
+        self.assertFalse((self.fixture.root/'state/cluster-backups').exists())
+
+    def test_forget_plan_lists_what_is_removed_and_kept_and_changes_nothing(self):
+        f = self.fixture
+        files = self.cluster_state()
+        result = f.run('topology', 'forget', '--plan', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual((plan['kind'], plan['result'], plan['membership']), ('pulsar-topology-forget', 'planned', 'saved'))
+        self.assertEqual([item['name'] for item in plan['remove']],
+                         ['membership', 'ssh-config', 'service-inventory', 'storage-budget', 'cluster-changes'])
+        self.assertTrue(all(item['present'] for item in plan['remove']))
+        self.assertEqual([item['path'] for item in plan['remove']][:2], [str(f.path), str(f.config)])
+        self.assertEqual(plan['services'], [{'hostname': 'fixture-rank-0', 'state': 'none'},
+                                            {'hostname': 'fixture-rank-1', 'state': 'none'}])
+        # The site overlay can name a node for placement; the plan says which.
+        self.assertEqual(plan['overlay']['names'], [{'node_id': 'fixture-node-1', 'hostname': 'fixture-rank-1'}])
+        human = f.run('topology', 'forget', '--plan')
+        self.assertEqual(human.returncode, 0, human.stderr)
+        text = ' '.join(human.stdout.split())
+        for words in ('Membership saved: fixture-rank-0, fixture-rank-1',
+                      'Services none running on fixture-rank-0 and fixture-rank-1',
+                      'Removes Saved membership', 'Generated SSH configuration', 'Cluster changes noticed',
+                      "Keeps .env settings", "OpenSSH's own known_hosts",
+                      'The site overlay names fixture-rank-1 for placement; it still does after forgetting.',
+                      'Result Plan only. No files changed.'):
+            self.assertIn(words, text)
+        self.assertLessEqual(max(map(len, human.stdout.splitlines())), 48)
+        self.assert_kept(files)
+        self.assertEqual(set(tool for tool, _ in f.calls()), {'ssh', 'docker'})
+
+    def test_forget_refuses_while_a_service_runs_on_a_node_that_answers(self):
+        f = self.fixture
+        files = self.cluster_state()
+        f.env['TOPOLOGY_ACTIVE'] = '1'
+        result = f.run('topology', 'forget', '--yes')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('a Pulsar service runs on fixture-rank-1; stop it first', ' '.join(result.stdout.split()))
+        self.assertIn('No files changed.', result.stderr)
+        self.assert_kept(files)
+        plan = f.run('topology', 'forget', '--plan')
+        self.assertEqual(plan.returncode, 0)
+        self.assertIn('Forget would refuse while a Pulsar service runs.', ' '.join(plan.stdout.split()))
+
+    def test_forget_backs_up_then_removes_and_setup_starts_again(self):
+        f = self.fixture
+        files = self.cluster_state()
+        # A member that cannot be asked is named and does not block.
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'forget', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('fixture-rank-1 not observed: it could not be asked; it does not block forgetting', text)
+        for path in files:
+            self.assertFalse(path.exists(), path)
+        backups = list((f.root/'state/cluster-backups').iterdir())
+        self.assertEqual(len(backups), 1)
+        backup = backups[0]
+        self.assertRegex(backup.name, r'^forgotten-cluster-\d{8}T\d{6}Z$')
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
+        self.assertIn(f'Backup{backup}', ''.join(result.stdout.split()))
+        for path, contents in files.items():
+            copy = backup/path.name
+            self.assertEqual(copy.read_bytes(), contents)
+            self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
+        listed = json.loads((backup/'forgotten.json').read_text())
+        self.assertEqual({item['path'] for item in listed['files']}, {str(path) for path in files})
+        # Kept: model-library records and the overlay.
+        self.assertEqual((f.root/'model-library/record.json').read_text(), '{"kept": true}')
+        self.assertTrue((f.root/'overlay.json').exists())
+        self.assertIn('Next ./pulsar topology setup', text)
+        # The setup status reads as before first use.
+        status = subprocess.run([sys.executable, str(ROOT/'scripts/setup_status.py'), '--format', 'json'],
+                                env=f.env, text=True, capture_output=True, timeout=30)
+        document = json.loads(status.stdout)
+        self.assertEqual((document['topology']['status'], document['next_action'], document['complete']),
+                         ('missing', 'set-up-topology', False))
+        # A second forget has nothing to do.
+        again = f.run('topology', 'forget', '--yes')
+        self.assertEqual(again.returncode, 0)
+        self.assertIn('Nothing to forget', again.stdout)
+        self.assertEqual(len(list((f.root/'state/cluster-backups').iterdir())), 1)
+
+    def test_forget_asks_on_a_terminal_and_needs_yes_off_one(self):
+        f = self.fixture
+        files = self.cluster_state()
+        result = f.run('topology', 'forget')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('./pulsar topology forget --yes', ' '.join(result.stderr.split()))
+        self.assertEqual(f.calls(), [])
+        self.assert_kept(files)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), ["Forget this cluster's saved membership and observations?"])
+        confirms = [args for tool, args in f.calls() if tool == 'gum' and args[:1] == ['confirm']]
+        self.assertIn('--default=false', confirms[0])
+        self.assert_kept(files)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1,0')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 0, output)
+        self.assertFalse(f.path.exists())
+
+    def test_forget_with_unusable_saved_state_checks_only_this_machine(self):
+        for broken in ('membership', 'ssh-config'):
+            with self.subTest(broken=broken):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.fixture = f = Fixture(Path(temporary.name))
+                self.cluster_state()
+                (f.path if broken == 'membership' else f.config).write_text('{broken')
+                result = f.run('topology', 'forget', '--plan', '--json')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan = json.loads(result.stdout)
+                self.assertEqual(plan['membership'], 'invalid' if broken == 'membership' else 'saved')
+                self.assertTrue(plan['checked_only_here'])
+                self.assertEqual(len(plan['services']), 1)
+                # Never another SSH trust: no node but this one is asked.
+                self.assertFalse(any(tool == 'ssh' for tool, _ in f.calls()))
+                human = f.run('topology', 'forget', '--yes')
+                self.assertEqual(human.returncode, 0, human.stderr + human.stdout)
+                self.assertIn('Only this machine was checked', ' '.join(human.stdout.split()))
+                self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+                self.assertEqual(f.run('topology', 'show', '--json').returncode, 1)
+
+    def test_invalid_membership_names_forget_instead_of_a_hand_repair(self):
+        f = self.fixture
+        f.path.write_text('{broken')
+        result = f.run('topology', 'show')
+        text = ' '.join(result.stdout.split())
+        self.assertIn('To start over, run ./pulsar topology forget; it keeps a private backup copy.', text)
+        self.assertNotIn('by hand', text)
+
+    def test_forget_in_a_test_needs_every_path_named_and_never_removes_a_changed_file(self):
+        f = self.fixture
+        files = self.cluster_state()
+        env = dict(f.env); env.pop('PULSAR_CLUSTER_BACKUP_DIR')
+        result = subprocess.run([str(ROOT/'pulsar'), 'topology', 'forget', '--yes'], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assert_kept(files)
+        sys.path.insert(0, str(ROOT))
+        from scripts import topology_forget
+        with unittest.mock.patch.dict(os.environ, f.env):
+            plan = topology_forget.plan(ROOT, f.path, f.config, f.root/'overlay.json')
+            f.path.write_text(json.dumps(f.topology) + '\n')
+            with self.assertRaisesRegex(ValueError, 'changed since the plan'):
+                topology_forget.apply(plan, f.root/'state/cluster-backups')
+        self.assertTrue(f.config.exists())
+        self.assertFalse((f.root/'state/cluster-backups').exists())
 
     def test_narrow_human_observation(self):
         f = self.fixture

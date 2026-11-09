@@ -153,7 +153,8 @@ def observation(path, directory=None):
         topology = saved(path)
     except (manifest.TopologyError, KeyError, TypeError, ValueError, AttributeError):
         result["status"] = "invalid"
-        result["issues"].append("Saved topology is invalid. Inspect it before configuring membership again.")
+        result["issues"].append("Saved topology is invalid, and setup cannot replace it. To start over, run "
+                                "./pulsar topology forget; it keeps a private backup copy.")
         return result
     result.update(status="saved", topology=topology)
     if directory is None:
@@ -245,9 +246,10 @@ def render_summary(document, now=None):
         field("Membership", "not saved; choose Change membership… → First-use setup")
         return
     if document["status"] != "saved" or not topology:
-        # Setup, detect and configure all refuse to replace invalid saved state.
-        field("Membership", "saved but invalid, and no menu choice replaces it; inspect it with "
-                            "Show saved membership and repair the saved file by hand")
+        # Setup, detect and configure all refuse to replace invalid saved state;
+        # forget removes it, after a private backup copy.
+        field("Membership", "saved but invalid, and setup cannot replace it; inspect it with "
+                            "Show saved membership, or start over with ./pulsar topology forget")
         return
     nodes = sorted(topology["nodes"], key=lambda node: node["rank"])
     field("Nodes", ", ".join(node["hostname"] for node in nodes))
