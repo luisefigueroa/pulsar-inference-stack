@@ -214,6 +214,31 @@ class Preparation(Details):
             "code": "changed-copy", "message": "n1: explicitly purge the changed prepared copy before preparing",
             "node_id": "n1", "fix": "purge the prepared copies, then prepare"}])
 
+    def test_after_a_membership_save_prepare_alone_does_not_update_the_records(self):
+        # Find-out (phase 1.3): a membership save changes the topology ID even
+        # when the same nodes keep their positions. Prepare then refuses every
+        # prepared copy made under the old ID, the home's own included, until
+        # they are purged; a pinned one needs unpinning first.
+        old = "e" * 64
+        home_view = {**home(), "kind": "pulsar-prepared-view", "spec_id": self.spec["spec_id"], "topology_id": old,
+                     "rank": 0, "pinned": False, "is_home_view": True}
+        copy_view = self.mine(topology=old)
+        plan = self.plan(views=[home_view, copy_view], observations=observed(
+            "n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
+        self.assertFalse(plan["eligible"])
+        self.assertEqual([(item["code"], item["node_id"]) for item in plan["blocker_details"]],
+                         [("changed-copy", "n0"), ("changed-copy", "n1")])
+        # Under the same topology ID they are reused.
+        same = self.plan(views=[{**home_view, "topology_id": TOPOLOGY}, self.mine()], observations=observed(
+            "n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
+        self.assertEqual(([a["action"] for a in same["actions"]], same["eligible"]), (["reuse", "reuse"], True))
+        # Pinned: unpin, then purge.
+        pinned = self.plan(views=[home_view, self.mine(topology=old, pinned=True)])
+        self.assertEqual([item["code"] for item in pinned["blocker_details"]], ["changed-copy", "pinned"])
+        # After the purge removes the records, Prepare makes them again.
+        fresh = self.plan(views=[])
+        self.assertEqual(([a["action"] for a in fresh["actions"]], fresh["eligible"]), (["home-view", "copy"], True))
+
     def test_a_pinned_and_mounted_copy_lists_both_causes_under_one_message(self):
         old = self.mine(topology="e" * 64, pinned=True)
         plan = self.plan(views=[old], containers=[container(old["hub_path"], {MANAGED: "true", CONF: "ef" * 32})])

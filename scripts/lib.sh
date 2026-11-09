@@ -1750,10 +1750,19 @@ runtime_context_for_rank() {
 }
 
 
+# require_topology_rewrite_idle MANIFEST [UNANSWERED_NODE_ID...]
+# Every node of MANIFEST must answer a Docker query and run no Pulsar
+# service. The only exception is a node named after MANIFEST: a confirmed
+# node that did not answer discovery, which `topology configure
+# --remove-missing` leaves out. It is still asked; it may fail to answer, but
+# if it answers now the rewrite is refused, so a node that answers is never
+# left out without being checked by discovery again.
 require_topology_rewrite_idle() {
   local manifest="${1:?topology manifest required}"
+  shift
+  local -a unanswered=("$@")
   local rows kind rank node_id hostname ssh_host control_ip control_if hcas rdma_ifs
-  local running remote_query
+  local running remote_query skip item
 
   if ! rows=$(python3 "$REPO_DIR/scripts/topology_manifest.py" rows "$manifest"); then
     warn "cannot validate topology membership before rewrite: $manifest"
@@ -1763,6 +1772,19 @@ require_topology_rewrite_idle() {
       control_ip control_if hcas rdma_ifs; do
     [ "$kind" = NODE ] || continue
     running=""
+    skip=0
+    for item in "${unanswered[@]}"; do
+      [ "$item" != "$node_id" ] || skip=1
+    done
+    if [ "$skip" = 1 ] && [ "$rank" != 0 ]; then
+      printf -v remote_query 'docker ps -q --filter %q' \
+        "label=${PULSAR_MANAGED_LABEL}=true"
+      if ssh_control_endpoint "$ssh_host" "$control_ip" "$remote_query" </dev/null >/dev/null 2>&1; then
+        warn "$hostname answers now; run discovery again before leaving it out of membership"
+        return 1
+      fi
+      continue
+    fi
     if [ "$rank" = 0 ]; then
       if ! running=$("$PULSAR_DOCKER" ps -q \
           --filter "label=${PULSAR_MANAGED_LABEL}=true" 2>/dev/null); then

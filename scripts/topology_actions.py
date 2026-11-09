@@ -18,8 +18,13 @@ def saved(path):
     return topology
 
 
-def discovery_membership(path, document):
-    """A partial rediscovery must not erase confirmed members."""
+def discovery_membership(path, document, remove_missing=False):
+    """A partial rediscovery must not erase confirmed members.
+
+    With REMOVE_MISSING (`topology configure --remove-missing`), confirmed
+    members that did not answer may be left out; a member that answered and
+    was rejected still blocks, because no flag drops a node that answered.
+    """
     document["saved_membership"] = {"missing": [], "issues": []}
     if not Path(path).exists():
         return document
@@ -41,9 +46,20 @@ def discovery_membership(path, document):
                 if node["node_id"] in rejected else {})}
             for node in old["nodes"] if node["node_id"] not in found
         ]
-        if document["saved_membership"]["missing"]:
+        missing = document["saved_membership"]["missing"]
+        answered = [item for item in missing if item["answered"]]
+        if missing and not (remove_missing and not answered):
             document["saved_membership"]["issues"].append(
                 "Confirmed nodes are missing from discovery. Restore access or investigate their identity and fabric; membership was not changed.")
+            for item in answered:
+                reasons = "; ".join(item.get("reasons") or ["not qualified"])
+                document["saved_membership"]["issues"].append(
+                    f"{item['hostname']} answered but cannot be a member: {reasons}. "
+                    "--remove-missing leaves out only nodes that did not answer; fix it first.")
+            if not answered:
+                document["saved_membership"]["issues"].append(
+                    "To save membership without the nodes that did not answer, run "
+                    "./pulsar topology configure --remove-missing.")
         document["membership_changes"] = {
             "added": [node["hostname"] for node in (document.get("topology") or {}).get("nodes", [])
                       if node["node_id"] not in {item["node_id"] for item in old["nodes"]}],
@@ -256,6 +272,8 @@ def main():
     parser.add_argument("--document")
     parser.add_argument("--failure")
     parser.add_argument("--untrusted", help="a file of candidate addresses SSH does not trust, one per line")
+    parser.add_argument("--remove-missing", action="store_true",
+                        help="discovery: confirmed members that did not answer may be left out")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     if args.operation in ("notice", "notice-saved"):
@@ -296,7 +314,7 @@ def main():
         source = ({"schema_version": 1, "result": "incomplete", "topology": None,
                    "rejected": [], "discovery_issues": [args.failure]} if args.failure
                   else manifest.load_json(args.document))
-        document = discovery_membership(args.path, source)
+        document = discovery_membership(args.path, source, remove_missing=args.remove_missing)
         print(json.dumps(document, sort_keys=True))
         return 0 if document["result"] == "ok" else 1
     document = observation(args.path, args.observations if args.operation == "check" else None)

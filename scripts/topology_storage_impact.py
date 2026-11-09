@@ -49,10 +49,11 @@ def load_topology(path: Path | None) -> dict | None:
     return value
 
 
-def render(document: dict) -> None:
+def render(document: dict, names: dict | None = None) -> None:
+    """NAMES maps a removed node ID to its saved hostname, which people read."""
     out = TerminalWriter()
     out.emit('Managed storage impact')
-    removed = document['removed_node_ids']
+    removed = [(names or {}).get(node_id) or node_id for node_id in document['removed_node_ids']]
     out.field('Removed nodes', ', '.join(removed) if removed else 'none', indent=2)
     out.field('Homes on removed nodes',
               str(len(document['homes_on_removed_nodes'])), indent=2)
@@ -88,7 +89,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(document, sort_keys=True))
     else:
-        render(document)
+        render(document, {row['node_id']: row['hostname'] for row in (old or {}).get('nodes', [])})
     return 0
 
 

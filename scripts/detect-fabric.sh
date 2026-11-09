@@ -11,6 +11,7 @@ JSON=0
 WRITE=0
 YES=0
 ACCEPT_NEW=0
+REMOVE_MISSING=0
 declare -a CLI_CANDIDATES=()
 
 usage() {
@@ -27,6 +28,8 @@ Hostnames are descriptive only; cluster identity comes from each machine ID.
   --candidate HOST          probe an additional hostname or IP (repeatable)
   --yes, -y                 skip membership confirmation (automation)
   --accept-new-host-keys    explicitly trust a new SSH host key during discovery
+  --remove-missing          with --write-topology: save without confirmed nodes
+                            that did not answer (never one that answered)
   -h, --help                show this help
 
 Candidate sources are combined and de-duplicated:
@@ -56,6 +59,7 @@ while [ $# -gt 0 ]; do
       ;;
     --yes|-y) YES=1 ;;
     --accept-new-host-keys) ACCEPT_NEW=1 ;;
+    --remove-missing) REMOVE_MISSING=1 ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown arg: $1" ;;
   esac
@@ -64,6 +68,10 @@ done
 
 if [ "$JSON" = 1 ] && [ "$WRITE" = 1 ]; then
   die "--json and --write-topology are separate operations"
+fi
+
+if [ "$REMOVE_MISSING" = 1 ] && [ "$WRITE" != 1 ]; then
+  die "--remove-missing applies only when saving membership: pulsar topology configure --remove-missing" 2
 fi
 
 if [ "$WRITE" = 1 ] && [ "$YES" != 1 ]; then
@@ -267,8 +275,10 @@ assemble_args+=("${probe_files[@]}")
 discovery="$tmpdir/discovery.json"
 "$MANIFEST_TOOL" "${assemble_args[@]}" >"$discovery"
 membership_ok=1
-python3 "$REPO_DIR/scripts/topology_actions.py" discovery "$CLUSTER_TOPOLOGY_FILE" \
-  --document "$discovery" >"$tmpdir/membership.json" || membership_ok=0
+membership_args=(discovery "$CLUSTER_TOPOLOGY_FILE" --document "$discovery")
+[ "$REMOVE_MISSING" != 1 ] || membership_args+=(--remove-missing)
+python3 "$REPO_DIR/scripts/topology_actions.py" "${membership_args[@]}" \
+  >"$tmpdir/membership.json" || membership_ok=0
 mv "$tmpdir/membership.json" "$discovery"
 if [ "$JSON" != 1 ]; then
   python3 "$REPO_DIR/scripts/topology_actions.py" changes "$CLUSTER_TOPOLOGY_FILE" --document "$discovery"
@@ -344,10 +354,31 @@ if [ "$WRITE" != 1 ]; then
   exit 0
 fi
 
+# --remove-missing: the confirmed nodes that did not answer, which this save
+# leaves out. Discovery already refused any missing node that answered.
+declare -a unanswered_ids=() unanswered_names=()
+if [ "$REMOVE_MISSING" = 1 ]; then
+  while IFS=$'\t' read -r unanswered_id unanswered_name; do
+    [ -n "$unanswered_id" ] || continue
+    unanswered_ids+=("$unanswered_id")
+    unanswered_names+=("$unanswered_name")
+  done < <(python3 -c 'import json,sys
+for item in json.load(open(sys.argv[1]))["saved_membership"]["missing"]:
+    if item.get("answered") is False: print(item["node_id"] + "\t" + item["hostname"])
+' "$verified")
+fi
+unanswered_list=""
+if [ "${#unanswered_names[@]}" -gt 0 ]; then
+  unanswered_list=$(python3 -c 'import sys
+names = sys.argv[1:]
+print(names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])' "${unanswered_names[@]}")
+fi
+
 # Replacing membership while any old or proposed rank is active would make
-# lifecycle ownership ambiguous. Query every rank and fail closed on probe error.
+# lifecycle ownership ambiguous. Query every rank and fail closed on probe error;
+# only a node left out under --remove-missing may fail to answer.
 if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
-  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" \
+  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" "${unanswered_ids[@]}" \
     || die "existing cluster is not idle; stop managed services and restore access to every node"
 fi
 require_topology_rewrite_idle "$verified" \
@@ -360,6 +391,12 @@ python3 "$REPO_DIR/scripts/topology_storage_impact.py" "${impact_args[@]}" \
   || die "managed storage impact could not be inspected; topology was not changed"
 echo
 "$MANIFEST_TOOL" render-save "$verified" "$CLUSTER_TOPOLOGY_FILE"
+if [ -n "$unanswered_list" ]; then
+  print_hanging "  Left out  " "$unanswered_list, which did not answer."
+  unanswered_pronoun=it
+  [ "${#unanswered_names[@]}" = 1 ] || unanswered_pronoun=them
+  print_hanging "  Services  " "Pulsar cannot ask $unanswered_list whether a Pulsar service runs there. It saves without $unanswered_pronoun only because --remove-missing was given."
+fi
 
 node_count=$(python3 -c 'import json,sys
 document=json.load(open(sys.argv[1],encoding="utf-8"))
@@ -370,7 +407,10 @@ if [ "$YES" != 1 ]; then
   # ui.sh was loaded, and Gum found, before discovery started.
   machine_word=machines
   [ "$node_count" != 1 ] || machine_word=machine
-  if confirm "Save cluster membership with $node_count $machine_word?"; then
+  question="Save cluster membership with $node_count $machine_word?"
+  [ -z "$unanswered_list" ] \
+    || question="Save cluster membership with $node_count $machine_word, without $unanswered_list, which did not answer?"
+  if confirm "$question"; then
     :
   else
     confirmation_rc=$?
@@ -384,7 +424,7 @@ fi
 
 # Recheck after the human prompt so a newly started service blocks saving.
 if [ -f "$CLUSTER_TOPOLOGY_FILE" ]; then
-  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" || die "existing cluster is not idle"
+  require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" "${unanswered_ids[@]}" || die "existing cluster is not idle"
 fi
 require_topology_rewrite_idle "$verified" || die "proposed cluster is not idle"
 if [ -f "$tmpdir/saved-before.json" ]; then

@@ -154,6 +154,9 @@ def double_main():
         elif command.startswith('docker ps '): action = 'docker'
         else: raise RuntimeError('unexpected remote operation')
     if action == 'python3':
+        # A node that did not answer discovery but answers later queries.
+        if tool == 'ssh' and str(rank) in os.environ.get('TOPOLOGY_PROBE_UNREACHABLE', '').split(','):
+            return 255
         print((root/f'probe-{rank}.json').read_text())
     elif action == 'ping':
         return int(os.environ.get('TOPOLOGY_PING_RC', '0'))

@@ -13,7 +13,7 @@ for command, description in [
     ("show [--json]", "Read saved membership; no live probes."),
     ("check [--json]", "Check all saved nodes and fabric without saving."),
     ("detect [--json] [--candidate HOST ...]", "Discover without changing membership or SSH trust."),
-    ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys]", "Review and explicitly save membership; no model actions."),
+    ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys] [--remove-missing]", "Review and explicitly save membership; no model actions. --remove-missing saves without confirmed nodes that did not answer; it never leaves out a node that answered."),
     ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
     writer.emit(command, initial_indent="  ", subsequent_indent="    ", role="command")
@@ -294,7 +294,7 @@ case "$action" in
       case "$1" in
         --candidate) [ -n "${2:-}" ] || { usage >&2; exit 2; }; flags+=("$1" "$2"); shift ;;
         --json) [ "$action" = detect ] || { usage >&2; exit 2; }; flags+=("$1") ;;
-        --yes|-y|--accept-new-host-keys) [ "$action" = configure ] || { usage >&2; exit 2; }; flags+=("$1") ;;
+        --yes|-y|--accept-new-host-keys|--remove-missing) [ "$action" = configure ] || { usage >&2; exit 2; }; flags+=("$1") ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
       esac

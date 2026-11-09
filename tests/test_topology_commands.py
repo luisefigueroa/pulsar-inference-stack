@@ -883,6 +883,136 @@ class TopologyCommands(unittest.TestCase):
         self.assertIn('the cluster changes noticed was not saved', result.stderr)
         self.assertEqual(json.loads(result.stdout)['changes_noticed']['result'], 'unchanged')
 
+    # Phase 1.3: saving membership without a confirmed node that did not answer.
+    def three_nodes(self, enrolled=True):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.fixture = Fixture(Path(temporary.name), nodes=3, enrolled=enrolled)
+        return self.fixture
+
+    def saved_nodes(self):
+        return [(node['rank'], node['node_id']) for node in json.loads(self.fixture.path.read_text())['nodes']]
+
+    def test_without_the_flag_a_missing_node_still_blocks_and_the_refusal_names_it(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('Missing confirmed node: fixture-rank-1 (position 1)', text)
+        self.assertIn('To save membership without the nodes that did not answer, run '
+                      './pulsar topology configure --remove-missing.', text)
+        self.assertEqual(f.path.read_bytes(), before)
+        # Only configure takes the flag.
+        for action in ('detect', 'check', 'show', 'setup'):
+            self.assertEqual(f.run('topology', action, '--remove-missing').returncode, 2)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_drops_only_the_node_that_did_not_answer_and_keeps_the_order(self):
+        f = self.three_nodes()
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # The remaining nodes keep their relative order; positions close up.
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-2')])
+        text = ' '.join(result.stdout.split())
+        self.assertIn('Left out fixture-rank-1, which did not answer.', text)
+        self.assertIn('Pulsar cannot ask fixture-rank-1 whether a Pulsar service runs there. It saves without '
+                      'it only because --remove-missing was given.', text)
+        # The storage impact names the node that is left out, before the save.
+        self.assertIn('Removed nodes fixture-rank-1', text)
+        self.assertLess(text.index('Managed storage impact'), text.index('Left out'))
+        # The answering nodes were asked for running services, before and after
+        # the question; the node left out was asked too, and did not answer.
+        docker = [args[args.index('--')+1] for tool, args in f.calls()
+                  if tool == 'ssh' and args[-1].startswith('docker ps ')]
+        self.assertEqual(docker.count('alias-2'), 4)
+        self.assertEqual(docker.count('alias-1'), 2)
+        self.assertEqual(self.changes()['result'], 'unchanged')
+
+    def test_remove_missing_asks_a_question_that_names_the_node_and_starts_on_no(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'configure', '--remove-missing'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'),
+                         ['Save cluster membership with 2 machines, without fixture-rank-1, which did not answer?'])
+        confirms = [args for tool, args in f.calls() if tool == 'gum' and args[:1] == ['confirm']]
+        self.assertIn('--default=false', confirms[0])
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_never_drops_a_node_that_answered(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        # The member answered, but no longer qualifies: it is missing from the
+        # proposed membership, yet the flag cannot leave it out.
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], qualified=False, reject_reasons=['GPU is missing'])))
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('fixture-rank-1 answered but cannot be a member: GPU is missing. --remove-missing leaves out '
+                      'only nodes that did not answer; fix it first.', text)
+        self.assertNotIn('run ./pulsar topology configure --remove-missing', text)
+        self.assertEqual(f.path.read_bytes(), before)
+        # A node that did not answer discovery but answers the service query is
+        # not left out either: discovery must see it again first.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env['TOPOLOGY_PROBE_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('fixture-rank-1 answers now; run discovery again', result.stderr)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_keeps_the_running_service_guard_on_nodes_that_answer(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_ACTIVE='2')
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('has running stack-managed containers', result.stderr)
+        self.assertEqual(f.path.read_bytes(), before)
+        # A service started during the question still blocks the save.
+        f.env.pop('TOPOLOGY_ACTIVE')
+        (f.root/'docker-count').unlink(missing_ok=True)
+        self.use_gum(TOPOLOGY_ACTIVE_AFTER='4', TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'configure', '--remove-missing'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_adding_a_machine_and_a_changed_address_save_when_every_member_answers(self):
+        f = self.fixture
+        self.add_machine(2)
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-1'), (2, 'fixture-node-2')])
+        probe = dict(f.probes[1], control=dict(interface='mgmt0', ip='192.0.2.99'))
+        Path(f.files[1]).write_text(json.dumps(probe))
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(f.path.read_text())['nodes'][1]['control']['ip'], '192.0.2.99')
+
+    def test_a_membership_save_drops_every_recorded_ssh_identity(self):
+        # Find-out (1.3): a save writes membership without SSH identities, so
+        # every node, not only a new one, is enrolled again afterwards.
+        f = self.fixture
+        enrolled = json.loads(f.path.read_text())
+        self.assertTrue(all(node.get('ssh_host_keys') for node in enrolled['nodes']))
+        self.add_machine(2)
+        self.assertEqual(f.run('topology', 'configure', '--yes', '--candidate', 'alias-2').returncode, 0)
+        saved = json.loads(f.path.read_text())
+        self.assertEqual(saved['schema_version'], 1)
+        self.assertFalse(any(node.get('ssh_host_keys') for node in saved['nodes']))
+        result = f.run('ssh-trust', 'enroll', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        states = [line.split()[-1] for line in result.stdout.splitlines() if line.strip().startswith('State')]
+        self.assertEqual(states, ['new', 'new', 'new'])
+        # Enrollment changes the topology ID again, so the changes record from
+        # the save now names an earlier membership.
+        self.assertNotEqual(json.loads(f.path.read_text())['topology_id'], saved['topology_id'])
+        self.assertEqual(self.changes()['topology_id'], saved['topology_id'])
+
     def test_narrow_human_observation(self):
         f = self.fixture
         result = f.run('topology', 'show')
