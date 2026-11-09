@@ -1762,7 +1762,7 @@ require_topology_rewrite_idle() {
   shift
   local -a unanswered=("$@")
   local rows kind rank node_id hostname ssh_host control_ip control_if hcas rdma_ifs
-  local running remote_query skip item
+  local running remote_query skip item identity answered_id
 
   if ! rows=$(python3 "$REPO_DIR/scripts/topology_manifest.py" rows "$manifest"); then
     warn "cannot validate topology membership before rewrite: $manifest"
@@ -1777,13 +1777,22 @@ require_topology_rewrite_idle() {
       [ "$item" != "$node_id" ] || skip=1
     done
     if [ "$skip" = 1 ] && [ "$rank" != 0 ]; then
-      printf -v remote_query 'docker ps -q --filter %q' \
-        "label=${PULSAR_MANAGED_LABEL}=true"
-      if ssh_control_endpoint "$ssh_host" "$control_ip" "$remote_query" </dev/null >/dev/null 2>&1; then
-        warn "$hostname answers now; run discovery again before leaving it out of membership"
-        return 1
+      # Ask who answers at its saved address. No answer: it is left out.
+      # The same machine ID: it answers now, so it is not left out. Another
+      # machine (a reinstall, which Pulsar sees as a new node): that machine
+      # is checked for running services like any node.
+      if identity=$(ssh_control_endpoint "$ssh_host" "$control_ip" \
+          "python3 - --ssh-host $(printf '%q' "$ssh_host") --identity-only" \
+          <"$REPO_DIR/scripts/probe-node.py" 2>/dev/null); then
+        answered_id=$(printf '%s' "$identity" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["node_id"])' 2>/dev/null) || answered_id=""
+        if [ -z "$answered_id" ] || [ "$answered_id" = "$node_id" ]; then
+          warn "$hostname answers now; run discovery again before leaving it out of membership"
+          return 1
+        fi
+      else
+        continue
       fi
-      continue
     fi
     if [ "$rank" = 0 ]; then
       if ! running=$("$PULSAR_DOCKER" ps -q \

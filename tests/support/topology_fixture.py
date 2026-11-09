@@ -155,7 +155,8 @@ def double_main():
         else: raise RuntimeError('unexpected remote operation')
     if action == 'python3':
         # A node that did not answer discovery but answers later queries.
-        if tool == 'ssh' and str(rank) in os.environ.get('TOPOLOGY_PROBE_UNREACHABLE', '').split(','):
+        if (tool == 'ssh' and str(rank) in os.environ.get('TOPOLOGY_PROBE_UNREACHABLE', '').split(',')
+                and '--identity-only' not in args[-1]):
             return 255
         print((root/f'probe-{rank}.json').read_text())
     elif action == 'ping':

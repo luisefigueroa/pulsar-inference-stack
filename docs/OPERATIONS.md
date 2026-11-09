@@ -304,7 +304,8 @@ make a change by themselves, since discovery cannot tell whether they are GB10
 machines. Pulsar identifies a node by its OS machine ID, so a reinstalled
 machine is one node gone and one new: a found machine or untrusted address with
 the hostname or address of a member that did not answer is marked
-`possible_reinstall`. A successful save rewrites the record as unchanged. SSH
+`possible_reinstall`; a candidate that is the other mDNS name or address of a
+member that answered is not listed. A successful save rewrites the record as unchanged. SSH
 enrollment changes the `topology_id` too, so a record that names another
 `topology_id` than the saved membership describes an earlier membership.
 `detect --json` carries the same body as `changes_noticed`. Saving the record
@@ -343,8 +344,11 @@ A confirmed node that does not answer keeps membership from being saved, because
 Pulsar cannot tell a node that is down from one that is gone. When it is gone,
 `./pulsar topology configure --remove-missing` saves membership without it. The
 flag leaves out only confirmed nodes that did not answer discovery; a member
-that answered but no longer qualifies still blocks the save, and so does a
-left-out node that answers the running-service query: run discovery again.
+that answered but no longer qualifies still blocks the save. Each node left out
+is asked once more who it is, at its saved address: if it answers with its own
+machine ID, the save is refused (run discovery again); if another machine
+answers there, as after a reinstall, that machine is checked for running
+services like any node, and joins as a new node after the saved ones.
 Nodes that answer are checked for running Pulsar services as before, and a
 running one still blocks. The output names each node left out and says that it
 could not be asked whether a Pulsar service runs there. The storage impact
@@ -1660,8 +1664,9 @@ formats, for `contract`, `resources` and contributor subcommands such as
 `warn` in yellow, `FAIL` and `NOT READY` in bold red, `READY` in bold green;
 `ok` stays plain. `./pulsar doctor` groups its checks under this node, cluster
 membership, each other node by hostname and the catalog, then counts warnings
-and blocking issues in its verdict; its `--json` output is unchanged. Each
-node's section ends with its [prerequisites](#installation-prerequisites). Every
+and blocking issues in its verdict; its `--json` output keeps its checks
+without that grouping. Each node's section ends with its
+[prerequisites](#installation-prerequisites). Every
 styled part also reads without color. `NO_COLOR` removes the colors and keeps
 bold and underline; `PULSAR_COLOR=never` prints no styles;
 `PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's

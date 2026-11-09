@@ -356,8 +356,8 @@ could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
 
 `topology configure --remove-missing` saves membership without confirmed nodes
 that did not answer discovery. It refuses with exit 1 when a missing member
-answered, or answers the running-service query, and when a node that answers
-runs a Pulsar service.
+answered, when a node left out answers again with its own machine ID, and when
+a node that answers runs a Pulsar service.
 
 `topology forget [--plan] [--yes] [--json]` removes the saved membership, the
 generated SSH configuration and the saved observations of the cluster after a

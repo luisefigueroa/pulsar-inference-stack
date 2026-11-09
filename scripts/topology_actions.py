@@ -122,10 +122,18 @@ def changes_noticed(old, document, untrusted=(), issue=None):
             fields["position"] = {"old": previous["rank"], "new": node["rank"]}
         if fields:
             changed.append({"hostname": node["hostname"], "node_id": node["node_id"], "changes": fields})
-    members = {node["ssh_host"] for node in old["nodes"]}
+    # A machine that answered discovery under one name is not "untrusted"
+    # under another: mDNS advertises each member's .local name and address too.
+    answered = [*nodes, *(document.get("rejected") or []),
+                *(node for node in old["nodes"] if node["node_id"] in {item["node_id"] for item in nodes})]
+    known = {node["ssh_host"] for node in old["nodes"]}
+    for node in answered:
+        hostname = node.get("hostname")
+        known.update(value for value in (hostname, f"{hostname}.local" if hostname else None, node.get("ssh_host"),
+                                         (node.get("control") or {}).get("ip")) if value)
     seen = []
     for address in untrusted:
-        if address and address not in members and address not in seen:
+        if address and address not in known and address not in seen:
             seen.append(address)
     untrusted_rows = [{"address": address,
                        "possible_reinstall": address.removesuffix(".local") in gone or address in gone_addresses}

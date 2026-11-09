@@ -806,15 +806,17 @@ class TopologyCommands(unittest.TestCase):
 
     def test_untrusted_candidates_alone_do_not_make_a_change(self):
         f = self.fixture
-        f.env['TOPOLOGY_UNTRUSTED'] = 'printer.local'
-        result = f.run('topology', 'detect', '--candidate', 'printer.local', '--candidate', 'gone.local')
+        # A member that answered is never untrusted under its other mDNS names.
+        f.env['TOPOLOGY_UNTRUSTED'] = 'printer.local,fixture-rank-1.local,192.0.2.11'
+        result = f.run('topology', 'detect', '--candidate', 'printer.local', '--candidate', 'gone.local',
+                       '--candidate', 'fixture-rank-1.local', '--candidate', '192.0.2.11')
         self.assertEqual(result.returncode, 0, result.stderr)
         record = self.changes()
         self.assertEqual(record['result'], 'unchanged')
         # An address that did not answer at all is not listed: it was never seen.
         self.assertEqual(record['untrusted'], [{'address': 'printer.local', 'possible_reinstall': False}])
         # The human output is unchanged by the record.
-        self.assertIn('SSH 2 advertised addresses could not be checked with saved keys', ' '.join(result.stdout.split()))
+        self.assertIn('SSH 4 advertised addresses could not be checked with saved keys', ' '.join(result.stdout.split()))
 
     def test_a_reinstalled_machine_is_one_node_gone_and_one_new(self):
         f = self.fixture
@@ -928,11 +930,14 @@ class TopologyCommands(unittest.TestCase):
         self.assertIn('Removed nodes fixture-rank-1', text)
         self.assertLess(text.index('Managed storage impact'), text.index('Left out'))
         # The answering nodes were asked for running services, before and after
-        # the question; the node left out was asked too, and did not answer.
+        # the question; the node left out was asked who it is, and did not answer.
         docker = [args[args.index('--')+1] for tool, args in f.calls()
                   if tool == 'ssh' and args[-1].startswith('docker ps ')]
         self.assertEqual(docker.count('alias-2'), 4)
-        self.assertEqual(docker.count('alias-1'), 2)
+        self.assertEqual(docker.count('alias-1'), 0)
+        identity = [args[args.index('--')+1] for tool, args in f.calls()
+                    if tool == 'ssh' and '--identity-only' in args[-1]]
+        self.assertEqual(identity, ['alias-1', 'alias-1'])
         self.assertEqual(self.changes()['result'], 'unchanged')
 
     def test_remove_missing_asks_a_question_that_names_the_node_and_starts_on_no(self):
@@ -967,6 +972,27 @@ class TopologyCommands(unittest.TestCase):
         result = f.run('topology', 'configure', '--yes', '--remove-missing')
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('fixture-rank-1 answers now; run discovery again', result.stderr)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_saves_a_reinstalled_machine_as_one_node_gone_and_one_new(self):
+        # The machine at fixture-rank-1's address answers with a new machine ID.
+        # The old node did not answer; the machine that answers is checked for
+        # running services like any node, then joins as a new node.
+        f = self.three_nodes()
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # A new node joins after the saved ones, as any added machine does.
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-2'),
+                                              (2, 'fixture-node-1-reinstalled')])
+        self.assertIn('Left out fixture-rank-1, which did not answer.', ' '.join(result.stdout.split()))
+        # A service running on the machine that answers there still blocks.
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        f.env['TOPOLOGY_ACTIVE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_remove_missing_keeps_the_running_service_guard_on_nodes_that_answer(self):
