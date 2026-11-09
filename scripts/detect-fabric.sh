@@ -392,10 +392,10 @@ python3 "$REPO_DIR/scripts/topology_storage_impact.py" "${impact_args[@]}" \
 echo
 "$MANIFEST_TOOL" render-save "$verified" "$CLUSTER_TOPOLOGY_FILE"
 if [ -n "$unanswered_list" ]; then
-  print_hanging "  Left out  " "$unanswered_list, which did not answer."
+  print_hanging "Left out    " "$unanswered_list, which did not answer."
   unanswered_pronoun=it
   [ "${#unanswered_names[@]}" = 1 ] || unanswered_pronoun=them
-  print_hanging "  Services  " "Pulsar cannot ask $unanswered_list whether a Pulsar service runs there. It saves without $unanswered_pronoun only because --remove-missing was given."
+  print_hanging "Services    " "Pulsar cannot ask $unanswered_list whether a Pulsar service runs there. It saves without $unanswered_pronoun only because --remove-missing was given."
 fi
 
 node_count=$(python3 -c 'import json,sys
