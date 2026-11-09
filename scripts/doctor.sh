@@ -68,6 +68,73 @@ doctor_ready_line() {
   python3 "$REPO_DIR/scripts/terminal_format.py" --status pass READY "$1"
 }
 
+# prerequisite_rows: probe-node.py --prerequisites-only JSON on stdin, one
+# LEVEL|ID|MESSAGE row per prerequisite out. The rows are state words; the
+# probe never returns a token or an account name.
+prerequisite_rows() {
+  python3 -c '
+import json, sys
+doc = json.load(sys.stdin)
+facts = doc["prerequisites"]
+docs = " (`docs/OPERATIONS.md#installation-prerequisites`)"
+python = facts["python"]
+if python.get("ok") is True:
+    print("ok|python|Python " + str(python.get("version")))
+else:
+    print("fail|python|Python " + str(python.get("version") or "unknown")
+          + " is older than 3.11; install Python 3.11 or newer on this node" + docs)
+for tool, package in (("flock", "util-linux"), ("rsync", "rsync")):
+    if facts.get(tool) is True:
+        print(f"ok|{tool}|{tool} present")
+    else:
+        print(f"fail|{tool}|{tool} not found; install {package} on this node" + docs)
+hf = facts["hf"]
+state, version = hf.get("state"), str(hf.get("version") or "")
+if state == "ok":
+    print("ok|hf_cli|hf CLI " + (version or "present"))
+elif state == "missing" and hf.get("legacy_cli"):
+    print("fail|hf_cli|hf CLI not found, only the older huggingface-cli; install the current hf CLI on this node" + docs)
+elif state == "missing":
+    print("fail|hf_cli|hf CLI not found; install the Hugging Face hf CLI on this node" + docs)
+elif state == "unusable":
+    print("fail|hf_cli|hf CLI found, but its Python cannot load the Hugging Face library; install the hf CLI again on this node" + docs)
+elif state == "too-old":
+    print("fail|hf_cli|hf CLI " + (version + " " if version else "") + "lacks what Download uses; install a newer hf CLI on this node" + docs)
+else:
+    print("warn|hf_cli|hf CLI not checked: the check did not finish on this node")
+login = hf.get("login")
+if login == "accepted":
+    print("ok|hf_login|hf logged in to the Hub")
+elif login == "missing":
+    print("fail|hf_login|hf is not logged in to the Hub; run `hf auth login` on this node")
+elif login == "rejected":
+    print("fail|hf_login|the Hub rejected this node'"'"'s hf login; run `hf auth login` on this node")
+elif login == "not-reached":
+    print("warn|hf_login|hf login not checked: the Hub could not be reached from this node")
+else:
+    print("warn|hf_login|hf login not checked because the hf CLI is not usable")
+'
+}
+
+# record_prerequisites RANK: this node (0) or a confirmed node, in its section.
+record_prerequisites() {
+  local rank="$1" prefix="" name="" probe rows level id message
+  if [ "$rank" != 0 ]; then
+    prefix="rank_${rank}_"
+    name="$(human_node_name "$rank"): "
+  fi
+  if probe=$(probe_node_json_for_rank "$rank" --prerequisites-only 2>/dev/null) \
+      && rows=$(printf '%s' "$probe" | prerequisite_rows 2>/dev/null) && [ -n "$rows" ]; then
+    while IFS='|' read -r level id message; do
+      record "$level" "${prefix}${id}" "${name}${message}" "$message"
+    done <<<"$rows"
+  else
+    record warn "${prefix}prerequisites" \
+      "${name}prerequisites not checked: the node did not answer the check; run \`./pulsar doctor\` again" \
+      "prerequisites not checked: the node did not answer the check; run \`./pulsar doctor\` again"
+  fi
+}
+
 section "$(hostname -s 2>/dev/null || hostname) (this node)"
 
 arch=$(uname -m)
@@ -240,6 +307,7 @@ if awk -v a="$avail" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 < f)}'; 
 else
   record ok memory "MemAvailable ${avail} GiB" "${avail} GiB memory available"
 fi
+record_prerequisites 0
 
 section "Cluster membership"
 if ! load_cluster_topology; then
@@ -290,6 +358,7 @@ print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch
         record fail "rank_${rank}_memory" "$node_name: memory unavailable or below the hard floor; run \`./pulsar inventory\`" \
           "memory unavailable or below the hard floor; run \`./pulsar inventory\`"
       fi
+      record_prerequisites "$rank"
     else
       record fail "rank_${rank}_probe" "$node_name cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`" \
         "cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`"

@@ -1569,13 +1569,16 @@ append_probe_node_platform_args() {
   done
 }
 
+# probe_node_remote_python_command HOST [PROBE_FLAG...]: extra flags such as
+# --prerequisites-only follow the platform flags.
 probe_node_remote_python_command() {
   local ssh_host="${1:?ssh host required}"
+  shift
   local -a flags=()
   local flag
   append_probe_node_platform_args flags
   printf 'python3 - --ssh-host %q' "$ssh_host"
-  for flag in "${flags[@]}"; do
+  for flag in "${flags[@]}" "$@"; do
     printf ' %q' "$flag"
   done
   printf '\n'
@@ -1583,21 +1586,24 @@ probe_node_remote_python_command() {
 
 # Run probe-node.py on a confirmed rank. Rank 0 is local; other ranks receive
 # the probe over SSH stdin so the remote host does not need a repo checkout.
+# probe_node_json_for_rank RANK [--prerequisites-only]: only doctor asks for
+# the prerequisites, a separate answer that never decides membership.
 probe_node_json_for_rank() {
   local rank="${1:?rank required}"
+  shift
   local host
   local -a flags=()
   append_probe_node_platform_args flags
   if [ "$rank" = 0 ]; then
     python3 "$REPO_DIR/scripts/probe-node.py" --local --ssh-host local \
-      "${flags[@]}"
+      "${flags[@]}" "$@"
     return
   fi
   require_cluster_nodes "$((rank + 1))" \
     || die "rank $rank is not present in the confirmed topology"
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
   "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-    "$(probe_node_remote_python_command "$host")" \
+    "$(probe_node_remote_python_command "$host" "$@")" \
     <"$REPO_DIR/scripts/probe-node.py"
 }
 

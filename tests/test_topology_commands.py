@@ -712,6 +712,27 @@ class TopologyCommands(unittest.TestCase):
                 self.assertNotIn('topology-bound SSH identity enrolled', output)
                 self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
 
+    def test_only_doctor_asks_nodes_for_their_prerequisites(self):
+        # Discovery, the membership check and configure never ask for the
+        # prerequisites, so their Hub request never runs there.
+        f = self.fixture
+        for args in (('topology', 'check', '--json'), ('topology', 'detect', '--json'),
+                     ('topology', 'configure', '--yes')):
+            f.run(*args)
+        self.assertTrue(f.calls())
+        self.assertFalse(any('--prerequisites-only' in ' '.join(args) for _, args in f.calls()))
+        # The shared probe helper passes the flag to a confirmed node only when asked.
+        f.log.unlink()
+        script = (f'. {ROOT}/scripts/lib.sh; load_cluster_topology; '
+                  'probe_node_json_for_rank 1 --prerequisites-only >/dev/null; probe_node_json_for_rank 1 >/dev/null')
+        result = subprocess.run(['bash', '-c', script], env=f.env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [args[-1] for tool, args in f.calls() if tool == 'ssh']
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(commands[0].startswith('python3 - --ssh-host alias-1 --expected-gpu'), commands[0])
+        self.assertTrue(commands[0].endswith(' --prerequisites-only'), commands[0])
+        self.assertEqual(commands[1], commands[0][:-len(' --prerequisites-only')])
+
     def test_narrow_human_observation(self):
         f = self.fixture
         result = f.run('topology', 'show')
