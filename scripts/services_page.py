@@ -81,6 +81,7 @@ STATUS_WORDS = {
     "read-only": "read-only",
     "outside": "Started outside this catalog, for example by an experiment",
     "not-offered": "not offered",
+    "cannot-see": "Pulsar cannot see everything the service runs",
 }
 # A no-break space keeps a phrase together when a line wraps; it prints as a space.
 
@@ -368,7 +369,26 @@ class Page:
             if blocker and blocker != "Pulsar cannot stop it":
                 field("Restart", f"{STATUS_WORDS['not-offered']}: {blocker}")
         if service["stop_reason"]:
-            field("Stop", f"{STATUS_WORDS['not-offered']}: {clean(service['stop_reason'])}")
+            field("Stop", self.stop_words(conf))
+
+    def stop_words(self, conf: str) -> str:
+        """Why Stop… is not offered, in the operator's words: a node that does not answer
+        is named, since Pulsar then cannot see everything the service runs."""
+        service, _ = self.service(conf)
+        reason = clean(service["stop_reason"])
+        if not reason.startswith("Inventory has not established"):
+            return f"{STATUS_WORDS['not-offered']}: {reason}"
+        if self.unobserved:
+            verb = "does" if len(self.unobserved) == 1 else "do"
+            return (f"{STATUS_WORDS['not-offered']} while {_list(self.unobserved)} {verb} not answer, because "
+                    f"{STATUS_WORDS['cannot-see']}")
+        if self.blind:
+            return f"{STATUS_WORDS['not-offered']} while a node cannot be observed, because {STATUS_WORDS['cannot-see']}"
+        if service.get("ownership") != "managed":
+            return f"{STATUS_WORDS['not-offered']}: the service inventory could not confirm that Pulsar started it"
+        details = "; ".join(clean(item) for item in self.raw(conf).get("reasons") or [] if item)
+        return (f"{STATUS_WORDS['not-offered']}: the service inventory could not confirm Pulsar can stop all of it"
+                + (f" ({details})" if details else ""))
 
     def _inventory_api(self, raw: dict) -> str | None:
         """The API address the inventory implies, as `./pulsar status` falls back to it

@@ -220,6 +220,7 @@ below are for reading.
 | Services: processes Pulsar did not start, read-only | GPU work and containers on the nodes that Pulsar did not start. The page names them and offers nothing for them. |
 | Services: Started outside this catalog, for example by an experiment | A Pulsar-managed service whose spec this checkout does not publish. The page can show its logs and stop it; it has no recipe to check, restart or switch from. |
 | Services: not offered | **Restart…** or **Stop…** is left out for the reason given, for example a service started from a modified recipe, or on other nodes than Start would use. |
+| Services: Pulsar cannot see everything the service runs | **Stop…** is not offered while the named node does not answer the service inventory: Stop removes the service on every node, and Pulsar cannot see what runs on that one. Choose **Back**, then the page again once it answers. |
 | Why: not run: an earlier blocker ended the checks | **Why will a model not start?** shows each of Start's checks; Start stops at the first blocking group, so later checks did not run. It does not mean they passed. After the fix, **Check again** runs them. |
 | Why: Nothing blocks it | Start's checks all passed without starting. **Serve a model…** starts it, after its plan. |
 | Why: Start's checks could not run | The dry run gave no answer Pulsar could read, for the reason given. **Run diagnostics** checks Docker, the GPUs and every node's prerequisites. |
@@ -1499,7 +1500,9 @@ and offered nothing. The choices:
 A service outside the catalog offers **Logs** and **Stop…** only, and its
 question adds `This service was started outside this catalog.` Stop and
 Restart are left out while the inventory has not established that Pulsar can
-stop the service, for example when a node did not answer; the card says why.
+stop the service; the card says why, naming a node that did not answer:
+`Stop not offered while <node-3> does not answer, because Pulsar cannot see
+everything the service runs`.
 None of these choices passes `--replace`, `--pull-image` or
 `--accept-memory-warn`. With nothing running it offers **Serve a model…**,
 **Look again** and **Back**.

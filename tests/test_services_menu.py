@@ -330,7 +330,9 @@ class SeveralOrNone(Page):
                       "absent", text)
         # Stop needs every node to answer: not offered, and why.
         self.assertNotIn("Stop…", self.menus()[0])
-        self.assertIn("Stop not offered: Inventory has not established safe ownership", text)
+        self.assertIn("Stop not offered while spark-3 does not answer, because Pulsar cannot see everything the "
+                      "service runs", text)
+        self.assertNotIn("Inventory has not established", text)
 
     def test_a_service_outside_the_catalog_can_be_stopped_and_gets_nothing_else(self):
         self.inventory(inventory(service(THIRD, served="experiment-model")))
@@ -408,6 +410,20 @@ class Widths(unittest.TestCase):
                     self.assertLessEqual(len(line), width)
                 self.assertIn("fp8", label)
                 self.assertIn("port 8000", label.replace("\x1f", " "))
+
+    def test_why_stop_is_not_offered_is_said_in_the_operators_words(self):
+        entries = [checked(home=HOME, local_state="ready")]
+        for document, words in (
+                (inventory(service(SPEC, safe=False), unobserved=("w1", "w2")),
+                 "Stop not offered while spark-2 and spark-3 do not answer, because Pulsar cannot see everything "
+                 "the service runs"),
+                (inventory(service(SPEC, safe=False)),
+                 "Stop not offered: the service inventory could not confirm Pulsar can stop all of it (not every "
+                 "confirmed node is observable for cleanup)")):
+            with self.subTest(words=words):
+                text = " ".join(self.page(document, entries).screen(SPEC, width=200).split())
+                self.assertIn(words, text)
+                self.assertNotIn("Inventory has not established", text)
 
     def test_every_choice_uses_plain_words(self):
         entries = [checked(home=HOME, local_state="ready")]
