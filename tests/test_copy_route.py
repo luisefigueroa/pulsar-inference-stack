@@ -94,8 +94,10 @@ class Harness:
     command a double. Returns the calls, in order, with the fixture's own paths
     written as <root>, and the files the destination received."""
 
-    def __init__(self, test, topology, *, overrides=None, env=None):
+    def __init__(self, test, topology, *, overrides=None, env=None, configured=False):
         self.test, self.topology, self.overrides, self.env = test, topology, overrides or {}, env or {}
+        # CONFIGURED adds the enrolled cluster's SSH options, -F and ProxyCommand=none among them.
+        self.configured = configured
 
     def run(self, source_rank, destination_rank):
         root = Path(self.test.enterContext(tempfile.TemporaryDirectory()))
@@ -127,6 +129,7 @@ CLUSTER_TOPOLOGY_COUNT={len(nodes)}
 CLUSTER_NODE_SSH_HOSTS=({hosts})
 CLUSTER_NODE_HOSTNAMES=({names})
 require_topology_ssh_trust() {{ :; }}
+{'CLUSTER_TOPOLOGY_SSH_TRUSTED=1 CLUSTER_SSH_CONFIG_FILE=' + shlex.quote(str(root / 'ssh-config')) + '; _pulsar_configure_topology_ssh' if self.configured else ''}
 model_node() {{ printf '%s' "$2" | python3 -m model_library.node; }}
 ssh_node() {{
   python3 -c 'import json,sys; open(sys.argv[1],"a").write(json.dumps(["ssh_node",int(sys.argv[2]),sys.argv[3]])+"\\n")' \\
@@ -247,6 +250,134 @@ class TheRoute(unittest.TestCase):
             copy_route(broken, 0, 2)
         with self.assertRaises(StorageError):
             copy_route(ring, 1, 1)
+
+
+def proofs(calls):
+    """The argv of each proof SSH ran through the route, in order."""
+    return [call[1] for call in calls if call[0] == 'ssh' and call[1][-2:] in (['ring-bravo', 'true'],
+            ['ring-echo', 'true'], ['ring-alpha', 'true'], ['ring-foxtrot', 'true'], ['ring-charlie', 'true'])]
+
+
+def option(argv, name):
+    """The value of the first -o NAME=… in ARGV, which is the one ssh uses."""
+    for index, arg in enumerate(argv):
+        if index and argv[index - 1] == '-o' and arg.startswith(name + '='):
+            return arg.split('=', 1)[1]
+    return None
+
+
+class CopyThroughANeighbour(unittest.TestCase):
+    """The opposite node of a four-node ring: one rsync over SSH, through rank 1."""
+
+    def setUp(self):
+        self.ring = ring_topology(self)
+        self.nodes = self.ring['nodes']
+        link = {tuple(item['ranks']): item['rails'][0] for item in self.ring['links']}
+        self.cable_01, self.cable_12 = link[(0, 1)], link[(1, 2)]
+
+    def test_a_push_proves_every_hop_then_copies_through_the_neighbour(self):
+        result, calls, received = Harness(self, self.ring).run(0, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(received, ['part-0.bin', 'part-1.bin', 'part-2.bin'])
+        self.assertIn('Copies to fixture-ring-echo pass through fixture-ring-bravo.', result.stderr)
+        b01, b12 = self.cable_01, self.cable_12
+        # Route checks over control SSH, both ends of each cable, in hop order.
+        self.assertEqual([call for call in calls if call[0] in ('ip', 'ssh_node') and 'route' in str(call)], [
+            ['ip', 0, ['-j', 'route', 'get', b01['b']['ip']]],
+            ['ssh_node', 1, f"ip -j route get {b01['a']['ip']}"],
+            ['ssh_node', 1, f"ip -j route get {b12['b']['ip']}"],
+            ['ssh_node', 2, f"ip -j route get {b12['a']['ip']}"]])
+        first, second = proofs(calls)
+        # This machine to bravo, on their cable, from this machine's own address on it.
+        self.assertEqual(option(first, 'HostName'), b01['b']['ip'])
+        self.assertEqual(option(first, 'HostKeyAlias'), 'ring-bravo')
+        self.assertEqual(option(first, 'BindAddress'), b01['a']['ip'])
+        self.assertIsNone(option(first, 'ProxyCommand'))
+        # Echo through bravo: bravo opens the connection to echo's address on their cable.
+        self.assertEqual(option(second, 'HostName'), b12['b']['ip'])
+        self.assertEqual(option(second, 'HostKeyAlias'), 'ring-echo')
+        self.assertIsNone(option(second, 'BindAddress'))
+        inner = shlex.split(option(second, 'ProxyCommand'))
+        self.assertEqual(inner[-3:], ['-W', f"{b12['b']['ip']}:%p", 'ring-bravo'])
+        # The proxy reaches bravo exactly as the first proof did, then forwards to echo.
+        self.assertEqual(inner[1:-3], first[:-4])
+        for argv in (first, second, inner):
+            self.assertEqual(option(argv, 'ForwardAgent'), 'no')
+            self.assertEqual(option(argv, 'StrictHostKeyChecking'), 'yes')
+            self.assertNotIn('-A', argv)
+            self.assertFalse([arg for arg in argv if '192.0.2.' in arg], argv)
+        # One rsync per stream over the wrapper that reaches echo; no control address anywhere.
+        copies = [call[1] for call in calls if call[0] == 'rsync']
+        self.assertTrue(copies)
+        for args in copies:
+            self.assertRegex(args[args.index('-e') + 1], r"^'<root>/[^']*/route/route-ssh-1'$|^'/[^']*/route/route-ssh-1'$")
+            self.assertEqual(args[-1].split(':', 1)[0], 'ring-echo')
+
+    def test_a_pull_passes_through_the_same_neighbour(self):
+        result, calls, received = Harness(self, self.ring).run(2, 0)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Copies from fixture-ring-echo pass through fixture-ring-bravo.', result.stderr)
+        self.assertEqual(len(proofs(calls)), 2)
+
+    def test_the_cluster_options_never_override_the_jump(self):
+        result, calls, _ = Harness(self, self.ring, configured=True).run(0, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first, second = proofs(calls)
+        for argv in (first, second):
+            self.assertIn('-F', argv)
+            self.assertIn('ProxyCommand=none', argv)
+        # ssh keeps the first value: the jump's ProxyCommand comes before the cluster's none.
+        self.assertLess(second.index(next(a for a in second if a.startswith('ProxyCommand=ssh') or
+                                          a.startswith('ProxyCommand=<root>') or
+                                          (a.startswith('ProxyCommand=') and a != 'ProxyCommand=none'))),
+                        second.index('ProxyCommand=none'))
+        self.assertEqual(option(second, 'ProxyCommand').split()[-3:-1], ['-W', f"{self.cable_12['b']['ip']}:%p"])
+        self.assertEqual(option(first, 'ProxyCommand'), 'none')
+
+    def test_a_neighbour_that_refuses_to_forward_stops_the_copy_and_says_so(self):
+        result, calls, received = Harness(self, self.ring, env={'TRANSFER_SSH_REFUSE': 'ring-bravo'}).run(0, 2)
+        self.assertNotEqual(result.returncode, 0)
+        words = ' '.join(result.stderr.split())
+        self.assertIn("the copy route is not proven: SSH to fixture-ring-echo through fixture-ring-bravo did not "
+                      "connect: kex_exchange_identification: Connection closed by remote host. fixture-ring-bravo's "
+                      'SSH server must allow it to forward the connection', words)
+        self.assertIn('nothing was copied', words)
+        self.assertEqual([call for call in calls if call[0] == 'rsync'], [])
+        self.assertEqual(received, [])
+
+    def test_a_hop_whose_route_leaves_its_cable_stops_before_any_ssh(self):
+        wrong = {f"1:{self.cable_12['b']['ip']}": {'dev': 'mgmt0', 'prefsrc': '192.0.2.31'}}
+        result, calls, received = Harness(self, self.ring, overrides=wrong).run(0, 2)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"on fixture-ring-bravo, fixture-ring-echo's address {self.cable_12['b']['ip']}",
+                      ' '.join(result.stderr.split()))
+        self.assertEqual([call for call in calls if call[0] in ('ssh', 'rsync')], [])
+        self.assertEqual(received, [])
+
+    def test_a_six_node_ring_takes_two_jumps(self):
+        ring = ring_topology(self, 6)
+        result, calls, received = Harness(self, ring).run(0, 3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Copies to fixture-ring-alpha pass through fixture-ring-bravo and fixture-ring-echo.',
+                      result.stderr)
+        first, second, third = proofs(calls)
+        link = {tuple(item['ranks']): item['rails'][0] for item in ring['links']}
+        self.assertEqual([option(argv, 'HostName') for argv in (first, second, third)],
+                         [link[(0, 1)]['b']['ip'], link[(1, 2)]['b']['ip'], link[(2, 3)]['b']['ip']])
+        outer = shlex.split(option(third, 'ProxyCommand'))
+        self.assertEqual(outer[-3:], ['-W', f"{link[(2, 3)]['b']['ip']}:%p", 'ring-echo'])
+        # The inner ProxyCommand is written for the ssh that runs it: its token is escaped once more.
+        nested = option(outer, 'ProxyCommand')
+        self.assertEqual(shlex.split(nested)[-3:], ['-W', f"{link[(1, 2)]['b']['ip']}:%%p", 'ring-bravo'])
+
+
+class RelayThroughANeighbour(unittest.TestCase):
+    def test_a_relay_leg_without_a_shared_link_passes_through_a_neighbour(self):
+        ring = ring_topology(self)
+        result, calls, received = Harness(self, ring).run(1, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(received, ['part-0.bin', 'part-1.bin', 'part-2.bin'])
+        self.assertIn('Copies to fixture-ring-echo pass through fixture-ring-bravo.', result.stderr)
 
 
 class Dump(unittest.TestCase):

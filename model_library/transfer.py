@@ -5,6 +5,8 @@ processes. Streams copy the canonical flat snapshot file set, never Hub blobs.
 """
 import argparse
 import json
+import os
+import shlex
 from pathlib import Path, PurePosixPath
 import sys
 from release_spec import verify_snapshot_manifest
@@ -88,6 +90,19 @@ def partition_files(manifest, streams=8):
     return groups
 
 
+def route_hops(topology, chain):
+    """One record per cable of CHAIN (saved ranks): the link each hop's TCP
+    connection runs on, with both ends' address and interface on it."""
+    nodes=topology['nodes'];hops=[]
+    for first,second in zip(chain,chain[1:]):
+        near,far,network=selected_rail_between(topology,first,second)
+        hops.append(dict(from_rank=first,to_rank=second,network=network,
+                         from_hostname=nodes[first]['hostname'],to_hostname=nodes[second]['hostname'],
+                         from_alias=nodes[first]['ssh_host'],to_alias=nodes[second]['ssh_host'],
+                         from_ip=near['ip'],from_netdev=near['netdev'],to_ip=far['ip'],to_netdev=far['netdev']))
+    return hops
+
+
 def transfer_map(topology_path,source_rank,destination_rank):
     from scripts.topology_manifest import load_json, extract_topology, validate_manifest, topology_has_ssh_trust
     topology=extract_topology(load_json(topology_path));validate_manifest(topology,require_verified=True)
@@ -96,11 +111,64 @@ def transfer_map(topology_path,source_rank,destination_rank):
         raise StorageError('transfer supports one local and one remote endpoint; two-remote transfer requires explicit orchestration')
     remote=max(source_rank,destination_rank)
     if min(source_rank,destination_rank)<0 or remote>=len(topology['nodes']):raise StorageError('transfer endpoint is not confirmed')
+    chain=copy_route(topology,0,remote)
+    if len(chain)>2:
+        # No shared link: the copy passes through the neighbours on the chain,
+        # one SSH jump per extra cable, each hop on its own cable.
+        hops=route_hops(topology,chain)
+        return dict(topology_id=topology['topology_id'],remote_rank=remote,
+                    control_ssh_host=topology['nodes'][remote]['ssh_host'],
+                    local_ip=hops[0]['from_ip'],local_netdev=hops[0]['from_netdev'],
+                    remote_ip=hops[-1]['to_ip'],remote_netdev=hops[-1]['to_netdev'],network=hops[-1]['network'],
+                    hops=hops)
     local_rail,remote_rail,network=selected_rail_between(topology,0,remote)
     return dict(topology_id=topology['topology_id'],remote_rank=remote,
                 control_ssh_host=topology['nodes'][remote]['ssh_host'],
                 local_ip=local_rail['ip'],local_netdev=local_rail['netdev'],
                 remote_ip=remote_rail['ip'],remote_netdev=remote_rail['netdev'],network=network)
+
+
+# Options every SSH connection of a route repeats: the recorded identity, and
+# nothing forwarded to the neighbour but the one TCP connection -W asks for.
+HOP_OPTIONS=('-o','StrictHostKeyChecking=yes','-o','CheckHostIP=no','-o','UpdateHostKeys=no','-o','ForwardAgent=no')
+
+
+def jump_argv(ssh, options, hops):
+    """The SSH argv that reaches each node of a route, one per hop, without the
+    destination (the caller adds it). Hop 0 is this machine to its neighbour,
+    bound to this machine's address on their cable. Each later hop connects
+    through the previous one with ProxyCommand (ssh … -W ADDRESS:%p), so the
+    neighbour opens the next connection to the far end's address on their own
+    cable; every hop checks its node's recorded host key itself.
+
+    ProxyCommand comes before OPTIONS, which hold ProxyCommand=none: ssh keeps
+    the first value it is given. The enclosing ssh expands %-tokens in its
+    ProxyCommand, so an inner command's own tokens are written %%."""
+    levels=[]
+    for index,hop in enumerate(hops):
+        argv=[ssh]
+        if index:
+            previous=hops[index-1]
+            proxy=[arg.replace('%','%%') for arg in levels[-1]]+['-W',f"{hop['to_ip']}:%p",previous['to_alias'].replace('%','%%')]
+            argv+=['-o','ProxyCommand='+shlex.join(proxy)]
+        argv+=[*options,'-o',f"HostName={hop['to_ip']}",'-o',f"HostKeyAlias={hop['to_alias']}"]
+        if not index:argv+=['-o',f"BindAddress={hop['from_ip']}"]
+        argv+=list(HOP_OPTIONS)
+        levels.append(argv)
+    return levels
+
+
+def write_jump_wrappers(mapped, directory, ssh, options):
+    """One executable per hop in DIRECTORY that runs SSH to that hop's node,
+    so rsync's -e, the relay's pipeline and the proofs run the same argv.
+    Returns (path, hop) pairs in hop order."""
+    directory=Path(directory);written=[]
+    for index,(argv,hop) in enumerate(zip(jump_argv(ssh,options,mapped['hops']),mapped['hops'])):
+        path=directory/f'route-ssh-{index}'
+        with open(os.open(path,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o700),'w') as handle:
+            handle.write('#!/bin/sh\nexec '+shlex.join(argv)+' "$@"\n')
+        written.append((path,hop))
+    return written
 
 
 # This small filesystem guard runs on either endpoint without a checkout.
@@ -125,7 +193,8 @@ finally:os.close(fd)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['map','partition','route','staging-code','stream-command'])
+    parser.add_argument('command',choices=['map','partition','route','staging-code','stream-command','jump','hops'])
+    parser.add_argument('--dir');parser.add_argument('--ssh');parser.add_argument('--options-json')
     parser.add_argument('--topology');parser.add_argument('--source-rank',type=int);parser.add_argument('--destination-rank',type=int)
     parser.add_argument('--mode');parser.add_argument('--path');parser.add_argument('--stream',type=int)
     parser.add_argument('--out');parser.add_argument('--remote-ip');parser.add_argument('--netdev');parser.add_argument('--source-ip')
@@ -134,6 +203,14 @@ def main():
         if args.command=='map':print(json.dumps(transfer_map(args.topology,args.source_rank,args.destination_rank)))
         elif args.command=='route':validate_ssh_roce_route(json.load(sys.stdin),remote_ip=args.remote_ip,expected_netdev=args.netdev,expected_source_ip=args.source_ip)
         elif args.command=='staging-code':print(STAGING_CHECK_CODE)
+        elif args.command=='hops':
+            # A route's hops, one tab-separated row each, for the shell's route checks.
+            for hop in json.load(sys.stdin).get('hops') or []:
+                print('\t'.join(str(hop[key]) for key in ('from_rank','from_hostname','from_ip','from_netdev','to_rank',
+                                                           'to_hostname','to_ip','to_netdev','to_alias','network')))
+        elif args.command=='jump':
+            for path,hop in write_jump_wrappers(json.load(sys.stdin),args.dir,args.ssh,json.loads(args.options_json)):
+                print('\t'.join([str(path),hop['to_alias'],hop['to_hostname'],hop['from_hostname'],hop['to_ip']]))
         elif args.command=='stream-command':
             import shlex
             print(shlex.join(stream_command(args.mode,args.path,json.load(sys.stdin),args.stream)))

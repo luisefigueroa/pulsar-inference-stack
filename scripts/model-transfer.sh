@@ -1,6 +1,58 @@
 #!/usr/bin/env bash
 # Eight-stream flat snapshot transfer over one exact confirmed RoCE rail.
 # Source this file after lib.sh and model-library-common.sh.
+
+# model_transfer_prove_hops MAP: for a copy route through neighbours (the
+# transfer map's hops), prove on both ends of every hop, over control SSH,
+# that the far end's address on their cable goes out through that cable's
+# interface from the node's own address on it. Dies naming the hop.
+model_transfer_prove_hops() {
+  local mapped="$1" from_rank from_name from_ip from_dev to_rank to_name to_ip to_dev _to_alias network route
+  while IFS=$'\t' read -r from_rank from_name from_ip from_dev to_rank to_name to_ip to_dev _to_alias network; do
+    [ -n "$from_rank" ] || continue
+    if [ "$from_rank" = 0 ]; then
+      route=$("${PULSAR_IP:-ip}" -j route get "$to_ip" </dev/null) \
+        || die "the copy route is not proven: this machine has no route to $to_name's address $to_ip on their cable; nothing was copied"
+    else
+      route=$(ssh_node "$from_rank" "$(shell_join_q ip -j route get "$to_ip")" </dev/null) \
+        || die "the copy route is not proven: $from_name did not say how it reaches $to_name's address $to_ip on their cable; nothing was copied"
+    fi
+    printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$to_ip" --netdev "$from_dev" --source-ip "$from_ip" \
+      || die "the copy route is not proven: on $from_name, $to_name's address $to_ip ($network) does not go out through $from_dev from $from_ip; nothing was copied"
+    route=$(ssh_node "$to_rank" "$(shell_join_q ip -j route get "$from_ip")" </dev/null) \
+      || die "the copy route is not proven: $to_name did not say how it reaches $from_name's address $from_ip on their cable; nothing was copied"
+    printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$from_ip" --netdev "$to_dev" --source-ip "$to_ip" \
+      || die "the copy route is not proven: on $to_name, $from_name's address $from_ip ($network) does not go out through $to_dev from $to_ip; nothing was copied"
+  done < <(printf '%s' "$mapped" | python3 -m model_library.transfer hops)
+}
+
+# model_transfer_jump MAP DIR: write one SSH wrapper per hop of the route in
+# DIR, then prove each in order with one short command: this machine to its
+# neighbour over their cable, then each next node through the one before.
+# Sets JUMP_WRAPPER, the wrapper that reaches the far end, and JUMP_THROUGH,
+# the machines the copy passes through. Dies naming the hop that failed.
+model_transfer_jump() {
+  local mapped="$1" dir="$2" options path alias to_name from_name to_ip index=0
+  local -a through=()
+  JUMP_WRAPPER="" JUMP_THROUGH=""
+  mkdir -m 700 "$dir" || die "cannot prepare the copy route"
+  options=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PULSAR_SSH_OPTS[@]}")
+  while IFS=$'\t' read -r path alias to_name from_name to_ip; do
+    [ -n "$path" ] || continue
+    if ! "$path" -n -- "$alias" true </dev/null >/dev/null 2>"$dir/proof.err"; then
+      if [ "$index" = 0 ]; then
+        die "the copy route is not proven: SSH from this machine to $to_name over their cable ($to_ip) did not connect: $(tail -n1 "$dir/proof.err"); nothing was copied"
+      fi
+      die "the copy route is not proven: SSH to $to_name through $from_name did not connect: $(tail -n1 "$dir/proof.err"). $from_name's SSH server must allow it to forward the connection to $to_ip (AllowTcpForwarding); nothing was copied"
+    fi
+    [ "$index" = 0 ] || through+=("$from_name")
+    JUMP_WRAPPER="$path"
+    index=$((index + 1))
+  done < <(printf '%s' "$mapped" | python3 -m model_library.transfer jump --dir "$dir" --ssh "$PULSAR_SSH" --options-json "$options")
+  [ -n "$JUMP_WRAPPER" ] || die "the copy route has no hop to prove"
+  JUMP_THROUGH=$(python3 -c 'import sys; names=sys.argv[1:]; print(names[0] if len(names)<2 else ", ".join(names[:-1])+" and "+names[-1])' "${through[@]}")
+}
+
 model_transfer() (
   set -euo pipefail
   set +m  # each setsid child keeps the PID tracked below
@@ -11,7 +63,7 @@ model_transfer() (
   # the stage; publication owns its destination hash. Other callers stay full.
   local source_stamp="${6:-null}" destination_verification="${7:-transfer}"
   case "$destination_verification" in transfer|publication) ;; *) die "invalid destination verification owner" ;; esac
-  local local_ip local_dev remote_ip remote_dev route shell command revision temp effective pid rc=0
+  local local_ip local_dev remote_ip remote_dev route shell command revision temp effective pid rc=0 hops
   local -a children=() ssh_argv=() fields=()
   [[ "$source_rank" =~ ^[0-9]+$ ]] && [[ "$destination_rank" =~ ^[0-9]+$ ]] || die "physical ranks must be nonnegative integers"
   [ "$source_rank" != "$destination_rank" ] || die "same-node copies use the local storage copy operation"
@@ -26,6 +78,7 @@ model_transfer() (
   remote_rank="${fields[0]}" alias="${fields[1]}" local_ip="${fields[2]}" local_dev="${fields[3]}" remote_ip="${fields[4]}" remote_dev="${fields[5]}"
   expected_alias="${CLUSTER_NODE_SSH_HOSTS[$remote_rank]:-}"
   [ -n "$expected_alias" ] && [ "$alias" = "$expected_alias" ] && [ "${fields[6]}" = "$CLUSTER_TOPOLOGY_ID" ] || die "transfer SSH identity or topology changed"
+  hops=$(printf '%s' "$transfer_map" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("hops") or []))')
   temp=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-transfer.XXXXXX")
   cleanup_transfer() {
     local child
@@ -43,11 +96,16 @@ model_transfer() (
   effective=$(printf '%s' "$manifest" | python3 -m model_library.transfer partition --out "$temp") || die "invalid transfer manifest"
   revision=$(printf '%s' "$manifest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot_revision"])')
   # Prove both endpoint routes using the control plane before starting bulk SSH.
+  if [ "$hops" -gt 0 ]; then
+    # No shared link: prove every hop's cable on both of its ends.
+    model_transfer_prove_hops "$transfer_map"
+  else
   route=$("${PULSAR_IP:-ip}" -j route get "$remote_ip") || die "local RoCE route is unavailable"
   printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$remote_ip" --netdev "$local_dev" --source-ip "$local_ip" || die "local route differs from confirmed rail"
   command=$(shell_join_q ip -j route get "$local_ip")
   route=$(ssh_node "$remote_rank" "$command") || die "remote RoCE route is unavailable"
   printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$local_ip" --netdev "$remote_dev" --source-ip "$remote_ip" || die "remote route differs from confirmed rail"
+  fi
   # Verify source bytes through the existing node service; no parallel schema.
   model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" stamp: "$source_stamp" full: false)" >/dev/null || die "transfer source does not match manifest"
   command=$(python3 -m model_library.transfer staging-code)
@@ -57,8 +115,20 @@ model_transfer() (
     command=$(shell_join_q python3 -c "$command" "$destination_path" "$revision")
     ssh_node "$destination_rank" "$command" || die "destination staging is unsafe"
   fi
+  if [ "$hops" -gt 0 ]; then
+    # Each hop is one SSH connection on its own cable; the proofs run the
+    # same wrappers rsync uses. rsync splits -e itself: one quoted path.
+    model_transfer_jump "$transfer_map" "$temp/route"
+    if [ "$destination_rank" = 0 ]; then
+      log "Copies from $(human_node_name "$remote_rank") pass through $JUMP_THROUGH." >&2
+    else
+      log "Copies to $(human_node_name "$remote_rank") pass through $JUMP_THROUGH." >&2
+    fi
+    shell="'$JUMP_WRAPPER'"
+  else
   ssh_argv=("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -o "HostName=$remote_ip" -o "HostKeyAlias=$alias" -o "BindAddress=$local_ip" -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no)
   shell=$(shell_join_q "${ssh_argv[@]}")
+  fi
   # --from0 and --protect-args preserve literal filenames and remote paths.
   # No --delete: only named files enter an empty operation-owned snapshot.
   for ((stream=0; stream<effective; stream++)); do
@@ -93,7 +163,7 @@ model_transfer_relay() (
   case "$destination_verification" in transfer|publication) ;; *) die "invalid destination verification owner" ;; esac
   local temp effective revision role rank mapped route command local_ip local_dev remote_ip remote_dev alias rshell stream send receive pipeline pid rc=0
   local -a children=() fields=()
-  local -A shells=() aliases=()
+  local -A shells=() aliases=() through=()
   [ "$source_rank" != 0 ] && [ "$destination_rank" != 0 ] && [ "$source_rank" != "$destination_rank" ] || die "relay requires two different remote nodes"
   require_topology_ssh_trust >/dev/null || die "relay requires enrolled confirmed SSH identities"
   temp=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-relay.XXXXXX")
@@ -116,6 +186,15 @@ model_transfer_relay() (
     [ "${#fields[@]}" = 6 ] || die "relay leg map is incomplete"
     alias="${fields[0]}" local_ip="${fields[1]}" local_dev="${fields[2]}" remote_ip="${fields[3]}" remote_dev="${fields[4]}"
     [ "$alias" = "${CLUSTER_NODE_SSH_HOSTS[$rank]:-}" ] && [ "${fields[5]}" = "$CLUSTER_TOPOLOGY_ID" ] || die "relay leg SSH identity or topology changed"
+    aliases[$role]="$alias"
+    if [ "$(printf '%s' "$mapped" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("hops") or []))')" -gt 0 ]; then
+      # This leg shares no link with this machine: it passes through neighbours.
+      model_transfer_prove_hops "$mapped"
+      model_transfer_jump "$mapped" "$temp/route-$role"
+      shells[$role]=$(shell_join_q "$JUMP_WRAPPER")
+      through[$role]="$JUMP_THROUGH"
+      continue
+    fi
     route=$("${PULSAR_IP:-ip}" -j route get "$remote_ip") || die "relay local route is unavailable"
     printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$remote_ip" --netdev "$local_dev" --source-ip "$local_ip" || die "relay local route differs from confirmed rail"
     route=$(ssh_node "$rank" "$(shell_join_q ip -j route get "$local_ip")") || die "relay remote route is unavailable"
@@ -124,6 +203,8 @@ model_transfer_relay() (
     aliases[$role]="$alias"
   done
   log "Move transfer route: $(human_node_name "$source_rank") → controller pipe → $(human_node_name "$destination_rank"); verified RoCE rail on each leg, no controller model copy." >&2
+  [ -z "${through[source]:-}" ] || log "Copies from $(human_node_name "$source_rank") pass through ${through[source]}." >&2
+  [ -z "${through[destination]:-}" ] || log "Copies to $(human_node_name "$destination_rank") pass through ${through[destination]}." >&2
   model_node "$source_rank" "$(model_json operation verify manifest: "$manifest" path "$source_path" stamp: "$source_stamp" full: false)" >/dev/null || die "relay source does not match manifest"
   command=$(python3 -m model_library.transfer staging-code)
   ssh_node "$destination_rank" "$(shell_join_q python3 -c "$command" "$destination_path" "$revision")" || die "relay destination staging is unsafe"
