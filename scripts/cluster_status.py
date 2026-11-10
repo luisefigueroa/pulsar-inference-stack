@@ -290,6 +290,26 @@ def check_items(records: Records) -> list[str]:
 ACTIVE_STATES = ("running", "partial", "degraded")
 
 
+def service_name(service: dict, room: int, *, outside: bool = False) -> str:
+    """One Pulsar service's name, the same on every screen: "MODEL running on
+    NODES · port P" while a container runs, else "exited containers of MODEL
+    remain on NODES", and " · outside the catalog" for a service whose spec
+    this checkout does not publish. MODEL is cut to ROOM, keeping its end.
+    Words are joined by no-break spaces where they must stay together."""
+    state = SERVICE_STATES.get(service["state"], service["state"])
+    where = ", ".join(service["hosts"]) or "nodes not identified"
+    model = cut_middle(service["model_id"], room)
+    if service["state"] in ACTIVE_STATES:
+        text = f"{model} {state} on {where}"
+        if service.get("port"):
+            text += f" ·{KEEP}{_kept('port', service['port'])}"
+    else:
+        text = f"{state} of {model} {STATUS_WORDS['remain']} on {where}"
+    if outside:
+        text += f" ·{KEEP}{_kept(*STATUS_WORDS['outside'].split())}"
+    return text
+
+
 def service_texts(records: Records, entries: list[dict], room: int,
                   states: tuple[str, ...] | None = None) -> tuple[list[str], str | None]:
     """One text per Pulsar service (only those in STATES, when given), and what is unknown about the others.
@@ -307,17 +327,7 @@ def service_texts(records: Records, entries: list[dict], room: int,
         for service in services.values():
             if states is not None and service["state"] not in states:
                 continue
-            state = SERVICE_STATES.get(service["state"], service["state"])
-            where = ", ".join(service["hosts"]) or "nodes not identified"
-            model = cut_middle(service["model_id"], room)
-            if service["state"] in ACTIVE_STATES:
-                text = f"{model} {state} on {where}"
-                if service.get("port"):
-                    text += f" ·{KEEP}{_kept('port', service['port'])}"
-            else:
-                text = f"{state} of {model} {STATUS_WORDS['remain']} on {where}"
-            if outside and entries:
-                text += f" ·{KEEP}{_kept(*STATUS_WORDS['outside'].split())}"
+            text = service_name(service, room, outside=outside and bool(entries))
             (active if service["state"] in ACTIVE_STATES else remains).append(text)
     texts = active + remains
     # Only a complete inventory can say that nothing runs: a node it did not

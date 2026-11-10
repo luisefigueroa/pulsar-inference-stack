@@ -115,7 +115,10 @@ case "$*" in
   "model restore "*) key=restore ;;
   "model prepare "*) key=prepare ;;
   "image stage "*) key=image ;;
+  "stop --all --yes") key=stop-all ;;
   "stop "*) key=stop ;;
+  "status "*) key=status ;;
+  "logs "*) key=logs ;;
   "start "*) key=start ;;
   "topology configure"*) key=configure ;;
   "ssh-trust enroll") key=enroll ;;
@@ -129,6 +132,10 @@ file="$FIXTURES/$key.$n.json"; [ -e "$file" ] || file="$FIXTURES/$key.json"
 rcfile="$FIXTURES/$key.$n.rc"; [ -e "$rcfile" ] || rcfile="$FIXTURES/$key.rc"
 rc=0; [ ! -e "$rcfile" ] || rc=$(cat "$rcfile")
 if [ "$rc" = 0 ] && [ -e "$FIXTURES/$key.inventory" ]; then cp "$FIXTURES/$key.inventory" "$FIXTURES/inventory.json"; fi
+# Start and status write their result where PULSAR_SERVICE_RESULT_FILE says, when they succeed.
+if [ "$rc" = 0 ] && [ -n "${PULSAR_SERVICE_RESULT_FILE:-}" ] && [ -e "$FIXTURES/$key.result" ]; then
+  cp "$FIXTURES/$key.result" "$PULSAR_SERVICE_RESULT_FILE"
+fi
 # Start records its blockers where PULSAR_START_BLOCKERS_FILE says, as the real one does.
 blockers="$FIXTURES/$key.$n.blockers"; [ -e "$blockers" ] || blockers="$FIXTURES/$key.blockers"
 if [ -n "${PULSAR_START_BLOCKERS_FILE:-}" ] && [ -e "$blockers" ]; then cat "$blockers" >> "$PULSAR_START_BLOCKERS_FILE"; fi

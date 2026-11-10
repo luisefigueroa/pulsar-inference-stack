@@ -132,11 +132,14 @@ wait_continue() {
         pulsar.chmod(0o755)
         # The Cluster menu and the topology menu are their own scripts.
         for name, word in (("cluster-menu.sh", "cluster menu"), ("topology.sh", "topology"),
-                           ("serve-menu.sh", "serve menu")):
+                           ("serve-menu.sh", "serve menu"), ("services-menu.sh", "services menu")):
             script = scripts / name
             script.write_text(f'#!/usr/bin/env bash\necho "{word} $*" >> "$PULSAR_LOG"\n'
                               '[ -z "${CHANGES_AFTER:-}" ] || cp "$CHANGES_AFTER" "$PULSAR_CLUSTER_CHANGES_FILE"\n'
-                              'exit "${MENU_RC:-0}"\n')
+                              # Running services… saves the inventory it takes.
+                              + ('[ -z "${INVENTORY_AFTER:-}" ] || cp "$INVENTORY_AFTER" '
+                                 '"$PULSAR_SERVICE_INVENTORY_FILE"\n' if name == "services-menu.sh" else '')
+                              + 'exit "${MENU_RC:-0}"\n')
             script.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh", "cluster-overview.sh"):
             probe = scripts / name
@@ -386,8 +389,9 @@ class Home(MenuHarness):
     def test_each_intent_opens_its_flow_or_todays_menu_until_later_phases_replace_it(self):
         result = self.run_home(["Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        # Serve a model… answers with a plan; today's catalog menu stays under Advanced.
-        self.assertEqual(self.commands(), ["serve menu ", "inventory menu", "models files", "cluster menu "])
+        # Serve a model… answers with a plan and Running services… is its own page; today's
+        # catalog menu and inventory menu stay under Advanced.
+        self.assertEqual(self.commands(), ["serve menu ", "services menu ", "models files", "cluster menu "])
         self.assertEqual(self.menus(), [HOME] * 5)
 
     def test_serve_a_model_returns_home_and_ctrl_c_there_exits(self):

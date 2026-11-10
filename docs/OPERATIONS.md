@@ -203,6 +203,21 @@ below are for reading.
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
+| Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
+| Services: not checked here; choose Check it now | The service inventory holds no API address, key requirement or health. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
+| Services: not in the service inventory; choose Check it now | The inventory did not record the name requests use for this service. **Check it now** asks the service. |
+| Services: the model name requests use | The served model name: what a client puts in the request's `model` field. **How to connect** shows a first request with it. |
+| Services: none: the API accepts requests without a key | The service was started without an API key, according to its launch record, as of **Check it now**. |
+| Services: required: requests send the key the service was started with | The service was started with an API key, according to its launch record, as of **Check it now**. The key itself is never shown; **Cluster… → Settings…** says where it is set. |
+| Services: not recorded: add the key header if the service was started with one | The service has no launch record that says whether it needs a key, for example one started before launch records existed. |
+| Services: answered /health, did not answer /health | What the service's API said to one health request at **Check it now**, with its age. A service that did not answer may still be loading; **Logs** shows its output. |
+| Services: running, with no API address to ask | Check it now found the service running but no API address to send the health request to. |
+| Services: Check it now found no service, Check it now could not tell | The check found no container of the service on any node, or a node did not answer, so whether it runs is unknown, not absent. |
+| Services: did not answer the service inventory | A node did not answer the inventory, so what runs there is unknown, not absent. Stop and Restart need every node to answer. |
+| Services: No Pulsar service is running, No Pulsar service was seen | Every node answered and none runs a Pulsar service; or none was seen on the nodes that answered, and the others are named as unknown. |
+| Services: processes Pulsar did not start, read-only | GPU work and containers on the nodes that Pulsar did not start. The page names them and offers nothing for them. |
+| Services: Started outside this catalog, for example by an experiment | A Pulsar-managed service whose spec this checkout does not publish. The page can show its logs and stop it; it has no recipe to check, restart or switch from. |
+| Services: not offered | **Restart…** or **Stop…** is left out for the reason given, for example a service started from a modified recipe, or on other nodes than Start would use. |
 | Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
 | Disk: past its reserve or copy budget by, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. |
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
@@ -868,7 +883,16 @@ printed. It has no `--json` form; `status --json` reports the service's state.
 A failed multi-node start removes its containers, so only the logs that start
 printed remain.
 
-**Live service inventory** in the root menu opens `inventory menu`. Select an
+In the menu, **Running services…** on home shows what runs and offers these
+commands by what they do: **Check it now** (`status`), **How to connect**,
+**Logs** (`logs`), **Restart…**, **Switch to another model…**, **Stop…** and
+**Stop every service…**; see [Running services…](#running-services). Its card
+states each fact with where it came from and its age: the service inventory
+holds the model, state, nodes, port and served model name, and **Check it
+now** adds the API address, whether a key is required and the health answer.
+
+**Live service inventory**, under **Help and troubleshooting… → Advanced:
+single operations…**, opens `inventory menu`, unchanged. Select an
 observed service whose spec is published in the catalog, then choose
 **Detailed status**, **Service logs** or **Stop service**. These invoke the
 existing status, logs and stop commands. One-node services use the node ID recorded in the inventory;
@@ -1047,6 +1071,15 @@ Omit `--node` for a multi-node service. For a guarded trial, follow its
 Stopping one spec asks no confirmation. To stop every Stack-managed service on
 all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
 and still runs until CLI contract 2 requires it.
+
+In the menu, **Running services… → Stop…** and **Stop every service…** run
+these commands after the same questions as before: Stop's names the nodes the
+service was seen on and says model files, pins and archives are kept, and
+Stop every service's names each service it removes. Both start on No.
+**Restart…** there is Stop then Start of the same recipe on the same nodes,
+shown as a two-step plan that starts on **Cancel**; neither it nor **Switch to
+another model…** passes `--replace`. Stopping removes containers only; no
+model files are deleted.
 
 ### Pin or reclaim prepared copies
 
@@ -1293,7 +1326,7 @@ status block, then six choices:
 | Choice | Opens | Same as |
 | --- | --- | --- |
 | **Serve a model…** | A model's plan: the steps it still needs, approved once; see [Serve a model…](#serve-a-model). The catalog menu is under **Help and troubleshooting… → Advanced: single operations…**. | The commands each plan lists; its outcome names those that ran |
-| **Running services…** | The service inventory menu: live status and Stop. | `./pulsar inventory menu` |
+| **Running services…** | What runs, how to connect, and Restart, Switch and Stop; see [Running services…](#running-services). Today's inventory menu is under **Help and troubleshooting… → Advanced: single operations…**. | `./pulsar inventory`, then the commands each choice names |
 | **Models and disk space…** | The Model files and disk space page. | `./pulsar models files` |
 | **Cluster…** | The cluster's one place; see [Cluster…](#cluster). | `./pulsar topology show`, then the commands below |
 | **Help and troubleshooting…** | Diagnostics, the guides and Advanced; see [Help and troubleshooting…](#help-and-troubleshooting). | `./pulsar help` |
@@ -1407,6 +1440,55 @@ needs, which the operator approves once.
    any retry: **Check its files now (read-only)** or **Check the service now
    (read-only)**. The outcome lists the commands that ran, in order, under
    `Same as:`.
+
+### Running services…
+
+**Running services…** takes one service inventory on entry (`./pulsar
+inventory --json`), or reuses the last one saved when it is under a minute
+old, and keeps reusing it while it is under a minute old: no choice probes
+twice in a row. A Stop or a Start makes it look again. It opens on the
+service when there is one, on a list of their names when there are several,
+and says when there is none: `No Pulsar service is running` only when every
+node answered, otherwise what was seen on the nodes that answered and which
+node did not, so what runs there is unknown, not absent (see the [Services
+labels](#catalog-labels)).
+
+Each service has one name on every screen, as home's Serving line has it:
+`MODEL running on NODES · port PORT`, or `exited containers of MODEL remain on
+NODES`, with `· outside the catalog` for a service this checkout does not
+publish. A name too long for the line keeps its end. Its card:
+
+```
+<model> running on <node-1>, <node-2> · port 8000
+  Seen      by the service inventory 2 minutes ago
+  Model     <served name>, the model name requests use
+  API       not checked here; choose Check it now
+  Key       not checked here; choose Check it now
+  Health    not checked here; choose Check it now
+```
+
+The inventory holds no API address, key requirement or health, so the card
+never guesses them; **Check it now** fills them in, each with its age. GPU
+work and containers Pulsar did not start are named under the card, read-only,
+and offered nothing. The choices:
+
+| Choice | Does | Same as |
+| --- | --- | --- |
+| **Check it now** | Asks the service: its output, then the card with its API, key and health. | `./pulsar status SPEC` |
+| **How to connect (a first request to copy)** | The Connect card from the last check, checking first when there is none. | `./pulsar status SPEC` |
+| **Logs** | Its containers' output in the pager. | `./pulsar logs SPEC` |
+| **Restart…** | Stop then Start of the same recipe on the same nodes, as a two-step plan that starts on **Cancel** and runs as **Serve a model…**'s plans do. Not offered for a modified recipe, or when Start would use other nodes; the card says why. | `./pulsar stop SPEC`, then `./pulsar start SPEC` |
+| **Switch to another model…** | The Serve list; the plan it builds stops this service directly before Start, even when the new recipe uses other nodes. | the plan's commands |
+| **Stop…** | Today's question, then Stop; model files, pins and archives are kept. | `./pulsar stop SPEC` |
+| **Stop every service…** | Today's question naming each service it removes, then Stop. | `./pulsar stop --all --yes` |
+
+A service outside the catalog offers **Logs** and **Stop…** only, and its
+question adds `This service was started outside this catalog.` Stop and
+Restart are left out while the inventory has not established that Pulsar can
+stop the service, for example when a node did not answer; the card says why.
+None of these choices passes `--replace`, `--pull-image` or
+`--accept-memory-warn`. With nothing running it offers **Serve a model…**,
+**Look again** and **Back**.
 
 ### Before cluster setup
 

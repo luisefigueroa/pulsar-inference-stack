@@ -195,7 +195,7 @@ def workflow() -> list[tuple[str, str]]:
          "it is ready once it answers a test request."),
         ("Connect",
          "Send requests to the API URL with the served model name, both shown on the **Connect** card "
-         f"after **{LABELS['start']}** and in **{LABELS['status']}**."),
+         f"after **{LABELS['start']}** and under **Running services… → How to connect**."),
         (LABELS["stop"], "Remove the *service*'s containers from every node; model files, *pins* and "
                          "*archives* are kept."),
         (LABELS["purge"],
@@ -253,8 +253,9 @@ def emit_workflow(writer: TerminalWriter) -> None:
                 "of the steps below that it still needs, with the *serving image* and a Stop of whatever is in "
                 "the way between Prepare and Start, and the cursor on **Cancel**. One **Go ahead** runs them in "
                 "order; each step checks first, and Pulsar stops and asks again if one would do more than the "
-                "plan says. **Running services…** shows what runs, and **Cluster…** checks the nodes and saves a "
-                "change to the cluster. **Help and troubleshooting… → Advanced: single operations…** runs each "
+                "plan says. **Running services…** shows what runs and how to connect to it, and restarts, switches "
+                "or stops it, after a plan that starts on Cancel or a question that starts on No. **Cluster…** checks the nodes and "
+                "saves a change to the cluster. **Help and troubleshooting… → Advanced: single operations…** runs each "
                 "step on its own.", markup=True)
     writer.blank()
     for number, (step, sentence) in enumerate(workflow(), 1):
