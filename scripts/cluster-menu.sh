@@ -35,11 +35,13 @@ with_effect() {
   if [ "${#text}" -le "$((columns - 2))" ]; then printf '%s\n' "$text"; else printf '%s\n' "$1"; fi
 }
 
+# status COMMAND...: a cluster_status screen fitted to the terminal; the frame's
+# border and padding take four more columns (FRAME_MARGIN). The width is read
+# once, before any capture: a captured stderr hides the terminal.
+COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 status() {
-  local columns width
-  columns=$(_ui_terminal_columns) || columns=""
-  width=""
-  [ -z "$columns" ] || width=$((columns > 36 ? columns - ${FRAME_MARGIN:-0} : 32))
+  local width=""
+  [ -z "$COLUMNS_SEEN" ] || width=$((COLUMNS_SEEN > 36 ? COLUMNS_SEEN - ${FRAME_MARGIN:-0} : 32))
   if [ -n "$width" ]; then
     python3 -m scripts.cluster_status "$@" --repo-root "$REPO_DIR" --width "$width"
   else

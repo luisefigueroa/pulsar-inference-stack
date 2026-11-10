@@ -392,6 +392,20 @@ Change note, 2026-11-09: doctor gained the prerequisite check ids above;
 --remove-missing` and `topology forget`; new saved changes record. Nothing was
 removed or renamed.
 
+The saved changes record may carry two optional fields, each written by the
+menu and carried forward by every later save for the same `topology_id`; a
+save for another `topology_id` drops both. `kept` (`kept_at`, `signature`,
+`missing`, the `node_id`s kept) records that members that did not answer are
+only down; it is dropped as soon as a discovery's `found`, `missing` or
+`changed` differ from what was kept. `check` (`checked_at`, `links` and
+`identities`, each `verified`, `failed` or `not-checked`, and `nodes`, each
+with `hostname`, `node_id`, `answered` true, false or null, and `failures` and
+`warnings` as text for people) is what the last **Check the cluster now**
+found.
+
+Change note, 2026-11-09: the saved changes record gained the optional `kept`
+and `check` fields. Nothing was removed or renamed.
+
 ### Error codes and exit statuses
 
 Branch on `ok` and `error.code`. Treat an unknown code as a failure: new, more

@@ -21,15 +21,7 @@ require_gum "the review of cluster changes" \
   "./pulsar ssh-trust enroll" "then record the nodes' SSH identities; asks first"
 ui_keep_styles
 
-status() {
-  local columns
-  columns=$(_ui_terminal_columns) || columns=""
-  if [ -n "$columns" ]; then
-    python3 -m scripts.cluster_status "$@" --repo-root "$REPO_DIR" --width "$columns"
-  else
-    python3 -m scripts.cluster_status "$@" --repo-root "$REPO_DIR"
-  fi
-}
+status() { python3 -m scripts.cluster_status "$@" --repo-root "$REPO_DIR"; }
 
 # saved_id: the saved membership's topology_id, or nothing.
 saved_id() { python3 -m scripts.cluster_status saved-id --repo-root "$REPO_DIR" 2>/dev/null || true; }
@@ -67,8 +59,11 @@ SAVED
   wait_continue "Cluster saved" || return
 }
 
-text=$(status review) || { printf '✗ The review could not be shown; review the error above.\n'; exit 1; }
-page_output "" printf '%s' "$text" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
+# The screen is rendered where it is shown, so it fits the pager's width.
+rc=0
+page_output "" python3 -m scripts.cluster_status review --repo-root "$REPO_DIR" || rc=$?
+[ "$rc" -ne 130 ] || exit 130
+[ "$rc" -eq 0 ] || { printf '✗ The review could not be shown; review the error above.\n'; exit 1; }
 labels=() actions=()
 while IFS=$'\t' read -r action label; do
   [ -n "$action" ] || continue

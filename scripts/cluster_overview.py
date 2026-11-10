@@ -398,6 +398,8 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
         verdict += f" · {len(report.missing)} check{'' if len(report.missing) == 1 else 's'} not observed"
     out.field("Result", verdict + "; each finding above names its fix.", label_width=LABEL_WIDTH,
               label_role="fail" if counts["fail"] else None)
+    out.field("Same as", "`./pulsar topology detect`, `topology check`, `ssh-trust check`, `doctor`, `inventory` "
+                         "and `model budget`", label_width=LABEL_WIDTH, markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:

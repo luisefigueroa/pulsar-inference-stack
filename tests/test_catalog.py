@@ -1769,7 +1769,7 @@ raise SystemExit(rc)
         shown = " ".join(result.stdout.split())
         self.assertIn("Next Check now — no saved check", shown)
         self.assertIn("Not shown Restore, Verify archive (no archive location is configured). Set one in "
-                      "Archive storage configuration on the home menu.", shown)
+                      "Cluster… → Settings… on the home menu.", shown)
         self.assertIn("Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
                       "Download records a home.", shown)
         self.assertNotIn("Check now refreshes", shown)

@@ -564,6 +564,12 @@ def review(records: Records, *, width: int | None = None) -> tuple[str, list[tup
         choices.append(("save", "Save the cluster as it is now"))
     else:
         choices.append(("check", "Check the cluster now"))
+    commands = {"save": "`./pulsar topology configure`, then `./pulsar ssh-trust enroll`",
+                "drop": "`./pulsar topology configure --remove-missing`, then `./pulsar ssh-trust enroll`"}
+    same = [commands[action] for action, _ in choices if action in commands]
+    if same:
+        out.blank()
+        field("Same as", "; ".join(same))
     choices.append(("back", "Back"))
     return _plain(output.getvalue()), choices
 

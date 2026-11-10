@@ -121,10 +121,10 @@ JSON fields, and container labels retain their existing names. The menu's
 | node | A confirmed machine, named by its hostname. |
 | rank | A serving slot in the spec's geometry, always shown with its node, such as `spark-2 (rank 1)`. |
 | controller | The machine that runs `./pulsar` from this checkout and keeps its saved records. It may also be a node. |
-| service inventory | What `./pulsar inventory` observed on every node: Pulsar services, their containers and memory, at one time. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Live service inventory save a new one. |
-| storage budget | What `./pulsar model budget` observed where each node keeps prepared copies: disk free, the reserve, Pulsar files and what it can still copy. The home menu shows the last saved one with its age; Cluster overview (checks nodes now) and Model files and disk space (checks nodes now) save a new one. |
+| service inventory | What `./pulsar inventory` observed on every node: Pulsar services, their containers and memory, at one time. The home menu's Serving line shows the last saved one with its age; Running services… and Check the cluster now save a new one. |
+| storage budget | What `./pulsar model budget` observed where each node keeps prepared copies: disk free, the reserve, Pulsar files and what it can still copy. The home menu's Disk line shows the last saved one with its age; Models and disk space… and Check the cluster now save a new one. |
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
-| changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time; it changes nothing by itself. |
+| changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time, and the last Check the cluster now keeps its findings beside it; it changes nothing by itself. Cluster… → Review what changed… shows it and saves a change after one question. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
 
@@ -155,7 +155,7 @@ below are for reading.
 | Archive: present at last check, not verified | The last check found an archive but did not compare its hashes. **Verify archive** compares them. |
 | Archive: not found at last check | The archive location has no copy of this spec's files. **Create archive** makes one if you want a recovery copy. |
 | Archive: unavailable at last check | The archive location could not be read, or the copy there was incomplete. Check that the location is reachable. |
-| Archive: archive location not configured at last check | No archive location was set. Archives are optional; **Archive storage configuration** sets one. |
+| Archive: archive location not configured at last check | No archive location was set. Archives are optional; **Cluster… → Settings… → Archive location…** sets one. |
 | Archive: unknown | The last check could not establish anything about the archive. |
 | List: not checked yet | The short form of **Files: not checked yet** in the catalog list. |
 | List: start unsupported | This Stack cannot start the spec, for example because it needs a serving guard or is a historical schema-1 spec. The spec's **Not shown** line says why. |
@@ -231,15 +231,18 @@ below are for reading.
 ### Confirm membership and SSH trust
 
 Confirmed topology determines membership and physical node identity. On a
-terminal, `./pulsar` offers the next setup step (**Set up cluster membership
-and SSH trust**, which runs `./pulsar topology setup`; **Enroll SSH trust**
-when membership is already saved), read-only catalog browsing
-(`./pulsar models menu --read-only`), diagnostics, saved topology, Help and Exit.
-Archives are optional and do not restrict navigation after cluster setup.
-A setup step that fails reports that it did not complete before the menu returns.
-Entering that menu uses saved local files; it does not probe nodes. After
-cluster setup, open `./pulsar` and choose **Cluster topology**. The
-same actions are available directly:
+terminal, `./pulsar` before setup offers **Set up this cluster…**, which runs
+`./pulsar topology setup` (and also records the SSH identities when membership
+is already saved), read-only catalog browsing (`./pulsar models menu
+--read-only`), **Help and troubleshooting…** and Exit. When saved membership is
+invalid, setup cannot replace it and the first choice is **Start over: forget
+this cluster…** (`./pulsar topology forget`) instead. Archives are optional and
+do not restrict navigation after cluster setup. A setup step that fails
+reports that it did not complete before the menu returns. Entering the menu
+uses saved local files; it does not probe nodes. After cluster setup, open
+`./pulsar` and choose **Cluster…** (see [Cluster…](#cluster)); today's topology
+menu is under **Help and troubleshooting… → Advanced: single operations… →
+Cluster topology**. The same actions are available directly:
 
 ```sh
 ./pulsar topology setup
@@ -255,12 +258,34 @@ same actions are available directly:
 `show` and `check` name each node by hostname with its position, the saved
 order that start uses for ranks; JSON keeps the stable `node_id` and `rank`.
 
-Start with `setup` on a fresh checkout. It guides membership configuration,
-checks SSH enrollment, offers missing enrollment with a separate key-confirmation
-prompt, and finishes with a topology readiness check. Healthy existing setup is
-reused. Cancellation or failed enrollment cannot report success. This applies
-to single-node clusters too. The first-run menu's setup step and the topology
-menu's **Change membership… → First-use setup** run this same command.
+Start with `setup` on a fresh checkout. It shows five numbered steps and checks
+every prerequisite before it can fail later; it installs nothing:
+
+1. **This machine**: Docker and GPU access, its RoCE links, and its
+   prerequisites (Python 3.11 or newer, `flock`, `rsync`, the `hf` CLI and its
+   Hub login), each missing one with its fix.
+2. **Find the machines**: the discovery review below. A machine that answers
+   with a host key SSH on this machine does not trust is listed with the check
+   to run (`ssh -o StrictHostKeyChecking=ask HOST`); it is not added.
+3. **Check each machine**: each machine discovery found, whose Docker, GPU and
+   links to every other machine discovery verified, is asked for the same
+   prerequisites over SSH with discovery's strict host-key policy.
+4. **Save**: configuration's fresh checks and its question.
+5. **Identities**: the SSH identity check, and enrollment with its own
+   key-confirmation question when identities are missing.
+
+Setup then finishes with a topology readiness check and lists what is still to
+fix on each machine. A missing prerequisite never blocks saving; only the
+platform facts discovery checks decide whether a machine can be a member. A
+missing `hf` CLI or Hub login is a warning that says what it affects: models
+cannot be downloaded to that node, and it can still serve. The `hf` login check
+asks the Hub once from each machine, with that machine's own login; a Hub that
+cannot be reached is reported as not checked, never as failed. Healthy existing
+setup is reused: with membership already saved, setup checks this machine,
+says it uses the saved membership, and goes on to step 5. Cancellation or
+failed enrollment cannot report success. This applies to single-node clusters
+too. The first-run menu's **Set up this cluster…** and the topology menu's
+**Change membership… → First-use setup** run this same command.
 
 After discovery, review the machines found. **Add a machine by hostname or IP**
 accepts one management address at a time; add more as needed. The review lists
@@ -283,7 +308,7 @@ and normal SSH access (`ssh -o StrictHostKeyChecking=ask HOST`). Discovery does 
 failures. Before accepting a new or changed OpenSSH host key, verify its fingerprint
 independently using the machine's console or its administrator, then retry.
 This initial OpenSSH trust is separate from Pulsar's later fingerprint review and
-**Enroll SSH trust** confirmation; the menu never accepts new host keys for you.
+identity confirmation (step 5); the menu never accepts new host keys for you.
 
 Initial key-based SSH login must already work; this flow verifies and records
 host identities, rather than installing remote login keys. No step starts or
@@ -335,9 +360,11 @@ addresses and stays private under the ignored `.pulsar/` folder.
 Noninteractive use requires explicit `--yes`. Active services or an unobservable
 required node block replacement; the check repeats after confirmation. It never
 stops services for you. Saving a discovery establishes membership, not enrolled
-SSH trust; use the menu's separate SSH-trust enrollment action or
-`./pulsar ssh-trust enroll` afterward. For an existing cluster, choose
-**Cluster topology → Change membership… → Configure membership or add a
+SSH trust; **Review what changed…** records the identities after a save, or run
+`./pulsar ssh-trust enroll` afterward. For an existing cluster, a machine that
+discovery finds appears under **Cluster… → Review what changed…**; to add one by
+address, choose **Help and troubleshooting… → Advanced: single operations… →
+Cluster topology → Change membership… → Configure membership or add a
 machine** to use the same
 candidate review. It runs `topology configure --candidate HOST` with your added
 addresses, then returns to the menu for separate enrollment after saving.
@@ -875,7 +902,7 @@ an outcome only when status answers no (exit 1) or cannot tell (exit 3).
 Model files, pins and archives are retained. The ordinary `inventory` and
 `inventory --json` commands remain read-only toward the cluster and change
 nothing on a node; each run saves its observation on the controller for the
-home menu's Running block.
+home menu's Serving line.
 
 ### Verify the recorded service and files
 
@@ -981,7 +1008,7 @@ comes first.
 Download's machine question then starts on that machine, labelled `files found
 here, not in Pulsar's records`. The choice stays **Download**: its preview
 says whether the files are reused. Only a scan from this catalog session
-counts; the same choice on the home menu runs on its own.
+counts; **Models and disk space…** on the home menu runs on its own.
 
 ### Check archive integrity
 
@@ -1041,8 +1068,8 @@ In the catalog menu, a blocked plan offers **Stop** for that Pulsar service
 
 ### Model files across the nodes
 
-Choose **Model files and disk space (checks nodes now)** on the home menu, or
-the choice of the same name in the catalog list; both open the same page. It
+Choose **Models and disk space…** on the home menu, or **Model files and disk
+space (checks nodes now)** in the catalog list; both open the same page. It
 lists model snapshots across every confirmed node,
 including managed downloads that have no catalog recipe. You do not need to open
 each recipe to see placement. Entering this menu always checks nodes and their
@@ -1242,78 +1269,151 @@ are gone. `start --json` reports the same record in its `cancelled` error.
 
 ## Menu reference
 
+### Home
+
+The home menu reads saved records without probing nodes. After setup it shows a
+status block, then six choices:
+
+| Choice | Opens | Same as |
+| --- | --- | --- |
+| **Serve a model…** | The catalog menu, unchanged for now: choose a spec, then its operations. | `./pulsar models menu` |
+| **Running services…** | The service inventory menu: live status and Stop. | `./pulsar inventory menu` |
+| **Models and disk space…** | The Model files and disk space page. | `./pulsar models files` |
+| **Cluster…** | The cluster's one place; see [Cluster…](#cluster). | `./pulsar topology show`, then the commands below |
+| **Help and troubleshooting…** | Diagnostics, the guides and Advanced; see [Help and troubleshooting…](#help-and-troubleshooting). | `./pulsar help` |
+| **Exit** | Leaves the menu; Esc does too. | |
+
+The status block has at most four labelled lines, with their wrapped
+continuations, so it fits on an 80×24 terminal with the menu (see the
+[Cluster, Serving, Disk and Attention labels](#catalog-labels)):
+
+- **Cluster**: the saved membership's node count and how many nodes answered
+  the last **Check the cluster now**, or the last discovery when that is newer,
+  with its age. Before any check it reads `not checked yet`; a check saved for
+  the membership before its last save reads `not checked since membership was
+  saved` and is not shown as current.
+- **Serving**: each Pulsar service in the last saved [service
+  inventory](#terms), with its nodes, port and age. The saved inventory holds
+  no API URL, so the line names **Running services…**, which has the details.
+- **Disk**: what each node can still copy in the last saved [storage
+  budget](#terms), with its age.
+- **Attention**, only when there is something: changes noticed, a node kept as
+  only down, a blocking issue the last check found, or an archive location
+  setting that cannot be read. It shows two items and counts the rest; the
+  last one names where to look.
+
+Every `./pulsar inventory` and `./pulsar model budget` run, including those
+from **Running services…**, **Models and disk space…** and **Check the cluster
+now**, saves its observation on the controller in
+`.pulsar/service-inventory.json` and `.pulsar/storage-budget.json`; every
+discovery and cluster check saves `.pulsar/cluster-changes.json`. None is ever
+tracked. A record that is missing reads `not observed yet` or `not checked
+yet`, never as fine, and a saved file that cannot be read says so and is
+replaced by the next check. The ages do not tick while the menu stays open;
+the block prints again only when a saved record changed or the inventory
+turned `last seen` after ten minutes. Saves of one record take turns under a
+lock file beside it, so an older inventory never replaces a newer one.
+
+Without Gum the menu does not open; `./pulsar` names the commands behind its
+choices instead.
+
 ### Before cluster setup
 
-The home menu reads saved configuration without probing nodes. It prints the
-setup status when it opens, and again after a choice only when the setup
-status, the saved catalog records, the saved service inventory or the saved
-storage budget changed. Cluster setup requires confirmed membership and, for multiple
-nodes, enrolled SSH trust. After setup, the status ends with a Next line built
-from saved catalog records, such as `Next: 2 specs not checked yet · 1 spec needs
-Prepare — open Catalog and storage. Newest saved check: 3 hours ago.` It counts
-each spec's suggested step from the catalog menu and runs no probe; once any
-spec has a home, specs without one are not counted as needing a check. The line
-is left out when no spec has a suggested step or the catalog cannot be read.
-
-After the Next line, the Running block shows the last saved
-[service inventory](#terms) and [storage budget](#terms): each Pulsar service
-with its state, nodes, port and GPU memory, and whether it runs a modified
-recipe; each node's available memory, GPU
-work Pulsar did not start, and disk headroom; and when each was observed (see
-the [Running, Memory, GPU work, Disk and Observed labels](#catalog-labels)).
-Every `./pulsar inventory` and `./pulsar model budget` run, including those
-from **Cluster overview (checks nodes now)**, **Live service inventory** and
-**Model files and disk space (checks nodes now)**, saves its observation on the
-controller in `.pulsar/service-inventory.json` and `.pulsar/storage-budget.json`,
-which are never tracked. Before any is saved the rows read `not observed yet`,
-and an inventory older than ten minutes reads `last seen`. The ages do not
-tick while the menu stays open, as the Next line's do not; the block prints
-again when a new observation is saved or the inventory turns `last seen`. A
-saved file that cannot be read says so on its row and is replaced by the next
-check. Saves of one record take turns under a lock file beside it, so an older
-inventory never replaces a newer one. The block is left out when the catalog
-cannot be read.
-
+Before setup, home prints the setup status and offers **Set up this cluster…**
+(`./pulsar topology setup`; see [Confirm membership and SSH
+trust](#confirm-membership-and-ssh-trust)), or **Start over: forget this
+cluster…** (`./pulsar topology forget`) when saved membership is invalid, then
+**Browse the catalog (read-only)**, **Help and troubleshooting…** and **Exit**.
 An unset archive location is optional configuration, not an incomplete cluster
-setup. **Archive storage configuration** is available when archive actions are
-needed; entering or browsing the menu never saves or disables that setting.
+setup.
 
-During cluster setup, **Browse the catalog (read-only)** lets you select a
-published spec, inspect its summary, details and published results, or compare
-it with another catalog spec, then return with **Back** or Esc.
-It offers no storage or serving operations. **Host diagnostics**, saved
-**Cluster topology (read-only)** and **Help** are also available. Diagnostics
-run only when selected. The same catalog browser is available directly as
-`./pulsar models menu --read-only`. Command-level prerequisites and confirmations
-still apply to all operational actions after setup.
+**Browse the catalog (read-only)** lets you select a published spec, inspect
+its summary, details and published results, or compare it with another
+catalog spec, then return with **Back** or Esc. It offers no storage or
+serving operations. The same catalog browser is available directly as
+`./pulsar models menu --read-only`. Command-level prerequisites and
+confirmations still apply to all operational actions after setup.
 
-**Help**, before and after setup, offers four pages, each in the pager:
-**What the words mean** (the [terms](#terms) above, `./pulsar help terms`),
-**What the labels mean** (the [catalog labels](#catalog-labels),
-`./pulsar help labels`), **How serving works** (one sentence for each step from Download to Purge,
-`./pulsar help workflow`) and **Command reference** (`./pulsar help`). Closing
-a page returns to Help; **Back** or Esc returns to the home menu.
+### Cluster…
 
-After setup, the home menu offers **Cluster overview (checks nodes now)**,
-**Catalog and storage**, **Model files and disk space (checks nodes now)**,
-**Live service inventory**, **Host diagnostics**, **Archive storage
-configuration**, **Cluster topology**, **Help** and **Exit**, in that order.
+**Cluster…** opens on a frame from saved records only: the nodes, how many
+answered the last check and when, whether the links and SSH identities were
+verified, and the changes noticed with their age, then the blocking issues the
+last check found. Opening it probes nothing. The frame is drawn again only
+when a saved record changed. Its choices:
 
-**Cluster overview (checks nodes now)**, the first choice, runs `./pulsar topology
-check`, `./pulsar inventory` and `./pulsar model budget` in turn, each under a
-spinner, and shows every saved node by hostname: its topology status and
-issues, available memory (GB10 shares it between the GPU and the host), disk
-space in the storage budget's terms (what it can still copy, disk free and
-Pulsar files), and the services and
-other GPU work on it. A source that fails is listed as not observed with its
-error, and the others still show. A long overview opens in the pager. Nothing
-runs until it is chosen and it changes nothing; **Show again** re-reads the
-same results, **Refresh (checks nodes now)** runs the three again, and
-**Back** or Esc returns home. The storage budget runs last because it takes the shared storage lock.
+- **Check the cluster now** runs one read-only report, each source under its
+  own spinner: discovery (`./pulsar topology detect`, which saves the changes
+  noticed), the membership check (`./pulsar topology check`), the SSH identity
+  check (`./pulsar ssh-trust check`), diagnostics with every node's
+  prerequisites (`./pulsar doctor`), the service inventory (`./pulsar
+  inventory`) and the storage budget (`./pulsar model budget`, last, because
+  it takes the shared storage lock). The report shows the changes noticed, then
+  every saved node by hostname: its status, SSH identity, its checks (each
+  warning and blocking issue with its fix; `hf` findings are warnings),
+  memory, disk and services, then the archive and API key settings, the
+  sources that could not be observed, and a verdict. A long report opens in
+  the pager. Its findings are saved beside the changes noticed, so home and
+  this frame show them later. Under the report: **Review what changed…** when
+  discovery noticed a change, **Show the report again**, **Check again** and
+  **Back**. It replaces the earlier home menu's **Cluster overview**.
+- **Review what changed…**, shown when the saved changes hold a change, shows
+  saved membership against what the last discovery saw, then one question:
+  - every member answered: **Save the cluster as it is now** (`./pulsar
+    topology configure`);
+  - a member did not answer: **Keep NODE; it is only down**, which records
+    the answer beside the changes so the question is asked again only when a
+    later discovery sees different changes (the node stays under Attention),
+    or **Save the cluster without NODE** (`./pulsar topology configure
+    --remove-missing`), whose question lists the files recorded on that node
+    first;
+  - a member that answered but cannot be a member is never left out: fix it
+    on that machine;
+  - while the saved inventory shows a Pulsar service, saving is refused with
+    the service named and how to stop it (`./pulsar stop SPEC`).
+
+  When a save would change the nodes' positions, as when a reinstalled machine
+  joins after the saved nodes, the screen shows each node's old and new
+  position: multi-node recipes use the first nodes in that order. Configure
+  asks its own question; this menu's choice leads there. After a save, Pulsar
+  records the nodes' SSH identities with their own question and fingerprints
+  (`./pulsar ssh-trust enroll`), and says that Prepare takes over each copy
+  that still verifies, with nothing copied again.
+- **Settings… (archive location, API key)**: **Archive location…** opens the
+  archive menu (`./pulsar configure archive-root menu`); **API key** says
+  whether `VLLM_API_KEY` (or `API_KEY`) is configured and where: this
+  checkout's `.env` file or the environment that started Pulsar. The menu
+  never reads out or takes the key.
+- **Start over: forget this cluster…** runs `./pulsar topology forget`: its
+  plan of what is removed and kept, then a question that starts on No. After a
+  forget, the menu returns home, which offers setup again.
+
+### Help and troubleshooting…
+
+**Help and troubleshooting…**, before and after setup, offers:
+
+| Choice | Same as |
+| --- | --- |
+| **Run diagnostics (checks nodes now)** | `./pulsar doctor` |
+| **What the words mean**: the [terms](#terms) above | `./pulsar help terms` |
+| **What the labels mean**: the [catalog labels](#catalog-labels) | `./pulsar help labels` |
+| **How serving works**: one sentence for each step from Download to Purge | `./pulsar help workflow` |
+| **Command reference** | `./pulsar help` |
+| **Advanced: single operations…** | today's menus, below |
+
+Each page opens in the pager; closing it returns here, and **Back** or Esc
+returns home. **Advanced: single operations…** keeps the menus from before
+this layout, unchanged: **Catalog and storage** (`./pulsar models menu`),
+**Model files and disk space (checks nodes now)** (`./pulsar models files`),
+**Live service inventory** (`./pulsar inventory menu`), **Cluster topology**
+(`./pulsar topology menu`) and **Archive storage configuration**
+(`./pulsar configure archive-root menu`). Before setup it offers only **Cluster
+topology (read-only)** (`./pulsar topology show`).
 
 ### Catalog operations and confirmations
 
-The interactive menu (`./pulsar`, then **Catalog and storage**) stays open
+The interactive menu (`./pulsar`, then **Serve a model…**, or **Catalog and
+storage** under **Help and troubleshooting… → Advanced: single operations…**) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. Where the terminal is wide enough,
@@ -1326,7 +1426,7 @@ archive → Full file audit (slow; hashes every file)** opens `model info --full
 which hashes every prepared file and can take many minutes. All three only read,
 so they ask nothing; a one-node recipe first asks which machine. An operation is left out only when
 saved records rule it out, and a **Not shown** line names it, the reason and
-what makes it available: a location set in **Archive storage configuration** on
+what makes it available: a location set in **Cluster… → Settings…** on
 the home menu, or a home that **Download** or **Restore** records. A serving
 guard points to a guarded trial (`./pulsar guarded --help` and
 [guarded serving](GUARDED_SERVING.md)); a historical spec has no such fix. **Check now** records file
@@ -1410,7 +1510,7 @@ labels mean**, which opens the [catalog labels](#catalog-labels) and also
 appears in read-only browsing. **Check running services (service
 inventory)** in the spec list runs `inventory --json` once and keeps the
 result while the catalog menu is open; like every inventory run, it is also
-saved for the home menu's Running block. Leaving it for the root menu starts
+saved for the home menu's Serving line. Leaving it for the root menu starts
 over. The list then says when it was observed and which nodes were not, and
 each spec's line names its service, such as `running on 3 nodes`. The recipe frame's **Running?** field gives the state, nodes, source
 and age; **Live status**, **Start** and **Stop** in the same catalog menu
@@ -1634,7 +1734,7 @@ terminals drop the reserve column first. The command uses the same reserve and
 allowance settings as preparation, requires no confirmation, and changes no
 spec's saved file-check state. It changes nothing on a node; each complete run
 saves the budget on the controller, stamped with the time it finished, for the
-home menu's Running block. This budget describes prepared-copy storage;
+home menu's Disk line. This budget describes prepared-copy storage;
 home and archive locations may use other filesystems. The page's payload
 estimates for [model files](#model-files-across-the-nodes) are separate from
 this prepared-copy budget.

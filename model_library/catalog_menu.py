@@ -303,9 +303,9 @@ def hidden_fix(reason: str, hidden: dict[str, str]) -> str | None:
     observations only, so it is never the fix: homes are recorded by Download
     and Restore, and the archive location is a setting."""
     if reason == _location_reason("not-configured"):
-        return "Set one in Archive storage configuration on the home menu."
+        return "Set one in Cluster… → Settings… on the home menu."
     if reason == _location_reason("disabled"):
-        return "Set a location in Archive storage configuration on the home menu."
+        return "Set a location in Cluster… → Settings… on the home menu."
     if reason.startswith("no home is recorded"):
         return "Download or Restore records a home." if "restore" not in hidden else "Download records a home."
     if reason == START_UNSUPPORTED["guard_unsupported"]:

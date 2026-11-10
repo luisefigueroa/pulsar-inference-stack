@@ -561,12 +561,12 @@ class View(unittest.TestCase):
             "Download or Restore records a home."])
         self.assertEqual(shown(row(), "not-configured"), [
             "Not shown Restore, Verify archive (no archive location is configured). "
-            "Set one in Archive storage configuration on the home menu.",
+            "Set one in Cluster… → Settings… on the home menu.",
             "Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
             "Download records a home."])
         self.assertEqual(shown(checked(home=HOME), "disabled"), [
             "Not shown Restore, Create archive, Verify archive (archives are disabled). "
-            "Set a location in Archive storage configuration on the home menu."])
+            "Set a location in Cluster… → Settings… on the home menu."])
         self.assertEqual(shown(row(snapshots=two_snapshots(HOME, None)), "configured"), [
             "Not shown Prepare (no home is recorded for snapshot draft). Download or Restore records a home."])
         for state, location in ((row(), "not-configured"), (checked(home=HOME, **GUARDED), "configured")):

@@ -468,7 +468,7 @@ class Styles(unittest.TestCase):
     def test_pages_mark_headings_terms_choices_and_commands(self):
         expected = {
             "reference": ["\x1b[1;94mPulsar Inference Stack\x1b[0m\n", "\n\x1b[1;94mGuides\x1b[0m\n",
-                          "  \x1b[36mpulsar models show \x1b[0m\x1b[4;36mSPEC\x1b[0m\n", "\x1b[1mHelp\x1b[0m",
+                          "  \x1b[36mpulsar models show \x1b[0m\x1b[4;36mSPEC\x1b[0m\n", "\x1b[1mHelp and troubleshooting…\x1b[0m",
                           "\x1b[4;36mSPEC\x1b[0m is a catalog spec ID."],
             "terms": ["\x1b[1;94mWhat the words mean\x1b[0m\n", "  \x1b[1;94mspec\x1b[0m\n",
                       "\x1b[36mreleases/\x1b[0m", "\x1b[36m./pulsar topology check\x1b[0m",

@@ -268,6 +268,7 @@ class Review(Harness):
                       "fixture-new new → 3. Multi-node recipes use the first nodes in this order.", text)
         self.assertIn("Prepare takes over each copy that still verifies on the same node, and nothing is copied "
                       "again.", text)
+        self.assertIn("Same as ./pulsar topology configure, then ./pulsar ssh-trust enroll", text)
         self.assertEqual(self.menus()[1], ["Cluster saved", "Continue"])
 
     def test_a_declined_or_failed_save_changes_nothing_and_records_no_identities(self):

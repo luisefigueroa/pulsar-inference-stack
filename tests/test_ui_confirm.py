@@ -513,5 +513,54 @@ exit "$rc"
         self.assertIn("REVIEWED=130", output)
 
 
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumIntentHome(BundledGum):
+    """The intent home and the Cluster menu with real Gum over fixture records; Esc only, nothing runs."""
+
+    def fixture(self):
+        from datetime import datetime, timezone
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        nodes = [{"rank": index, "hostname": f"fixture-node-{index + 1}", "node_id": f"node-{index}"}
+                 for index in range(3)]
+        topology_id = "a" * 64
+        (root / "topology.json").write_text(json.dumps({
+            "schema_version": 2, "topology_id": topology_id, "nodes": nodes,
+            "validation": {"ssh_identity_enrolled": True}}))
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (root / "changes.json").write_text(json.dumps({
+            "schema_version": 1, "kind": "pulsar-cluster-changes", "topology_id": topology_id,
+            "observed_at": now, "result": "changed", "issues": [], "found": [], "changed": [], "untrusted": [],
+            "missing": [{"hostname": "fixture-node-3", "node_id": "node-2", "position": 2, "answered": False}]}))
+        # Every record the menus read is the fixture's; nothing is read from or written to the checkout.
+        return (f'export PULSAR_FORCE_MENU=1 CLUSTER_TOPOLOGY_FILE={root}/topology.json '
+                f'PULSAR_CLUSTER_CHANGES_FILE={root}/changes.json '
+                f'PULSAR_SERVICE_INVENTORY_FILE={root}/inventory.json PULSAR_STORAGE_BUDGET_FILE={root}/budget.json '
+                f'PULSAR_MODEL_LIBRARY_DIR={root}/model-library PULSAR_COLD_ROOT=\n')
+
+    def test_the_home_draws_its_status_above_the_six_choices_at_80_by_24(self):
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.drive(self.fixture() + 'exec "$REPO_DIR/scripts/home.sh"\n', b"\x1b",
+                                          ready=b"Help and troubleshooting", columns=columns)
+                self.assertEqual(code, 0, output)
+                plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", output)
+                for text in ("Cluster    3 nodes · 2 of 3 answered", "Serving", "Disk", "Attention",
+                             "fixture-node-3 did not answer", "Pulsar Inference Stack", "esc exit",
+                             "Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"):
+                    self.assertIn(text, plain)
+
+    def test_the_cluster_menu_draws_its_frame_and_offers_review(self):
+        code, output = self.drive(self.fixture() + 'exec "$REPO_DIR/scripts/cluster-menu.sh"\n', b"\x1b",
+                                  ready=b"Start over: forget this cluster")
+        self.assertEqual(code, 0, output)
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", output)
+        for text in ("Nodes      3 · fixture-node-1, fixture-node-2, fixture-node-3",
+                     "Changes    fixture-node-3 did not answer", "Check the cluster now", "Review what changed…",
+                     "Settings… (archive location, API key)", "Back"):
+            self.assertIn(text, plain)
+
+
 if __name__ == "__main__":
     unittest.main()

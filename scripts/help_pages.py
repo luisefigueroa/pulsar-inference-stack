@@ -39,9 +39,13 @@ REFERENCE = [
         ("pulsar help labels", "What the catalog's status words mean, such as not checked yet, and what to do."),
         ("pulsar help workflow", "How serving works, from download to purge, one step at a time.")]),
     ("Set up this checkout", [
-        ("pulsar", "Open the menu on a terminal with Gum: cluster setup, read-only catalog details, "
-                   "diagnostics and **Help**. Full operations follow membership and SSH setup; archives are optional."),
-        ("pulsar topology setup", "First-use membership and SSH enrollment with separate confirmations."),
+        ("pulsar", "Open the menu on a terminal with Gum. Before setup: **Set up this cluster…**, read-only "
+                   "catalog details and **Help and troubleshooting…**. After it: **Serve a model…**, **Running "
+                   "services…**, **Models and disk space…**, **Cluster…** and **Help and troubleshooting…**, "
+                   "whose **Advanced: single operations…** keeps each single operation. Archives are optional."),
+        ("pulsar topology setup", "First-use setup in five steps: this machine, finding the machines, each "
+                                  "machine's prerequisites, then membership and SSH identities, each with its "
+                                  "own confirmation. It installs nothing."),
         ("pulsar topology show|check|detect|configure",
          "Inspect saved membership, check nodes, discover or explicitly configure; "
          "`configure --remove-missing` saves without a node that did not answer."),
@@ -245,8 +249,9 @@ def emit_labels(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
 
 def emit_workflow(writer: TerminalWriter) -> None:
     writer.emit("How serving works", role="heading")
-    writer.emit("**Set up cluster membership and SSH trust** first. Then choose a spec in **Catalog and "
-                "storage**; the **Lifecycle** line in its frame marks the step it has reached.", markup=True)
+    writer.emit("**Set up this cluster…** first. Then choose **Serve a model…** and a spec; the "
+                "**Lifecycle** line in its frame marks the step it has reached. **Running services…** shows "
+                "what runs, and **Cluster…** checks the nodes and saves a change to the cluster.", markup=True)
     writer.blank()
     for number, (step, sentence) in enumerate(workflow(), 1):
         writer.emit(f"{number}. {step}", initial_indent="  ", role="heading")
