@@ -36,7 +36,8 @@ require_gum "Serve a model…" \
   "./pulsar model prepare SPEC --plan" "copy preview; then --yes" \
   "./pulsar image stage SPEC --plan" "serving image preview; then --yes" \
   "./pulsar stop SPEC" "stop the service in the way" \
-  "./pulsar start SPEC --dry-run" "Start's checks; then start it"
+  "./pulsar start SPEC --dry-run" "Start's checks; then start it" \
+  "./pulsar spec compare --before releases/SPEC.json --after releases/OTHER.json" "compare two recipes"
 ui_keep_styles
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-serve.XXXXXX")
@@ -360,15 +361,33 @@ change_menu() {
   esac
 }
 
+# compare_menu: the other recipes as the list's cards, then the canonical
+# comparison of the two specs in the pager, as the catalog menu's Compare.
+compare_menu() {
+  local index rc
+  read_cards < <(printf '%s' "$CATALOG" | serve_plan list --leave-out "$SPEC")
+  if [ "${#CARD_IDS[@]}" -eq 0 ]; then
+    printf '\nNo other recipe in the catalog can be compared with this one.\n' | text
+    return 0
+  fi
+  index=$(choose_index "Compare with another recipe" "${CARD_OPTIONS[@]}" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  [ "$index" -lt "${#CARD_IDS[@]}" ] || return 0
+  page_output "" bash -c 'printf "Selected spec: %s\nCompared with: %s\n\n" "$1" "$2"; shift 2; exec "$@"' _ \
+    "$SPEC" "${CARD_IDS[$index]}" "$REPO_DIR/pulsar" spec compare --before "$REPO_DIR/releases/$SPEC.json" \
+    --after "$REPO_DIR/releases/${CARD_IDS[$index]}.json" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+}
+
 details_menu() {
   local choice rc
   while true; do
-    choice=$(choose_index "Details" "Recipe details" "Published results" "Back") \
+    choice=$(choose_index "Details" "Recipe details" "Published results" "Compare with another recipe" "Back") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "$choice" in
       0) page_output "" python3 -m model_library.catalog show "$SPEC" || rc=$? ;;
       1) page_output "" python3 -m model_library.catalog results "$SPEC" || rc=$? ;;
+      2) compare_menu || rc=$? ;;
       *) return 0 ;;
     esac
     [ "$rc" -ne 130 ] || return 130

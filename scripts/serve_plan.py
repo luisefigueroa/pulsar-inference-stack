@@ -3,7 +3,7 @@
 
     python3 -m scripts.serve_plan entry [--discovered | --explain]
     python3 -m scripts.serve_plan running --inventory FILE < CATALOG_JSON
-    python3 -m scripts.serve_plan list [--inventory FILE] < CATALOG_JSON
+    python3 -m scripts.serve_plan list [--inventory FILE] [--leave-out SPEC]... < CATALOG_JSON
     python3 -m scripts.serve_plan nodes --spec-id S < CATALOG_JSON
     python3 -m scripts.serve_plan previews --spec-id S [--node ID] [--files FILE] [--source WHERE]
             [--files-node ID] [--not-found NAME] [--ready-only] < CATALOG_JSON
@@ -233,13 +233,16 @@ def _facts(rows: list[dict]) -> dict[str, list[str]]:
 
 
 def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archive_location: str,
-               order: list[str], repo: Path, writer: TerminalWriter | None = None) -> list[str]:
+               order: list[str], repo: Path, writer: TerminalWriter | None = None,
+               leave_out: frozenset = frozenset()) -> list[str]:
     """The Serve list: a card per recipe grouped by model, each line the facts
     that tell it apart, its node count and one readiness phrase. Lines are
-    KIND<TAB>TEXT, as the catalog list's cards: heading, spec, line, gap."""
+    KIND<TAB>TEXT, as the catalog list's cards: heading, spec, line, gap.
+    LEAVE_OUT names recipes not to list, as Compare with another recipe
+    leaves out the one it compares."""
     width = max(MIN_WIDTH, min(MAX_WIDTH, width))
     facts, names = _facts(entries), short_model_names(entries)
-    shown = [row for row in entries if not row.get("historical")]
+    shown = [row for row in entries if not row.get("historical") and row["spec_id"] not in leave_out]
     lines = []
     for index, row in enumerate(shown):
         if index == 0 or shown[index - 1].get("model_id") != row.get("model_id"):
@@ -1171,6 +1174,7 @@ def main(argv: list[str] | None = None) -> int:
     running.add_argument("--inventory")
     listing = sub.add_parser("list")
     listing.add_argument("--inventory")
+    listing.add_argument("--leave-out", action="append", default=[], help="a recipe not to list")
     nodes = sub.add_parser("nodes")
     nodes.add_argument("--spec-id", required=True)
     previews = sub.add_parser("previews")
@@ -1251,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
             for line in list_lines(entries, width=width - 2, inventory=inventory if isinstance(inventory, dict)
                                    else None, archive_location=location,
                                    order=names.order, repo=args.repo_root,
-                                   writer=TerminalWriter(width=width)):
+                                   writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out)):
                 print(line)
             return 0
         if args.command == "nodes":

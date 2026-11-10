@@ -472,12 +472,28 @@ class NeedsEverything(Harness):
                                 "Go ahead", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[2], ["Change the plan", "Keep the files on another node…", "Back"])
-        self.assertEqual(self.menus()[4], ["Details", "Recipe details", "Published results", "Back"])
+        self.assertEqual(self.menus()[4], ["Details", "Recipe details", "Published results",
+                                           "Compare with another recipe", "Back"])
         self.assert_plain_choices()
         self.fixture("acquire", rc=130)
         self.answers.with_suffix(".n").unlink()
         self.choose_log.unlink()
         self.run_menu(["0", "Go ahead", "Back"])
+        self.assert_plain_choices()
+
+    def test_details_compares_with_another_recipe_from_the_lists_cards(self):
+        result = self.run_menu(["0", "Details", "Compare with another recipe", "0", "Back", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        compare = self.menus()[3]
+        # The other recipe only, as the list shows it: no spec ID in a choice.
+        self.assertEqual(compare[0], "Compare with another recipe")
+        self.assertIn("org/other", compare[1])
+        self.assertNotIn("org/model", " ".join(compare))
+        self.assertEqual(compare[-1], "Back")
+        self.assertIn(f"spec compare --before {self.root}/releases/{SPEC}.json --after "
+                      f"{self.root}/releases/{OTHER}.json", self.commands())
+        self.assertEqual(self.ran(), [f"spec compare --before {self.root}/releases/{SPEC}.json --after "
+                                      f"{self.root}/releases/{OTHER}.json"])
         self.assert_plain_choices()
 
     def test_get_it_ready_drops_the_stop_and_the_start(self):
