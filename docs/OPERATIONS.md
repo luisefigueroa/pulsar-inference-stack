@@ -1576,7 +1576,7 @@ offering **Back up a model…** and **Check the archives…**.
 | Choice | Does | Same as |
 | --- | --- | --- |
 | **Free up space…** | What can go, largest gain first, each with what it frees and what it costs to get back; then what cannot go and why. Each line opens its plan. | `./pulsar model purge SPEC`, `model remove SPEC`, `model move SPEC --node NODE` |
-| **Get a model ready ahead of time…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
+| **Get a model ready ahead of time…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. A change found on entry opens Review with **Get it ready on the cluster as saved**, never a Stop to save it, since nothing would start after it. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
 | **Keep a model ready…** | **Keep MODEL ready** marks its copies as kept so **Free up space…** never offers them; **Stop keeping MODEL ready** lifts it. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
 | **Back up a model…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME` |
 | **Check the archives…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME` |
@@ -1595,7 +1595,11 @@ offering **Back up a model…** and **Check the archives…**.
   without one it says a download would be needed, and its plan offers **Back it
   up first, then remove it**, which adds the archive steps before the others.
   It is offered only when every recipe that uses the files can be purged and
-  needs no other files.
+  needs no other files. A copy two of those recipes share frees nothing
+  through either one's estimate, though both Purges together delete it, so
+  the figure then reads `frees at least`. A recipe served from its home only
+  releases it; its step says so. A verified archive is said to bring the
+  model back only while the archive location is set.
 - `Move the files of MODEL from NODE to NODE: frees SIZE on NODE` is offered
   only when a node is past its storage budget's reserve, another node's homes
   folder has room for the files after its reserve, and nothing depends on the
@@ -1609,8 +1613,9 @@ Under them, what cannot go, with its reason and the choice that lifts it: a
 serving model (stop it through **Running services…**), a kept model (**Stop
 keeping MODEL ready**, its own plan), copies another recipe shares (their files
 stay), a container Pulsar did not start that mounts the files (named,
-read-only), unfinished downloads no record names, and files no catalog recipe
-uses. Nothing is ever unpinned on its own, no archive is deleted, and no file
+read-only), a model whose copies could not all be checked on a node that
+answered (what it would free there is unknown, so nothing is offered for it),
+unfinished downloads no record names, and files no catalog recipe uses. Nothing is ever unpinned on its own, no archive is deleted, and no file
 Pulsar has no record of is deleted.
 
 Every plan has the form **Serve a model…**'s has: the steps and what each
