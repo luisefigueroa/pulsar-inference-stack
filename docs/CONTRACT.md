@@ -448,7 +448,7 @@ gained `fabric_failures`; `topology detect --json` gained `cabling`; the saved
 changes record gained `order`, `shape` and `cables`. Nothing was removed or
 renamed.
 
-Change note, 2026-11-11: start's launch check judges the recipe's chosen nodes
+Change note, 2026-11-10: start's launch check judges the recipe's chosen nodes
 rather than the cluster's shape: every pair of them must share at least the
 links the recipe needs. On a ring a `fabric_incomplete` record for two chosen
 nodes that share no link has a null `fix` and a `note`. No code, field or
