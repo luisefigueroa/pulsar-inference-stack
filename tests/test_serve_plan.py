@@ -546,7 +546,7 @@ class Cli(unittest.TestCase):
             self.assertEqual(lines[0].split("\t")[5], "Stop org/other on spark-1, spark-2 and spark-3. Its model "
                                                       "files are kept.")
             self.assertEqual(lines[2:], ["./pulsar", "stop", OTHER[:12],
-                                         "cancel\tCancel", "go\tGo ahead", "change\tChange…", "details\tDetails"])
+                                         "cancel\tCancel", "go\tGo ahead", "details\tDetails"])
 
 
 if __name__ == "__main__":

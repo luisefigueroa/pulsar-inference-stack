@@ -248,14 +248,16 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
                 name = writer.paint(name, ["choice"] * len(name))
             lines.append("heading\t" + " " * CARD_NAME_COLUMN + name)
         parts = list(facts.get(row["spec_id"]) or [])
+        phrase = readiness(row, order=order, archive_location=archive_location,
+                           sizes=snapshot_sizes(repo, row["spec_id"]),
+                           service=own_service(row, inventory, entries))
+        # The node count, unless a fact or the phrase already names it.
         count = node_count(row["geometry"]["nodes"])
-        if count not in parts:
-            parts.insert(0 if not parts else len(parts), count)
+        if count not in parts and not phrase.startswith(f"needs {count}"):
+            parts.append(count)
         if (row.get("review") or {}).get("status") == "withdrawn":
             parts.insert(0, "withdrawn")
-        parts.append(readiness(row, order=order, archive_location=archive_location,
-                               sizes=snapshot_sizes(repo, row["spec_id"]),
-                               service=own_service(row, inventory, entries)))
+        parts.append(phrase)
         text = _card(parts, width)
         lines.append(f"spec\t{row['spec_id']}\t{text[0]}")
         lines += [f"line\t{line}" for line in text[1:]]
@@ -784,7 +786,12 @@ def choices(plan: dict) -> list[tuple[str, str]]:
         found.append(("go", "Go ahead"))
     if runnable and any(step["kind"] not in ("stop", "start") for step in plan["steps"]):
         found.append(("ready", "Get it ready, but do not start" if not plan.get("ready_only") else "Go ahead"))
-    found += [("change", "Change…"), ("details", "Details")]
+    # Change… only where something can change: a one-node recipe's machine,
+    # or where restored or downloaded files come from and go.
+    if len(plan.get("serving") or []) == 1 or any(step["kind"] in ("restore", "download")
+                                                  for step in plan["steps"]):
+        found.append(("change", "Change…"))
+    found.append(("details", "Details"))
     return found
 
 
@@ -1277,7 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
             ran = [" ".join(plan["steps"][index]["command"]) for index in args.ran_step]
             # Removing this recipe's own leftover containers stops nothing that served.
             others = {item["conf"] for item in plan.get("stopped") or []}
-            stopped = any(plan["steps"][index]["kind"] == "stop"
+            stopped = any(plan["steps"][index]["kind"] == "stop" and index != args.failed
                           and (plan["steps"][index].get("facts") or {}).get("conf") in others
                           for index in args.ran_step)
             text, found = outcome(plan, done=args.done, failed=args.failed, rc=args.rc, ran=ran,

@@ -305,7 +305,7 @@ class Switch(Harness):
         result = self.run_menu(["0", "Go ahead", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = self.menus()[1]
-        self.assertEqual(plan, ["Serve a model", "Cancel", "Go ahead", "Change…", "Details"])
+        self.assertEqual(plan, ["Serve a model", "Cancel", "Go ahead", "Details"])
         self.assertIn("Serve a model\t0", self.default_log.read_text().splitlines())
         # One inventory serves the list, the plan and Stop's own check.
         self.assertEqual(self.commands(), ["inventory --json", "model prepare abababababab --plan --json",
@@ -332,6 +332,8 @@ class Switch(Harness):
         text = " ".join(result.stdout.split())
         self.assertIn("✗ Step 2 did not finish: Start the service and wait until it answers.", text)
         self.assertIn("Nothing is serving now: org/other was stopped before Start.", text)
+        # The failed Start ran too, so it is named with the Stop.
+        self.assertIn("Same as: ./pulsar stop cdcdcdcdcdcd ./pulsar start abababababab", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
         self.assertEqual(self.ran(), ["stop cdcdcdcdcdcd", "start abababababab", "start cdcdcdcdcdcd"])
 

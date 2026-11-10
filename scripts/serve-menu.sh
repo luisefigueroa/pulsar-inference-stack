@@ -464,7 +464,8 @@ run_plan() {
     trap - INT
     case "$kind" in stop|start) forget_inventory ;; esac
     [ "$interrupted" = 0 ] || [ "$rc" -gt 128 ] || rc=130
-    if [ "$rc" -ne 0 ]; then failed=$index; break; fi
+    # A failed command ran too: the outcome names it with the others.
+    if [ "$rc" -ne 0 ]; then failed=$index ran+=(--ran-step "$index"); break; fi
     done=$((done + 1)) ran+=(--ran-step "$index")
   done
   local -a result=(--plan "$PLAN" --done "$done" "${ran[@]}")
