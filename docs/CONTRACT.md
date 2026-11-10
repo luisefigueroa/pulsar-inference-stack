@@ -448,6 +448,12 @@ gained `fabric_failures`; `topology detect --json` gained `cabling`; the saved
 changes record gained `order`, `shape` and `cables`. Nothing was removed or
 renamed.
 
+Change note, 2026-11-11: start's launch check judges the recipe's chosen nodes
+rather than the cluster's shape: every pair of them must share at least the
+links the recipe needs. On a ring a `fabric_incomplete` record for two chosen
+nodes that share no link has a null `fix` and a `note`. No code, field or
+value was added, removed or renamed.
+
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a
 save for another `topology_id` drops both. `kept` (`kept_at`, `signature`,
@@ -604,8 +610,10 @@ code from `start_blocker_codes` in the contract), `stage`, `node` (hostname) and
   `container_start_failed`, `smoke_test_failed`, `health_timeout`,
   `container_exited` and `service_stopped`. `service_id` names that service.
 - `fix` is one command that can be run as written, or null when no command
-  resolves the blocker (`guard_unsupported`, `historical_spec`, and launch
-  records whose containers were confirmed removed). When removing a failed
+  resolves the blocker (`guard_unsupported`, `historical_spec`, launch
+  records whose containers were confirmed removed, and `fabric_incomplete`
+  when two of the chosen nodes share no link on a ring, whose `note` says
+  what placement could start instead, if any). When removing a failed
   launch's containers cannot be confirmed on every node, `fix` is
   `./pulsar stop` and `note` names those nodes. `note` carries any
   explanation. Suggested start commands repeat the flags start was given, such
