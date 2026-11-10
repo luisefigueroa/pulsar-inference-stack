@@ -498,8 +498,8 @@ class StatusBlock(MenuHarness):
         self.without_recorded_files()
         result = self.run_home(["Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Attention no model has files recorded on the cluster yet; Models and disk space… → Look for "
-                      "model files Pulsar has no record of… records any files already on the nodes",
+        self.assertIn("Attention no model has files recorded yet; Models and disk space… → Look for "
+                      "model files Pulsar has no record of…",
                       self.block(result))
         # From the catalog's saved records alone: opening home probes nothing.
         self.assertEqual(self.commands(), [])
@@ -516,7 +516,7 @@ class StatusBlock(MenuHarness):
         attention = lines[[line.split()[0] for line in lines].index("Attention"):]
         self.assertIn("did not answer", attention[0])
         self.assertIn("and 2 more; Cluster… shows them", attention[1])
-        self.assertIn("Look for model files Pulsar has no record of… records any files already on the nodes",
+        self.assertIn("Look for model files Pulsar has no record of…",
                       " ".join(" ".join(attention[2:]).split()))
 
     def test_the_suggestion_fits_80_by_24_and_wraps_at_44(self):
@@ -683,13 +683,20 @@ class StatusBlock(MenuHarness):
         self.saved_changes.write_text(saved_changes(missing=["gb10-spark-workstation-2"], check=[
             checked("gb10-spark-workstation-1", failures=["rsync not found; install rsync on this node"]),
             checked("gb10-spark-workstation-0", answered=False)]))
-        result = self.run_home(["Exit"], COLUMNS="80")
-        lines = result.stdout.splitlines()
-        self.assertTrue(all(len(line) <= 80 for line in lines), result.stdout)
-        # A blank line, the block, then the menu: Gum adds 5 rows to its 6 choices.
-        self.assertLessEqual(len(lines) + 5 + 6, 24, result.stdout)
-        self.assertEqual([line.split()[0] for line in lines if line and not line.startswith(" ")],
-                         ["Cluster", "Serving", "Disk", "Attention"])
+        for recorded in (True, False):
+            with self.subTest(files_recorded=recorded):
+                # Lost records while services still run: the suggestion takes Attention's third row.
+                if not recorded:
+                    self.without_recorded_files()
+                    self.again()
+                result = self.run_home(["Exit"], COLUMNS="80")
+                lines = result.stdout.splitlines()
+                self.assertTrue(all(len(line) <= 80 for line in lines), result.stdout)
+                # A blank line, the block, then the menu: Gum adds 5 rows to its 6 choices.
+                self.assertLessEqual(len(lines) + 5 + 6, 24, result.stdout)
+                self.assertEqual([line.split()[0] for line in lines if line and not line.startswith(" ")],
+                                 ["Cluster", "Serving", "Disk", "Attention"])
+                self.assertEqual("Look for model files" in " ".join(result.stdout.split()), not recorded)
 
     def test_narrow_terminals_wrap_every_line_inside_the_width(self):
         self.saved_inventory.write_text(saved_inventory())

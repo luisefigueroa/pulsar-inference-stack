@@ -432,7 +432,8 @@ MENUS = {
     ("inventory-menu.sh", '"Select a service"'): ADVANCED,
     # The catalog menu. Before setup, home's Browse the catalog (read-only) opens
     # it read-only, so its cards, which begin with a spec's 12-character prefix,
-    # are reached outside Advanced too: an open question in the 4b report.
+    # are reached outside Advanced too, where FORBIDDEN would refuse the prefix; it is today's
+    # menu, unchanged (D11), and not checked here.
     **{("model-storage.sh", title): ADVANCED for title in (
         '"$title"', '"Stage the serving image (exact digest)"', '"Blocked plan"', '"Select a required snapshot"',
         '"Compare the selected spec with another catalog spec"', '"Launch options for the selected catalog spec"',

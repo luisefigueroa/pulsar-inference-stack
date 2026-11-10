@@ -230,7 +230,8 @@ class PreparedContent(unittest.TestCase):
 
 
 class UnrecordedDestination(unittest.TestCase):
-    """A folder at a rank's prepared copy path that no node record names (no adoption, no deletion)."""
+    """A folder at a rank's prepared copy path that no node record names: taken over only when asked
+    and every file verifies (D7); never deleted."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

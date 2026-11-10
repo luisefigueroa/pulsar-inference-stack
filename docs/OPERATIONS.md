@@ -240,7 +240,7 @@ below are for reading.
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
 | Attention: the archive location setting could not be read | The archive location setting in `.env` or the environment is not a readable literal path. **Cluster…** → **Settings…** says where it is set. |
 | Attention: and … more | More items need attention than home shows; **Cluster…** shows them all. |
-| Attention: no model has files recorded on the cluster yet | No recipe in the catalog has a *home* recorded, from Pulsar's saved records alone; the nodes may still hold model files, for example after the controller's records were lost. **Models and disk space…** → **Look for model files Pulsar has no record of…** scans the nodes and records what verifies. |
+| Attention: no model has files recorded yet | No recipe in the catalog has a *home* recorded, from Pulsar's saved records alone; the nodes may still hold model files, for example after the controller's records were lost. **Models and disk space…** → **Look for model files Pulsar has no record of…** scans the nodes and records what verifies. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -1428,7 +1428,11 @@ continuations, so it fits on an 80×24 terminal with the menu (see the
 - **Attention**, only when there is something: changes noticed, a node kept as
   only down, a blocking issue the last check found, or an archive location
   setting that cannot be read. It shows two items and counts the rest; the
-  last one names where to look.
+  last one names where to look. When no catalog recipe has a home recorded, a
+  last row suggests **Models and disk space… → Look for model files Pulsar has
+  no record of…**; more than two other items then show one and count the
+  rest, so the block still fits 80×24. It comes from the catalog's saved records: an empty
+  or unreadable catalog suggests nothing.
 
 Every `./pulsar inventory` and `./pulsar model budget` run, including those
 from **Running services…**, **Models and disk space…** and **Check the cluster

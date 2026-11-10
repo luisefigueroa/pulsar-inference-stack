@@ -319,11 +319,15 @@ layout (`manifest.json` and `snapshots/REVISION` only), manifest, file set and
 file sizes match the snapshot, is planned as `adopt` instead of the
 `unrecorded-destination` blocker; the action carries the folder's `path`.
 `--yes` then hashes every file against the manifest, reusing no earlier
-verification, before any rank is copied, and records the folder as that rank's
-prepared copy, on the node and then on the controller, only when every file
-matches. A folder that does not match keeps the `unrecorded-destination`
-blocker, with the reason in its `fix`; one whose hashes differ makes `--yes`
-exit 1 before anything is copied or recorded. Nothing in the folder is deleted,
+verification, before any rank of that snapshot is copied, and records the
+folder as that rank's prepared copy, on its node at once and on the controller
+with the other ranks, only when every file matches. A folder that does not
+match keeps the `unrecorded-destination` blocker, with the reason in its `fix`;
+one whose hashes differ makes `--yes` exit 1 before that snapshot's ranks are
+copied or recorded on the controller. A take-over that verified before it, on
+another rank, stays recorded on its node alone, as after an interrupted copy,
+and the next Prepare reuses it; for a recipe with several required snapshots,
+snapshots prepared before the failing one keep their copies. Nothing in the folder is deleted,
 moved or written, and an adoption needs no budget. Without the flag plans are
 unchanged, except that the blocker's `fix` names the flag. Other operations
 refuse the flag as a usage error. Prepared-copy records keep their schema and

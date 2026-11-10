@@ -95,7 +95,7 @@ STATUS_WORDS = {
     "unreadable": "unreadable",
     "archive-unreadable": "the archive location setting could not be read",
     "more": "more",
-    "no-files-recorded": "no model has files recorded on the cluster yet",
+    "no-files-recorded": "no model has files recorded yet",
 }
 
 
@@ -412,7 +412,7 @@ def files_suggestion(entries: list[dict]) -> str | None:
         return any(isinstance(member, dict) and member.get("home") for member in members.values())
     if any(recorded(row) for row in rows):
         return None
-    return (f"{STATUS_WORDS['no-files-recorded']}; {MODELS} → {FIND} records any files already on the nodes")
+    return f"{STATUS_WORDS['no-files-recorded']}; {MODELS} → {FIND}"
 
 
 def attention_items(records: Records, entries: list[dict] = ()) -> list[str]:

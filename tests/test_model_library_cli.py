@@ -1513,6 +1513,49 @@ class ModelLibraryCLI(unittest.TestCase):
         refused = self.success(f.run("prepare", "--plan", spec=True))
         self.assertEqual([d["code"] for d in refused["blocker_details"]], ["unrecorded-destination"])
 
+    def test_a_later_folder_that_does_not_verify_leaves_the_earlier_take_over_recorded_on_its_node(self):
+        # Take-overs run rank by rank before any copy: one that verified stays recorded on its node,
+        # as after an interrupted copy, and the next Prepare reuses it.
+        f, folders = self.records_lost_everywhere(nodes=3)
+        weights = next(path for path in folders[2].rglob("*") if path.is_file() and path.name != "manifest.json")
+        data = bytearray(weights.read_bytes()); data[0] ^= 0xFF; weights.write_bytes(bytes(data))
+        files, transfers = self.model_files(f), len(f.events("transfer"))
+        plan = self.success(f.run("prepare", "--plan", "--adopt-unrecorded", spec=True))
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "adopt", "adopt"])
+        result = f.run("prepare", "--yes", "--adopt-unrecorded", spec=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(len(f.events("transfer")), transfers)
+        self.assertEqual(self.model_files(f), files)
+        views = self.node_views(f)
+        self.assertEqual((views[f.cfg["nodes"][1]["node_id"]], views[f.cfg["nodes"][2]["node_id"]]),
+                         ([(1, str(folders[1]))], []))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec["spec_id"]), [])
+        again = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual([a["action"] for a in again["actions"]], ["home-view", "reuse", "copy"])
+        self.assertEqual([(d["code"], d["node_id"]) for d in again["blocker_details"]],
+                         [("unrecorded-destination", f.cfg["nodes"][2]["node_id"])])
+
+    def test_a_schema_3_recipe_takes_over_every_snapshots_copy_on_a_node(self):
+        f = self.speculative_fixture(nodes=2, draft_home=0)
+        self.success(f.run("prepare", "--yes", spec=True))
+        store = Store(f.state)
+        for record in store.views(spec_id=f.spec["spec_id"]):
+            store.remove("views", view_record_key(record))
+        shutil.rmtree(Path(f.cfg["nodes"][1]["view_root"]) / ".pulsar-node")
+        files, transfers = self.model_files(f), len(f.events("transfer"))
+        refused = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual(sorted(d["code"] for d in refused["blocker_details"]), ["unrecorded-destination"] * 2)
+        plan = self.success(f.run("prepare", "--plan", "--adopt-unrecorded", spec=True))
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([[a["action"] for a in member["actions"]] for member in plan["snapshots"]],
+                         [["reuse", "adopt"], ["reuse", "adopt"]])
+        self.success(f.run("prepare", "--yes", "--adopt-unrecorded", spec=True))
+        self.assertEqual(len(f.events("transfer")), transfers)
+        self.assertEqual(self.model_files(f), files)
+        self.assertEqual(len(self.node_views(f)[f.cfg["nodes"][1]["node_id"]]), 2)
+        again = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual({a["action"] for member in again["snapshots"] for a in member["actions"]}, {"reuse"})
+
     def test_an_adoption_interrupted_before_the_controller_records_it_is_reused_next_time(self):
         f, folders = self.records_lost_everywhere()
         files = self.model_files(f)
