@@ -13,8 +13,11 @@ Every fact comes from one service inventory (`./pulsar inventory --json`),
 taken on entering the page and reused while it is under a minute old, and from
 the last **Check it now** of a service (`./pulsar status`), each with its
 source and age. The inventory holds each service's model, state, nodes, port
-and served model name; it holds no API address, key requirement or health,
-so those read "not checked here" until Check it now, and nothing is guessed.
+and served model name. The API address is read from it as `./pulsar status`
+falls back to it (rank 0's observed port on its node), and whether a key is
+required from the launch plan the containers name, as the Connect card reads
+it. Health is not in it, so it reads "not checked here" until Check it now,
+and nothing is guessed.
 A node the inventory did not observe makes what runs there unknown, never
 absent. Nothing here contacts a node; the menu (scripts/services-menu.sh)
 runs every command.
@@ -64,6 +67,8 @@ STATUS_WORDS = {
     "no-key": "none: the API accepts requests without a key",
     "key": "required: requests send the key the service was started with",
     "key-not-recorded": "not recorded: add the key header if the service was started with one",
+    "launch-record": "from its launch record",
+    "loopback": "a loopback address, so it works only on",
     "answered": "answered /health",
     "did-not-answer": "did not answer /health",
     "no-address": "running, with no API address to ask",
@@ -335,18 +340,23 @@ class Page:
             field("State", f"its containers exist, but none is running. **Stop…** removes them; model files are "
                            "kept.")
         else:
-            from scripts.connect_card import recorded_api_auth, served_name
+            from scripts.connect_card import plan_api_auth, recorded_api_auth, served_name
             name = (served_name(result) if isinstance(result, dict) and rc == 0 else None) or raw.get("served_name")
             field("Model", f"`{clean(name)}`, {STATUS_WORDS['served-name']}" if name
                   else STATUS_WORDS["not-in-inventory"])
             url = result.get("api_url") if isinstance(result, dict) and rc == 0 else None
+            keys = {True: STATUS_WORDS["key"], False: STATUS_WORDS["no-key"], None: STATUS_WORDS["key-not-recorded"]}
+            seen = self._inventory_api(raw) if not checked else None
             if url:
-                field("API", f"`{url.rstrip('/')}/v1` · checked {when}")
+                field("API", f"`{url.rstrip('/')}/v1` · checked {when}" + self._loopback(url, raw))
                 auth = result.get("api_auth") if type(result.get("api_auth")) is bool \
                     else recorded_api_auth(result.get("service_id"))
-                words = {True: STATUS_WORDS["key"], False: STATUS_WORDS["no-key"],
-                         None: STATUS_WORDS["key-not-recorded"]}[auth]
-                field("Key", f"{words} · checked {when}")
+                field("Key", f"{keys[auth]} · checked {when}")
+            elif seen:
+                # As status itself falls back to the inventory: rank 0's observed port on its node.
+                field("API", f"`{seen}/v1` · seen {STATUS_WORDS['seen']} {self.age}" + self._loopback(seen, raw))
+                auth = plan_api_auth(self._plan_id(raw))
+                field("Key", keys[auth] + (f" · {STATUS_WORDS['launch-record']}" if auth is not None else ""))
             else:
                 field("API", STATUS_WORDS["not-checked"] if not checked else
                       f"not found by Check it now {when}")
@@ -359,6 +369,35 @@ class Page:
                 field("Restart", f"{STATUS_WORDS['not-offered']}: {blocker}")
         if service["stop_reason"]:
             field("Stop", f"{STATUS_WORDS['not-offered']}: {clean(service['stop_reason'])}")
+
+    def _inventory_api(self, raw: dict) -> str | None:
+        """The API address the inventory implies, as `./pulsar status` falls back to it
+        (scripts/service_status.py inventory_api_url); None when it holds no port."""
+        if raw.get("state") != "running":
+            return None
+        from scripts.service_status import inventory_api_url
+        try:
+            url = inventory_api_url(raw, self.inventory.get("nodes") or {})
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return url.rstrip("/") if url else None
+
+    @staticmethod
+    def _plan_id(raw: dict) -> str | None:
+        """The launch plan every rank's container names, or None when they do not name one."""
+        from scripts.container_runtime import PLAN_LABEL
+        ids = {(rank.get("labels") or {}).get(PLAN_LABEL) for rank in raw.get("ranks") or []
+               if isinstance(rank, dict)}
+        return ids.pop() if len(ids) == 1 and None not in ids else None
+
+    def _loopback(self, url: str, raw: dict) -> str:
+        """The Connect card's note for a loopback address: it works only on the API node."""
+        from scripts.connect_card import LOOPBACK
+        if not any(f"//{host}" in url for host in LOOPBACK):
+            return ""
+        ranks = sorted(raw.get("ranks") or [], key=lambda rank: str(rank.get("rank") or "0"))
+        node = ((self.inventory.get("nodes") or {}).get(ranks[0].get("node") if ranks else "") or {})
+        return f"; {STATUS_WORDS['loopback']} {node.get('hostname') or 'the API node'}"
 
     @staticmethod
     def _health(result: Any, rc: int, when: str) -> str:

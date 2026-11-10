@@ -19,6 +19,8 @@ from tests.test_serve_plan import OTHER, SPEC, envelope, image_plan, prepare_pla
 THIRD = "ef" * 32
 NODES = {"head": ("n0", "spark-1", "192.0.2.1"), "w1": ("n1", "spark-2", "192.0.2.2"), "w2": ("n2", "spark-3", "192.0.2.3")}
 MANAGED = "io.pulsar.gb10.managed"
+PLAN_LABEL = "io.pulsar.gb10.launch-plan"
+PLAN_ID = "7a" * 32
 
 
 def utc(moment):
@@ -26,14 +28,15 @@ def utc(moment):
 
 
 def service(conf, state="running", keys=("head", "w1", "w2"), *, served="served-model", port=8000,
-            ownership="managed", safe=True, matches=True):
-    """One service of a service inventory, as ./pulsar inventory --json reports it."""
+            ownership="managed", safe=True, matches=True, plan=None):
+    """One service of a service inventory, as ./pulsar inventory --json reports it; PLAN is the
+    launch plan its containers name by label."""
+    labels = {MANAGED: "true", **({PLAN_LABEL: plan} if plan else {})} if ownership == "managed" else {}
     return {"service_id": conf, "conf": conf, "state": state, "ownership": ownership, "safe_to_stop": safe,
             "matches_selected_spec": matches, "served_name": served, "api_port": port,
             "reasons": [] if safe else ["not every confirmed node is observable for cleanup"],
             "ranks": [{"rank": str(index), "node": key, "observed_api_port": port if index == 0 else None,
-                       "labels": {MANAGED: "true"} if ownership == "managed" else {}}
-                      for index, key in enumerate(keys)]}
+                       "labels": labels} for index, key in enumerate(keys)]}
 
 
 def inventory(*services, minutes=0, unobserved=(), gpu=()):
@@ -92,12 +95,37 @@ class OneService(Page):
         self.assertIn("org/model running on spark-1, spark-2, spark-3 · port 8000", text)
         self.assertIn("Seen by the service inventory less than a minute ago", text)
         self.assertIn("Model served-model, the model name requests use", text)
-        # The inventory holds no API address, key requirement or health: nothing is guessed.
-        for label in ("API", "Key", "Health"):
-            self.assertIn(f"{label} not checked here; choose Check it now", text)
+        # The API comes from the inventory as status itself has it: rank 0's port on its node,
+        # here this machine, so the Connect card's loopback note applies. Health needs Check it now.
+        self.assertIn("API http://127.0.0.1:8000/v1 · seen by the service inventory less than a minute ago; a "
+                      "loopback address, so it works only on spark-1", text)
+        self.assertIn("Key not recorded: add the key header if the service was started with one", text)
+        self.assertIn("Health not checked here; choose Check it now", text)
         self.assertNotIn("192.0.2.1", text)
         self.assertEqual(self.commands(), ["inventory --json"])
         self.assert_plain_choices()
+
+    def test_the_key_requirement_comes_from_the_launch_plan_its_containers_name(self):
+        from model_library.state import Store
+        store = Store(self.root / "model-library")
+        for api_auth, words in ((True, "Key required: requests send the key the service was started with · "
+                                       "from its launch record"),
+                                (False, "Key none: the API accepts requests without a key · from its launch record")):
+            with self.subTest(api_auth=api_auth):
+                for path in (self.choose_log, self.answers.with_suffix(".n"), self.log):
+                    path.unlink(missing_ok=True)
+                store.put("service-plans", PLAN_ID, {"ranks": [], "api_auth": api_auth})
+                # Rank 0 on another node: its control address, with no loopback note.
+                self.inventory(inventory(service(SPEC, keys=("w1", "w2", "head"), plan=PLAN_ID)))
+                result = self.run_menu(["Back"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                text = self.text(result)
+                self.assertIn(words, text)
+                self.assertIn("API http://192.0.2.2:8000/v1 · seen by the service inventory less than a minute ago",
+                              text)
+                self.assertNotIn("loopback", text)
+                # Still one probe: the card reads the saved record, not the service.
+                self.assertEqual(self.commands(), ["inventory --json"])
 
     def test_entering_takes_its_own_inventory_even_when_one_was_saved_just_now(self):
         # A Stop run elsewhere, such as Serve a model…'s before a refused Start, leaves the saved
