@@ -320,7 +320,9 @@ def service_texts(records: Records, entries: list[dict], room: int,
                 text += f" ·{KEEP}{_kept(*STATUS_WORDS['outside'].split())}"
             (active if service["state"] in ACTIVE_STATES else remains).append(text)
     texts = active + remains
-    if remains and not active:
+    # Only a complete inventory can say that nothing runs: a node it did not
+    # observe may run a service.
+    if remains and not active and not live["incomplete"]:
         texts[0] = f"{STATUS_WORDS['none-running']} · {texts[0]}"
     unknown = None
     if live["incomplete"]:

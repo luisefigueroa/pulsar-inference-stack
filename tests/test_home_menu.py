@@ -524,6 +524,14 @@ class StatusBlock(MenuHarness):
                       "seen 6 hours ago", text)
         self.assertNotIn("last seen", text)
         self.assertNotIn("port 8000", text)
+        # A node the inventory did not observe may run a service: no "none running".
+        document["nodes"]["head"].update(probe_status="unreachable", probe_reason="ssh timed out")
+        self.saved_inventory.write_text(json.dumps(document))
+        self.again()
+        text = self.block(self.run_home(["Exit"]))
+        self.assertIn("Serving exited containers of example/model remain on fixture-remote · seen 6 hours ago; "
+                      "others unknown, fixture-local not observed", text)
+        self.assertNotIn("none running", text)
 
     def test_a_node_that_did_not_answer_is_under_attention_and_unknown_is_not_absent(self):
         document = json.loads(saved_inventory())
