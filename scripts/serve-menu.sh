@@ -69,7 +69,9 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
-# The list's and the plan's title.
+# The list's and the plan's title; Review's flag and its way on without a save.
+REVIEW=--serve AS_SAVED="Serve on the cluster as saved"
+[ "$MODE" != ready ] || REVIEW=--ready AS_SAVED="Get it ready on the cluster as saved"
 case "$MODE" in
   switch) TITLE="Switch to another model" ;;
   restart) TITLE="Restart a service" ;;
@@ -141,17 +143,18 @@ entry_check() {
       not-checked)
         echo
         serve_plan entry --explain
-        choice=$(choose_index "$TITLE" "Serve on the cluster as saved" "Back") \
+        choice=$(choose_index "$TITLE" "$AS_SAVED" "Back") \
           || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
         [ "$choice" = 0 ] || return 1
         return 0 ;;
       *)
         rc=0
-        "$REPO_DIR/scripts/cluster-review.sh" --serve || rc=$?
+        "$REPO_DIR/scripts/cluster-review.sh" "$REVIEW" || rc=$?
         case "$rc" in
           130) return 130 ;;
           20) return 0 ;;
-          21) stop_save_continue; return $? ;;
+          # Get a model ready starts nothing, so it never stops a service to save a change.
+          21) [ "$MODE" != ready ] || return 1; stop_save_continue; return $? ;;
           0)
             # A save or a kept answer leaves nothing to review; Back leaves the change.
             state=$(serve_plan entry --discovered) || state=not-checked

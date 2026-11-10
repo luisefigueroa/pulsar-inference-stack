@@ -15,11 +15,17 @@
 #   Serve on the cluster as saved                  exits 20
 #   Stop MODEL, save the change, then continue     exits 21; shown when a
 #                                                  running service refuses the save
+# --ready is that screen for Get a model ready ahead of time…, which starts
+# nothing: Get it ready on the cluster as saved exits 20, and the Stop is not
+# offered, since nothing would start after it.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 SERVE=()
-[ "${1:-}" != --serve ] || SERVE=(--serve)
+case "${1:-}" in
+  --serve) SERVE=(--serve) ;;
+  --ready) SERVE=(--ready) ;;
+esac
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
 require_gum "the review of cluster changes" \

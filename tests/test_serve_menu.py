@@ -373,6 +373,24 @@ class Entry(Harness):
         self.assertEqual(self.menus()[2][0], "Serve a model")
 
 
+    def test_getting_a_model_ready_never_offers_to_stop_a_running_service_to_save_a_change(self):
+        # Get a model ready starts nothing, so a Stop to save the change would leave the cluster idle.
+        self.save_changes(*changes(missing=["n2"]))
+        (self.root / "service-inventory.json").write_text(json.dumps({**OTHER_RUNNING, "generated_at": utc(NOW)}))
+        self.entries(checked(home=HOME, local_state="ready"),
+                     checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready"))
+        result = self.run_menu(["Get it ready on the cluster as saved", "Back"], "--ready")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        review = self.menus()[0]
+        self.assertEqual(review[0], "Review what changed")
+        self.assertIn("Get it ready on the cluster as saved", review)
+        self.assertNotIn("Serve on the cluster as saved", review)
+        self.assertFalse([label for label in review if label.startswith("Stop ")], review)
+        self.assertEqual(self.menus()[1][0], "Get a model ready")
+        self.assertEqual(self.ran(), [])
+        self.assert_plain_choices()
+
+
 class Switch(Harness):
     """A ready model with another service in the way: Stop, then Start."""
 
