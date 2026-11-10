@@ -263,7 +263,17 @@ if [ "$NODES" -gt 1 ]; then
     rm -f "$fabric_err"
     status_line "FAIL  fabric    ${fabric_reason:-the confirmed fabric does not meet this spec}"
     start_check fail fabric "${fabric_reason:-the confirmed fabric does not meet this spec}"
-    blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
+    if [ "${CLUSTER_TOPOLOGY_REFUSAL:-}" = cabling ]; then
+      # No command changes the cabling, so the record names none.
+      if [ "$NODES" = 2 ]; then
+        cabling_note="Choose two machines that are neighbours on the ring, which share a cable."
+      else
+        cabling_note="On this cluster no $NODES machines are all cabled to each other."
+      fi
+      blocked fabric_incomplete --detail "$fabric_reason" --no-command --note "$cabling_note"
+    else
+      blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
+    fi
     stop_if_blocked
   fi
   rm -f "$fabric_err"

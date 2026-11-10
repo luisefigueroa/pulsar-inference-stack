@@ -63,7 +63,7 @@ human_node_name() { echo "fixture-host-$1"; }
 CLUSTER_NODE_IDS=(node-0 node-1 node-2)
 CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2)
 require_cluster_nodes() { CLUSTER_TOPOLOGY_COUNT="${FIXTURE_TOPOLOGY:-$NODES}"; CLUSTER_TOPOLOGY_ID=cccccccccccc; [ "$CLUSTER_TOPOLOGY_COUNT" -ge "$1" ]; }
-require_profile_topology() { [ -z "${FIXTURE_FABRIC:-}" ] || { echo "topology: $FIXTURE_FABRIC" >&2; return 1; }; }
+require_profile_topology() { CLUSTER_TOPOLOGY_REFUSAL="${FIXTURE_REFUSAL:-}"; [ -z "${FIXTURE_FABRIC:-}" ] || { echo "topology: $FIXTURE_FABRIC" >&2; return 1; }; }
 container_name_for() { echo fixture-container; }
 container_ownership_inspect_local() { return "${FIXTURE_EXISTING:-3}"; }
 container_ownership_inspect_remote() { return "${FIXTURE_EXISTING:-3}"; }

@@ -368,15 +368,15 @@ def failure_words(failure: dict[str, Any]) -> str:
             f"{failure['interface']}.")
 
 
-def ring_refusal(nodes: int) -> str:
-    """Why a recipe on NODES nodes does not start on a saved ring, in one clause.
+# Why a recipe on two or more nodes cannot use two machines of a saved ring
+# that are not neighbours. The launch check in cluster/topology.sh prints the
+# same words after naming the two machines.
+RING_CABLING = "the cluster is a ring, and this recipe needs every one of its nodes cabled to the others"
 
-    The launch check in cluster/topology.sh prints the same words; a ring's
-    neighbouring pair is cabled, so a two-node recipe is refused for the
-    Stack's own reason, not for its cabling."""
-    if nodes == 2:
-        return "the cluster is a ring, and this Stack starts a two-node recipe only on a full mesh"
-    return "the cluster is a ring, and this recipe needs every one of its nodes cabled to the others"
+
+def ring_refusal(first: str, second: str) -> str:
+    """The launch check's refusal for two chosen nodes of a ring that share no link."""
+    return f"{first} and {second} are not cabled to each other: {RING_CABLING}"
 
 
 def cabled_neighbours(nodes: list[dict[str, Any]]) -> list[set[int]]:

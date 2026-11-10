@@ -22,6 +22,7 @@ CLUSTER_TOPOLOGY_MIN_RAILS=0
 CLUSTER_TOPOLOGY_SCHEMA=0
 CLUSTER_TOPOLOGY_SSH_TRUSTED=0
 CLUSTER_TOPOLOGY_CLASS=""
+CLUSTER_TOPOLOGY_REFUSAL=""
 CLUSTER_PROFILE_NODE_COUNT=0
 
 declare -ag CLUSTER_NODE_IDS=()
@@ -237,18 +238,12 @@ require_profile_topology() {
       return 1
       ;;
   esac
-  if [ "$CLUSTER_TOPOLOGY_FULL_MESH" != 1 ]; then
-    # The same words as ring_refusal in scripts/topology_manifest.py.
-    if [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ] && [ "$required" = 2 ]; then
-      echo "topology: the cluster is a ring, and this Stack starts a two-node recipe only on a full mesh" >&2
-    elif [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ]; then
-      echo "topology: the cluster is a ring, and this recipe needs every one of its nodes cabled to the others" >&2
-    else
-      echo "topology: confirmed topology is not a full mesh" >&2
-    fi
-    return 1
-  fi
-
+  # Every pair of the recipe's chosen nodes must share the required links:
+  # on a full mesh every pair does; on a ring only neighbours do.
+  # CLUSTER_TOPOLOGY_REFUSAL says why the check refused, for callers that
+  # choose the next step: "cabling" when two chosen nodes share no link on a
+  # ring, "links" when they share too few.
+  CLUSTER_TOPOLOGY_REFUSAL=""
   local a b ai bi low high rails
   for ((a = 0; a < required; a++)); do
     ai="${SERVING_NODE_INDEXES[$a]:-$a}"
@@ -260,10 +255,19 @@ require_profile_topology() {
       bi="${SERVING_NODE_INDEXES[$b]:-$b}"
       low="$ai" high="$bi"; if [ "$low" -gt "$high" ]; then low="$bi"; high="$ai"; fi
       rails="${CLUSTER_PAIR_RAILS["$low:$high"]:-0}"
-      if [ "$rails" -lt "$min_rails" ]; then
+      [ "$rails" -lt "$min_rails" ] || continue
+      if [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ] && [ "$rails" = 0 ]; then
+        # The same words as RING_CABLING in scripts/topology_manifest.py.
+        CLUSTER_TOPOLOGY_REFUSAL=cabling
+        echo "topology: ${CLUSTER_NODE_HOSTNAMES[$ai]} and ${CLUSTER_NODE_HOSTNAMES[$bi]} are not cabled to each other: the cluster is a ring, and this recipe needs every one of its nodes cabled to the others" >&2
+      elif [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ]; then
+        CLUSTER_TOPOLOGY_REFUSAL=links
+        echo "topology: ${CLUSTER_NODE_HOSTNAMES[$ai]} and ${CLUSTER_NODE_HOSTNAMES[$bi]} share $rails link$([ "$rails" = 1 ] || printf s) on their cable; this recipe needs $min_rails" >&2
+      else
+        CLUSTER_TOPOLOGY_REFUSAL=links
         echo "topology: ranks $a/$b expose $rails shared RoCE rail(s); the spec requires $min_rails" >&2
-        return 1
       fi
+      return 1
     done
   done
   select_cluster_profile_fabric "$required" || return 1

@@ -92,17 +92,17 @@ def gate(fixture, *counts):
 
 
 class RingRefusal(unittest.TestCase):
-    """A multi-node Start on a ring stays refused, and every caller says why in the same words."""
+    """On a ring the default pair starts and three or more nodes are refused, naming two that share no link."""
 
     def test_the_launch_check_names_the_cabling(self):
         fixture = ring_fixture(self)
         result = gate(fixture, 1, 2, 3, 4)
-        self.assertEqual(result.stdout, 'rc=0\nrc=1\nrc=1\nrc=1\n')
-        self.assertEqual(result.stderr.splitlines(), [
-            f'topology: {tm.ring_refusal(2)}', f'topology: {tm.ring_refusal(3)}', f'topology: {tm.ring_refusal(4)}'])
-        self.assertEqual(tm.ring_refusal(3), 'the cluster is a ring, and this recipe needs every one of its nodes '
-                                             'cabled to the others')
-        self.assertNotIn('full mesh', tm.ring_refusal(3))
+        self.assertEqual(result.stdout, 'rc=0\nrc=0\nrc=1\nrc=1\n')
+        self.assertEqual(result.stderr.splitlines(), [f'topology: {tm.ring_refusal('fixture-ring-dorado', 'fixture-ring-echo')}'] * 2)
+        self.assertEqual(tm.ring_refusal('fixture-ring-dorado', 'fixture-ring-echo'), 'fixture-ring-dorado and fixture-ring-echo are not cabled to '
+                         'each other: the cluster is a ring, and this recipe needs every one of its nodes cabled to '
+                         'the others')
+        self.assertNotIn('full mesh', result.stderr)
 
     def test_a_mesh_keeps_its_words(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -117,10 +117,15 @@ class RingStart(unittest.TestCase):
     start = test_start_blockers.StartScenarios.start
 
     def test_start_is_refused_with_the_cabling(self):
-        result, codes = self.start(nodes=3, fabric=tm.ring_refusal(3))
+        refusal = tm.ring_refusal('fixture-ring-dorado', 'fixture-ring-echo')
+        result, codes = self.start(nodes=3, fabric=refusal, extra_env={'FIXTURE_REFUSAL': 'cabling'})
         self.assertEqual(codes, ['fabric_incomplete'])
-        self.assertIn(f'FAIL  fabric    {tm.ring_refusal(3)}', result.stdout)
-        self.assertIn(f'({tm.ring_refusal(3)})', self.records[0]['message'])
+        self.assertIn(f'FAIL  fabric    {refusal}', result.stdout)
+        self.assertIn(f'({refusal})', self.records[0]['message'])
+        # No command changes the cabling: the record names none.
+        self.assertIsNone(self.records[0]['fix'])
+        self.assertEqual(self.records[0]['note'], 'On this cluster no 3 machines are all cabled to each other.')
+        self.assertNotIn('Next: ./pulsar topology check', result.stdout)
 
 
 def discovery(fixture, *extra, json_output=False, columns='80'):

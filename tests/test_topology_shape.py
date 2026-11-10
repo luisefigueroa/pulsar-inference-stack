@@ -641,10 +641,10 @@ class SavedRingLoaders(unittest.TestCase):
         self.assertIn('pairs=0:1 0:3 1:2 2:3 \n', result.stdout)
         self.assertIn('one=0\n', result.stdout)
         self.assertIn('fabric=0 rocep0a,rocep0b,rocep1a,rocep1b\n', result.stdout)
-        self.assertIn('two=1\n', result.stdout)
+        self.assertIn('two=0\n', result.stdout)
         self.assertIn('four=1\n', result.stdout)
-        self.assertEqual(result.stderr.count(f'topology: {tm.ring_refusal(2)}\n'), 1)
-        self.assertEqual(result.stderr.count(f'topology: {tm.ring_refusal(4)}\n'), 1)
+        self.assertEqual(result.stderr.count('topology: '), 1)
+        self.assertIn(tm.RING_CABLING, result.stderr)
         self.assertNotIn('Traceback', result.stderr)
 
 
