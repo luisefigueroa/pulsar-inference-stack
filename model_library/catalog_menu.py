@@ -1211,6 +1211,10 @@ def start_choices(records: list[dict], row: dict, archive_location: str,
         if not isinstance(record, dict):
             continue
         kinds = START_CHOICES.get(record.get("blocker"), ())
+        # Two chosen nodes of a ring that share no cable: Start recorded no
+        # command, since checking the nodes again cannot change the cabling.
+        if record.get("blocker") == "fabric_incomplete" and record.get("fix") is None and record.get("note"):
+            kinds = ()
         # A failed launch's record says whether its containers remain: none
         # to inspect, read or stop once every rank's was seen removed, and
         # Stop clears what an unconfirmed removal may have left.

@@ -2059,7 +2059,7 @@ lead to it:
 | Blocker | Choice |
 | --- | --- |
 | `topology_incomplete` | Open Cluster topology, where membership can be set up or changed |
-| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
+| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric; none when two of the chosen nodes of a ring share no cable, which no check or menu operation changes |
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |

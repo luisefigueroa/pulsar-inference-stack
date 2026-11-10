@@ -219,5 +219,18 @@ class CheckTheClusterNow(unittest.TestCase):
                       f"{nodes[1]['hostname']}'s {rail['a']['netdev']}.", words)
 
 
+class LaunchMenuChoices(unittest.TestCase):
+    """The older launch menu offers no check for a cabling refusal, and keeps it for the others."""
+
+    def test_a_cabling_refusal_offers_no_check(self):
+        from model_library import catalog_menu
+        state = row()
+        self.assertEqual(catalog_menu.start_choices([cabling_record()], state, 'configured'), [])
+        from scripts import start_blockers
+        links = start_blockers.blocker('fabric_incomplete', spec='ab' * 32, detail='spark-1 and spark-2 share 1 link')
+        self.assertEqual(catalog_menu.start_choices([links], state, 'configured'),
+                         [('topology-check', 'Check saved nodes and fabric (checks nodes now)')])
+
+
 if __name__ == '__main__':
     unittest.main()
