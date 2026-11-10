@@ -74,9 +74,9 @@ FIXES = {
     "diagnostics": ("Run diagnostics", "checks Docker, the GPUs and every node's prerequisites"),
 }
 NO_FIX = "No menu choice resolves it: this Stack cannot start this recipe."
-# A ring's refusal comes from the launch check's own words (ring_refusal in
-# scripts/topology_manifest.py); no menu choice changes the cabling.
-RING = "the cluster is a ring"
+# A cabling refusal: the launch check found two chosen nodes of a ring that
+# share no link, and Start recorded it with no command, since none changes
+# the cabling. Its detail is the check's own sentence.
 RING_NO_FIX = "No menu choice resolves it on this cluster."
 
 
@@ -150,8 +150,12 @@ def blockers(records: list[dict]) -> list[tuple[str, str | None]]:
                                             "diagnostics"))
         where = clean(record.get("node") or "")
         detail = clean(record.get("detail") or "")
-        if code == "fabric_incomplete" and detail.startswith(RING):
-            reason, action, detail = detail[0].upper() + detail[1:] + ".", "ring", ""
+        if code == "fabric_incomplete" and record.get("fix") is None and record.get("note"):
+            # Start's record holds the check's sentence in brackets after its summary.
+            message = clean(record.get("message") or "")
+            sentence = detail or (message.split(" (", 1)[1].rstrip(")") if " (" in message else message)
+            # It starts with a hostname, which keeps its own case.
+            reason, action, detail = sentence + ".", "ring", ""
         extra = "; ".join(part for part in (f"on {where}" if where else "", detail) if part)
         sentence = reason[:-1] + f" ({extra})." if extra else reason
         if (sentence, action) in seen:

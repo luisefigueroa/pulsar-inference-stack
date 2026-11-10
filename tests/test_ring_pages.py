@@ -19,6 +19,16 @@ from scripts import cluster_overview, cluster_status
 from scripts.terminal_format import TerminalWriter
 from tests import test_cluster_overview as overview_sources
 
+REFUSAL = tm.ring_refusal('spark-1', 'spark-3')
+
+
+def cabling_record():
+    """Start's record of a cabling refusal, as scripts/start_blockers.py writes it."""
+    from scripts import start_blockers
+    return start_blockers.blocker('fabric_incomplete', spec='ab' * 32, detail=REFUSAL, no_command=True,
+                                 note='On this cluster no 3 machines are all cabled to each other.')
+
+
 RING_NAMES = NodeNames({f'n{i}': f'spark-{i + 1}' for i in range(4)}, [f'n{i}' for i in range(4)], 'roce-ring')
 
 
@@ -32,26 +42,31 @@ class RingRefusalWords(unittest.TestCase):
                                    service=None, ring=ring)
         self.assertEqual(phrase(3, True), 'needs every one of its nodes cabled to the others; the cluster is a ring')
         self.assertEqual(phrase(4, True), phrase(3, True))
-        self.assertEqual(phrase(2, True), 'starts on two nodes only on a full mesh; the cluster is a ring')
+        self.assertNotIn('ring', phrase(2, True))
+        self.assertEqual(phrase(2, True), phrase(2, False))
         self.assertNotIn('ring', phrase(1, True))
         self.assertNotIn('ring', phrase(3, False))
 
     def test_the_serve_plan_is_blocked_with_the_same_words(self):
         state = row()
         plan = serve.compose(state, [state], names=RING_NAMES, inventory=inventory(), sizes={})
-        self.assertEqual(plan['blocked'], [f'Start refuses it: {tm.ring_refusal(3)}.'])
+        self.assertEqual(plan['blocked'], [f'Start refuses it: {tm.RING_CABLING}.'])
         self.assertEqual(plan['steps'], [])
+        pair = row(geometry={'nodes': 2, 'tp': 2, 'pp': 1})
+        self.assertNotIn(f'Start refuses it: {tm.RING_CABLING}.',
+                         serve.compose(pair, [pair], names=RING_NAMES, inventory=inventory(), sizes={})['blocked'])
 
     def test_why_cant_i_start_names_the_cabling_and_offers_no_fix(self):
         document = {'ok': False, 'error': {'code': 'prerequisite_failed', 'message': 'start is blocked',
                     'checks': [{'id': 'topology', 'outcome': 'pass'},
-                               {'id': 'fabric', 'outcome': 'fail', 'message': tm.ring_refusal(3)}],
-                    'details': [{'blocker': 'fabric_incomplete', 'detail': tm.ring_refusal(3)}]}}
+                               {'id': 'fabric', 'outcome': 'fail', 'message': REFUSAL}],
+                    'details': [cabling_record()]}}
         text = start_reasons.screen(document, 1, 'Why will example/model not start?', width=80)
         flat = ' '.join(text.split())
-        self.assertIn(f'✗ links between nodes: {tm.ring_refusal(3)} ', flat)
-        self.assertIn('Blocked: The cluster is a ring, and this recipe needs every one of its nodes cabled to the '
-                      'others. No menu choice resolves it on this cluster.', flat)
+        self.assertIn(f'✗ links between nodes: {REFUSAL} ', flat)
+        self.assertIn('Blocked: spark-1 and spark-3 are not cabled to each other: the cluster is a ring, and this '
+                      'recipe needs every one of its nodes cabled to the others. No menu choice resolves it on this '
+                      'cluster.', flat)
         self.assertNotIn('Check the cluster now', flat)
         self.assertEqual(start_reasons.choices(document, 1), [('again', 'Check again'), ('back', 'Back')])
 

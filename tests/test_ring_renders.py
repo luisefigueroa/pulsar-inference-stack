@@ -32,11 +32,11 @@ def flat(text):
 
 def why_document():
     checks = [{'id': 'recipe', 'outcome': 'pass'}, {'id': 'topology', 'outcome': 'pass'},
-              {'id': 'fabric', 'outcome': 'fail', 'message': tm.ring_refusal(3)}]
+              {'id': 'fabric', 'outcome': 'fail', 'message': pages.REFUSAL}]
     checks += [{'id': name, 'outcome': 'not_run'} for name in ('image', 'service', 'model-files', 'memory', 'port',
                                                                'preflight', 'plan')]
     return {'ok': False, 'error': {'code': 'prerequisite_failed', 'message': 'start is blocked', 'checks': checks,
-                                   'details': [{'blocker': 'fabric_incomplete', 'detail': tm.ring_refusal(3)}]}}
+                                   'details': [pages.cabling_record()]}}
 
 
 class Renders(unittest.TestCase):
@@ -100,7 +100,7 @@ class Renders(unittest.TestCase):
         for width in WIDTHS:
             with self.subTest(width=width):
                 self.fits(start_reasons.screen(why_document(), 1, 'Why will example/model not start?', width=width),
-                          width, 'Blocked: The cluster is a ring, and this recipe needs every one of its nodes')
+                          width, 'Blocked: spark-1 and spark-3 are not cabled to each other: the cluster is a ring')
                 lines = serve_plan.list_lines(entries, width=width - 2, inventory=None, archive_location='disabled',
                                               order=names.order, repo=ROOT, ring=True)
                 self.fits('\n'.join(line.split('\t')[-1] for line in lines), width, serve_plan.READINESS['ring'])

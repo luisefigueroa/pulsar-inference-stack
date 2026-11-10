@@ -76,7 +76,6 @@ READINESS = {
     "download": "needs downloading · {size}",
     "too-big": "needs {needed}; the cluster has {have}",
     "ring": "needs every one of its nodes cabled to the others; the cluster is a ring",
-    "ring-pair": "starts on two nodes only on a full mesh; the cluster is a ring",
     "unsupported": "start unsupported",
     "unknown": "size unknown",
 }
@@ -175,7 +174,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
               service: dict | None, ring: bool = False) -> str:
     """One phrase for where the recipe stands, from saved records and the inventory.
 
-    RING: the saved cluster is a ring, where Start refuses a multi-node recipe."""
+    RING: the saved cluster is a ring. Its ranks 0 and 1 are neighbours, so a
+    two-node recipe fits; three or more nodes always include two that are not."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -186,8 +186,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         return READINESS["unsupported"]
     if order and nodes > len(order):
         return READINESS["too-big"].format(needed=node_count(nodes), have=node_count(len(order)))
-    if ring and nodes > 1:
-        return READINESS["ring-pair" if nodes == 2 else "ring"]
+    if ring and nodes > 2:
+        return READINESS["ring"]
     missing = without_home(row)
     if missing:
         if all(archive_available(row, name, archive_location) for name in missing):
@@ -484,10 +484,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         blocked.append(f"It needs {node_count(nodes)}; the cluster has {node_count(len(order))}."
                        if nodes > 1 else "No machine was chosen to serve it.")
         return plan
-    if names.ring and nodes > 1:
-        from scripts.topology_manifest import ring_refusal
-        refusal = ring_refusal(nodes)
-        blocked.append(f"Start refuses it: {refusal}.")
+    if names.ring and nodes > 2:
+        from scripts.topology_manifest import RING_CABLING
+        blocked.append(f"Start refuses it: {RING_CABLING}.")
         return plan
     silent = [names(item) for item in serving if item in unanswered]
     if silent:

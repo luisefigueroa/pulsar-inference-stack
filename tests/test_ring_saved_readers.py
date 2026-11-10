@@ -186,8 +186,6 @@ class Pages(unittest.TestCase):
                                           service=None, ring=True)
             if nodes >= 3:
                 self.assertEqual(phrase, serve_plan.READINESS['ring'], row['spec_id'])
-            elif nodes == 2:
-                self.assertEqual(phrase, serve_plan.READINESS['ring-pair'], row['spec_id'])
             else:
                 self.assertNotIn('ring', phrase)
         self.assertIn(serve_plan.READINESS['ring'], text)

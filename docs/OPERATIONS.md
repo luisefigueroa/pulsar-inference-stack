@@ -128,7 +128,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 | full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
-| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files; Prepare copies files only between neighbours, and this Stack does not start a recipe on two or more of its nodes. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files; Prepare copies files only between neighbours. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring. |
 | cable | One physical connection between two neighbours. On a ring each cable carries two links. |
 | neighbour | A node at the other end of one of this node's cables. |
 
@@ -209,7 +209,6 @@ below are for reading.
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
 | Serve: needs every one of its nodes cabled to the others; the cluster is a ring | The saved cluster is a *ring*: each machine is cabled only to its two *neighbours*. This recipe needs every one of its nodes cabled to the others, so Start refuses it here. |
-| Serve: starts on two nodes only on a full mesh; the cluster is a ring | The saved cluster is a *ring*. Neighbouring machines are cabled, but this Stack starts a two-node recipe only on a full mesh, so Start refuses it here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
 | Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. An API address marked `· seen` comes from it too. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
 | Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
@@ -382,10 +381,12 @@ its two *neighbours*; its ranks follow the cables from this node, and a later
 discovery keeps their direction while the cables still match. Anything else,
 such as an open chain or a ring with a dead *cable*, is saved as the largest
 group in which every node is cabled to every other, and the report names each
-machine that answered but was left out, with the reason. On a ring a recipe
-on two or more nodes does not start: start, the Serve list and **Why will
-a model not start?** say that the cluster is a ring. Stop never depends on the
-shape.
+machine that answered but was left out, with the reason. Start needs every
+pair of a recipe's nodes cabled, with at least the links the recipe needs. On a
+ring a two-node recipe starts on this node and its neighbour at rank 1; a
+recipe on three or more nodes does not start, because some of its nodes share
+no link. Start names those two machines, and the Serve list and **Why will a
+model not start?** say the same. Stop never depends on the shape.
 
 `detect` probes local, advertised, explicitly supplied and previously confirmed
 nodes without saving membership or enrolling new SSH trust. Repeat `--candidate`
