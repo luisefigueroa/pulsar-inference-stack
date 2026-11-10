@@ -63,24 +63,30 @@ advanced_menu() {
   done
 }
 
-# Help and troubleshooting…: diagnostics, the guides and the command
+# Help and troubleshooting…: after setup, Why will a model not start?
+# (scripts/why-not-start.sh); then diagnostics, the guides and the command
 # reference, each opening in the pager and returning here, and Advanced.
 # Back or Esc returns home.
 help_menu() {
   local choice rc
+  local -a labels=() actions=()
+  if [ "$complete" = 1 ]; then labels+=("Why will a model not start?"); actions+=(why); fi
+  labels+=("Run diagnostics (checks nodes now)" "What the words mean" "What the labels mean" "How serving works"
+    "Command reference" "Advanced: single operations…" "Back")
+  actions+=(doctor terms labels workflow reference advanced back)
   while true; do
-    choice=$(choose_index "Help and troubleshooting" "Run diagnostics (checks nodes now)" "What the words mean" \
-      "What the labels mean" "How serving works" "Command reference" "Advanced: single operations…" "Back") \
+    choice=$(choose_index "Help and troubleshooting" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
-    case "$choice" in
+    case "${actions[$choice]}" in
+      why) "$REPO_DIR/scripts/why-not-start.sh" || rc=$? ;;
       # Long output opens in the pager, so this menu cannot bury it.
-      0) page_output "Running diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
-      1) page_output "" "$REPO_DIR/pulsar" help terms || rc=$? ;;
-      2) page_output "" "$REPO_DIR/pulsar" help labels || rc=$? ;;
-      3) page_output "" "$REPO_DIR/pulsar" help workflow || rc=$? ;;
-      4) page_output "" "$REPO_DIR/pulsar" help || rc=$? ;;
-      5) advanced_menu || rc=$? ;;
+      doctor) page_output "Running diagnostics…" "$REPO_DIR/pulsar" doctor || rc=$? ;;
+      terms) page_output "" "$REPO_DIR/pulsar" help terms || rc=$? ;;
+      labels) page_output "" "$REPO_DIR/pulsar" help labels || rc=$? ;;
+      workflow) page_output "" "$REPO_DIR/pulsar" help workflow || rc=$? ;;
+      reference) page_output "" "$REPO_DIR/pulsar" help || rc=$? ;;
+      advanced) advanced_menu || rc=$? ;;
       *) return 0 ;;
     esac
     [ "$rc" -ne 130 ] || return 130
@@ -102,6 +108,7 @@ if [ "$complete" = 1 ]; then
     "./pulsar topology check" "check the cluster: saved nodes and fabric" \
     "./pulsar topology detect" "look for changes to the cluster; saves nothing" \
     "./pulsar doctor" "diagnostics with every node's prerequisites" \
+    "./pulsar start SPEC --dry-run" "why a model will not start: Start's checks, each blocker with its fix" \
     "./pulsar configure archive-root" "archive location setting" \
     "./pulsar help" "commands and guides (help terms, help labels, help workflow)"
 elif [ "$topology_state" = invalid ]; then

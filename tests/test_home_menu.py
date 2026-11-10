@@ -17,6 +17,8 @@ FIRST_RUN = ["Pulsar Inference Stack", "Set up this cluster…", "Browse the cat
              "Help and troubleshooting…", "Exit"]
 HELP = ["Help and troubleshooting", "Run diagnostics (checks nodes now)", "What the words mean",
         "What the labels mean", "How serving works", "Command reference", "Advanced: single operations…", "Back"]
+# After setup, Why will a model not start? comes first.
+HELP_AFTER_SETUP = [HELP[0], "Why will a model not start?", *HELP[1:]]
 ADVANCED = ["Advanced: single operations", "Catalog and storage", "Model files and disk space (checks nodes now)",
             "Live service inventory", "Cluster topology", "Archive storage configuration", "Back"]
 sys.path.insert(0, str(ROOT))
@@ -132,7 +134,8 @@ wait_continue() {
         pulsar.chmod(0o755)
         # The Cluster menu and the topology menu are their own scripts.
         for name, word in (("cluster-menu.sh", "cluster menu"), ("topology.sh", "topology"),
-                           ("serve-menu.sh", "serve menu"), ("services-menu.sh", "services menu")):
+                           ("serve-menu.sh", "serve menu"), ("services-menu.sh", "services menu"),
+                           ("why-not-start.sh", "why menu")):
             script = scripts / name
             script.write_text(f'#!/usr/bin/env bash\necho "{word} $*" >> "$PULSAR_LOG"\n'
                               '[ -z "${CHANGES_AFTER:-}" ] || cp "$CHANGES_AFTER" "$PULSAR_CLUSTER_CHANGES_FILE"\n'
@@ -324,13 +327,25 @@ class Help(MenuHarness):
 
     def test_help_returns_home_on_esc_and_a_failed_page_returns_to_help(self):
         self.enroll()
-        result = self.run_home(["Help and troubleshooting…", "1", "esc", "Exit"], PULSAR_RC="1")
+        result = self.run_home(["Help and troubleshooting…", "What the words mean", "esc", "Exit"], PULSAR_RC="1")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["help terms"])
         self.assertEqual([menu[0] for menu in self.menus()],
                          ["Pulsar Inference Stack", "Help and troubleshooting", "Help and troubleshooting",
                           "Pulsar Inference Stack"])
         self.assertEqual(self.menus()[-1], HOME)
+
+    def test_after_setup_help_first_offers_why_a_model_will_not_start(self):
+        self.enroll()
+        result = self.run_home(["Help and troubleshooting…", "Why will a model not start?", "Back", "Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[1], HELP_AFTER_SETUP)
+        self.assertEqual(self.commands(), ["why menu "])
+        # Before setup there is no model to start, so it is not offered.
+        self.again()
+        (self.root / ".cluster-topology.json").unlink()
+        self.run_home(["Help and troubleshooting…", "Back", "Exit"])
+        self.assertEqual(self.menus()[1], HELP)
 
     def test_ctrl_c_in_help_or_its_page_exits_130(self):
         for answers, rc, menus in ((["Help and troubleshooting…", "ctrl-c"], "0", 2),

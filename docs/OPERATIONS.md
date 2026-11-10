@@ -218,6 +218,9 @@ below are for reading.
 | Services: processes Pulsar did not start, read-only | GPU work and containers on the nodes that Pulsar did not start. The page names them and offers nothing for them. |
 | Services: Started outside this catalog, for example by an experiment | A Pulsar-managed service whose spec this checkout does not publish. The page can show its logs and stop it; it has no recipe to check, restart or switch from. |
 | Services: not offered | **Restart…** or **Stop…** is left out for the reason given, for example a service started from a modified recipe, or on other nodes than Start would use. |
+| Why: not run: an earlier blocker ended the checks | **Why will a model not start?** shows each of Start's checks; Start stops at the first blocking group, so later checks did not run. It does not mean they passed. After the fix, **Check again** runs them. |
+| Why: Nothing blocks it | Start's checks all passed without starting. **Serve a model…** starts it, after its plan. |
+| Why: Start's checks could not run | The dry run gave no answer Pulsar could read, for the reason given. **Run diagnostics** checks Docker, the GPUs and every node's prerequisites. |
 | Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
 | Disk: past its reserve or copy budget by, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. |
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
@@ -1245,6 +1248,7 @@ remain explicit decisions.
 
 | Symptom | First check | Next action |
 | --- | --- | --- |
+| A model will not start | **Help and troubleshooting… → Why will a model not start?**, or `./pulsar start SPEC --dry-run` | Follow the fix each blocker names; in the menu each is a choice. |
 | Setup incomplete or a node unreachable | `./pulsar topology show`, then `./pulsar topology check` | Repair membership, SSH trust, or connectivity using [topology setup](#configure-topology-and-storage). |
 | A confirmed node is gone for good | `./pulsar topology detect`, which names it as missing | Save membership without it with `./pulsar topology configure --remove-missing`; see [Inspect or change membership](#inspect-or-change-membership). |
 | Saved membership is invalid, or this checkout should start over | `./pulsar topology forget --plan` | `./pulsar topology forget` keeps a private backup copy; then run `./pulsar topology setup`. |
@@ -1569,6 +1573,7 @@ when a saved record changed. Its choices:
 
 | Choice | Same as |
 | --- | --- |
+| **Why will a model not start?**, after setup only: see below | `./pulsar start SPEC --dry-run` |
 | **Run diagnostics (checks nodes now)** | `./pulsar doctor` |
 | **What the words mean**: the [terms](#terms) above | `./pulsar help terms` |
 | **What the labels mean**: the [catalog labels](#catalog-labels) | `./pulsar help labels` |
@@ -1577,7 +1582,19 @@ when a saved record changed. Its choices:
 | **Advanced: single operations…** | today's menus, below |
 
 Each page opens in the pager; closing it returns here, and **Back** or Esc
-returns home. **Advanced: single operations…** keeps the menus from before
+returns home.
+
+**Why will a model not start?** lists the recipes as **Serve a model…** does,
+from saved records only, and asks a one-node recipe's machine. It then runs
+Start's checks without starting (`./pulsar start SPEC --dry-run --json`) and
+shows each check: passed, failed with what it found, or not run because an
+earlier blocker ended the checks (see the [Why labels](#catalog-labels)). Each
+blocker is said in plain words with its fix, and each fix is a choice that
+names an intent, not a single operation: **Serve a model…** (its plan gets the
+files, the copies and the serving image, and stops a Pulsar service in the
+way), **Running services…**, **Check the cluster now** or **Run diagnostics**.
+**Check again** runs the checks once more. It starts nothing and passes no
+flag a plan would need authority for. **Advanced: single operations…** keeps the menus from before
 this layout, unchanged: **Catalog and storage** (`./pulsar models menu`),
 **Model files and disk space (checks nodes now)** (`./pulsar models files`),
 **Live service inventory** (`./pulsar inventory menu`), **Cluster topology**
