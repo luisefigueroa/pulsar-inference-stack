@@ -107,8 +107,8 @@ show() {
   fi
   printf '\n%s\n' "$screen"
 }
-# rows LABEL...: how many rows the choices take, a card's lines counted.
-rows() { printf '%s\n' "$@" | wc -l; }
+# choice_rows LABEL...: how many rows the choices take, a card's lines counted.
+choice_rows() { printf '%s\n' "$@" | wc -l; }
 
 # ---------------------------------------------------------------------------
 # A plan and its run
@@ -231,7 +231,7 @@ intent_page() {
     # A label too long for the row is a card of lines at their screen columns.
     while IFS=$'\t' read -r target label; do targets+=("$target"); labels+=("${label//$'\x1f'/$'\n'}"); done \
       < <(view options "$intent")
-    show "$(rows "${labels[@]}")" screen "$intent" "${READ[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    show "$(choice_rows "${labels[@]}")" screen "$intent" "${READ[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     choice=$(choose_index "$title" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "${targets[$choice]}" != back ] || return 0
     rc=0
