@@ -47,8 +47,8 @@ cluster…**: it checks this machine, finds the others, checks each one's
 prerequisites, then saves the cluster and records its SSH identities, each with
 its own question. After setup, the menu opens with a short status from saved
 records, each with its age (the cluster, what is serving, disk room, and what
-needs attention), then offers what you came to do: **Serve a model…**,
-**Running services…**, **Models and disk space…**, **Cluster…** (where **Check
+needs attention), then offers what you came to do: **Serve a model…**, which
+shows the steps a model still needs as one plan to approve, **Running services…**, **Models and disk space…**, **Cluster…** (where **Check
 the cluster now** checks every node) and **Help and troubleshooting…**, whose
 **Advanced: single operations…** keeps each single operation. Archive storage
 is optional.

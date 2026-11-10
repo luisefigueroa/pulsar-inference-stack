@@ -640,6 +640,11 @@ Replace `<spec-id>` with its complete ID and `<node>` with a confirmed hostname
 or node ID. Run one action at a time, and continue only after its result is
 understood. A spec with a guard uses [guarded serving](GUARDED_SERVING.md).
 
+The menu's **Serve a model…** composes these steps into one plan for a chosen
+model and runs them in this order, each after its own preview; see
+[Serve a model…](#serve-a-model). The commands below are the same steps one at
+a time.
+
 For a one-node recipe, `--node` selects the serving node. For a multi-node
 recipe, omit it from preparation, image, start, status, and stop commands;
 ordinary serving uses the first required number of confirmed nodes. Acquisition
@@ -1287,7 +1292,7 @@ status block, then six choices:
 
 | Choice | Opens | Same as |
 | --- | --- | --- |
-| **Serve a model…** | The catalog menu, unchanged for now: choose a spec, then its operations. | `./pulsar models menu` |
+| **Serve a model…** | A model's plan: the steps it still needs, approved once; see [Serve a model…](#serve-a-model). The catalog menu is under **Help and troubleshooting… → Advanced: single operations…**. | The commands each plan lists; its outcome names those that ran |
 | **Running services…** | The service inventory menu: live status and Stop. | `./pulsar inventory menu` |
 | **Models and disk space…** | The Model files and disk space page. | `./pulsar models files` |
 | **Cluster…** | The cluster's one place; see [Cluster…](#cluster). | `./pulsar topology show`, then the commands below |
@@ -1329,6 +1334,66 @@ lock file beside it, so an older inventory never replaces a newer one.
 
 Without Gum the menu does not open; `./pulsar` names the commands behind its
 choices instead.
+
+### Serve a model…
+
+**Serve a model…** answers with a plan: the steps the chosen model still
+needs, which the operator approves once.
+
+1. **The cluster change check.** On entry it runs one discovery (`./pulsar
+   topology detect --json`, which saves the changes noticed) unless the saved
+   record is for the saved membership and under ten minutes old. With no
+   change, or only nodes kept as only down, the list follows at once. A change
+   opens [Review what changed…](#cluster) with two more choices: **Serve on
+   the cluster as saved**, and, while a Pulsar service runs and refuses the
+   save, **Stop the running service, save the change, then continue**. The
+   second lists its steps (Stop, save the cluster, record the SSH
+   identities), starts on **Cancel**, says that nothing serves from the Stop
+   until the chosen model starts, and then opens the list; that model's plan
+   copies its files again where needed, taking over copies that still verify.
+   A plan whose serving nodes include one that did not answer the last
+   discovery says so and does not run.
+2. **The list.** Each recipe of each model, told apart by what differs
+   (context, node count, an 8-character image digest, or `recipe 1 of 2` when
+   nothing differs), with one readiness phrase: `running on …`, `ready to
+   start`, `needs copying to … · …`, `needs its files checked`, `needs
+   restoring from its archive`, `needs downloading · …` or `needs …; the
+   cluster has …` (see the [Serve labels](#catalog-labels)). The phrases come
+   from saved records and one service inventory, which the menu reuses while
+   it is under a minute old.
+3. **The machine.** A one-node recipe asks which machine serves it, starting
+   on the one its files are on. A multi-node recipe serves on the saved node
+   order, as `./pulsar start` does; serving nodes are never chosen from
+   discovery.
+4. **The plan.** The previews that can run now, in order: a model files scan
+   when a required snapshot has no home, the restore plan, the `hf`
+   prerequisites of the node a download goes to (one Hub request; a missing or
+   unusable CLI blocks that node and **Change…** offers another, a rejected
+   login warns, an unreachable Hub is not checked), the prepare plan once
+   every snapshot has a home, the image plan and Start's dry run. Missing
+   files come from files found on a node that no record names, then the
+   archive, then a download to the first serving node. The steps follow in a
+   fixed order: files, copies (Prepare takes over copies that still verify and
+   counts them as not copied), the serving image, then **Stop** of whatever is
+   in the way, then **Start**, so a failed download or copy leaves the running
+   service running. Stopping a service and pulling an image from its registry
+   are always their own steps; nothing passes `--replace` or `--pull-image`.
+   Steps whose preview cannot run yet (Prepare before a home exists, Start
+   after a blocking check) are named as estimates. The screen says what a
+   failure leaves and whether the API will require a key. Choices: **Cancel**
+   (where the cursor starts), **Go ahead**, **Get it ready, but do not start**
+   (the same plan without Stop and Start), **Change…** (the serving machine,
+   the archive or a download, the node that keeps the files) and **Details**
+   (recipe details and published results).
+5. **The run.** Each step runs its own preview when its turn comes, then its
+   command. A step that is blocked, or would do what the plan did not say,
+   stops the run before it changes anything and offers **Plan again from the
+   state as it is now**. A failed step says what is done and what still
+   serves; after the Stop, a failed Start says nothing is serving and offers
+   to start the stopped service again. An interrupted step is inspected before
+   any retry: **Check its files now (read-only)** or **Check the service now
+   (read-only)**. The outcome lists the commands that ran, in order, under
+   `Same as:`.
 
 ### Before cluster setup
 
@@ -1427,8 +1492,8 @@ topology (read-only)** (`./pulsar topology show`).
 
 ### Catalog operations and confirmations
 
-The interactive menu (`./pulsar`, then **Serve a model…**, or **Catalog and
-storage** under **Help and troubleshooting… → Advanced: single operations…**) stays open
+The catalog menu (`./pulsar`, then **Catalog and storage** under **Help and
+troubleshooting… → Advanced: single operations…**, or `./pulsar models menu`) stays open
 until **Back** or **Exit**; each operation returns to the same recipe with its
 result and any recovery guidance. It lists operations in lifecycle order and keeps storage
 maintenance under **Storage and archive**. Where the terminal is wide enough,

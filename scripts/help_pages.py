@@ -249,16 +249,21 @@ def emit_labels(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
 
 def emit_workflow(writer: TerminalWriter) -> None:
     writer.emit("How serving works", role="heading")
-    writer.emit("**Set up this cluster…** first. Then choose **Serve a model…** and a spec; the "
-                "**Lifecycle** line in its frame marks the step it has reached. **Running services…** shows "
-                "what runs, and **Cluster…** checks the nodes and saves a change to the cluster.", markup=True)
+    writer.emit("**Set up this cluster…** first. Then choose **Serve a model…** and a model: Pulsar shows a plan "
+                "of the steps below that it still needs, with the *serving image* and a Stop of whatever is in "
+                "the way between Prepare and Start, and the cursor on **Cancel**. One **Go ahead** runs them in "
+                "order; each step checks first, and Pulsar stops and asks again if one would do more than the "
+                "plan says. **Running services…** shows what runs, and **Cluster…** checks the nodes and saves a "
+                "change to the cluster. **Help and troubleshooting… → Advanced: single operations…** runs each "
+                "step on its own.", markup=True)
     writer.blank()
     for number, (step, sentence) in enumerate(workflow(), 1):
         writer.emit(f"{number}. {step}", initial_indent="  ", role="heading")
         writer.emit(sentence, initial_indent="     ", markup=True)
     writer.blank()
     writer.emit("The same steps as commands: `pulsar model acquire` or `model restore`, `model prepare`, "
-                "`start`, `status`, `stop` and `model purge`. Most commands accept `--help`.", markup=True)
+                "`image stage`, `start`, `status`, `stop` and `model purge`. Most commands accept `--help`. "
+                "The outcome of **Serve a model…** lists the commands it ran under Same as.", markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:
