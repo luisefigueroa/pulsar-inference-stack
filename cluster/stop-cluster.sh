@@ -67,8 +67,9 @@ if [ "$NODES" -le 1 ]; then
   echo "error: $ARG is a single-node spec; use ./pulsar stop $ARG" >&2
   exit 1
 fi
-require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
-  || exit 1
+# Stop needs the confirmed nodes, never the fabric: a running or leftover
+# service stays stoppable whatever the saved cluster's shape.
+require_cluster_nodes "$NODES" || exit 1
 
 EXACT=$(container_name_for "$ARG" "$NODES")
 log "stopping spec ${ARG:0:12} · $NODES nodes · container=$EXACT"
