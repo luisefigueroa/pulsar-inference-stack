@@ -69,55 +69,11 @@ doctor_ready_line() {
 }
 
 # prerequisite_rows: probe-node.py --prerequisites-only JSON on stdin, one
-# LEVEL|ID|MESSAGE row per prerequisite out. The rows are state words; the
-# probe never returns a token or an account name.
+# LEVEL|ID|MESSAGE row per prerequisite out (scripts/prerequisites.py, which
+# guided setup also uses). The rows are state words; the probe never returns
+# a token or an account name, and every hf finding is a warning.
 prerequisite_rows() {
-  python3 -c '
-import json, sys
-doc = json.load(sys.stdin)
-facts = doc["prerequisites"]
-docs = " (`docs/OPERATIONS.md#installation-prerequisites`)"
-python = facts["python"]
-if python.get("ok") is True:
-    print("ok|python|Python " + str(python.get("version")))
-else:
-    print("fail|python|Python " + str(python.get("version") or "unknown")
-          + " is older than 3.11; install Python 3.11 or newer on this node" + docs)
-for tool, package in (("flock", "util-linux"), ("rsync", "rsync")):
-    if facts.get(tool) is True:
-        print(f"ok|{tool}|{tool} present")
-    else:
-        print(f"fail|{tool}|{tool} not found; install {package} on this node" + docs)
-# hf matters only on a node chosen to receive a download (its home); a node
-# without it can still serve and hold prepared copies. So every hf finding
-# is a warning that says what it affects, never a blocking issue.
-hf = facts["hf"]
-state, version = hf.get("state"), str(hf.get("version") or "")
-cannot = ", so models cannot be downloaded to this node; it can still serve. To download here, "
-if state == "ok":
-    print("ok|hf_cli|hf CLI " + (version or "present"))
-elif state == "missing" and hf.get("legacy_cli"):
-    print("warn|hf_cli|hf CLI not found, only the older huggingface-cli" + cannot + "install the current hf CLI on this node" + docs)
-elif state == "missing":
-    print("warn|hf_cli|hf CLI not found" + cannot + "install the Hugging Face hf CLI on this node" + docs)
-elif state == "unusable":
-    print("warn|hf_cli|hf CLI found, but its Python cannot load the Hugging Face library" + cannot + "install the hf CLI again on this node" + docs)
-elif state == "too-old":
-    print("warn|hf_cli|hf CLI " + (version + " " if version else "") + "lacks what Download uses" + cannot + "install a newer hf CLI on this node" + docs)
-else:
-    print("warn|hf_cli|hf CLI not checked: the check did not finish on this node")
-login = hf.get("login")
-if login == "accepted":
-    print("ok|hf_login|hf logged in to the Hub")
-elif login == "missing":
-    print("warn|hf_login|hf is not logged in to the Hub on this node; public models download without a login. To add one, run `hf auth login` on this node")
-elif login == "rejected":
-    print("warn|hf_login|the Hub rejected the hf login saved on this node; downloads to this node may fail until you run `hf auth login` there again")
-elif login == "not-reached":
-    print("warn|hf_login|hf login not checked: the Hub could not be reached from this node")
-else:
-    print("warn|hf_login|hf login not checked because the hf CLI is not usable")
-'
+  python3 "$REPO_DIR/scripts/prerequisites.py"
 }
 
 # record_prerequisites RANK: this node (0) or a confirmed node, in its section.

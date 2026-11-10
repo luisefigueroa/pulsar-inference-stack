@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import json
 import os
 import pty
+import re
 from pathlib import Path
 import select
 import stat
@@ -15,7 +16,7 @@ import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
-from support.topology_fixture import Fixture, node_probe
+from support.topology_fixture import Fixture, node_probe, prerequisites_answer
 import topology_actions
 
 
@@ -417,6 +418,73 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         self.assertTrue(f.config.is_file())
+
+    def test_setup_shows_its_steps_and_each_machines_prerequisites_without_blocking(self):
+        f = self.fixture
+        f.path.unlink(); f.config.unlink()
+        (f.root/'prerequisites-0.json').write_text(json.dumps(prerequisites_answer(0, login='missing')))
+        (f.root/'prerequisites-1.json').write_text(json.dumps(prerequisites_answer(1, hf='missing', login=None,
+                                                                                   rsync=False)))
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', COLUMNS='100')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 0, output)
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', output).split())
+        steps = ['Step 1 of 5 · This machine', 'Step 2 of 5 · Find the machines', 'Step 3 of 5 · Check each machine',
+                 'Step 4 of 5 · Save', 'Step 5 of 5 · Identities', 'Still to fix']
+        self.assertEqual([text.index(step) for step in steps], sorted(text.index(step) for step in steps))
+        step1 = text.split(steps[0], 1)[1].split(steps[1], 1)[0]
+        self.assertIn('fixture-rank-0 (this machine) Docker and GPU access ✓ · RoCE links ✓ Python 3.12.3 ✓ · flock ✓ · rsync ✓ · '
+                      'hf CLI ✓', step1)
+        self.assertIn('WARN hf is not logged in to the Hub on this node; public models download without a login.', step1)
+        step3 = text.split(steps[2], 1)[1].split(steps[3], 1)[0]
+        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every other machine ✓', step3)
+        self.assertIn('FAIL rsync not found; install rsync on this node', step3)
+        self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this node; it can still serve.', step3)
+        # A missing prerequisite never blocks saving; the closing summary lists what is left.
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?',
+                                                       'Enroll these SSH identities?'])
+        self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
+        summary = text.split('Still to fix', 1)[1]
+        self.assertIn('FAIL fixture-rank-1: rsync not found', summary)
+        self.assertIn('Warnings do not stop serving', summary)
+        # Step 3 asks with discovery's strict SSH policy, never accepting a host key.
+        asked = [args for tool, args in f.calls() if tool == 'ssh' and '--prerequisites-only' in args[-1]]
+        self.assertEqual(len(asked), 1)
+        self.assertIn('StrictHostKeyChecking=yes', asked[0])
+        self.assertNotIn('StrictHostKeyChecking=accept-new', asked[0])
+
+    def test_a_machine_that_cannot_be_a_member_or_did_not_answer_says_so_with_its_fix(self):
+        import io
+        sys.path.insert(0, str(ROOT))
+        from scripts import setup_steps
+        from scripts.terminal_format import TerminalWriter
+        findings = Path(self.fixture.root)/'findings'
+        out = io.StringIO()
+        probe = {**node_probe(0), 'qualified': False, 'reject_reasons': ['Docker NVIDIA runtime missing']}
+        setup_steps.machine('fallback-name', probe, None, discovered=False, findings=findings,
+                            out=TerminalWriter(width=60, stream=out), this_machine=True)
+        text = ' '.join(out.getvalue().split())
+        self.assertTrue(text.startswith('fixture-rank-0 (this machine) FAIL Docker NVIDIA runtime missing; this '
+                                        'machine cannot be a member until it is fixed'), text)
+        self.assertIn('WARN prerequisites not checked: the machine did not answer the check', text)
+        self.assertTrue(all(len(line) <= 60 for line in out.getvalue().splitlines()))
+        out = io.StringIO()
+        setup_steps.summary(findings, TerminalWriter(width=60, stream=out))
+        self.assertEqual(out.getvalue().count('fixture-rank-0:'), 2)
+
+    def test_setup_reuses_saved_membership_and_says_which_steps_it_skips(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', COLUMNS='100')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 0, output)
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', output).split())
+        self.assertIn('Step 1 of 5 · This machine', text)
+        self.assertIn('Steps 2 to 4: membership is already saved, so setup uses it and adds no machine.', text)
+        self.assertNotIn('Step 3 of 5', text)
+        self.assertIn('Step 5 of 5 · Identities', text)
+        self.assertIn('Still to fix Nothing: every machine has its prerequisites.', text)
+        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
 
     def test_fresh_setup_cancel_never_reaches_enrollment(self):
         f = self.fixture
@@ -822,8 +890,13 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(record['result'], 'unchanged')
         # An address that did not answer at all is not listed: it was never seen.
         self.assertEqual(record['untrusted'], [{'address': 'printer.local', 'possible_reinstall': False}])
-        # The human output is unchanged by the record.
-        self.assertIn('SSH 4 advertised addresses could not be checked with saved keys', ' '.join(result.stdout.split()))
+        text = ' '.join(result.stdout.split())
+        self.assertIn('SSH 4 advertised addresses could not be checked with saved keys', text)
+        # The machine SSH here does not trust is listed with the check to run;
+        # a member's other names are not.
+        self.assertIn('Untrusted printer.local answers, but SSH on this machine does not trust it yet; verify its '
+                      'host key with ssh -o StrictHostKeyChecking=ask printer.local, then retry discovery.', text)
+        self.assertEqual(text.count('Untrusted '), 1)
 
     def test_a_reinstalled_machine_is_one_node_gone_and_one_new(self):
         f = self.fixture

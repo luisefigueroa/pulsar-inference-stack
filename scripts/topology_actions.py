@@ -78,6 +78,28 @@ def _links(node):
                    for link in node.get("rdma") or []), key=lambda link: (link["hca"], link["netdev"]))
 
 
+def untrusted_addresses(document, untrusted, saved_nodes=()):
+    """The addresses SSH here did not trust, less those of machines that answered.
+
+    A machine that answered discovery under one name is not "untrusted" under
+    another: mDNS advertises each member's .local name and address too.
+    SAVED_NODES are the saved members, whose aliases are known as well."""
+    nodes = (document.get("topology") or {}).get("nodes") or []
+    found = {item["node_id"] for item in nodes}
+    answered = [*nodes, *(document.get("rejected") or []),
+                *(node for node in saved_nodes if node["node_id"] in found)]
+    known = {node["ssh_host"] for node in saved_nodes}
+    for node in answered:
+        hostname = node.get("hostname")
+        known.update(value for value in (hostname, f"{hostname}.local" if hostname else None, node.get("ssh_host"),
+                                         (node.get("control") or {}).get("ip")) if value)
+    seen = []
+    for address in untrusted:
+        if address and address not in known and address not in seen:
+            seen.append(address)
+    return seen
+
+
 def changes_noticed(old, document, untrusted=(), issue=None):
     """What one discovery saw against the saved membership OLD.
 
@@ -122,19 +144,7 @@ def changes_noticed(old, document, untrusted=(), issue=None):
             fields["position"] = {"old": previous["rank"], "new": node["rank"]}
         if fields:
             changed.append({"hostname": node["hostname"], "node_id": node["node_id"], "changes": fields})
-    # A machine that answered discovery under one name is not "untrusted"
-    # under another: mDNS advertises each member's .local name and address too.
-    answered = [*nodes, *(document.get("rejected") or []),
-                *(node for node in old["nodes"] if node["node_id"] in {item["node_id"] for item in nodes})]
-    known = {node["ssh_host"] for node in old["nodes"]}
-    for node in answered:
-        hostname = node.get("hostname")
-        known.update(value for value in (hostname, f"{hostname}.local" if hostname else None, node.get("ssh_host"),
-                                         (node.get("control") or {}).get("ip")) if value)
-    seen = []
-    for address in untrusted:
-        if address and address not in known and address not in seen:
-            seen.append(address)
+    seen = untrusted_addresses(document, untrusted, old["nodes"])
     untrusted_rows = [{"address": address,
                        "possible_reinstall": address.removesuffix(".local") in gone or address in gone_addresses}
                       for address in seen]
@@ -276,7 +286,7 @@ def render_summary(document, now=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("show", "check", "discovery", "changes", "summary",
-                                              "notice", "notice-saved"))
+                                              "notice", "notice-saved", "untrusted"))
     parser.add_argument("path")
     parser.add_argument("--observations")
     parser.add_argument("--document")
@@ -286,6 +296,17 @@ def main():
                         help="discovery: confirmed members that did not answer may be left out")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.operation == "untrusted":
+        # PATH is the saved membership, or a path that does not exist before
+        # first use; one address per line that SSH here does not trust.
+        addresses = Path(args.untrusted).read_text(encoding="utf-8").split() if args.untrusted else []
+        try:
+            saved_nodes = saved(args.path)["nodes"] if Path(args.path).exists() else []
+        except (manifest.TopologyError, KeyError, TypeError, ValueError, AttributeError):
+            saved_nodes = []
+        for address in untrusted_addresses(manifest.load_json(args.document), addresses, saved_nodes):
+            print(address)
+        return 0
     if args.operation in ("notice", "notice-saved"):
         # PATH is the saved membership the discovery is compared with. notice
         # prints the discovery document with `changes_noticed` added;

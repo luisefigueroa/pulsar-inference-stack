@@ -252,12 +252,26 @@ for position in "${!probe_pids[@]}"; do
     fi
   fi
 done
+# report_untrusted_candidates DOCUMENT: each machine that answered with a host
+# key SSH on this machine does not trust, with the check to run; an alias of a
+# machine that answered is left out. Pulsar never accepts a host key for the
+# operator.
+report_untrusted_candidates() {
+  local address
+  [ -s "$untrusted_file" ] || return 0
+  while IFS= read -r address; do
+    [ -n "$address" ] || continue
+    print_hanging "  Untrusted " "$address answers, but SSH on this machine does not trust it yet; verify its host key with ssh -o StrictHostKeyChecking=ask $address, then retry discovery."
+  done < <(python3 "$REPO_DIR/scripts/topology_actions.py" untrusted "$CLUSTER_TOPOLOGY_FILE" --document "$1" \
+    --untrusted "$untrusted_file" 2>/dev/null)
+}
 report_skipped_candidates() {
   local noun=addresses
   [ "$skipped_probe_count" -gt 0 ] || return 0
   [ "$skipped_probe_count" -ne 1 ] || noun=address
   echo "DISCOVERY NOTES"
   print_hanging "  SSH       " "$skipped_probe_count advertised SSH $noun could not be checked with saved keys."
+  report_untrusted_candidates "$discovery"
   if [ "${_PULSAR_SETUP_REVIEW:-0}" = 1 ]; then
     print_hanging "  Help      " "These are usually unrelated devices. If a GB10 is missing, choose Add a machine by hostname or IP below."
   else
@@ -327,6 +341,8 @@ fi
 verified="$tmpdir/verified.json"
 "$MANIFEST_TOOL" mark-verified "$discovery" >"$verified"
 notice_changes "$verified"
+# Guided setup's step 3 checks each machine this discovery verified (private marker).
+[ -z "${_PULSAR_SETUP_DISCOVERY:-}" ] || cp -- "$verified" "$_PULSAR_SETUP_DISCOVERY" 2>/dev/null || :
 
 if [ "$JSON" = 1 ]; then
   cat "$verified"
@@ -340,6 +356,7 @@ echo
 review_flag=()
 [ "${_PULSAR_SETUP_REVIEW:-0}" != 1 ] || review_flag=(--in-review)
 "$MANIFEST_TOOL" render "$verified" --skipped-ssh "$skipped_probe_count" "${review_flag[@]}"
+report_untrusted_candidates "$verified"
 if [ "$membership_ok" != 1 ]; then
   warn "discovery is incomplete; confirmed membership was not changed"
   exit 1
