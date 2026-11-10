@@ -1465,10 +1465,12 @@ def render(plan: dict, *, width: int | None = None) -> str:
             out.emit(line)
         projected = [index + 1 for index in plan.get("projected") or []]
         if projected:
+            # Look for model files' footer already says that each step checks first.
+            checks = ("." if plan["intent"] == "find" else ": each step checks first, and Pulsar stops and asks "
+                      "again if one is blocked or would do more than it says.")
             out.emit(f"{'Step' if len(projected) == 1 else 'Steps'} {_list([str(n) for n in projected])} "
                      f"{'is an estimate' if len(projected) == 1 else 'are estimates'} until the steps before "
-                     f"{'it run' if len(projected) == 1 else 'them run'}: each step checks first, and Pulsar stops "
-                     "and asks again if one is blocked or would do more than it says.")
+                     f"{'it run' if len(projected) == 1 else 'them run'}{checks}")
         for note in plan["notes"]:
             out.emit(note)
     if plan.get("cannot"):
