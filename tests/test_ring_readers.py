@@ -4,6 +4,7 @@ Synthetic ring fixtures and doubles only; nothing here contacts a node.
 """
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -16,7 +17,7 @@ from support.topology_fixture import (Fixture, answer_on_fabric_addresses, as_me
                                      use_probes)
 import topology_actions
 import topology_manifest as tm
-from tests import test_start_blockers
+from tests import test_start_blockers, test_topology_commands
 
 SPEC = 'a' * 64
 
@@ -249,6 +250,32 @@ class DeadCableOnASavedRing(unittest.TestCase):
         result = fixture.run('topology', 'configure', '--yes')
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(fixture.path.read_bytes(), before)
+
+
+class GuidedSetupOnARing(unittest.TestCase):
+    """Set up this cluster… on four machines cabled as a ring: one save, then the identities."""
+    interactive = test_topology_commands.TopologyCommands.interactive
+    use_gum = test_topology_commands.TopologyCommands.use_gum
+    gum_prompts = test_topology_commands.TopologyCommands.gum_prompts
+
+    def test_setup_saves_the_ring_and_records_its_identities(self):
+        self.fixture = ring_fixture(self)
+        self.fixture.path.unlink()
+        self.fixture.config.unlink()
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', COLUMNS='100')
+        aliases = [alias for alias in json.loads((self.fixture.root/'map.json').read_text()) if alias != 'local']
+        args = ['topology', 'setup'] + [word for alias in aliases for word in ('--candidate', alias)]
+        result, output = self.interactive(args, '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 4 machines?',
+                                                       'Record these SSH identities?'])
+        saved = json.loads(self.fixture.path.read_text())
+        self.assertEqual((saved['schema_version'], saved['validation']['class']), (2, tm.RING_CLASS))
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', output).split())
+        self.assertIn('Found 4 GB10 machines answered · ring · 2 links on every cable', text)
+        self.assertIn('Docker and GPU ✓ · links to every machine it is cabled to ✓', text)
+        for retired in ('links to every other machine', 'full mesh', 'node pair'):
+            self.assertNotIn(retired, text)
 
 
 if __name__ == '__main__':

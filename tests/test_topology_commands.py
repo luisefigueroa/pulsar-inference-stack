@@ -438,7 +438,7 @@ class TopologyCommands(unittest.TestCase):
                       'hf CLI ✓', step1)
         self.assertIn('WARN hf is not logged in to the Hub on this machine; public models download without a login.', step1)
         step3 = text.split(steps[2], 1)[1].split(steps[3], 1)[0]
-        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every other machine ✓', step3)
+        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every machine it is cabled to ✓', step3)
         self.assertIn('FAIL rsync not found; install rsync on this machine', step3)
         self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this machine; it can still serve.', step3)
         # Before they are members they are machines; discovery's own output is unchanged.
