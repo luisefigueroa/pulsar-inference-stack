@@ -268,6 +268,15 @@ class SeveralOrNone(Page):
         self.assertEqual(self.ran(), ["stop --all --yes"])
         self.assertIn("Same as: ./pulsar stop --all --yes", self.text(result))
 
+    def test_serve_a_model_from_an_empty_page_reuses_its_capture(self):
+        self.inventory(inventory())
+        result = self.run_menu(["Serve a model…", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([menu[0] for menu in self.menus()], ["Running services", "Serve a model",
+                                                              "Running services"])
+        # The Serve list and the page again: one inventory serves all three.
+        self.assertEqual(self.commands(), ["inventory --json"])
+
     def test_none_running_is_said_only_when_every_node_answered(self):
         self.inventory(inventory())
         result = self.run_menu(["Back"])
@@ -323,6 +332,32 @@ class SeveralOrNone(Page):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("✗ Running services could not be checked: the service inventory exited 3", self.text(result))
         self.assertEqual(self.menus(), [["Running services", "Look again", "Back"]])
+
+
+class WithoutGum(unittest.TestCase):
+    def test_each_new_screen_names_the_commands_behind_its_choices(self):
+        import os
+        import subprocess
+        import tempfile
+        from tests.test_serve_menu import build_root, root_environment
+        expected = {"services-menu.sh": ["./pulsar inventory", "./pulsar status SPEC", "./pulsar logs SPEC",
+                                         "./pulsar stop SPEC", "./pulsar start SPEC", "./pulsar stop --all --yes"],
+                    "why-not-start.sh": ["./pulsar models list", "./pulsar start SPEC --dry-run",
+                                         "./pulsar topology check", "./pulsar doctor", "./pulsar inventory"]}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            build_root(root, tuple(expected), gum=True)
+            env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "GUM_"))}
+            env.update(root_environment(root))
+            for name, commands in expected.items():
+                with self.subTest(name=name):
+                    result = subprocess.run(["bash", str(root / "scripts" / name)], env=env, text=True,
+                                            capture_output=True, timeout=30, stdin=subprocess.DEVNULL)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("needs an interactive terminal with Gum", result.stderr)
+                    for command in commands:
+                        self.assertIn(f"  {command}", result.stderr)
+                    self.assertFalse((root / "pulsar.log").exists())
 
 
 class Widths(unittest.TestCase):

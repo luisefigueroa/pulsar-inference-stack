@@ -36,7 +36,7 @@ require_gum "Running services…" \
   "./pulsar logs SPEC" "read its containers' output" \
   "./pulsar stop SPEC" "stop it; model files are kept" \
   "./pulsar start SPEC" "then start it again: Restart" \
-  "./pulsar start OTHER --dry-run" "switch: stop it, then start another recipe" \
+  "./pulsar start OTHER --dry-run" "switch: its checks; then stop it and start OTHER" \
   "./pulsar stop --all --yes" "stop every Pulsar service; model files are kept"
 ui_keep_styles
 
@@ -146,11 +146,12 @@ logs() {
 }
 
 # plan_from_here ACTION CONF: Restart… or Switch to another model…, through
-# Serve a model…'s plan and run, with this page's capture.
+# Serve a model…'s plan and run, with this page's capture; with no ACTION,
+# Serve a model… itself.
 plan_from_here() {
   local action="$1" conf="$2" rc=0 at
   local -a arguments=()
-  mapfile -t arguments < <(view command --conf "$conf" --action "$action")
+  [ -z "$action" ] || mapfile -t arguments < <(view command --conf "$conf" --action "$action")
   rm -f -- "$INVENTORY.at"
   "$REPO_DIR/scripts/serve-menu.sh" "${arguments[@]}" --inventory "$INVENTORY" --inventory-at "$INVENTORY_AT" \
     || rc=$?
@@ -281,13 +282,7 @@ none_page() {
   while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done < <(view choices)
   choice=$(choose_index "Running services" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   case "${actions[$choice]}" in
-    serve)
-      rc=0
-      "$REPO_DIR/scripts/serve-menu.sh" || rc=$?
-      [ "$rc" -ne 130 ] || return 130
-      # It may have started something: look again.
-      forget
-      return "$CHANGED" ;;
+    serve) plan_from_here "" "" ;;
     again) forget; return "$CHANGED" ;;
     *) return 0 ;;
   esac
