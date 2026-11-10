@@ -199,5 +199,174 @@ class RingFixtures(unittest.TestCase):
             self.assertTrue(probe['control']['ip'].startswith('192.0.2.'))
 
 
+def discover(probes, existing=None):
+    """`assemble` over PROBES, listed in the given order."""
+    with tempfile.TemporaryDirectory() as directory:
+        existing_path = None
+        if existing is not None:
+            existing_path = str(Path(directory)/'existing.json')
+            Path(existing_path).write_text(json.dumps(existing))
+        return tm.assemble(write_probes(directory, probes), existing_path)
+
+
+def saved_ring(count=4, **options):
+    """A verified, enrolled ring membership."""
+    probes = ring_probes(count, **options)
+    verified = tm.mark_verified(discover(shuffled(probes)))['topology']
+    return tm.enroll_ssh_trust(verified, probes)
+
+
+def ring_pairs(count):
+    return {(rank, rank + 1) for rank in range(count - 1)} | {(0, count - 1)}
+
+
+class RingShape(unittest.TestCase):
+    """Discovery decides between a full mesh, a ring and today's fallback."""
+
+    def assert_ring(self, document, count, rails=2):
+        self.assertEqual(document['result'], 'ok')
+        topology = document['topology']
+        self.assertEqual(len(topology['nodes']), count)
+        self.assertTrue(topology['nodes'][0]['ssh_host'] == 'local')
+        self.assertEqual(topology['validation']['class'], 'roce-ring')
+        self.assertIs(topology['validation']['full_mesh'], False)
+        self.assertEqual(topology['validation']['min_rails_per_pair'], rails)
+        self.assertEqual([tuple(link['ranks']) for link in topology['links']], sorted(ring_pairs(count)))
+        nodes = topology['nodes']
+        for a, b in ring_pairs(count):
+            self.assertTrue(tm.rails_between(nodes[a], nodes[b]))
+        tm.validate_manifest(topology)
+        return topology
+
+    def test_four_and_six_node_rings_are_saved_as_rings(self):
+        for count in (4, 6):
+            for local in (0, count - 1):
+                with self.subTest(count=count, local=local):
+                    document = discover(shuffled(ring_probes(count, local=local)))
+                    self.assertEqual(document['rejected'], [])
+                    topology = self.assert_ring(document, count)
+                    self.assertTrue(all(len(link['rails']) == 2 for link in topology['links']))
+                    verified = tm.mark_verified(document)['topology']
+                    enrolled = tm.enroll_ssh_trust(verified, ring_probes(count, local=local))
+                    tm.validate_manifest(enrolled, require_verified=True, require_ssh_trust=True)
+
+    def test_a_cable_with_one_link_keeps_the_ring_and_sets_the_minimum(self):
+        topology = self.assert_ring(discover(shuffled(ring_probes(4, single_link_cables={2}))), 4, rails=1)
+        self.assertEqual(sorted(len(link['rails']) for link in topology['links']), [1, 2, 2, 2])
+
+    def test_three_nodes_in_a_loop_stay_a_full_mesh(self):
+        document = discover(ring_probes(3))
+        topology = document['topology']
+        self.assertEqual(topology['validation']['class'], 'roce-full-mesh')
+        self.assertIs(topology['validation']['full_mesh'], True)
+        self.assertEqual([link['ranks'] for link in topology['links']], [[0, 1], [0, 2], [1, 2]])
+        self.assertEqual(document['rejected'], [])
+
+    def test_anything_else_falls_back_to_the_largest_mesh_and_names_who_was_left_out(self):
+        cases = {
+            'open chain': ring_probes(4, dead_cables={3}),
+            'dead cable': ring_probes(4, dead_cables={1}),
+            'stray link': ring_probes(4, extra_links=((0, 2),)),
+            'open chain of six': ring_probes(6, dead_cables={2}),
+        }
+        for name, probes in cases.items():
+            with self.subTest(name):
+                document = discover(shuffled(probes))
+                topology = document['topology']
+                self.assertEqual(topology['validation']['class'], 'roce-full-mesh')
+                kept = {node['hostname'] for node in topology['nodes']}
+                left_out = {probe['hostname'] for probe in probes} - kept
+                self.assertTrue(left_out)
+                self.assertEqual({item['hostname'] for item in document['rejected']}, left_out)
+                for item in document['rejected']:
+                    self.assertEqual(item['reasons'], [tm.MESH_LEFT_OUT, tm.FALLBACK_LEFT_OUT])
+                tm.validate_manifest(topology)
+
+    def test_a_machine_cabled_to_no_ring_node_is_left_out_of_the_ring(self):
+        stray = isolated_probe(5)
+        document = discover([*shuffled(ring_probes(4)), stray])
+        self.assert_ring(document, 4)
+        self.assertEqual(document['rejected'], [dict(ssh_host='alias-5', hostname='fixture-rank-5',
+                                                     node_id='fixture-node-5', reasons=[tm.RING_LEFT_OUT])])
+
+    def test_a_mesh_with_a_machine_cabled_to_no_one_keeps_todays_reason(self):
+        document = discover([node_probe(0), node_probe(1), isolated_probe(2)])
+        self.assertEqual([item['reasons'] for item in document['rejected']], [[tm.MESH_LEFT_OUT]])
+
+
+class SavedRingFormat(unittest.TestCase):
+    """A saved ring validates; every malformed ring is refused with its reason."""
+
+    def setUp(self):
+        self.ring = saved_ring(4)
+
+    def refused(self, change, message):
+        topology = json.loads(json.dumps(self.ring))
+        change(topology)
+        topology['topology_id'] = tm.topology_digest(topology)
+        with self.assertRaises(tm.TopologyError) as caught:
+            tm.validate_manifest(topology)
+        self.assertIn(message, str(caught.exception))
+
+    def link(self, topology, a, b):
+        return next(link for link in topology['links'] if link['ranks'] == [a, b])
+
+    def test_four_and_six_node_rings_validate(self):
+        for count in (4, 6):
+            ring = saved_ring(count)
+            tm.validate_manifest(ring, require_verified=True, require_ssh_trust=True)
+            self.assertEqual(len(ring['links']), count)
+            self.assertEqual(ring['schema_version'], 2)
+
+    def test_a_cable_left_out_is_refused_and_named(self):
+        self.refused(lambda t: t['links'].remove(self.link(t, 1, 2)),
+                     'a ring of 4 nodes lists 4 cables in links; this one lists 3 and lacks '
+                     'the cable between ranks 1 and 2')
+
+    def test_a_missing_closing_cable_is_refused_and_named(self):
+        self.refused(lambda t: t['links'].remove(self.link(t, 0, 3)),
+                     'lacks the closing cable between ranks 0 and 3')
+
+    def test_a_chord_is_refused(self):
+        def chord(topology):
+            topology['links'].append(dict(ranks=[0, 2], rails=self.link(topology, 0, 1)['rails']))
+        self.refused(chord, 'links[4]: ranks 0 and 2 are not neighbours on the ring')
+
+    def test_ranks_out_of_order_are_refused(self):
+        def reverse(topology):
+            self.link(topology, 0, 3)['ranks'] = [3, 0]
+        self.refused(reverse, 'ranks must list the lower rank first')
+
+    def test_a_rank_outside_the_ring_is_refused(self):
+        self.refused(lambda t: self.link(t, 0, 3).update(ranks=[0, 4]), "rank outside the ring's 4 nodes")
+
+    def test_a_cable_with_no_shared_link_is_refused(self):
+        self.refused(lambda t: self.link(t, 1, 2).update(rails=[]), 'no shared RoCE rails')
+
+    def test_a_cable_listed_twice_is_refused(self):
+        self.refused(lambda t: t['links'].append(json.loads(json.dumps(self.link(t, 1, 2)))),
+                     'invalid or duplicate rank pair')
+
+    def test_a_ring_must_not_claim_a_full_mesh(self):
+        self.refused(lambda t: t['validation'].update(full_mesh=True), 'validation.full_mesh must be false')
+
+    def test_a_ring_saved_as_a_full_mesh_is_refused(self):
+        self.refused(lambda t: t['validation'].update({'class': 'roce-full-mesh', 'full_mesh': True}),
+                     'links do not cover every rank pair')
+
+    def test_the_minimum_must_match_the_cables(self):
+        self.refused(lambda t: t['validation'].update(min_rails_per_pair=1),
+                     'min_rails_per_pair does not match links')
+
+    def test_three_nodes_cannot_be_saved_as_a_ring(self):
+        def three(topology):
+            topology['nodes'] = topology['nodes'][:3]
+            topology['links'] = [self.link(topology, 0, 1), self.link(topology, 1, 2)]
+        self.refused(three, 'a ring needs at least 4 nodes; this one has 3')
+
+    def test_an_unknown_class_is_refused(self):
+        self.refused(lambda t: t['validation'].update({'class': 'roce-star'}), 'links do not cover every rank pair')
+
+
 if __name__ == '__main__':
     unittest.main()

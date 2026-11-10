@@ -298,6 +298,79 @@ def rails_between(
     return rails
 
 
+MESH_CLASS = "roce-full-mesh"
+RING_CLASS = "roce-ring"
+RING_MIN_NODES = 4
+MESH_LEFT_OUT = (
+    "not part of the largest directly connected RoCE group containing this node"
+)
+RING_LEFT_OUT = "not cabled to the ring that contains this node"
+FALLBACK_LEFT_OUT = (
+    "the machines cabled to this node form neither a full mesh nor a closed "
+    "ring of four or more"
+)
+
+
+def cabled_neighbours(nodes: list[dict[str, Any]]) -> list[set[int]]:
+    """For each node, the indexes of the nodes it shares at least one link with."""
+    neighbours: list[set[int]] = [set() for _ in nodes]
+    for a in range(len(nodes)):
+        for b in range(a + 1, len(nodes)):
+            if rails_between(nodes[a], nodes[b]):
+                neighbours[a].add(b)
+                neighbours[b].add(a)
+    return neighbours
+
+
+def cabled_group(neighbours: list[set[int]], start: int = 0) -> set[int]:
+    """The indexes reachable from START over cables, START included."""
+    group = {start}
+    pending = [start]
+    while pending:
+        for other in neighbours[pending.pop()]:
+            if other not in group:
+                group.add(other)
+                pending.append(other)
+    return group
+
+
+def ring_walk(
+    nodes: list[dict[str, Any]], neighbours: list[set[int]], first: int
+) -> list[int]:
+    """Indexes around the loop from node 0, starting towards its neighbour FIRST."""
+    order = [0, first]
+    while True:
+        previous, current = order[-2], order[-1]
+        (following,) = neighbours[current] - {previous}
+        if following == 0:
+            return order
+        order.append(following)
+
+
+def cluster_shape(
+    local: dict[str, Any], remotes: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]]:
+    """The shape of the cabled group that contains LOCAL, and its nodes in rank order.
+
+    `full-mesh` when every pair in the group is cabled, chosen exactly as
+    before by `largest_mesh`. `ring` when the group is four or more nodes in
+    one closed loop, each cabled to exactly two others. Anything else is
+    `fallback`: the largest full mesh containing LOCAL, as before.
+    """
+    nodes = [local, *remotes]
+    neighbours = cabled_neighbours(nodes)
+    group = cabled_group(neighbours)
+    if all(neighbours[index] >= group - {index} for index in group):
+        return "full-mesh", largest_mesh(local, remotes)
+    if len(group) >= RING_MIN_NODES and all(
+        len(neighbours[index]) == 2 for index in group
+    ):
+        # Connected, and every node of degree two: a single closed loop.
+        first = min(neighbours[0])
+        return "ring", [nodes[index] for index in ring_walk(nodes, neighbours, first)]
+    return "fallback", largest_mesh(local, remotes)
+
+
 def largest_mesh(
     local: dict[str, Any], remotes: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -420,7 +493,12 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
             node["node_id"],
         )
     )
-    selected = largest_mesh(local, remotes)
+    shape, selected = cluster_shape(local, remotes)
+    left_out = {
+        "full-mesh": [MESH_LEFT_OUT],
+        "ring": [RING_LEFT_OUT],
+        "fallback": [MESH_LEFT_OUT, FALLBACK_LEFT_OUT],
+    }[shape]
     selected_ids = {node["node_id"] for node in selected}
     for node in remotes:
         if node["node_id"] not in selected_ids:
@@ -429,9 +507,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                     "ssh_host": node["ssh_host"],
                     "hostname": node["hostname"],
                     "node_id": node["node_id"],
-                    "reasons": [
-                        "not part of the largest directly connected RoCE group containing this node"
-                    ],
+                    "reasons": list(left_out),
                 }
             )
 
@@ -452,10 +528,14 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
             }
         )
 
+    # A full mesh lists every pair; a ring lists only its cables, the lower
+    # rank first: [i, i+1] for consecutive ranks and [0, N-1] for the closing one.
     links: list[dict[str, Any]] = []
     for a in range(len(nodes)):
         for b in range(a + 1, len(nodes)):
             rails = rails_between(nodes[a], nodes[b])
+            if shape == "ring" and not rails:
+                continue
             links.append({"ranks": [a, b], "rails": rails})
 
     rail_counts = [len(link["rails"]) for link in links]
@@ -465,8 +545,10 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
         "nodes": nodes,
         "links": links,
         "validation": {
-            "class": "roce-full-mesh",
-            "full_mesh": all(rail_counts) if links else True,
+            "class": RING_CLASS if shape == "ring" else MESH_CLASS,
+            "full_mesh": (
+                False if shape == "ring" else (all(rail_counts) if links else True)
+            ),
             "connectivity_verified": False,
             "min_rails_per_pair": min(rail_counts) if rail_counts else 0,
         },
@@ -550,9 +632,21 @@ def validate_manifest(
             for cidr in rdma.get("cidrs") or []:
                 valid_cidr(cidr, f"nodes[{rank}].rdma[{index}].cidr")
 
-    expected_pairs = {
-        (a, b) for a in range(len(nodes)) for b in range(a + 1, len(nodes))
-    }
+    # A ring lists only its cables: each consecutive pair of ranks and the
+    # closing cable [0, N-1]. A full mesh lists every pair.
+    count = len(nodes)
+    ring = validation.get("class") == RING_CLASS
+    if ring:
+        if count < RING_MIN_NODES:
+            fail(
+                f"a ring needs at least {RING_MIN_NODES} nodes; this one has "
+                f"{count}, and fewer nodes cabled in a loop are a full mesh"
+            )
+        expected_pairs = {(a, a + 1) for a in range(count - 1)} | {(0, count - 1)}
+    else:
+        expected_pairs = {
+            (a, b) for a in range(count) for b in range(a + 1, count)
+        }
     observed_pairs: set[tuple[int, int]] = set()
     rail_counts: list[int] = []
     for index, link in enumerate(links):
@@ -564,6 +658,16 @@ def validate_manifest(
         ):
             fail(f"links[{index}].ranks malformed")
         pair = (ranks[0], ranks[1])
+        if ring:
+            if not all(0 <= rank < count for rank in pair):
+                fail(f"links[{index}]: rank outside the ring's {count} nodes")
+            if pair[0] >= pair[1]:
+                fail(f"links[{index}]: ranks must list the lower rank first")
+            if pair not in expected_pairs:
+                fail(
+                    f"links[{index}]: ranks {pair[0]} and {pair[1]} are not "
+                    "neighbours on the ring"
+                )
         if pair not in expected_pairs or pair in observed_pairs:
             fail(f"links[{index}]: invalid or duplicate rank pair")
         observed_pairs.add(pair)
@@ -589,12 +693,28 @@ def validate_manifest(
                     endpoint.get("ip"),
                     f"links[{index}].rails[{rail_index}].{side}.ip",
                 )
-    if observed_pairs != expected_pairs:
-        fail("links do not cover every rank pair")
-    if validation.get("class") != "roce-full-mesh":
-        fail("unsupported validation class")
-    if validation.get("full_mesh") is not True:
-        fail("topology is not a full mesh")
+    if ring:
+        missing = sorted(expected_pairs - observed_pairs)
+        if missing:
+            a, b = missing[0]
+            cable = (
+                f"the closing cable between ranks 0 and {count - 1}"
+                if (a, b) == (0, count - 1)
+                else f"the cable between ranks {a} and {b}"
+            )
+            fail(
+                f"a ring of {count} nodes lists {count} cables in links; this "
+                f"one lists {len(observed_pairs)} and lacks {cable}"
+            )
+        if validation.get("full_mesh") is not False:
+            fail("a ring is not a full mesh; validation.full_mesh must be false")
+    else:
+        if observed_pairs != expected_pairs:
+            fail("links do not cover every rank pair")
+        if validation.get("class") != MESH_CLASS:
+            fail("unsupported validation class")
+        if validation.get("full_mesh") is not True:
+            fail("topology is not a full mesh")
     actual_min = min(rail_counts) if rail_counts else 0
     if validation.get("min_rails_per_pair") != actual_min:
         fail("min_rails_per_pair does not match links")
