@@ -963,11 +963,12 @@ def entry_state(repo: Path, now=None, *, discovered: bool = False) -> str:
     from scripts.cluster_status import Records
     records = Records(repo, now)
     changes = records.changes
-    if not discovered:
-        age = age_seconds(changes["observed_at"], records.now) if changes else None
-        if changes is None or age is None or age > CHANGES_FRESH_SECONDS:
-            return "discover"
-    if changes is None or changes["result"] == "not-checked":
+    age = age_seconds(changes["observed_at"], records.now) if changes else None
+    stale = changes is None or age is None or age > CHANGES_FRESH_SECONDS
+    if stale and not discovered:
+        return "discover"
+    # A discovery that saved nothing leaves an old record, which says nothing about now.
+    if stale or changes["result"] == "not-checked":
         return "not-checked"
     if changes["result"] == "unchanged":
         return "unchanged"

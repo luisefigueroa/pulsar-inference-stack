@@ -247,6 +247,15 @@ class Entry(Harness):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), ["topology detect --json", "inventory --json"])
 
+    def test_a_discovery_that_saves_nothing_is_not_read_as_unchanged(self):
+        self.save_changes(*changes(minutes=20))
+        self.fixture("detect", rc=1)
+        result = self.run_menu(["Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus(), [["Serve a model", "Serve on the cluster as saved", "Back"]])
+        self.assertIn("✗ The cluster check did not finish", result.stdout)
+        self.assertEqual(self.ran(), [])
+
     def test_a_kept_node_is_not_asked_about_again(self):
         self.save_changes(*changes(missing=["n2"], kept=True))
         result = self.run_menu(["Back"])
