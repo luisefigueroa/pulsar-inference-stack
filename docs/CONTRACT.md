@@ -388,6 +388,12 @@ is the smallest link count over the listed pairs. Field names and the schema
 version are unchanged. A Stack without ring support refuses a ring's saved
 membership as invalid, because its `links` do not cover every pair.
 
+Whenever discovery found something other than a full mesh, `topology detect
+--json` adds `cabling`: every pair of qualified machines that answered and share
+at least one RoCE link, as two `node_id`s each, so a ring's changes and the
+machines a fallback left out can be explained. Left-out machines keep their
+stable `reasons` strings; people read them in plain words.
+
 `topology check --json` adds `fabric_failures` when the fabric check failed:
 one entry per saved link that did not answer, with `from` and `to` (the
 hostnames of the pinging and the pinged node), `ranks`, `address`, `network`
@@ -402,7 +408,12 @@ could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
 `possible_reinstall`); `missing` (`hostname`, `node_id`, `position`,
 `answered`, optional `reasons`); `changed` (`hostname`, `node_id`, and
 `changes` with `control`, `links` or `position`, each `old` and `new`); and
-`untrusted` (`address`, `possible_reinstall`). A successful `ssh-trust enroll`
+`untrusted` (`address`, `possible_reinstall`). When discovery produced a
+cluster, the record also has `order` (`hostname`, `node_id`), the order a save
+keeps, which follows a ring's cables; `shape` (`old` and `new`
+`validation.class`) when the shape differs from saved; and `cables` (`gone`
+and `new`, hostname pairs) when a ring is saved or found and the cables between
+machines that answered differ. A successful `ssh-trust enroll`
 rewrites only an `unchanged` record that names the membership from before
 enrollment, to the new `topology_id`, keeping `observed_at`.
 
@@ -433,7 +444,9 @@ removed or renamed.
 
 Change note, 2026-11-10: saved membership gained the `validation.class` value
 `roce-ring`, whose `links` list only its cables; `topology check --json`
-gained `fabric_failures`. Nothing was removed or renamed.
+gained `fabric_failures`; `topology detect --json` gained `cabling`; the saved
+changes record gained `order`, `shape` and `cables`. Nothing was removed or
+renamed.
 
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a

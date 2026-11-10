@@ -553,8 +553,9 @@ class FabricChecks(unittest.TestCase):
                 {'from': nodes[1]['hostname'], 'to': nodes[2]['hostname']}, ranks=[1, 2], address=rail['b']['ip'],
                 network=rail['network'], interface=rail['a']['netdev'])])
             human = fixture.run('topology', 'check')
-            self.assertIn(f"{nodes[1]['hostname']} → {nodes[2]['hostname']}: no answer on link "
-                          f"{rail['network']} ({rail['a']['netdev']} to {rail['b']['ip']})",
+            self.assertIn(f"The cable between {nodes[1]['hostname']} and {nodes[2]['hostname']}: "
+                          f"{nodes[2]['hostname']} did not answer at {rail['b']['ip']} on link {rail['network']}, "
+                          f"pinged from {nodes[1]['hostname']}'s {rail['a']['netdev']}.",
                           ' '.join(human.stdout.split()))
 
     def test_an_unbound_ping_never_answers_in_the_double(self):
@@ -596,15 +597,15 @@ class CableOrderCheck(unittest.TestCase):
             recabled[2][key], recabled[3][key] = recabled[3][key], recabled[2][key]
         document = self.observe(saved, recabled)
         self.assertEqual(document['status'], 'blocked')
-        self.assertIn('The ring\'s cable order changed: now fixture-ring-dorado → fixture-ring-bravo → '
-                      'fixture-ring-alpha → fixture-ring-echo → fixture-ring-dorado; saved fixture-ring-dorado → '
-                      'fixture-ring-bravo → fixture-ring-echo → fixture-ring-alpha → fixture-ring-dorado. '
-                      'Save the cluster again to use the new order.', document['issues'])
+        self.assertIn('The ring\'s cables run in another order now: fixture-ring-dorado → fixture-ring-bravo → '
+                      'fixture-ring-alpha → fixture-ring-echo → fixture-ring-dorado (saved: fixture-ring-dorado → '
+                      'fixture-ring-bravo → fixture-ring-echo → fixture-ring-alpha → fixture-ring-dorado). '
+                      'Review what changed… saves the new order.', document['issues'])
 
     def test_a_dead_cable_is_named(self):
         document = self.observe(saved_ring(4), ring_probes(4, dead_cables={1}))
-        self.assertIn("The ring's cables differ from saved membership: fixture-ring-bravo and fixture-ring-echo "
-                      "share no link now.", document['issues'])
+        self.assertIn("fixture-ring-bravo and fixture-ring-echo are neighbours in the saved ring but share no link "
+                      "now; check the cable between them.", document['issues'])
 
     def test_a_mesh_is_not_compared_by_cables(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -664,10 +665,11 @@ class RingWords(unittest.TestCase):
     def test_discovery_calls_a_ring_a_ring(self):
         document = tm.mark_verified(discover(shuffled(ring_probes(4, single_link_cables={1}))))
         text = rendered(document)
-        self.assertIn('Fabric      ring · at least 1 RoCE link on each cable between neighbours\n', text)
+        self.assertIn('Found       4 GB10 machines answered · ring · at least 1 link on every cable\n', text)
         self.assertIn('Checks      PASS · 14/14 connections reachable\n', text)
         self.assertNotIn('mesh', text)
-        self.assertNotIn('pair', text)
+        self.assertNotIn('every pair', text)
+        self.assertNotIn('node pair', text)
         narrow = rendered(document, columns='44')
         self.assertTrue(all(len(line) <= 44 for line in narrow.splitlines()), narrow)
 
@@ -676,7 +678,7 @@ class RingWords(unittest.TestCase):
             probes = [node_probe(rank) for rank in range(3)]
             document = tm.mark_verified(tm.assemble(write_probes(directory, probes), None))
         text = rendered(document)
-        self.assertIn('Fabric      full mesh · at least 1 RoCE link between each node pair\n', text)
+        self.assertIn('Found       3 GB10 machines answered · full mesh · 1 link between every pair\n', text)
         self.assertIn('Checks      PASS · 6/6 connections reachable\n', text)
 
 

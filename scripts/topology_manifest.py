@@ -311,6 +311,63 @@ FALLBACK_LEFT_OUT = (
 )
 
 
+# What a person reads for each reason a machine that answered was left out.
+# The JSON reasons keep their stable strings.
+LEFT_OUT_WORDS = {
+    MESH_LEFT_OUT: "not cabled to every other machine in the cluster",
+    RING_LEFT_OUT: "not cabled to the ring",
+}
+CABLING_WORDS = (
+    "the cabling forms neither a full mesh nor a closed ring of four or "
+    "more, so Pulsar keeps the largest group in which every machine is "
+    "cabled to every other"
+)
+RING_MEANING = (
+    "Machines that are not neighbours share no direct link. A ring allows "
+    "serving on one machine, a neighbouring pair or the whole ring; each "
+    "recipe's readiness says what can start now."
+)
+
+
+def left_out_for_cabling(item: dict[str, Any]) -> bool:
+    """Whether a rejected machine answered, qualifies, and was left out for its cabling."""
+    return any(reason in LEFT_OUT_WORDS for reason in item.get("reasons") or [])
+
+
+def reason_words(reasons: list[str]) -> str:
+    """REASONS as a person reads them: the cabling reasons in plain words."""
+    words = [LEFT_OUT_WORDS[reason] if reason in LEFT_OUT_WORDS else CABLING_WORDS
+             if reason == FALLBACK_LEFT_OUT else reason for reason in reasons]
+    return "; ".join(words) or "not qualified"
+
+
+def ring_loop(hostnames: list[str]) -> str:
+    """HOSTNAMES in cable order as a loop, the first repeated at the end."""
+    return " → ".join([*hostnames, hostnames[0]]) if hostnames else ""
+
+
+def shape_text(topology: dict[str, Any]) -> str:
+    """The shape and links of a membership, as "ring · 2 links on every cable"."""
+    nodes = topology["nodes"]
+    validation = topology.get("validation") or {}
+    if len(nodes) == 1:
+        return "one machine · no cluster links needed"
+    counts = [len(link.get("rails") or []) for link in topology.get("links") or []]
+    least = min(counts) if counts else 0
+    amount = f"{'' if len(set(counts)) <= 1 else 'at least '}{least} {'link' if least == 1 else 'links'}"
+    if validation.get("class") == RING_CLASS:
+        return f"ring · {amount} on every cable"
+    return f"full mesh · {amount} between every pair"
+
+
+def failure_words(failure: dict[str, Any]) -> str:
+    """One link that did not answer the fabric check (topology check's
+    fabric_failures entry), named by the cable it runs on."""
+    return (f"The cable between {failure['from']} and {failure['to']}: {failure['to']} did not answer at "
+            f"{failure['address']} on link {failure['network']}, pinged from {failure['from']}'s "
+            f"{failure['interface']}.")
+
+
 def ring_refusal(nodes: int) -> str:
     """Why a recipe on NODES nodes does not start on a saved ring, in one clause.
 
@@ -627,12 +684,24 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
     }
     topology["topology_id"] = topology_digest(topology)
     validate_manifest(topology)
-    return {
+    document = {
         "schema_version": topology_schema,
         "result": "ok",
         "topology": topology,
         "rejected": rejected,
     }
+    if shape != "full-mesh":
+        # Which qualified machines share links, so a ring's changes and a
+        # fallback's left-out machines can be explained. A full mesh needs none.
+        everyone = [local, *remotes]
+        neighbours = cabled_neighbours(everyone)
+        document["cabling"] = sorted(
+            sorted([everyone[a]["node_id"], everyone[b]["node_id"]])
+            for a in range(len(everyone))
+            for b in neighbours[a]
+            if a < b
+        )
+    return document
 
 
 def validate_manifest(
@@ -828,41 +897,38 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
 
     nodes = topology["nodes"]
     validation = topology["validation"]
-    link_count = validation["min_rails_per_pair"]
-    link_word = "link" if link_count == 1 else "links"
-    node_word = "system" if len(nodes) == 1 else "systems"
     check_count = sum(2 * len(link["rails"]) for link in topology["links"])
+    rejected = document.get("rejected") or []
+    left_out = [item for item in rejected if left_out_for_cabling(item)]
+    answered = len(nodes) + len(left_out)
 
     term.emit("CLUSTER DISCOVERY")
     try:
         display_name = load_current_platform()["display_name"]
     except PlatformReferenceError as exc:
         fail(str(exc))
-    field("Nodes", f"{len(nodes)} {display_name} {node_word}")
+    headline = f"{answered} {display_name} {'machine' if answered == 1 else 'machines'} answered"
+    if left_out:
+        headline += f" · {len(nodes)} in the cluster"
+    field("Found", f"{headline} · {shape_text(topology)}")
+    if validation.get("class") == RING_CLASS:
+        field("Order", ring_loop([node["hostname"] for node in nodes]))
+        field("Serving", RING_MEANING)
+    for item in left_out:
+        reasons = [reason for reason in item.get("reasons") or [] if reason != FALLBACK_LEFT_OUT]
+        field("Left out", f"{item.get('hostname') or item.get('ssh_host') or '?'} answered, but is "
+                          f"{reason_words(reasons)}")
+    if any(FALLBACK_LEFT_OUT in (item.get("reasons") or []) for item in left_out):
+        field("Cabling", CABLING_WORDS[0].upper() + CABLING_WORDS[1:] + ".")
     if len(nodes) == 1:
-        field("Fabric", "single node · no cluster links required")
-        field("Checks", "not needed · no other nodes found")
+        field("Checks", "not needed · no other machines in the cluster")
+    elif validation.get("connectivity_verified") is True:
+        field("Checks", f"PASS · {check_count}/{check_count} connections reachable")
     else:
-        if validation.get("class") == RING_CLASS:
-            field(
-                "Fabric",
-                f"ring · at least {link_count} RoCE {link_word} on each "
-                "cable between neighbours",
-            )
-        else:
-            field(
-                "Fabric",
-                f"full mesh · at least {link_count} RoCE {link_word} "
-                "between each node pair",
-            )
-        if validation.get("connectivity_verified") is True:
-            field(
-                "Checks",
-                f"PASS · {check_count}/{check_count} connections reachable",
-            )
-        else:
-            field("Checks", "not yet verified")
-    field("Cluster ID", topology["topology_id"][:12])
+        field("Checks", "not yet verified")
+    noticed = (document.get("changes_noticed") or {}).get("result")
+    if noticed in ("unchanged", "changed"):
+        field("Membership", "the same as saved" if noticed == "unchanged" else "differs from saved membership")
 
     term.blank()
     term.emit("NODES")
@@ -881,13 +947,13 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
                 key["fingerprint"] for key in node["ssh_host_keys"]
             ]
             field(
-                "SSH trust",
-                f"enrolled · {len(fingerprints)} host "
+                "Identity",
+                f"SSH identity recorded · {len(fingerprints)} host "
                 f"{'key' if len(fingerprints) == 1 else 'keys'}",
                 indent=4,
             )
         else:
-            field("SSH trust", "legacy · fingerprints not enrolled", indent=4)
+            field("Identity", "SSH identity not recorded yet", indent=4)
         field(
             "Cluster IP",
             f"{node['control']['ip']} · interface "
@@ -901,19 +967,19 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
             indent=4,
         )
 
-    rejected = document.get("rejected") or []
-    if rejected or skipped_ssh:
+    duplicates = [item for item in rejected if item.get("reasons") == ["duplicate node identity"]]
+    others = [item for item in rejected if item not in duplicates and item not in left_out]
+    if duplicates or others or skipped_ssh:
         term.blank()
         term.emit("DISCOVERY NOTES")
-    for item in rejected:
+    for item in others:
         ssh_host = item.get("ssh_host") or "?"
-        hostname = item.get("hostname") or "?"
-        reasons = item.get("reasons") or ["not qualified"]
-        if reasons == ["duplicate node identity"]:
-            detail = f"{ssh_host} · same system already listed as {hostname}"
-        else:
-            detail = f"{ssh_host} · {'; '.join(reasons)}"
-        field("Ignored", detail)
+        field("Ignored", f"{ssh_host} · {reason_words(item.get('reasons') or [])}")
+    if duplicates:
+        # Each machine answers on its LAN address and on its fabric addresses.
+        count = len(duplicates)
+        field("Also seen", f"{count} more {'address' if count == 1 else 'addresses'} answered for "
+                           f"{'a machine' if count == 1 else 'machines'} already listed")
     if skipped_ssh:
         address_word = "address" if skipped_ssh == 1 else "addresses"
         field(

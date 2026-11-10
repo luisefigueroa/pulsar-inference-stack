@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import ipaddress
 import json
 from pathlib import Path
 import sys
@@ -52,7 +53,7 @@ def discovery_membership(path, document, remove_missing=False):
             document["saved_membership"]["issues"].append(
                 "Confirmed nodes are missing from discovery. Restore access or investigate their identity and fabric; membership was not changed.")
             for item in answered:
-                reasons = "; ".join(item.get("reasons") or ["not qualified"])
+                reasons = manifest.reason_words(item.get("reasons") or ["not qualified"])
                 document["saved_membership"]["issues"].append(
                     f"{item['hostname']} answered but cannot be a member: {reasons}. "
                     "--remove-missing leaves out only nodes that did not answer; fix it first.")
@@ -95,9 +96,19 @@ def untrusted_addresses(document, untrusted, saved_nodes=()):
                                          (node.get("control") or {}).get("ip")) if value)
     seen = []
     for address in untrusted:
-        if address and address not in known and address not in seen:
+        if address and address not in known and address not in seen and not _loopback(address):
             seen.append(address)
     return seen
+
+
+def _loopback(address):
+    """Whether ADDRESS names this machine's own loopback, which mDNS may advertise."""
+    if address.lower() in ("localhost", "localhost.localdomain"):
+        return True
+    try:
+        return ipaddress.ip_address(address).is_loopback
+    except ValueError:
+        return False
 
 
 def changes_noticed(old, document, untrusted=(), issue=None):
@@ -151,14 +162,71 @@ def changes_noticed(old, document, untrusted=(), issue=None):
     missing_rows = [{"hostname": item["hostname"], "node_id": item["node_id"], "position": item["rank"],
                      "answered": bool(item.get("answered")),
                      **({"reasons": item["reasons"]} if item.get("reasons") else {})} for item in missing]
+    shape = cabling = None
+    if nodes and not issues:
+        shape, cabling = shape_changes(old, document)
     if issues:
         result = "not-checked"
-    elif found or missing_rows or changed:
+    elif found or missing_rows or changed or shape or cabling:
         result = "changed"
     else:
         result = "unchanged"
-    return {"topology_id": old["topology_id"], "result": result, "issues": issues, "found": found,
+    body = {"topology_id": old["topology_id"], "result": result, "issues": issues, "found": found,
             "missing": missing_rows, "changed": changed, "untrusted": untrusted_rows}
+    if nodes and not issues:
+        # The order a save would keep: discovery's ranks, which follow a ring's cables.
+        body["order"] = [{"hostname": node["hostname"], "node_id": node["node_id"]} for node in nodes]
+    if shape:
+        body["shape"] = shape
+    if cabling:
+        body["cables"] = cabling
+    return body
+
+
+def _pairs(topology):
+    """The cabled pairs of a membership as node_id pairs: its links."""
+    nodes = topology.get("nodes") or []
+    return {frozenset((nodes[link["ranks"][0]]["node_id"], nodes[link["ranks"][1]]["node_id"]))
+            for link in topology.get("links") or []}
+
+
+def shape_changes(old, document):
+    """How the cluster's shape and cables differ from saved membership OLD.
+
+    (shape, cables): shape is {"old", "new"} validation classes when they
+    differ; cables is {"gone", "new"}, hostname pairs, when a ring is saved
+    or found and the cables between machines that answered differ. Discovery
+    lists every cable between qualified machines (`cabling`) whenever it
+    found something other than a full mesh; a full mesh's cables are its
+    links."""
+    topology = document.get("topology") or {}
+    old_class = (old.get("validation") or {}).get("class")
+    new_class = (topology.get("validation") or {}).get("class")
+    shape = {"old": old_class, "new": new_class} if old_class != new_class else None
+    if manifest.RING_CLASS not in (old_class, new_class) and "cabling" not in document:
+        return shape, None
+    names = {node["node_id"]: node["hostname"] for node in old.get("nodes") or []}
+    names.update({node["node_id"]: node["hostname"] for node in topology.get("nodes") or []})
+    names.update({item["node_id"]: item.get("hostname") or item["node_id"]
+                  for item in document.get("rejected") or [] if item.get("node_id")})
+    if "cabling" in document:
+        now = {frozenset(pair) for pair in document["cabling"]}
+        qualified = {node["node_id"] for node in topology.get("nodes") or []}
+        qualified |= {node_id for pair in now for node_id in pair}
+        qualified |= {item["node_id"] for item in document.get("rejected") or []
+                      if manifest.left_out_for_cabling(item)}
+    else:
+        now = _pairs(topology)
+        qualified = {node["node_id"] for node in topology.get("nodes") or []}
+    saved = _pairs(old)
+    gone = [pair for pair in saved - now if pair <= qualified]
+    new = [pair for pair in now - saved if pair <= qualified]
+
+    def named(pairs):
+        return sorted(sorted(names.get(node_id, node_id) for node_id in pair) for pair in pairs)
+
+    cables = {"gone": named(gone), "new": named(new)} if gone or new else None
+    return shape, cables
 
 
 def fabric_failures(topology, path):
@@ -204,11 +272,14 @@ def ring_cables_changed(topology, live):
     if len(nodes) >= manifest.RING_MIN_NODES and all(len(items) == 2 for items in neighbours) \
             and len(manifest.cabled_group(neighbours)) == len(nodes):
         order = manifest.ring_walk(probes, neighbours, 1 if 1 in neighbours[0] else min(neighbours[0]))
-        return ("The ring's cable order changed: now " + " → ".join(names[index] for index in [*order, 0])
-                + "; saved " + " → ".join([*names, names[0]]) + ". Save the cluster again to use the new order.")
-    parts = [f"{names[a]} and {names[b]} share no link now" for a, b in sorted(saved - now)]
-    parts += [f"{names[a]} and {names[b]} are cabled now" for a, b in sorted(now - saved)]
-    return "The ring's cables differ from saved membership: " + "; ".join(parts) + "."
+        return ("The ring's cables run in another order now: "
+                + manifest.ring_loop([names[index] for index in order]) + " (saved: " + manifest.ring_loop(names)
+                + "). Review what changed… saves the new order.")
+    parts = [f"{names[a]} and {names[b]} are neighbours in the saved ring but share no link now; check the cable "
+             "between them" for a, b in sorted(saved - now)]
+    parts += [f"{names[a]} and {names[b]} share a link now, which the saved ring does not have"
+              for a, b in sorted(now - saved)]
+    return "; ".join(parts) + "."
 
 
 def observation(path, directory=None):
@@ -292,9 +363,7 @@ def render_observation(document):
     for issue in document["issues"]:
         writer.emit(issue, initial_indent="  ", subsequent_indent="  ")
     for failure in document.get("fabric_failures") or []:
-        writer.emit(f"{failure['from']} → {failure['to']}: no answer on link {failure['network']} "
-                    f"({failure['interface']} to {failure['address']})",
-                    initial_indent="    ", subsequent_indent="      ")
+        writer.emit(manifest.failure_words(failure), initial_indent="    ", subsequent_indent="      ")
     writer.emit("Model geometry remains the selected recipe's exact configuration.")
 
 

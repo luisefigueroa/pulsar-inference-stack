@@ -91,6 +91,40 @@ def shuffled(probes):
     return local + others[1::2] + others[0::2]
 
 
+def as_mesh(probes):
+    """PROBES with their identities kept and one adapter each on a shared /24: a full mesh."""
+    mesh = []
+    for index, probe in enumerate(probes):
+        probe = json.loads(json.dumps(probe))
+        probe['rdma'] = [dict(hca='roce0', netdev='fabric0', cidrs=[f'203.0.113.{10 + index}/24'])]
+        mesh.append(probe)
+    return mesh
+
+
+def use_probes(fixture, probes):
+    """Make FIXTURE's nodes answer as PROBES from now on: the cluster changed after it was saved."""
+    for index, probe in enumerate(probes):
+        (fixture.root/f'probe-{index}.json').write_text(json.dumps(probe))
+    (fixture.root/'map.json').write_text(json.dumps({probe['ssh_host']: index for index, probe in enumerate(probes)}))
+
+
+def answer_on_fabric_addresses(fixture, per_machine=2):
+    """Let each other machine also answer SSH on its first fabric addresses, as
+    machines do on the real ring; returns the addresses, for CLUSTER_CANDIDATES."""
+    mapping = json.loads((fixture.root/'map.json').read_text())
+    added = []
+    for alias, index in list(mapping.items()):
+        probe = json.loads((fixture.root/f'probe-{index}.json').read_text())
+        if probe['local']:
+            continue
+        for link in probe['rdma'][:per_machine]:
+            address = link['cidrs'][0].split('/')[0]
+            mapping[address] = index
+            added.append(address)
+    (fixture.root/'map.json').write_text(json.dumps(mapping))
+    return added
+
+
 def prerequisites_answer(rank, *, hf='ok', login='accepted', rsync=True):
     """A `probe-node.py --prerequisites-only` answer for fixture rank RANK."""
     return dict(probe_schema_version=1, kind='pulsar-node-prerequisites', local=rank == 0,
@@ -276,7 +310,14 @@ def double_main():
             path = root/f'prerequisites-{rank}.json'
             print(path.read_text() if path.exists() else json.dumps(prerequisites_answer(rank)))
             return 0
-        print((root/f'probe-{rank}.json').read_text())
+        text = (root/f'probe-{rank}.json').read_text()
+        if tool == 'ssh':
+            # A machine reached at another of its addresses reports that address,
+            # as probe-node.py does with --ssh-host.
+            probe = json.loads(text)
+            if not probe.get('local') and probe.get('ssh_host') not in (None, alias):
+                text = json.dumps(dict(probe, ssh_host=alias))
+        print(text)
     elif action == 'ping':
         words = args if tool == 'ping' else [word for word in shlex.split(args[-1])[1:] if not word.startswith(('>', '2>'))]
         return ping_double(root, rank, words)
