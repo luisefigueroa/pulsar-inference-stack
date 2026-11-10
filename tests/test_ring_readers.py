@@ -13,6 +13,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
 from support.topology_fixture import Fixture, ring_probes, shuffled
+import topology_manifest as tm
+from tests import test_start_blockers
 
 SPEC = 'a' * 64
 
@@ -76,6 +78,46 @@ retire_stopped_service_indexes() {{ :; }}
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(marker.read_text(), '4\n')
+
+
+def gate(fixture, *counts):
+    """Each count's exit status and stderr from the launch check, sourced alone."""
+    script = '. "$1/cluster/topology.sh"; shift; for n in "$@"; do require_profile_topology "$n"; echo "rc=$?"; done'
+    result = subprocess.run(['bash', '-c', script, 'gate', str(ROOT), *map(str, counts)], env=fixture.env,
+                            capture_output=True, text=True, timeout=60)
+    return result
+
+
+class RingRefusal(unittest.TestCase):
+    """A multi-node Start on a ring stays refused, and every caller says why in the same words."""
+
+    def test_the_launch_check_names_the_cabling(self):
+        fixture = ring_fixture(self)
+        result = gate(fixture, 1, 2, 3, 4)
+        self.assertEqual(result.stdout, 'rc=0\nrc=1\nrc=1\nrc=1\n')
+        self.assertEqual(result.stderr.splitlines(), [
+            f'topology: {tm.ring_refusal(2)}', f'topology: {tm.ring_refusal(3)}', f'topology: {tm.ring_refusal(4)}'])
+        self.assertEqual(tm.ring_refusal(3), 'the cluster is a ring, and this recipe needs every one of its nodes '
+                                             'cabled to the others')
+        self.assertNotIn('full mesh', tm.ring_refusal(3))
+
+    def test_a_mesh_keeps_its_words(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory), nodes=3)
+            result = gate(fixture, 1, 3)
+        self.assertEqual(result.stdout, 'rc=0\nrc=1\n')
+        self.assertEqual(result.stderr, 'topology: ranks 0/1 expose 1 shared RoCE rail(s); the spec requires 2\n')
+
+class RingStart(unittest.TestCase):
+    """Start's own refusal carries the launch check's words."""
+    setUp = test_start_blockers.StartScenarios.setUp
+    start = test_start_blockers.StartScenarios.start
+
+    def test_start_is_refused_with_the_cabling(self):
+        result, codes = self.start(nodes=3, fabric=tm.ring_refusal(3))
+        self.assertEqual(codes, ['fabric_incomplete'])
+        self.assertIn(f'FAIL  fabric    {tm.ring_refusal(3)}', result.stdout)
+        self.assertIn(f'({tm.ring_refusal(3)})', self.records[0]['message'])
 
 
 if __name__ == '__main__':

@@ -40,6 +40,17 @@ def saved_order(path: str | Path) -> list[str]:
         return []
 
 
+def saved_shape(path: str | Path) -> str | None:
+    """The saved topology's validation.class, such as roce-ring; None when unreadable."""
+    from scripts.topology_manifest import extract_topology
+    try:
+        topology = extract_topology(json.loads(Path(path).read_text(encoding="utf-8")))
+        shape = (topology.get("validation") or {}).get("class")
+        return str(shape) if shape else None
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 class NodeNames:
     """Name nodes for people. Without a mapping, node IDs are shown unchanged.
 
@@ -47,15 +58,23 @@ class NodeNames:
     an unknown machine is never presented as a known one.
     """
 
-    def __init__(self, hostnames: dict[str, str] | None = None, order: list[str] | None = None):
+    def __init__(self, hostnames: dict[str, str] | None = None, order: list[str] | None = None,
+                 shape: str | None = None):
         self.hostnames = hostnames
         # Node IDs in saved topology order, when known.
         self.order = order or []
+        # The saved topology's validation.class, when known.
+        self.shape = shape
 
     @classmethod
     def saved(cls, repo: str | Path = ROOT) -> "NodeNames":
         path = topology_path(repo)
-        return cls(saved_hostnames(path), saved_order(path))
+        return cls(saved_hostnames(path), saved_order(path), saved_shape(path))
+
+    @property
+    def ring(self) -> bool:
+        """Whether the saved cluster is a ring, whose nodes are cabled only to their neighbours."""
+        return self.shape == "roce-ring"
 
     def serving_hostnames(self, count: int) -> list[str] | None:
         """Ordinary start's ranks 0..count-1: the first ``count`` saved nodes, named.

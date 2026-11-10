@@ -21,6 +21,7 @@ CLUSTER_TOPOLOGY_FULL_MESH=0
 CLUSTER_TOPOLOGY_MIN_RAILS=0
 CLUSTER_TOPOLOGY_SCHEMA=0
 CLUSTER_TOPOLOGY_SSH_TRUSTED=0
+CLUSTER_TOPOLOGY_CLASS=""
 CLUSTER_PROFILE_NODE_COUNT=0
 
 declare -ag CLUSTER_NODE_IDS=()
@@ -43,6 +44,7 @@ _cluster_topology_reset() {
   CLUSTER_TOPOLOGY_MIN_RAILS=0
   CLUSTER_TOPOLOGY_SCHEMA=0
   CLUSTER_TOPOLOGY_SSH_TRUSTED=0
+  CLUSTER_TOPOLOGY_CLASS=""
   CLUSTER_PROFILE_NODE_COUNT=0
   CLUSTER_NODE_IDS=()
   CLUSTER_NODE_HOSTNAMES=()
@@ -85,6 +87,7 @@ load_cluster_topology() {
         CLUSTER_TOPOLOGY_MIN_RAILS="$d"
         CLUSTER_TOPOLOGY_SCHEMA="${e:-1}"
         CLUSTER_TOPOLOGY_SSH_TRUSTED="${f:-0}"
+        CLUSTER_TOPOLOGY_CLASS="${g:-}"
         ;;
       NODE)
         CLUSTER_NODE_IDS["$a"]="$b"
@@ -235,7 +238,14 @@ require_profile_topology() {
       ;;
   esac
   if [ "$CLUSTER_TOPOLOGY_FULL_MESH" != 1 ]; then
-    echo "topology: confirmed topology is not a full mesh" >&2
+    # The same words as ring_refusal in scripts/topology_manifest.py.
+    if [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ] && [ "$required" = 2 ]; then
+      echo "topology: the cluster is a ring, and this Stack starts a two-node recipe only on a full mesh" >&2
+    elif [ "$CLUSTER_TOPOLOGY_CLASS" = roce-ring ]; then
+      echo "topology: the cluster is a ring, and this recipe needs every one of its nodes cabled to the others" >&2
+    else
+      echo "topology: confirmed topology is not a full mesh" >&2
+    fi
     return 1
   fi
 

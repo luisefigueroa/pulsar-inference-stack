@@ -311,6 +311,17 @@ FALLBACK_LEFT_OUT = (
 )
 
 
+def ring_refusal(nodes: int) -> str:
+    """Why a recipe on NODES nodes does not start on a saved ring, in one clause.
+
+    The launch check in cluster/topology.sh prints the same words; a ring's
+    neighbouring pair is cabled, so a two-node recipe is refused for the
+    Stack's own reason, not for its cabling."""
+    if nodes == 2:
+        return "the cluster is a ring, and this Stack starts a two-node recipe only on a full mesh"
+    return "the cluster is a ring, and this recipe needs every one of its nodes cabled to the others"
+
+
 def cabled_neighbours(nodes: list[dict[str, Any]]) -> list[set[int]]:
     """For each node, the indexes of the nodes it shares at least one link with."""
     neighbours: list[set[int]] = [set() for _ in nodes]
@@ -957,6 +968,7 @@ def rows(topology: dict[str, Any]) -> None:
                 str(validation["min_rails_per_pair"]),
                 str(topology["schema_version"]),
                 "1" if topology_has_ssh_trust(topology) else "0",
+                str(validation["class"]),
             ]
         )
     )

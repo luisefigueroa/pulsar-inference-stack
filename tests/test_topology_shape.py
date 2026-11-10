@@ -642,7 +642,8 @@ class SavedRingLoaders(unittest.TestCase):
         self.assertIn('fabric=0 rocep0a,rocep0b,rocep1a,rocep1b\n', result.stdout)
         self.assertIn('two=1\n', result.stdout)
         self.assertIn('four=1\n', result.stdout)
-        self.assertEqual(result.stderr.count('topology: confirmed topology is not a full mesh\n'), 2)
+        self.assertEqual(result.stderr.count(f'topology: {tm.ring_refusal(2)}\n'), 1)
+        self.assertEqual(result.stderr.count(f'topology: {tm.ring_refusal(4)}\n'), 1)
         self.assertNotIn('Traceback', result.stderr)
 
 
