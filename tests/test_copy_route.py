@@ -18,6 +18,8 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tests'), str(ROOT / 'scripts')]
 from release_spec import build_snapshot_manifest
 from support.topology_fixture import Fixture, ring_probes, shuffled
 from tests.test_transfer import topology as mesh_topology
+from model_library.integrity import StorageError
+from model_library.transfer import copy_route
 
 
 def manifest_for(files):
@@ -184,6 +186,48 @@ class PinnedCopiesWithoutAHop(unittest.TestCase):
 PINNED = json.loads((ROOT / 'tests/fixtures/transfer/copies-without-a-hop.json').read_text())
 MESH_PUSH, RING_NEIGHBOUR_PUSH, RING_NEIGHBOUR_PULL = (
     PINNED['MESH_PUSH'], PINNED['RING_NEIGHBOUR_PUSH'], PINNED['RING_NEIGHBOUR_PULL'])
+
+
+class TheRoute(unittest.TestCase):
+    """The shortest chain of cables between two nodes; on a tie, through the lower ranks."""
+
+    def test_neighbours_need_no_hop(self):
+        ring = ring_topology(self)
+        self.assertEqual(copy_route(ring, 0, 1), [0, 1])
+        self.assertEqual(copy_route(ring, 3, 0), [3, 0])
+
+    def test_the_opposite_node_of_a_four_ring_is_one_hop_through_rank_1(self):
+        ring = ring_topology(self)
+        self.assertEqual(copy_route(ring, 0, 2), [0, 1, 2])
+        self.assertEqual(copy_route(ring, 2, 0), [2, 1, 0])
+
+    def test_a_six_node_ring_takes_two_hops(self):
+        ring = ring_topology(self, 6)
+        self.assertEqual(copy_route(ring, 0, 3), [0, 1, 2, 3])
+        self.assertEqual(copy_route(ring, 3, 0), [3, 2, 1, 0])
+        self.assertEqual(copy_route(ring, 0, 4), [0, 5, 4])
+        self.assertEqual(copy_route(ring, 1, 4), [1, 0, 5, 4])
+
+    def test_the_tie_rule_gives_the_same_nodes_both_ways(self):
+        ring = ring_topology(self)
+        # From rank 1 to rank 3 the chains pass through rank 0 or rank 2: rank 0 wins.
+        self.assertEqual(copy_route(ring, 1, 3), [1, 0, 3])
+        self.assertEqual(copy_route(ring, 3, 1), [3, 0, 1])
+
+    def test_a_full_mesh_never_needs_a_hop(self):
+        mesh = mesh_topology(3)
+        for first in range(3):
+            for second in range(3):
+                if first != second:
+                    self.assertEqual(copy_route(mesh, first, second), [first, second])
+
+    def test_no_chain_is_refused_with_the_two_machines(self):
+        ring = ring_topology(self)
+        broken = {**ring, 'links': [link for link in ring['links'] if link['ranks'] not in ([1, 2], [2, 3])]}
+        with self.assertRaisesRegex(StorageError, 'no chain of cables joins fixture-ring-dorado and fixture-ring-echo'):
+            copy_route(broken, 0, 2)
+        with self.assertRaises(StorageError):
+            copy_route(ring, 1, 1)
 
 
 class Dump(unittest.TestCase):

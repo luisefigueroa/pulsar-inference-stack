@@ -27,6 +27,36 @@ def selected_rail_between(topology, first, second, rail_index=0):
     return rail[first_side],rail[second_side],rail['network']
 
 
+def copy_route(topology, first, second):
+    """Saved ranks from FIRST to SECOND along the shortest chain of cables.
+
+    Two nodes that share a link are one cable apart: [FIRST, SECOND]. On a tie
+    the chain through the lower ranks wins, compared as the sorted ranks it
+    passes through, so a route and its reverse pass through the same nodes.
+    A full mesh never needs a node in between."""
+    count=len(topology['nodes'])
+    if type(first) is not int or type(second) is not int or not (0<=first<count and 0<=second<count):
+        raise StorageError('copy route endpoint is not confirmed')
+    if first==second:raise StorageError('a copy route needs two different nodes')
+    neighbours={rank:set() for rank in range(count)}
+    for link in topology['links']:
+        a,b=link['ranks']
+        if link.get('rails'):neighbours[a].add(b);neighbours[b].add(a)
+    # Every shortest chain, breadth first; rings and meshes keep this small.
+    chains=[[first]];best=[];seen={first}
+    while chains and not best:
+        longer=[]
+        for chain in chains:
+            for other in sorted(neighbours[chain[-1]]):
+                if other in seen:continue
+                (best if other==second else longer).append([*chain,other])
+        chains=longer;seen|={chain[-1] for chain in longer}
+    if not best:
+        names=[node.get('hostname') or f'rank {node["rank"]}' for node in topology['nodes']]
+        raise StorageError(f'no chain of cables joins {names[first]} and {names[second]}')
+    return min(best,key=lambda chain:(sorted(chain[1:-1]),chain[1:-1]))
+
+
 def validate_ssh_roce_route(route_data, *, remote_ip, expected_netdev, expected_source_ip):
     if not remote_ip or not expected_netdev or not expected_source_ip:
         raise StorageError('route check requires peer, interface and source address')
