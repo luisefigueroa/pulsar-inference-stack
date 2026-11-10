@@ -68,7 +68,7 @@ STATUS_WORDS = {
     "key": "required: requests send the key the service was started with",
     "key-not-recorded": "not recorded: add the key header if the service was started with one",
     "launch-record": "from its launch record",
-    "loopback": "a loopback address, so it works only on",
+    "loopback": "only from",
     "answered": "answered /health",
     "did-not-answer": "did not answer /health",
     "no-address": "running, with no API address to ask",
@@ -354,10 +354,12 @@ class Page:
                     else recorded_api_auth(result.get("service_id"))
                 field("Key", f"{keys[auth]} · checked {when}")
             elif seen:
-                # As status itself falls back to the inventory: rank 0's observed port on its node.
-                field("API", f"`{seen}/v1` · seen {STATUS_WORDS['seen']} {self.age}" + self._loopback(seen, raw))
+                # As status itself falls back to the inventory: rank 0's observed port on its node. The
+                # Seen row names the inventory and its age, so the row stays one line at 60 columns.
+                field("API", f"`{seen}/v1`" + self._loopback(seen, raw))
                 auth = plan_api_auth(self._plan_id(raw))
-                field("Key", keys[auth] + (f" · {STATUS_WORDS['launch-record']}" if auth is not None else ""))
+                field("Key", f"{keys[auth]} · {STATUS_WORDS['launch-record']}" if auth is not None
+                      else STATUS_WORDS["not-checked"])
             else:
                 field("API", STATUS_WORDS["not-checked"] if not checked else
                       f"not found by Check it now {when}")
@@ -417,7 +419,7 @@ class Page:
             return ""
         ranks = sorted(raw.get("ranks") or [], key=lambda rank: str(rank.get("rank") or "0"))
         node = ((self.inventory.get("nodes") or {}).get(ranks[0].get("node") if ranks else "") or {})
-        return f"; {STATUS_WORDS['loopback']} {node.get('hostname') or 'the API node'}"
+        return f", {STATUS_WORDS['loopback']} {node.get('hostname') or 'the API node'}"
 
     @staticmethod
     def _health(result: Any, rc: int, when: str) -> str:
