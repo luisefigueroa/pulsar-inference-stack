@@ -8,10 +8,9 @@
     python3 -m scripts.services_page command --inventory FILE --conf SPEC --action ACTION [--shown] < CATALOG_JSON
     python3 -m scripts.services_page question --inventory FILE (--conf SPEC | --all) < CATALOG_JSON
     python3 -m scripts.services_page outcome --action stop|stop-all --rc N [--name NAME] --shown TEXT
-    python3 -m scripts.services_page fresh --inventory FILE [--seconds N]
 
 Every fact comes from one service inventory (`./pulsar inventory --json`),
-taken on entering the page or reused while it is under a minute old, and from
+taken on entering the page and reused while it is under a minute old, and from
 the last **Check it now** of a service (`./pulsar status`), each with its
 source and age. The inventory holds each service's model, state, nodes, port
 and served model name; it holds no API address, key requirement or health,
@@ -51,8 +50,6 @@ from scripts.inventory_menu import (gpu_process_parts, project, project_others, 
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, terminal_width  # noqa: E402
 
 LABEL_WIDTH = 10
-# Reused while younger than this, as Serve a model… reuses its capture.
-FRESH_SECONDS = 60
 # Containers Pulsar did not start: the first is named, the rest counted, so the
 # card and its choices fit 80x24.
 READ_ONLY_ROWS = 1
@@ -413,30 +410,6 @@ def _entries(stream) -> list[dict]:
         return []
 
 
-def fresh(path: str, seconds: int = FRESH_SECONDS, now: float | None = None) -> int | None:
-    """The epoch a readable inventory at PATH was taken, when under SECONDS old; else None."""
-    document = load_json(path)
-    if not isinstance(document, dict):
-        return None
-    try:
-        project(document, [])
-        moment = _parse(document.get("generated_at"))
-    except (ValueError, TypeError, AttributeError):
-        return None
-    current = now if now is not None else time.time()
-    if moment is None or not 0 <= current - moment < seconds:
-        return None
-    return int(moment)
-
-
-def _parse(value: Any) -> float | None:
-    from datetime import datetime
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -456,21 +429,12 @@ def main(argv: list[str] | None = None) -> int:
     result.add_argument("--rc", type=int, required=True)
     result.add_argument("--name", default="")
     result.add_argument("--shown", required=True)
-    check = sub.add_parser("fresh")
-    check.add_argument("--inventory", required=True)
-    check.add_argument("--seconds", type=int, default=FRESH_SECONDS)
     for command in sub.choices.values():
         command.add_argument("--repo-root", type=Path, default=ROOT)
         command.add_argument("--width", type=int)
     args = parser.parse_args(argv)
     width = max(MIN_WIDTH, min(MAX_WIDTH, args.width or terminal_width()))
     try:
-        if args.command == "fresh":
-            moment = fresh(args.inventory, args.seconds)
-            if moment is None:
-                return 1
-            print(moment)
-            return 0
         if args.command == "outcome":
             sys.stdout.write(outcome(args.action, args.rc, args.name, args.shown, width=width))
             return 0

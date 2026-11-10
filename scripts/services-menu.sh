@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Running services… (home menu): what runs, how to reach it, and what to do.
 #
-# Entering takes at most one service inventory (./pulsar inventory --json),
-# and reuses the last one saved when it is under a minute old. The page opens
+# Entering takes one service inventory (./pulsar inventory --json). The last
+# one saved on disk is not reused: a Stop or a Start run elsewhere, from
+# another menu or the command line, does not change it. The page opens
 # on the service when there is one, on a list when there are several, and
 # says so when there is none; a node that did not answer makes what runs
 # there unknown, not absent. Each fact on a service's card says where it came
@@ -65,24 +66,13 @@ view() { page "$@" --inventory "$INVENTORY" <<<"$CATALOG"; }
 # One service inventory
 # ---------------------------------------------------------------------------
 
-INVENTORY="$WORK/inventory.json" INVENTORY_AT=0 INVENTORY_ERROR="" ENTERED=1
+INVENTORY="$WORK/inventory.json" INVENTORY_AT=0 INVENTORY_ERROR=""
 # Check it now's last result, for one service.
 STATUS_CONF="" STATUS_RC="" STATUS_AT="" STATUS_FILE="$WORK/status.json"
 capture_inventory() {
-  local now rc=0 saved at
+  local now rc=0
   now=$(date +%s)
   if [ -s "$INVENTORY" ] && [ "$INVENTORY_AT" -gt 0 ] && [ $((now - INVENTORY_AT)) -lt 60 ]; then return 0; fi
-  if [ "$ENTERED" = 1 ]; then
-    # On entry, the inventory another menu or command just saved, when it is under a minute old.
-    ENTERED=0
-    saved=$(python3 -c 'import sys; from scripts import saved_observations as s; print(s.record_path(sys.argv[1], s.INVENTORY_NAME))' \
-      "$REPO_DIR" 2>/dev/null) || saved=""
-    if [ -n "$saved" ] && at=$(page fresh --inventory "$saved" 2>/dev/null); then
-      cp -- "$saved" "$INVENTORY"
-      INVENTORY_AT=$at INVENTORY_ERROR=""
-      return 0
-    fi
-  fi
   spin "Checking running services on every node…" bash -c '"$@" 2>"$0"' "$WORK/inventory.err" \
     "$REPO_DIR/pulsar" inventory --json >"$INVENTORY.next" || rc=$?
   [ "$rc" -ne 130 ] || return 130
@@ -97,7 +87,7 @@ capture_inventory() {
   fi
 }
 # A Stop or a Start makes the capture and the last check stale.
-forget() { INVENTORY_AT=0 STATUS_CONF=""; ENTERED=0; }
+forget() { INVENTORY_AT=0 STATUS_CONF=""; }
 status_args() {
   [ "$STATUS_CONF" = "$1" ] || return 0
   printf '%s\n' --status "$STATUS_FILE" --status-rc "$STATUS_RC" --status-at "$STATUS_AT"
@@ -216,7 +206,7 @@ service_page() {
   while true; do
     capture_inventory || return $?
     [ -z "$INVENTORY_ERROR" ] || return "$CHANGED"
-    if ! view services | cut -f1 | grep -qx -- "$conf"; then
+    if ! view services | cut -f1 | grep -x -- "$conf" >/dev/null; then
       printf '\nThat service was not seen just now.\n' | text
       return "$CHANGED"
     fi

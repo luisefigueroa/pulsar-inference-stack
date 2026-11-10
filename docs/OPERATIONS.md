@@ -1448,9 +1448,11 @@ needs, which the operator approves once.
 ### Running services…
 
 **Running services…** takes one service inventory on entry (`./pulsar
-inventory --json`), or reuses the last one saved when it is under a minute
-old, and keeps reusing it while it is under a minute old: no choice probes
-twice in a row. A Stop or a Start makes it look again. It opens on the
+inventory --json`) and reuses it while it is under a minute old, so no choice
+probes twice in a row; **Restart…**, **Switch to another model…** and **Serve
+a model…** opened from it use the same one. A Stop or a Start makes it look
+again. It does not reuse the inventory saved on disk, since a Stop or a Start
+run from another menu or the command line does not change that record. It opens on the
 service when there is one, on a list of their names when there are several,
 and says when there is none: `No Pulsar service is running` only when every
 node answered, otherwise what was seen on the nodes that answered and which

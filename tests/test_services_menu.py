@@ -99,17 +99,16 @@ class OneService(Page):
         self.assertEqual(self.commands(), ["inventory --json"])
         self.assert_plain_choices()
 
-    def test_an_inventory_saved_under_a_minute_ago_is_reused_and_an_older_one_is_not(self):
-        saved = self.root / "service-inventory.json"
-        saved.write_text(json.dumps(inventory(service(SPEC))))
+    def test_entering_takes_its_own_inventory_even_when_one_was_saved_just_now(self):
+        # A Stop run elsewhere, such as Serve a model…'s before a refused Start, leaves the saved
+        # record as it was: the service it shows may be gone.
+        (self.root / "service-inventory.json").write_text(json.dumps(inventory(service(SPEC))))
+        self.inventory(inventory())
         result = self.run_menu(["Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.commands(), [])
-        saved.write_text(json.dumps(inventory(service(SPEC), minutes=2)))
-        for path in (self.choose_log, self.answers.with_suffix(".n")):
-            path.unlink(missing_ok=True)
-        result = self.run_menu(["Back"])
         self.assertEqual(self.commands(), ["inventory --json"])
+        self.assertIn("No Pulsar service is running.", result.stdout)
+        self.assertNotIn("org/model running", result.stdout)
 
     def test_check_it_now_fills_in_the_api_the_key_and_health_without_another_inventory(self):
         (self.fixtures / "status.result").write_text(json.dumps(STATUS_OK))
