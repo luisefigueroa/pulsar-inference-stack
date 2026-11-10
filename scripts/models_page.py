@@ -469,6 +469,12 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
                             "offer it.", ("unkeep:" + spec, f"Stop keeping {name} ready")))
         if fact["in_use_on"] or fact["pinned_on"]:
             continue
+        if fact["unknown_on"]:
+            # Purge needs every copy observed; a size without them would read as the whole.
+            blocked.append((f"What removing {name} would free on {cluster.hosts(fact['unknown_on'])} is unknown: its "
+                            "files there could not be fully checked, so nothing is offered for it. Choose Look "
+                            "again.", None))
+            continue
         unfinished = fact["unfinished"]
         if fact["freed"]:
             where = cluster.hosts(fact["freed"])
@@ -528,7 +534,7 @@ def cluster_set(cluster: Cluster, spec: str, facts: dict) -> tuple[list[str] | N
         if not set(cluster.manifests(other).values()) <= manifests:
             return None, f"{cluster.name(other)} also uses these files, with others"
         fact = facts.get(other)
-        if fact and (fact["pinned_on"] or fact["in_use_on"]):
+        if fact and (fact["pinned_on"] or fact["in_use_on"] or fact["unknown_on"]):
             return None, None  # its own line says why
     return sorted(dependents), None
 
@@ -562,23 +568,41 @@ def cluster_options(cluster: Cluster, facts: dict, blocked: list) -> list[dict]:
         # A home frees its listed size, as the Model files page sizes it.
         sizes += [cluster.snapshot_size(spec, snapshot) for snapshot in homes]
         total = _sum(sizes)
+        # A copy these recipes share frees nothing through either one's estimate, though both Purges
+        # together delete it: the figure is then a minimum, as the Model files page says of its own.
+        least = any(facts[other]["shared"] for other in purged if facts.get(other))
         hosts = cluster.hosts(location["node_id"] for location in homes.values())
-        label = f"Remove {name} from the cluster: frees {_size(total)}"
-        archives = cluster.archives(spec)
-        if all(kind == "verified" for kind, _ in archives.values()):
-            ages = [age for _, age in archives.values()]
-            age = None if None in ages else max(ages)
-            after = (f"Its archive was verified {age_text(age) if age is not None else '(age unknown)'}, so it can "
-                     "be restored without the internet.")
-        else:
-            after = (f"It has no verified archive, so getting it back means downloading it again "
-                     f"({_size(cluster.size(spec))}).")
-            after += (" Its plan offers to back it up first." if cluster.archive_location == "configured" else
-                      " Backing it up first needs the archive location; Cluster… → Settings… sets it.")
-        copies = f" its copies, then" if purged else ""
+        label = f"Remove {name} from the cluster: frees {'at least ' if least and total else ''}{_size(total)}"
+        deletes = least or any(facts[other]["freed"] for other in purged if facts.get(other))
+        copies = " its copies, then" if deletes else ""
         found.append({"target": "cluster:" + spec, "label": label, "size": total,
-                      "text": f"{label}. It deletes{copies} its home on {hosts}, the copy Pulsar keeps. {after}"})
+                      "text": f"{label}. It deletes{copies} its home on {hosts}, the copy Pulsar keeps. "
+                              f"{archive_after(cluster, spec, plan=False)}"})
     return found
+
+
+def archive_after(cluster: Cluster, spec: str, *, plan: bool, archive_first: bool = False) -> str:
+    """What getting SPEC back after it leaves the cluster takes: its archive, when every required
+    snapshot has a verified one and the archive location is set, or a download."""
+    archives = cluster.archives(spec)
+    configured = cluster.archive_location == "configured"
+    if archive_first:
+        return "Its archive is made first and stays, so it can be restored without the internet."
+    if all(kind == "verified" for kind, _ in archives.values()):
+        ages = [age for _, age in archives.values()]
+        age = None if None in ages else max(ages)
+        verified = f"verified {age_text(age)}" if age is not None else "verified (age unknown)"
+        if configured:
+            return (f"Its archive stays, {verified}, so it can be restored without the internet." if plan else
+                    f"Its archive was {verified}, so it can be restored without the internet.")
+        return (f"Its archive was {verified}, but the archive location is not set, so restoring it first needs "
+                "Cluster… → Settings….")
+    text = (f"It has no verified archive, so getting it back means downloading it again "
+            f"({_size(cluster.size(spec))}).")
+    if plan:
+        return text
+    return text + (" Its plan offers to back it up first." if configured else
+                   " Backing it up first needs the archive location; Cluster… → Settings… sets it.")
 
 
 def short_nodes(cluster: Cluster) -> list[str]:
@@ -627,7 +651,8 @@ def move_options(cluster: Cluster) -> list[dict]:
                     continue
                 spec, _ = choice
                 name = cluster.name(spec)
-                label = f"Move the files of {name} from {cluster.host(short)} to {cluster.host(node)}: frees {_size(size)} on {cluster.host(short)}"
+                label = (f"Move the files of {name} from {cluster.host(short)} to {cluster.host(node)}: frees "
+                         f"{_size(size)} on {cluster.host(short)}")
                 left = can_still_copy(cluster.budget[short])
                 found.append({"target": f"move:{entry['snapshot_manifest_id']}:{node}", "label": label, "size": size,
                               "text": f"{label}. {cluster.host(short)} is {_size(-left)} past its reserve and "
@@ -771,7 +796,8 @@ def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) ->
     out.blank()
     out.emit(explain)
     if cluster.unread and intent in ("keep", "backup"):
-        out.emit(f"{cluster.hosts(cluster.unread)} could not be checked, so a plan that needs {'it' if len(cluster.unread) == 1 else 'them'} "
+        them = "it" if len(cluster.unread) == 1 else "them"
+        out.emit(f"{cluster.hosts(cluster.unread)} could not be checked, so a plan that needs {them} "
                  "stops at its own check.")
     out.blank()
     if not lines:
@@ -886,6 +912,9 @@ def _purge_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     if fact["pinned_on"]:
         plan["blocked"].append(f"{name} is kept ready on {cluster.hosts(fact['pinned_on'])}. Stop keeping it ready "
                                "first; this plan never does that on its own.")
+    if fact.get("unknown_on") and not cluster.unread:
+        plan["blocked"].append(f"Its files on {cluster.hosts(fact['unknown_on'])} could not be fully checked, so what "
+                               "this would delete there is unknown. Choose Look again.")
     for text, _ in _users_text(cluster, spec, [item for item in fact.get("users") or []]):
         plan["blocked"].append(text)
     home = (f"Its home on {cluster.hosts(fact['homes'])}, the copy Pulsar keeps, stays, so serving it again copies "
@@ -933,10 +962,16 @@ def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
         if not fact:
             continue
         where = cluster.hosts(fact["freed"]) if fact["freed"] else "its nodes"
+        clear = (f" and clear {_count(len(fact['unfinished']), 'unfinished copy', 'unfinished copies')}"
+                 if fact["unfinished"] else "")
+        if fact["freed"]:
+            sentence = f"Delete the copies of {cluster.name(other)} on {where} ({_size(fact['total'])}){clear}."
+        else:
+            # Its copies are the home or shared with another recipe here: Purge only lets go of them.
+            sentence = (f"Release the copies of {cluster.name(other)}{clear}; their files stay for the steps after "
+                        "it, and this step deletes none.")
         plan["steps"].append(_step(
-            "purge", f"Delete the copies of {cluster.name(other)} on {where} ({_size(fact['total'])})"
-                     + (f" and clear {_count(len(fact['unfinished']), 'unfinished copy', 'unfinished copies')}"
-                        if fact["unfinished"] else "") + ".",
+            "purge", sentence,
             ["./pulsar", "model", "purge", other, "--yes"], ["./pulsar", "model", "purge", other, "--plan", "--json"],
             {"spec": other, "nodes": list(fact["freed"]), "clear": False, "changes": f"deletes copies on {where}"},
             authority=True, entries=cluster.entries))
@@ -955,13 +990,8 @@ def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
             {"spec": spec, "snapshot": snapshot, "node": location["node_id"], "changes": "deletes the home"},
             authority=True, now=not later, entries=cluster.entries,
             summary=f"Delete the home of {what} on {cluster.host(location['node_id'])} ({size})"))
-    if not unarchived or archive_first:
-        plan["footer"].append("Its archive stays, so it can be restored without the internet."
-                              if not archive_first else
-                              "Its archive is made first and stays, so it can be restored without the internet.")
-    else:
-        plan["footer"].append(f"It has no verified archive, so getting it back means downloading it again "
-                              f"({_size(cluster.size(spec))}).")
+    plan["footer"].append(archive_after(cluster, spec, plan=True, archive_first=archive_first))
+    if unarchived and not archive_first:
         if cluster.archive_location == "configured":
             plan["choices"].append(("archive-first", "Back it up first, then remove it"))
         else:

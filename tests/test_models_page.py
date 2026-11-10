@@ -236,6 +236,18 @@ class FreeUpSpace(unittest.TestCase):
         self.assertIn("spark-3 could not be checked, so the files and room there are unknown, not absent.",
                       blocked[0][0])
 
+    def test_a_copy_that_could_not_be_checked_on_a_node_that_answered_offers_nothing_for_that_model(self):
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding()),
+            location("n2", "prepared", binding(), state="unknown")], specs=[SPEC])])
+        found = cluster([recipe()], document)
+        removable, blocked = mp.free_options(found)
+        # A partial size would read as the whole one: no line for it, and the node is named.
+        self.assertEqual(removable, [])
+        self.assertIn("What removing org/model would free on spark-3 is unknown: its files there could not be fully "
+                      "checked, so nothing is offered for it. Choose Look again.", [text for text, _ in blocked])
+        self.assertTrue(mp.compose(found, f"purge:{SPEC}")["blocked"])
+
     def test_unfinished_copies_are_cleared_through_their_recipe_and_unrecorded_ones_never(self):
         stage = {"path": "/fixture/views/.pending-x", "kind": "incomplete", "reason": "incomplete staging",
                  "preparation_spec_id": OTHER, "container_references": []}
@@ -310,8 +322,36 @@ class Plans(unittest.TestCase):
     def test_remove_from_the_cluster_with_an_archive_says_it_can_be_restored(self):
         plan = mp.compose(cluster([recipe(archive=archived())], files([ready_model()])), f"cluster:{SPEC}")
         self.assertEqual(mp.plan_choices(plan), [("cancel", "Cancel"), ("go", "Go ahead")])
-        self.assertIn("Its archive stays, so it can be restored without the internet.",
+        self.assertIn("Its archive stays, verified 4 days ago, so it can be restored without the internet.",
                       flat(mp.render(plan, width=100)))
+        # Without the archive location it cannot be restored from it until that is set.
+        unset = mp.compose(cluster([recipe(archive=archived())], files([ready_model()]),
+                                   archive_location="not-configured"), f"cluster:{SPEC}")
+        self.assertIn("Its archive was verified 4 days ago, but the archive location is not set, so restoring it "
+                      "first needs Cluster… → Settings….", flat(mp.render(unset, width=100)))
+
+    def test_a_one_node_recipe_served_from_its_home_releases_it_and_deletes_only_the_home(self):
+        row = recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)
+        document = files([entry(OTHER_FILES, "org/other", [home("n0", binding(OTHER))], 60 * G, specs=[OTHER])])
+        found = cluster([row], document)
+        removable, _ = mp.free_options(found)
+        self.assertEqual([option["target"] for option in removable], [f"cluster:{OTHER}"])
+        self.assertTrue(flat(removable[0]["text"]).startswith(
+            "Remove org/other from the cluster: frees 60.0 GiB. It deletes its home on spark-1"), removable[0])
+        plan = mp.compose(found, f"cluster:{OTHER}")
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["purge", "remove"])
+        self.assertEqual(flat(plan["steps"][0]["sentence"]), "Release the copies of org/other; their files stay for "
+                                                             "the steps after it, and this step deletes none.")
+
+    def test_copies_two_recipes_share_make_the_cluster_figure_a_minimum(self):
+        rows = [recipe(), recipe(OTHER, "org/model", MODEL, nodes=2, engine_args=["--max-model-len", "8192"])]
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding(), binding(OTHER)), location("n1", "prepared", binding(), binding(OTHER))],
+            specs=[SPEC, OTHER])])
+        removable, _ = mp.free_options(cluster(rows, document))
+        line = next(option for option in removable if option["target"].startswith("cluster:"))
+        self.assertTrue(flat(line["text"]).startswith("Remove org/model from the cluster: frees at least 212 GiB. It "
+                                                      "deletes its copies, then its home"), line)
 
     def test_a_preview_that_refuses_blocks_the_plan_and_one_with_nothing_left_drops_its_step(self):
         found = cluster([recipe()], files([ready_model()]))
