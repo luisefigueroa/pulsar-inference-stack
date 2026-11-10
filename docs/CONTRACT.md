@@ -375,6 +375,24 @@ valid saved membership exists. Each `rejected` entry adds `node_id`, and each
 `saved_membership.missing` entry adds `answered` (true when that member's
 identity answered but was rejected) and, when it answered, `reasons`.
 
+Saved membership, and the `topology` of `topology detect --json` and
+`topology show --json`, names the cluster's shape in `validation.class`:
+`roce-full-mesh`, every pair of nodes cabled, or `roce-ring`, four or more
+nodes in one closed loop, each cabled to exactly two neighbours. `links` lists
+cabled pairs only, the lower rank first and as side `a` of each entry's
+`rails`: every pair for a full mesh, and for a ring of N nodes exactly N
+entries, `[i, i+1]` for consecutive ranks and `[0, N-1]` for the cable that
+closes the loop. Consumers must not assume that every pair of ranks is present
+in `links`. A ring has `validation.full_mesh` false, and `min_rails_per_pair`
+is the smallest link count over the listed pairs. Field names and the schema
+version are unchanged. A Stack without ring support refuses a ring's saved
+membership as invalid, because its `links` do not cover every pair.
+
+`topology check --json` adds `fabric_failures` when the fabric check failed:
+one entry per saved link that did not answer, with `from` and `to` (the
+hostnames of the pinging and the pinged node), `ranks`, `address`, `network`
+and `interface`, the pinging node's own interface on that link.
+
 The saved changes record (`.pulsar/cluster-changes.json`, or
 `PULSAR_CLUSTER_CHANGES_FILE`) is private local state with
 `kind: "pulsar-cluster-changes"` and schema version 1: `observed_at`, stamped
@@ -412,6 +430,10 @@ Change note, 2026-11-09: doctor gained the prerequisite check ids above;
 `saved_membership.missing[].answered` and `reasons`; new `topology configure
 --remove-missing` and `topology forget`; new saved changes record. Nothing was
 removed or renamed.
+
+Change note, 2026-11-10: saved membership gained the `validation.class` value
+`roce-ring`, whose `links` list only its cables; `topology check --json`
+gained `fabric_failures`. Nothing was removed or renamed.
 
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a
