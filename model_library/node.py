@@ -16,9 +16,15 @@ from .state import (Store, checked_id, ensure_directory, validate_home, validate
                     copy_references, VIEW_IDENTITY_FIELDS, now)
 
 # Prepare's advice for a folder at a prepared copy's path that no record names.
-# Purge acts on records only, so it cannot remove such a folder.
+# Purge acts on records only, so it cannot remove such a folder. Prepare takes
+# it over only when asked (--adopt-unrecorded) and every file verifies (D7).
 UNRECORDED_DESTINATION_FIX = ('Pulsar has no record of this folder and never deletes files it did not record. '
-                              'Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
+                              "Inspect it. If it holds this recipe's files, prepare with --adopt-unrecorded, which "
+                              'checks every file against the manifest and records the folder only if all of them '
+                              'match; if it is not needed, remove it outside Pulsar, then Prepare again.')
+# The advice where --adopt-unrecorded was given and the folder does not match.
+UNRECORDED_MISMATCH_FIX = ('Pulsar has no record of this folder and never deletes files it did not record. '
+                           'Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
 
 
 def destination_recorded(store: Store, destination: Path) -> bool:
@@ -31,6 +37,70 @@ def destination_recorded(store: Store, destination: Path) -> bool:
     return (any(overlaps(v.get(field)) for v in store.views() for field in ('hub_path', 'path'))
             or any(overlaps(t.get(field)) for t in store.records('transactions')
                    for field in ('destination', 'stage', 'path')))
+
+
+def adoption_mismatch(dest: Path, manifest: dict) -> str | None:
+    """Why the folder at DEST cannot be taken over as a prepared copy of MANIFEST, without hashing,
+    or None when its layout, manifest, file set and sizes match. A prepared copy holds exactly
+    manifest.json and snapshots/REVISION, so a later Purge deletes only what was verified."""
+    import stat
+    from .integrity import directory, file_at, file_names
+    try:
+        if not stat.S_ISDIR(dest.lstat().st_mode):
+            return 'it is not a regular folder'
+        with directory(dest) as fd:
+            if sorted(os.listdir(fd)) != ['manifest.json', 'snapshots']:
+                return 'it holds other files than one prepared copy (manifest.json and snapshots)'
+        with directory(dest/'snapshots') as fd:
+            if os.listdir(fd) != [manifest['snapshot_revision']]:
+                return 'it holds another revision of the model files, or more than one'
+        if read_json(dest/'manifest.json') != manifest:
+            return "its manifest describes other files than this recipe's"
+        with directory(payload(dest, manifest)) as fd:
+            if file_names(fd) != [item['path'] for item in manifest['files']]:
+                return 'its set of files differs from the manifest'
+            for item in manifest['files']:
+                with file_at(fd, item['path']) as source:
+                    if os.fstat(source).st_size != item['size']:
+                        return f"a file's size differs from the manifest: {item['path']}"
+    except (OSError, ValueError) as exc:
+        return f'it could not be read as a prepared copy: {exc}'
+    return None
+
+
+def adopt_view(request: dict, store: Store, root: Path, manifest: dict, identity: dict) -> dict:
+    """Take over the folder at this rank's prepared copy path that no record names (D7).
+
+    Every file is hashed against the manifest, with no earlier verification
+    reused, and only a folder that matches completely is recorded, as
+    publish-view records a new copy. Nothing is deleted, moved or written in
+    the folder. It runs under the node lock, so no record can name the folder
+    meanwhile."""
+    require_serving_filesystem(root)
+    dest = view_destination(root, identity)
+
+    def refuse(reason: str):
+        raise StorageError(f'a folder already exists where Prepare would place the prepared copy: {dest}. '
+                           f'It was not taken over: {reason}. ' + UNRECORDED_MISMATCH_FIX)
+    if not dest.exists() and not dest.is_symlink():
+        raise StorageError(f'the folder to take over is gone: {dest}; prepare again')
+    key = view_record_key(identity)
+    if (destination_recorded(store, dest) or store.get('views', key) is not None
+            or store.get('transactions', key) is not None):
+        raise StorageError(f'a record on this node now names {dest} or this recipe; prepare again')
+    reason = adoption_mismatch(dest, manifest)
+    if reason:
+        refuse(reason)
+    try:
+        stamp = verify_tree(payload(dest, manifest), manifest, full=True)
+    except StorageError as exc:
+        refuse(str(exc))
+    from .local import prepared_record
+    home = home_record(manifest, request['node_id'], dest, stamp)
+    record = prepared_record(home, spec_id=request['spec_id'], topology_id=request['topology_id'],
+                             rank=request['rank'], schema_version=request.get('view_schema', 1))
+    store.put('views', key, record)
+    return {'home': home, 'view': record}
 
 
 def run(request: dict) -> dict:
@@ -60,7 +130,7 @@ def run(request: dict) -> dict:
     read_operations = {'view-records', 'view-destination'}
     owned_operations = {*read_operations, 'refresh-view', 'save-view', 'pin-view',
                         'forget-view', 'remove-staging', 'begin-view', 'publish-view',
-                        'bind-view', 'remove-view'}
+                        'bind-view', 'remove-view', 'adopt-view'}
     # Serialize sharing and final deletion on the physical node, including calls
     # from different controllers. A read of absent state must stay read-only.
     lock = (node_store.lock(exclusive=op not in read_operations) if op in owned_operations
@@ -196,12 +266,20 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
     if op == 'view-destination':
         # Read-only: where begin-view would place this rank's prepared copy, and
         # whether something is already there that no node record names.
+        # With adopt (Prepare's --adopt-unrecorded), a present folder that no
+        # record names also says whether it could be taken over, without hashing.
         dest = view_destination(view_root, view_identity)
         try:
             dest.lstat()
         except FileNotFoundError:
             return {'path': str(dest), 'state': 'missing', 'recorded': destination_recorded(node_store, dest)}
-        return {'path': str(dest), 'state': 'present', 'recorded': destination_recorded(node_store, dest)}
+        result = {'path': str(dest), 'state': 'present', 'recorded': destination_recorded(node_store, dest)}
+        if request.get('adopt') is True and not result['recorded']:
+            reason = adoption_mismatch(dest, manifest)
+            result['adoptable'] = reason is None
+            if reason:
+                result['mismatch'] = reason
+        return result
     if op == 'exists':
         require_serving_filesystem(home_root)
         hub = location(home_root, manifest)
@@ -309,6 +387,8 @@ def run_node(request: dict, node_store: Store, home_root: Path, view_root: Path)
         return release_view(request, node_store, view_root, manifest)
     if op == 'bind-view':
         return bind_view(request, node_store, view_root, manifest)
+    if op == 'adopt-view':
+        return adopt_view(request, node_store, view_root, manifest, view_identity)
     raise StorageError(f'unknown node operation {op}')
 
 

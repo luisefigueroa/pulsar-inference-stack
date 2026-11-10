@@ -538,6 +538,19 @@ class CheckStep(unittest.TestCase):
                                                                  ("n2", "copy"), eligible=False, details=[detail])))
         self.assertEqual(verdict, "blocked")
 
+    def test_a_folder_no_record_names_stops_the_run_and_points_to_look_for_model_files(self):
+        # D7: Serve and Get ready never take such a folder over; they stop and name the choice that does.
+        from model_library.node import UNRECORDED_DESTINATION_FIX
+        plan = self.plan(self.step("prepare", copy_to=["n1"]))
+        self.assertNotIn("--adopt-unrecorded", plan["steps"][0]["command"] + plan["steps"][0]["preview"])
+        detail = {"code": "unrecorded-destination", "message": "n1: a folder already exists", "node_id": "n1",
+                  "path": "/fixture/views/" + "ab" * 32, "fix": UNRECORDED_DESTINATION_FIX}
+        verdict, reason = self.check(plan, envelope(prepare_plan(("n0", "home-view"), ("n1", "copy"),
+                                                                 eligible=False, details=[detail])))
+        self.assertEqual(verdict, "blocked")
+        self.assertIn("Look for model files Pulsar has no record of… on Models and disk space…", reason)
+        self.assertNotIn("--adopt-unrecorded", reason)
+
     def test_the_image_is_skipped_when_already_there_and_differs_when_staged_elsewhere(self):
         plan = self.plan(self.step("image", mode="copy", nodes=["1"]))
         self.assertEqual(self.check(plan, envelope(image_plan((0, "ok"), (1, "missing")))), ("same", ""))

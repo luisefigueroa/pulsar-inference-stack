@@ -1403,8 +1403,8 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual([(Path(loc["hub_path"]), loc["bindings"]) for loc in prepared], [(destination, [])])
         self.reregister_home(f)
         self.assertEqual(self.success(f.run("purge", "--plan", spec=True))["plan"]["actions"], [])
-        fix = ("Pulsar has no record of this folder and never deletes files it did not record. "
-               "Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.")
+        from model_library.node import UNRECORDED_DESTINATION_FIX as fix
+        self.assertIn("prepare with --adopt-unrecorded", fix)
         plan = self.success(f.run("prepare", "--plan", spec=True))
         self.assertFalse(plan["eligible"])
         self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "copy"])
@@ -1439,6 +1439,95 @@ class ModelLibraryCLI(unittest.TestCase):
         shutil.rmtree(destination)
         self.success(f.run("prepare", "--yes", spec=True))
         self.assertGreater(len(f.events("transfer")), transfers)
+
+    # D7: --adopt-unrecorded takes the folder over after hashing every file.
+    def records_lost_everywhere(self, nodes=2):
+        """Prepared on NODES nodes, then every record lost but the re-registered home; returns the
+        fixture and each rank's copy folder by rank."""
+        f = self.fixture(nodes=nodes)
+        self.acquire_candidate(f, nodes=nodes)
+        self.success(f.run("prepare", "--yes", spec=True))
+        folders = {v["rank"]: Path(v["hub_path"]) for v in Store(f.state).views(spec_id=f.spec["spec_id"])}
+        shutil.rmtree(f.state)
+        for node in f.cfg["nodes"]:
+            shutil.rmtree(Path(node["view_root"]) / ".pulsar-node")
+        self.reregister_home(f)
+        return f, folders
+
+    def model_files(self, f):
+        """file_state without each node's prepared-copy root itself, whose time changes when the
+        node's records folder inside it is made again."""
+        roots = {str(Path(node["view_root"])) for node in f.cfg["nodes"]}
+        return {path: value for path, value in self.file_state(f).items() if path not in roots}
+
+    def node_views(self, f):
+        return {node["node_id"]: [(v["rank"], v["hub_path"]) for v in Store(Path(node["view_root"]) / ".pulsar-node")
+                                  .views(spec_id=f.spec["spec_id"])] for node in f.cfg["nodes"]}
+
+    def test_prepare_adopts_an_unrecorded_copy_only_when_asked_and_after_hashing_it(self):
+        self.failure(subprocess.run(["bash", str(ROOT / "scripts/model-library.sh"), "purge", "f" * 64,
+                                     "--adopt-unrecorded", "--plan"], capture_output=True, text=True),
+                     "--adopt-unrecorded applies only to prepare")
+        f, folders = self.records_lost_everywhere()
+        files, transfers = self.model_files(f), len(f.events("transfer"))
+        plan = self.success(f.run("prepare", "--plan", "--adopt-unrecorded", spec=True))
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([(a["action"], a.get("path")) for a in plan["actions"]],
+                         [("home-view", None), ("adopt", str(folders[1]))])
+        # Planning hashes nothing and records nothing.
+        self.assertEqual(self.node_views(f), {node["node_id"]: [] for node in f.cfg["nodes"]})
+        result = f.run("prepare", "--yes", "--adopt-unrecorded", spec=True)
+        self.success(result)
+        self.assertIn("checking every file of the folder no record names before taking it over", result.stderr)
+        # Nothing copied, moved or rewritten: the same folders and files, recorded on both sides.
+        self.assertEqual(len(f.events("transfer")), transfers)
+        self.assertEqual(self.model_files(f), files)
+        self.assertEqual([e["operation"] for e in f.events("node-operation")].count("adopt-view"), 1)
+        self.assertEqual(self.node_views(f)[f.cfg["nodes"][1]["node_id"]], [(1, str(folders[1]))])
+        recorded = {v["rank"]: Path(v["hub_path"]) for v in Store(f.state).views(spec_id=f.spec["spec_id"])}
+        self.assertEqual((sorted(recorded), recorded[1]), ([0, 1], folders[1]))
+        # From now on it is an ordinary recorded copy: the next plan reuses it without the flag.
+        again = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual([a["action"] for a in again["actions"]], ["reuse", "reuse"])
+        self.assertIsNotNone(self.start_reads(f))
+
+    def test_an_adoption_that_does_not_verify_stops_before_any_copy_and_changes_nothing(self):
+        f, folders = self.records_lost_everywhere(nodes=3)
+        # Rank 2's copy is gone, so Prepare would copy there; rank 1's folder has a changed file of the same size.
+        shutil.rmtree(folders[2])
+        weights = next(path for path in folders[1].rglob("*") if path.is_file() and path.name != "manifest.json")
+        data = bytearray(weights.read_bytes()); data[0] ^= 0xFF; weights.write_bytes(bytes(data))
+        files, transfers = self.model_files(f), len(f.events("transfer"))
+        plan = self.success(f.run("prepare", "--plan", "--adopt-unrecorded", spec=True))
+        # Sizes match, so the plan can only say it will check; the hash decides.
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "adopt", "copy"])
+        result = f.run("prepare", "--yes", "--adopt-unrecorded", spec=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("It was not taken over: snapshot SHA-256 differs", result.stderr)
+        self.assertIn("was not taken over; nothing was copied or deleted", result.stderr)
+        self.assertEqual(len(f.events("transfer")), transfers)
+        self.assertEqual(self.model_files(f), files)
+        self.assertEqual(self.node_views(f), {node["node_id"]: [] for node in f.cfg["nodes"]})
+        self.assertEqual(Store(f.state).views(spec_id=f.spec["spec_id"]), [])
+        # The plan keeps today's blocker until the folder is dealt with outside Pulsar.
+        refused = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual([d["code"] for d in refused["blocker_details"]], ["unrecorded-destination"])
+
+    def test_an_adoption_interrupted_before_the_controller_records_it_is_reused_next_time(self):
+        f, folders = self.records_lost_everywhere()
+        files = self.model_files(f)
+        f.cfg["controller_fault"] = "save-views"; f.save()
+        self.failure(f.run("prepare", "--yes", "--adopt-unrecorded", spec=True))
+        f.cfg.pop("controller_fault"); f.save()
+        # The node recorded the folder it verified; the controller did not.
+        self.assertEqual(self.node_views(f)[f.cfg["nodes"][1]["node_id"]], [(1, str(folders[1]))])
+        self.assertEqual(Store(f.state).views(spec_id=f.spec["spec_id"]), [])
+        # As after an interrupted copy, the next Prepare reuses the node's record; no flag, no second hash.
+        plan = self.success(f.run("prepare", "--plan", spec=True))
+        self.assertEqual([a["action"] for a in plan["actions"]], ["reuse", "reuse"])
+        self.success(f.run("prepare", "--yes", spec=True))
+        self.assertEqual(len(Store(f.state).views(spec_id=f.spec["spec_id"])), 2)
+        self.assertEqual(self.model_files(f), files)
 
 
 if __name__ == "__main__": unittest.main()

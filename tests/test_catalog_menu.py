@@ -2124,7 +2124,7 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
             "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0, "adopted": 0,
                                                              "nothing": False})
 
     def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
@@ -2148,7 +2148,7 @@ class PlanSummary(unittest.TestCase):
     def test_prepare_takes_over_copies_made_before_the_membership_changed(self):
         # D13: a takeover (rebind) copies nothing and reads as taking over.
         plan = preparation(("n0", "rebind"), ("n1", "rebind"))
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2, "adopted": 0,
                                                              "nothing": True})
         self.assertEqual(self.summary("prepare", plan), [
             "Nothing to copy: the snapshot is already on spark-1, spark-2. "
@@ -2172,7 +2172,7 @@ class PlanSummary(unittest.TestCase):
         plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0, "adopted": 0,
                                                              "nothing": False})
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",
@@ -2296,15 +2296,32 @@ class PlanSummary(unittest.TestCase):
                                  "2 more blockers in the full preview."])
 
     def test_an_unrecorded_folder_shows_its_whole_path_and_the_fix(self):
+        from model_library.node import UNRECORDED_DESTINATION_FIX
         path = "/fixture/views/" + "ab" * 32
-        detail = {"code": "unrecorded-destination", "message": "m", "node_id": "n1", "path": path,
-                  "fix": "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."}
+        older = ("Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it "
+                 "is not needed, remove it outside Pulsar, then Prepare again.")
+        detail = {"code": "unrecorded-destination", "message": "m", "node_id": "n1", "path": path, "fix": older}
         plan = {"eligible": False, "blocker_details": [detail]}
         self.assertEqual(self.summary("prepare", plan), [
             f"Blocked: a folder already exists where Prepare would place the prepared copy on spark-2: {path}; "
-            "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."])
+            f"{older}"])
         # No menu operation removes a folder that no record names.
         self.assertEqual(menu.blocked_choices(plan, [checked()]), [])
+        # Inside the menu the fix names the choice that takes it over, not Prepare's flag (D7).
+        detail["fix"] = UNRECORDED_DESTINATION_FIX
+        text = " ".join(self.summary("prepare", plan))
+        self.assertIn("Look for model files Pulsar has no record of… on Models and disk space… checks every file "
+                      "and takes it over if all of them match", text)
+        self.assertNotIn("--adopt-unrecorded", text)
+
+    def test_prepare_that_adopts_says_it_checks_every_file_first(self):
+        plan = preparation(("n0", "home-view"), ("n1", "adopt"))
+        self.assertEqual(menu.plan_effect("prepare", plan)["adopted"], 1)
+        self.assertEqual(self.summary("prepare", plan), [
+            "Nothing to copy: the snapshot is already on spark-1, spark-2. Prepare verifies the files and records "
+            "them.",
+            "It takes over 1 folder no record names after checking every file, which can take a while, and records "
+            "it only if every file matches; nothing is copied or deleted."])
 
     def test_blocked_plans_without_details_use_their_messages(self):
         plan = {"eligible": False, "blockers": ["n1: disk is full", "n1: disk is full"]}

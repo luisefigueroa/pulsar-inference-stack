@@ -285,12 +285,89 @@ class UnrecordedDestination(unittest.TestCase):
             node.run(self.request('begin-view'))
         message = str(raised.exception)
         self.assertEqual(message, f'a folder already exists where Prepare would place the prepared copy: {dest}. '
-                         'Pulsar has no record of this folder and never deletes files it did not record. '
-                         'Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.')
+                         + node.UNRECORDED_DESTINATION_FIX)
+        self.assertIn('--adopt-unrecorded', message)
         self.assertNotIn('purge', message.lower())
         self.assertEqual(sorted(p.name for p in self.view_root.iterdir() if p.name != '.pulsar-node'), ['b'*64])
         self.assertEqual((payload(dest,self.manifest)/'weights.bin').read_bytes(), b'data')
         self.assertEqual(Store(self.view_root/'.pulsar-node').records('transactions'), [])
+
+    # D7: Prepare's --adopt-unrecorded takes over such a folder only after every file verifies.
+    def lost_copy(self, view_schema=1):
+        """A complete prepared copy whose records were lost: manifest.json and its snapshot."""
+        dest = self.leftover(view_schema)
+        (dest/'manifest.json').write_text(json.dumps(self.manifest))
+        return dest
+
+    def folder_state(self, dest):
+        return {str(p): (p.stat().st_ino, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
+                for p in [dest, *dest.rglob('*')]}
+
+    def test_asked_whether_a_folder_could_be_taken_over_the_node_answers_without_hashing(self):
+        dest = self.lost_copy()
+        # Without adopt the answer is unchanged.
+        self.assertEqual(node.run(self.request('view-destination')),
+                         {'path': str(dest), 'state': 'present', 'recorded': False})
+        with patch.object(node, 'verify_tree', side_effect=AssertionError('hashed')):
+            self.assertEqual(node.run(self.request('view-destination', adopt=True)),
+                             {'path': str(dest), 'state': 'present', 'recorded': False, 'adoptable': True})
+        (dest/'notes.txt').write_text('mine')
+        answer = node.run(self.request('view-destination', adopt=True))
+        self.assertEqual((answer['adoptable'], answer['mismatch']),
+                         (False, 'it holds other files than one prepared copy (manifest.json and snapshots)'))
+        self.assertFalse((self.view_root/'.pulsar-node').exists())
+
+    def test_adopt_view_hashes_every_file_then_records_what_publish_view_would(self):
+        for schema in (1, 2):
+            with self.subTest(view_schema=schema):
+                dest = self.lost_copy(schema)
+                before = self.folder_state(dest)
+                with patch.object(node, 'verify_tree', wraps=verify_tree) as hashed:
+                    result = node.run(self.request('adopt-view', view_schema=schema))
+                # Every file hashed, no earlier stamp reused.
+                self.assertEqual([(call.kwargs.get('full'), call.kwargs.get('stamp')) for call in hashed.call_args_list],
+                                 [(True, None)])
+                record = result['view']
+                self.assertEqual(result['home']['verification']['method'], 'sha256')
+                store = Store(self.view_root/'.pulsar-node')
+                self.assertEqual(store.views(), [record])
+                self.assertEqual((record['hub_path'], record['path'], record['rank'], record['topology_id'],
+                                  record['pinned'], record['is_home_view'], record['schema_version']),
+                                 (str(dest), str(payload(dest, self.manifest)), 1, 'd'*64, False, False, schema))
+                self.assertEqual(self.folder_state(dest), before)
+                # Now recorded: a second take-over is refused, and nothing changes.
+                with self.assertRaisesRegex(StorageError, 'record on this node now names'):
+                    node.run(self.request('adopt-view', view_schema=schema))
+                store.remove('views', view_record_key(record))
+                import shutil
+                shutil.rmtree(dest)
+
+    def test_a_folder_that_does_not_verify_is_never_recorded_or_changed(self):
+        dest = self.lost_copy()
+        (payload(dest, self.manifest)/'weights.bin').write_bytes(b'DATA')  # Same size, other bytes.
+        before = self.folder_state(dest)
+        # Sizes match, so the node's quick answer allows it; the hash decides.
+        self.assertTrue(node.run(self.request('view-destination', adopt=True))['adoptable'])
+        with self.assertRaises(StorageError) as raised:
+            node.run(self.request('adopt-view'))
+        message = str(raised.exception)
+        self.assertTrue(message.startswith(f'a folder already exists where Prepare would place the prepared copy: '
+                                           f'{dest}. It was not taken over: snapshot SHA-256 differs: weights.bin. '),
+                        message)
+        self.assertTrue(message.endswith(node.UNRECORDED_MISMATCH_FIX), message)
+        self.assertEqual(Store(self.view_root/'.pulsar-node').views(), [])
+        self.assertEqual(self.folder_state(dest), before)
+        for change, reason in ((lambda: (dest/'extra').mkdir(), 'it holds other files than one prepared copy'),
+                               (lambda: (dest/'manifest.json').write_text('{}'), 'its manifest describes other files'),
+                               (lambda: (dest/'manifest.json').write_text('{'), 'could not be read as a prepared copy')):
+            with self.subTest(reason):
+                dest = self.lost_copy() if not dest.exists() else dest
+                change()
+                with self.assertRaisesRegex(StorageError, reason):
+                    node.run(self.request('adopt-view'))
+                self.assertEqual(Store(self.view_root/'.pulsar-node').views(), [])
+                import shutil
+                shutil.rmtree(dest)
 
 
 if __name__=='__main__': unittest.main()

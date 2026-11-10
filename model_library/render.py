@@ -166,7 +166,7 @@ def preparation_estimate(plans: list[dict]) -> tuple[int | None, dict[str, dict]
     for node, groups in placements.items():
         copy_sizes, existing_sizes = [], []
         for identity, actions in groups.items():
-            if not actions <= {'copy', 'reuse', 'home-view', 'bind', 'rebind'}:
+            if not actions <= {'copy', 'reuse', 'home-view', 'bind', 'rebind', 'adopt'}:
                 copy_sizes.append(None); existing_sizes.append(None)
             elif 'copy' in actions:
                 copy_sizes.append(sizes[identity])
@@ -383,6 +383,8 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
                'copy': 'copy and verify local files', 'bind': 'bind this recipe to existing verified files',
                'rebind': ("take over verified files prepared before the cluster's membership changed; "
                           'nothing is copied or deleted'),
+               'adopt': ('take over the folder no record names, after checking every file against the manifest; '
+                         'nothing is copied or deleted'),
                'release-binding': 'release this prepared copy; its files stay (the home, or a shared copy)',
                'remove-copy': 'delete this prepared copy and its files'}
     for item in document.get('actions') or []:

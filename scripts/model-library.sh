@@ -52,6 +52,7 @@ Options:
   --json                Machine-readable output
   --full                Force full SHA-256 verification instead of reuse
   --verification-jobs N  Prepared-copy workers (default 3; one per node)
+  --adopt-unrecorded    Prepare: take over an unrecorded copy if every file hashes
 
 Archive location is explicit PULSAR_COLD_ROOT. Configure an existing
 location with ./pulsar configure archive-root. No archive deletion exists.
@@ -63,7 +64,7 @@ ARCHIVE_ACTION=""
 if [ "$OP" = archive ]; then ARCHIVE_ACTION="${1:-}"; [ $# -eq 0 ] || shift; fi
 SPEC_ID="" SPEC_FILE="${PULSAR_SPEC_FILE:-}" MANIFEST_FILE="" MODEL_ID="" REVISION=""
 SNAPSHOT="" SNAPSHOTS_JSON="" VIEW_SCHEMA=1
-NODE="" PLACEMENT_NODES="" YES=0 PLAN=0 JSON=0 FULL=0 MANIFEST_OUT=""
+NODE="" PLACEMENT_NODES="" YES=0 PLAN=0 JSON=0 FULL=0 MANIFEST_OUT="" ADOPT_UNRECORDED=0
 VERIFICATION_JOBS=3
 PREPARE_VERIFICATION_DIR=""
 while [ $# -gt 0 ]; do
@@ -85,6 +86,7 @@ while [ $# -gt 0 ]; do
     --plan) PLAN=1 ;;
     --json) JSON=1 ;;
     --full) FULL=1 ;;
+    --adopt-unrecorded) ADOPT_UNRECORDED=1 ;;
     --for-launch) ;;
     --discard-unpromoted) : ;; # Compatibility: --yes confirms every home removal.
     --backend) [ "${2:-}" = copy ] || usage_die "--backend accepts only copy (local-file preparation)"; shift ;;
@@ -98,6 +100,7 @@ while [ $# -gt 0 ]; do
 done
 case "$OP" in help|-h|--help) usage; exit 0 ;; esac
 [ -z "$PLACEMENT_NODES" ] || case "$OP" in prepare|info|check) : ;; *) usage_die "--placement-nodes applies only to prepare, info and check" ;; esac
+[ "$ADOPT_UNRECORDED" = 0 ] || [ "$OP" = prepare ] || usage_die "--adopt-unrecorded applies only to prepare"
 [[ "$VERIFICATION_JOBS" =~ ^[1-9][0-9]*$ ]] || usage_die "--verification-jobs requires a positive integer"
 [ "$YES" -eq 0 ] || [ "$PLAN" -eq 0 ] || usage_die "--plan and --yes are separate operations"
 case "$OP" in acquire|prepare|info|check|move|restore|archive|pin|unpin|purge|remove|budget|files) ;; *) usage_die "unknown operation: $OP" ;; esac

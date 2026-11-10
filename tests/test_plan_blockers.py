@@ -343,10 +343,48 @@ class Preparation(Details):
             "code": "unrecorded-destination",
             "message": f"n1: a folder already exists at the prepared copy path {path} and no Pulsar record names it",
             "node_id": "n1",
-            "fix": "Pulsar has no record of this folder and never deletes files it did not record. "
-                   "Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.",
+            "fix": "Pulsar has no record of this folder and never deletes files it did not record. Inspect it. "
+                   "If it holds this recipe's files, prepare with --adopt-unrecorded, which checks every file "
+                   "against the manifest and records the folder only if all of them match; if it is not needed, "
+                   "remove it outside Pulsar, then Prepare again.",
             "path": path}])
         self.assertNotIn("purge", plan["blocker_details"][0]["fix"].lower())
+
+    # D7: with --adopt-unrecorded, a folder that matches is taken over; nothing else changes.
+    def test_asked_to_adopt_a_matching_folder_the_plan_takes_it_over_with_no_budget(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": True}
+        observations = observed("n0", "n1", n1={"destination": present})
+        plan = self.plan(observations=observations, adopt_unrecorded=True, budgets={"n1": budget(available=0)})
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([(a["action"], a.get("path")) for a in plan["actions"]],
+                         [("home-view", None), ("adopt", path)])
+        # Without the flag the same folder blocks, as before: the plan never adopts on its own.
+        refused = self.plan(observations=observations)
+        self.assertEqual([a["action"] for a in refused["actions"]], ["home-view", "copy"])
+        self.assertEqual([d["code"] for d in refused["blocker_details"]], ["unrecorded-destination"])
+
+    def test_asked_to_adopt_a_folder_that_does_not_match_keeps_the_blocker(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": False,
+                   "mismatch": "its manifest describes other files than this recipe's"}
+        plan = self.plan(observations=observed("n0", "n1", n1={"destination": present}), adopt_unrecorded=True)
+        self.assert_paired(plan)
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "copy"])
+        detail, = plan["blocker_details"]
+        self.assertEqual((detail["code"], detail["path"]), ("unrecorded-destination", path))
+        self.assertEqual(detail["fix"], "It cannot be taken over: its manifest describes other files than this "
+                                        "recipe's. Pulsar has no record of this folder and never deletes files it did "
+                                        "not record. Inspect it; if it is not needed, remove it outside Pulsar, then "
+                                        "Prepare again.")
+
+    def test_adoption_never_applies_to_a_recorded_folder(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        other = {**view(spec_id="cd" * 32), "hub_path": path, "path": path + "/snapshots/" + "a" * 40}
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": True}
+        plan = self.plan(views=[other], observations=observed("n0", "n1", n1={"destination": present}),
+                         adopt_unrecorded=True)
+        self.assertNotIn("adopt", [a["action"] for a in plan["actions"]])
 
     def test_a_recorded_or_missing_destination_does_not_add_the_blocker(self):
         path = f"/fixture/views/{self.spec['spec_id']}"

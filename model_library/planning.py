@@ -13,11 +13,18 @@ already where Prepare would copy and that no record names.
 A preparation action ``rebind`` takes over this spec's copy on a serving node
 that was made under another membership or position and still verifies: only
 its records change, on the node and on the controller (decision D13).
+
+A preparation action ``adopt`` exists only when Prepare is asked to
+(``adopt_unrecorded``, the CLI's ``--adopt-unrecorded``): the folder no record
+names at the rank's prepared copy ``path`` has the layout, manifest, file set
+and sizes of this snapshot, and the run hashes every file before it records
+the folder as the rank's copy (decision D7). Nothing is copied or deleted, and
+it needs no budget.
 """
 from __future__ import annotations
 
 from .integrity import StorageError
-from .node import UNRECORDED_DESTINATION_FIX
+from .node import UNRECORDED_DESTINATION_FIX, UNRECORDED_MISMATCH_FIX
 from .state import checked_id, validate_home, validate_view, view_record_key, copy_references
 
 
@@ -180,7 +187,7 @@ def preparation_candidates(*, spec: dict, home: dict, node_id: str, views: list[
 
 def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id: str,
                      observations: list[dict], views: list[dict], budgets: dict[str, dict], snapshot: str = "target",
-                     confirmed_node_ids: list[str] | None = None) -> dict:
+                     confirmed_node_ids: list[str] | None = None, adopt_unrecorded: bool = False) -> dict:
     from release_spec import verify_spec
     spec = verify_spec(spec)
     validate_home(home)
@@ -255,11 +262,18 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
             named = destination.get('recorded') is True or any(
                 _nested(path, v[field]) for v in views if v.get('node_id') == node_id
                 for field in ('hub_path', 'path'))
-            if not named:
+            # D7: asked to (--adopt-unrecorded), Prepare takes over a folder
+            # whose layout, manifest and sizes match; the run hashes every file
+            # before it records it. Otherwise, or when it does not match, it stops.
+            if not named and adopt_unrecorded and destination.get('adoptable') is True:
+                action = 'adopt'
+            elif not named:
                 blockers.append(f'{node_id}: a folder already exists at the prepared copy path {path} '
                                 'and no Pulsar record names it')
-                details.append(detail('unrecorded-destination', blockers[-1], UNRECORDED_DESTINATION_FIX,
-                                      node_id, path=path))
+                mismatch = destination.get('mismatch') if adopt_unrecorded else None
+                details.append(detail('unrecorded-destination', blockers[-1],
+                                      f'It cannot be taken over: {mismatch}. {UNRECORDED_MISMATCH_FIX}'
+                                      if mismatch else UNRECORDED_DESTINATION_FIX, node_id, path=path))
         budget = budgets.get(node_id)
         if action == 'copy':
             if not isinstance(budget, dict) or any(not isinstance(budget.get(k), int) or isinstance(budget[k], bool) or budget[k] < 0 for k in ('available', 'reserve', 'used', 'limit')):
@@ -270,6 +284,7 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
                                       'free space or purge unused prepared copies on this node', node_id))
         actions.append({'rank': rank, 'node_id': node_id, 'action': action,
                         **({'source_view':candidate} if action == 'bind' else {}),
+                        **({'path': destination['path']} if action == 'adopt' else {}),
                         **({'previous': {'topology_id': old['topology_id'], 'rank': old['rank']}}
                            if action == 'rebind' else {})})
     return {'kind': 'pulsar-preparation-plan', 'spec_id': spec['spec_id'],

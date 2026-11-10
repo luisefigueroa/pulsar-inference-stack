@@ -1562,8 +1562,11 @@ def plan_effect(action: str, plan: dict) -> dict:
         # A takeover (rebind) copies nothing: it records files made before the
         # cluster's membership changed under the current membership.
         taken = sum(1 for step in steps if step.get("action") == "rebind")
-        return {"copied": len(copies), "reused": len(steps) - len(copies) - taken, "taken_over": taken,
-                "nothing": bool(steps) and not copies}
+        # An adoption (--adopt-unrecorded) copies nothing either: it records a
+        # folder no record named once every file matches (D7).
+        adopted = sum(1 for step in steps if step.get("action") == "adopt")
+        return {"copied": len(copies), "reused": len(steps) - len(copies) - taken - adopted, "taken_over": taken,
+                "adopted": adopted, "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -1602,6 +1605,15 @@ def _taken_over(count: int) -> str:
             "nothing is copied or deleted.")
 
 
+def _adopted(count: int) -> str:
+    """The sentence for Prepare's adoptions (--adopt-unrecorded): folders no
+    record named, recorded once every file matches the manifest (D7)."""
+    folders = "folder" if count == 1 else "folders"
+    them = "it" if count == 1 else "them"
+    return (f"It takes over {count} {folders} no record names after checking every file, which can take a "
+            f"while, and records {them} only if every file matches; nothing is copied or deleted.")
+
+
 def _short_ids(text: str, keep: str | None = None) -> str:
     """Shorten each full 64-character spec ID to its 12-character prefix.
 
@@ -1630,7 +1642,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     Live service inventory. A container that Pulsar did not start gets no
     choice: its fix is to remove it or its mount, which the menu never does.
     Neither does a folder at a prepared copy's path that no record names: the
-    operator inspects it and removes it outside Pulsar.
+    fix names Look for model files Pulsar has no record of…, which takes it
+    over after checking every file (D7), or the operator removes it outside
+    Pulsar.
     """
     specs: list[str] = []
     for item in _plan_document(plan).get("blocker_details") or []:
@@ -1652,6 +1666,22 @@ def _amount(size: object, count: object, unknown: str) -> str:
     return size_text(size) + (f" ({files})" if files else "")
 
 
+# Inside the menu, the fix for a folder no record names names the choice that
+# takes it over (D7), not Prepare's flag: no menu Prepare passes the flag
+# except that choice's own approved step.
+UNRECORDED_MENU_FIX = ("Pulsar has no record of this folder and never deletes files it did not record. Look for "
+                       "model files Pulsar has no record of… on Models and disk space… checks every file and takes "
+                       "it over if all of them match; if it is not needed, remove it outside Pulsar.")
+
+
+def menu_fix(detail: dict) -> str:
+    """A plan blocker's fix as a menu screen says it."""
+    from .node import UNRECORDED_DESTINATION_FIX
+    if detail.get("code") == "unrecorded-destination" and detail.get("fix") == UNRECORDED_DESTINATION_FIX:
+        return UNRECORDED_MENU_FIX
+    return str(detail.get("fix") or "")
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
@@ -1665,7 +1695,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     if plan_blocked(plan):
         details = [item for item in document.get("blocker_details") or [] if isinstance(item, dict)]
         if details:
-            causes = [_short_ids(blocker_detail_text(item, names) + (f"; {item['fix']}" if item.get("fix") else ""),
+            causes = [_short_ids(blocker_detail_text(item, names) + (f"; {menu_fix(item)}" if item.get("fix") else ""),
                                  keep=item.get("path") if item.get("code") == "unrecorded-destination" else None)
                       for item in details]
         else:
@@ -1691,12 +1721,16 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
                      "Prepare verifies the files and records them."]
             if effect["taken_over"]:
                 lines.append(_taken_over(effect["taken_over"]))
+            if effect["adopted"]:
+                lines.append(_adopted(effect["adopted"]))
             return lines
         sizes = [nodes[node]["new_copy"] for node in copying]
         size = sum(sizes) if all(value is not None for value in sizes) else None
         lines = [f"Copy {size_text(size)} to {_node_list(copying, names)} "
                  f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused"
-                 + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "") + ")."]
+                 + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
+                 + (f", {_count(effect['adopted'], 'folder')} no record named taken over after checking every file"
+                    if effect["adopted"] else "") + ")."]
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])

@@ -312,6 +312,23 @@ copy needs no budget. A copy that does not verify, does not match its source or
 is mounted by a container keeps today's `changed-copy`, `pinned` or
 `container-reference` blocker. Prepared-copy records keep their schema and keys.
 
+Change note, 2026-11-09: `model prepare` gained the opt-in flag
+`--adopt-unrecorded`, and preparation plans the action `adopt`. Only with the
+flag, a folder at a rank's prepared copy path that no record names, whose
+layout (`manifest.json` and `snapshots/REVISION` only), manifest, file set and
+file sizes match the snapshot, is planned as `adopt` instead of the
+`unrecorded-destination` blocker; the action carries the folder's `path`.
+`--yes` then hashes every file against the manifest, reusing no earlier
+verification, before any rank is copied, and records the folder as that rank's
+prepared copy, on the node and then on the controller, only when every file
+matches. A folder that does not match keeps the `unrecorded-destination`
+blocker, with the reason in its `fix`; one whose hashes differ makes `--yes`
+exit 1 before anything is copied or recorded. Nothing in the folder is deleted,
+moved or written, and an adoption needs no budget. Without the flag plans are
+unchanged, except that the blocker's `fix` names the flag. Other operations
+refuse the flag as a usage error. Prepared-copy records keep their schema and
+keys; an adopted copy is an ordinary prepared copy afterwards.
+
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;
 `cleanup_incomplete` means worker exit could not be established. Neither result

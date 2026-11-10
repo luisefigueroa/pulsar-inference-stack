@@ -65,7 +65,10 @@ REFERENCE = [
         ("pulsar models results SPEC", "Inspect published run dates, workloads and policy outcomes for this spec."),
         ("pulsar models check SPEC", "Explicitly check the selected managed files and archive."),
         ("pulsar release show|verify SPEC", "Print a catalog spec as JSON, or its state and review."),
-        ("pulsar model --help", "Acquire, restore, move, prepare, pin, purge and archive.")]),
+        ("pulsar model --help", "Acquire, restore, move, prepare, pin, purge and archive."),
+        ("pulsar model prepare SPEC --adopt-unrecorded",
+         "Take over a prepared copy's folder that no record names, only if every file hashes as expected; "
+         "nothing in it is deleted or changed.")]),
     ("Serve", [
         ("pulsar image check|stage SPEC", "Inspect or explicitly stage the exact image on selected serving ranks."),
         ("pulsar start SPEC", "Recheck prerequisites and start the exact selected spec."),
