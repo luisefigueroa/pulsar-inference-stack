@@ -188,9 +188,12 @@ class Help(unittest.TestCase):
         """A new status word fails here until docs/OPERATIONS.md explains it."""
         from model_library import catalog, catalog_menu
         from release_spec import schema
-        from scripts import cluster_status
+        from scripts import cluster_status, serve_plan
         words = {catalog.NOT_CHECKED, *catalog.FILE_STATES.values(), *catalog.SNAPSHOT_FILE_STATES.values(),
                  *cluster_status.STATUS_WORDS.values(),
+                 # Serve a model…'s readiness phrases, each value written as … in its row.
+                 *(re.sub(r"\{[a-z]+\}", "…", phrase) for key, phrase in serve_plan.READINESS.items()
+                   if key != "service"),
                  *catalog_menu.LABEL_FILES.values(), *catalog_menu.SERVICE_STATES.values(),
                  *(state for state in schema.STATES if state), *schema.REVIEW_STATUSES,
                  "start unsupported", "not checked here", "service exists", "service seen",

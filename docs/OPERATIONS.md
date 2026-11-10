@@ -195,6 +195,14 @@ below are for reading.
 | Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. Exited or stopped containers that remain are named after it. |
 | Serving: unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. |
 | Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
+| Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do. |
+| Serve: ready to start | The last saved check found its files prepared on every serving node. Its plan is Start alone, after whatever is in the way is stopped. |
+| Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. |
+| Serve: needs its files checked | Its files are where it serves, but no saved check has found them prepared. The plan checks and records them; nothing is copied. |
+| Serve: needs restoring from its archive | No home (the copy Pulsar keeps) is recorded, and its archive is there: the plan restores the files from it, without the internet. |
+| Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
+| Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
+| Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
 | Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
 | Disk: past its reserve or copy budget by, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. |
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
