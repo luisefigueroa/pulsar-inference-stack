@@ -7,6 +7,8 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 # shellcheck disable=SC1091
 . "$REPO_DIR/scripts/lib.sh"
+# shellcheck disable=SC1091
+. "$REPO_DIR/scripts/topology-probes.sh"
 
 PROFILE="${1:-}"
 if [ -n "$PROFILE" ]; then
@@ -66,38 +68,30 @@ for ((rank = 0; rank < EXPECTED_NODES; rank++)); do
   fi
 done
 
-# Verify every selected pair and rail in both directions on every preflight,
-# each ping bound to the source's own interface on that link.
-# require_profile_topology already guarantees a confirmed manifest here.
-while IFS=$'\t' read -r source_rank _source_host target_rank target_ip network interface; do
-  [ -n "$source_rank" ] || continue
-  if [ "$source_rank" -ge "$EXPECTED_NODES" ] \
-      || [ "$target_rank" -ge "$EXPECTED_NODES" ]; then
-    continue
-  fi
-  command="ping -I $(printf '%q' "$interface") -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1"
-  if node_exec "$source_rank" "$command"; then
-    ok "rank $source_rank → rank $target_rank · $target_ip · $network"
-  else
-    bad "rank $source_rank cannot reach rank $target_rank · $target_ip · $network"
-  fi
-done < <(python3 "$REPO_DIR/scripts/topology_manifest.py" \
-  ping-plan "$CLUSTER_TOPOLOGY_FILE")
+# Verify every link among the recipe's ranks in both directions on every
+# preflight, each ping bound to the source's own interface on that link, then
+# each pair's links against what the recipe needs. On a ring only neighbours
+# have links; require_profile_topology already refused any pair without them.
+while IFS=$'\t' read -r kind first second third fourth _interface; do
+  case "$kind" in
+    ok) ok "rank $first → rank $second · $third · $fourth" ;;
+    fail) bad "rank $first cannot reach rank $second · $third · $fourth" ;;
+    pair)
+      if [ "$third" -ge "$MIN_RAILS_PER_PAIR" ]; then
+        ok "ranks $first/$second: $third of $fourth links answered both ways"
+      else
+        bad "ranks $first/$second: $third of $fourth links answered both ways; the spec requires $MIN_RAILS_PER_PAIR"
+      fi
+      ;;
+  esac
+done < <(topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES")
 
 echo "[preflight] per-node readiness"
 check_node() {
-  local rank="$1" rdma gpu runtime avail_kb control_ip control_if command
+  local rank="$1" gpu runtime avail_kb control_ip control_if command
   local probe_file probe_json
   control_ip="${CLUSTER_NODE_CONTROL_IPS[$rank]}"
   control_if="${CLUSTER_NODE_CONTROL_IFS[$rank]}"
-
-  rdma=$(node_exec "$rank" \
-    "rdma link show 2>/dev/null | grep -c 'state ACTIVE'" 2>/dev/null || true)
-  if [ "${rdma:-0}" -ge "$MIN_RAILS_PER_PAIR" ]; then
-    ok "rank $rank: ${rdma:-0} RDMA links ACTIVE"
-  else
-    bad "rank $rank: only ${rdma:-0} RDMA links ACTIVE"
-  fi
 
   probe_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-preflight-probe.XXXXXX")
   if probe_node_json_for_rank "$rank" >"$probe_file" 2>/dev/null \

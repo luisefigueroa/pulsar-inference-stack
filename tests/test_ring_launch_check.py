@@ -1,6 +1,8 @@
 """The launch check on the chosen nodes: what the recipe's link requirement
 reaches, and how each caller judges a placement on a ring and on a full mesh.
 Synthetic fixtures and doubles only; nothing here contacts a node."""
+import contextlib
+import io
 import json
 from pathlib import Path
 import re
@@ -185,6 +187,99 @@ class EveryCallerAppliesTheSameRule(unittest.TestCase):
         self.assertIn('ordinary start cannot launch a remote head', (ROOT / 'scripts/up.sh').read_text())
         self.assertIn('[ "$expected_rank" = "$rank" ]', (ROOT / 'scripts/guard-storage.sh').read_text())
         self.assertNotIn('require_profile_topology', (ROOT / 'cluster/stop-cluster.sh').read_text())
+
+
+PORT0, PORT1 = {'rocep0a', 'rocep0b'}, {'rocep1a', 'rocep1b'}
+
+
+def profile(topology, *ranks):
+    """profile-fabric's rows for the recipe's nodes at saved RANKS, in that order."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        tm.profile_fabric(topology, len(ranks), [topology['nodes'][rank]['node_id'] for rank in ranks])
+    # The adapters, as a set: their order follows the saved links' networks.
+    return {int(line.split('\t')[0]): set(line.split('\t')[1].split(',')) for line in out.getvalue().splitlines()}
+
+
+class AdaptersForTheChosenNodes(unittest.TestCase):
+    """Each node of a neighbouring pair gets its own adapters on their cable,
+    whichever order the pair is given in, the closing cable included."""
+
+    def test_every_neighbouring_pair_in_both_orders(self):
+        fixture, _names = ring(self)
+        topology = fixture.topology
+        # Saved ranks follow the cables: rank i's port 0 is cabled to rank i+1's port 1,
+        # and the closing cable [0, 3] joins rank 3's port 0 to rank 0's port 1.
+        for first, second in ((0, 1), (1, 2), (2, 3), (3, 0)):
+            for ranks in ((first, second), (second, first)):
+                with self.subTest(ranks=ranks):
+                    self.assertEqual(profile(topology, *ranks), {first: PORT0, second: PORT1})
+
+    def test_the_launch_check_keeps_each_nodes_adapters_by_its_saved_position(self):
+        fixture, _names = ring(self)
+        script = r"""
+            . "$1/cluster/topology.sh"
+            SERVING_NODE_INDEXES=(3 0)
+            require_profile_topology 2 roce-full-mesh 2 || exit 9
+            printf '%s|%s\n' "${CLUSTER_PROFILE_HCAS[3]}" "${CLUSTER_PROFILE_HCAS[0]}"
+        """
+        result = subprocess.run(['bash', '-c', script, 'fabric', str(ROOT)], env=fixture.env, capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        node3, node0 = result.stdout.strip().split('|')
+        self.assertEqual((set(node3.split(',')), set(node0.split(','))), (PORT0, PORT1))
+
+
+def ping_links(fixture, count, **env):
+    """topology_ping_links for a recipe on COUNT nodes, with lib.sh sourced."""
+    script = r"""
+        . "$1/scripts/lib.sh"; . "$1/scripts/topology-probes.sh"
+        load_cluster_topology || exit 9
+        topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$2"
+    """
+    result = subprocess.run(['bash', '-c', script, 'ping', str(ROOT), str(count)], env={**fixture.env, **env},
+                            capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return [line.split('\t') for line in result.stdout.splitlines()]
+
+
+class PreflightPings(unittest.TestCase):
+    """Preflight pings only the links among the recipe's ranks and judges each pair."""
+
+    def test_a_two_node_recipe_on_a_ring_pings_only_its_cable(self):
+        fixture, _names = ring(self)
+        rows = ping_links(fixture, 2)
+        pings = [row for row in rows if row[0] != 'pair']
+        self.assertEqual(len(pings), 4)
+        self.assertTrue(all(row[0] == 'ok' and {row[1], row[2]} == {'0', '1'} for row in pings), pings)
+        self.assertEqual([row for row in rows if row[0] == 'pair'], [['pair', '0', '1', '2', '2']])
+        self.assertEqual(len([args for tool, args in fixture.calls() if tool in ('ping', 'ssh')]), 4)
+
+    def test_a_link_that_does_not_answer_lowers_its_pairs_count(self):
+        fixture, _names = ring(self)
+        rail = next(link for link in fixture.topology['links'] if link['ranks'] == [0, 1])['rails'][0]
+        rows = ping_links(fixture, 2, TOPOLOGY_PING_FAIL=rail['b']['ip'])
+        self.assertIn(['fail', '0', '1', rail['b']['ip'], rail['network'], rail['a']['netdev']], rows)
+        self.assertEqual(rows[-1], ['pair', '0', '1', '1', '2'])
+
+    def test_the_whole_ring_judges_only_its_cables(self):
+        fixture, _names = ring(self)
+        pairs = [row for row in ping_links(fixture, 4) if row[0] == 'pair']
+        self.assertEqual(pairs, [['pair', '0', '1', '2', '2'], ['pair', '0', '3', '2', '2'],
+                                 ['pair', '1', '2', '2', '2'], ['pair', '2', '3', '2', '2']])
+
+    def test_a_mesh_pings_the_pairs_among_its_ranks(self):
+        fixture = Fixture(Path(self.enterContext(tempfile.TemporaryDirectory())), nodes=3)
+        rows = ping_links(fixture, 2)
+        self.assertEqual([row[0] for row in rows], ['ok', 'ok', 'pair'])
+        self.assertEqual(rows[-1], ['pair', '0', '1', '1', '1'])
+        self.assertEqual(len([row for row in ping_links(fixture, 3) if row[0] == 'pair']), 3)
+
+    def test_preflight_reads_the_rows_and_no_longer_counts_links_per_node(self):
+        text = (ROOT / 'cluster/preflight.sh').read_text()
+        self.assertIn('topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES"', text)
+        self.assertNotIn('RDMA links ACTIVE', text)
 
 
 if __name__ == '__main__':
