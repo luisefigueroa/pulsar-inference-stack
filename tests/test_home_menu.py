@@ -131,7 +131,8 @@ wait_continue() {
                           'exit "${rc:-0}"\n')
         pulsar.chmod(0o755)
         # The Cluster menu and the topology menu are their own scripts.
-        for name, word in (("cluster-menu.sh", "cluster menu"), ("topology.sh", "topology")):
+        for name, word in (("cluster-menu.sh", "cluster menu"), ("topology.sh", "topology"),
+                           ("serve-menu.sh", "serve menu")):
             script = scripts / name
             script.write_text(f'#!/usr/bin/env bash\necho "{word} $*" >> "$PULSAR_LOG"\n'
                               '[ -z "${CHANGES_AFTER:-}" ] || cp "$CHANGES_AFTER" "$PULSAR_CLUSTER_CHANGES_FILE"\n'
@@ -382,19 +383,17 @@ class Home(MenuHarness):
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
         self.assertEqual(list((self.root / "saved").iterdir()), [])
 
-    def test_each_intent_opens_todays_menu_until_later_phases_replace_it(self):
+    def test_each_intent_opens_its_flow_or_todays_menu_until_later_phases_replace_it(self):
         result = self.run_home(["Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.commands(), ["models menu", "inventory menu", "models files", "cluster menu "])
+        # Serve a model… answers with a plan; today's catalog menu stays under Advanced.
+        self.assertEqual(self.commands(), ["serve menu ", "inventory menu", "models files", "cluster menu "])
         self.assertEqual(self.menus(), [HOME] * 5)
 
-    def test_a_catalog_error_waits_before_redrawing_home(self):
-        result = self.run_home(["Serve a model…", "0", "Exit"], PULSAR_RC="2")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.commands(), ["models menu"])
-        self.assertEqual(self.menus()[1], ["Catalog error", "Continue"])
-        self.assertEqual(len(self.menus()), 3)
-        self.assertIn("✗ The catalog could not be displayed; review the error above.\n  exit 2\n", result.stdout)
+    def test_serve_a_model_returns_home_and_ctrl_c_there_exits(self):
+        result = self.run_home(["Serve a model…"], MENU_RC="130")
+        self.assertEqual(result.returncode, 130, result.stderr)
+        self.assertEqual(self.commands(), ["serve menu "])
 
     def test_ctrl_c_at_home_or_in_a_menu_exits_with_130(self):
         result = self.run_home(["Cluster…", "ctrl-c"])

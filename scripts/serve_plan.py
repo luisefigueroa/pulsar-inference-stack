@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Serve a model…: the model list's readiness phrases and the plan it runs.
 
-    python3 -m scripts.serve_plan list [--inventory FILE] [--archive-location L] < CATALOG_JSON
+    python3 -m scripts.serve_plan entry [--discovered | --explain]
+    python3 -m scripts.serve_plan running --inventory FILE < CATALOG_JSON
+    python3 -m scripts.serve_plan list [--inventory FILE] < CATALOG_JSON
     python3 -m scripts.serve_plan nodes --spec-id S < CATALOG_JSON
-    python3 -m scripts.serve_plan sources --spec-id S [--node ID] [--files FILE] [--source WHERE]
-            [--files-node ID] [--not-found NAME] [--archive-location L] < CATALOG_JSON
-    python3 -m scripts.serve_plan compose --spec-id S --out FILE [previews...] < CATALOG_JSON
-    python3 -m scripts.serve_plan render|steps|choices --plan FILE
-    python3 -m scripts.serve_plan command --plan FILE --step I [--preview]
+    python3 -m scripts.serve_plan previews --spec-id S [--node ID] [--files FILE] [--source WHERE]
+            [--files-node ID] [--not-found NAME] [--ready-only] < CATALOG_JSON
+    python3 -m scripts.serve_plan compose --spec-id S --out FILE [same options, --inventory FILE,
+            --preview NAME=FILE..., --hf FILE] < CATALOG_JSON
+    python3 -m scripts.serve_plan render|steps|choices|facts --plan FILE
+    python3 -m scripts.serve_plan command --plan FILE (--step I [--preview] | --restart I)
     python3 -m scripts.serve_plan check-step --plan FILE --step I --preview-file FILE [--preview-rc N]
-    python3 -m scripts.serve_plan outcome --plan FILE --done N [--failed I --rc N] [--command ARGS]...
+    python3 -m scripts.serve_plan outcome --plan FILE --done N [--failed I --rc N] [--stopped]
+            [--ran-step I]... [--choices]
 
 The plan is an ordered list of steps. Each has a sentence for the operator,
 the `./pulsar` command it runs, what it changes, and whether it needs
@@ -491,7 +495,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         size = sizes.get(name)
         amount = _kept(short_size(size)) if size is not None else "size unknown"
         step = {"kind": kind, "snapshot": name, "node": where, "authority": False, "projected": False,
-                "facts": {"kind": kind, "node": where}}
+                "archive": bool(found.get("archive")), "facts": {"kind": kind, "node": where}}
         if kind == "register":
             step["sentence"] = (f"Check and record {what} found on {host}, which Pulsar has no record of; nothing "
                                 "is downloaded when they match. They become its home, the copy Pulsar keeps.")
@@ -652,9 +656,15 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                           "command": ["./pulsar", "stop", spec_ref(stop["conf"], entries)],
                           "preview": None})
             if not stop.get("own"):
+                # Starting it again after a failed Start is offered only for a
+                # catalog recipe whose node is known when it serves on one.
+                again = service_node(inventory, stop["conf"]) if single else None
+                modified = any(item.get("conf") == stop["conf"] and item.get("matches_selected_spec") is False
+                               for item in inventory.get("services") or [] if isinstance(item, dict))
+                restart = (["./pulsar", "start", stop["conf"][:12], *(["--node", names(again)] if again else [])]
+                           if own is not None and not modified and (again or not single) else None)
                 plan["stopped"].append({"conf": stop["conf"], "name": stop["name"], "hosts": stop["hosts"],
-                                        "in_catalog": own is not None,
-                                        "node": (service_node(inventory, stop["conf"]) if single else None)})
+                                        "in_catalog": restart is not None, "node": again, "restart": restart})
 
     # 5. Start, and what its dry run said.
     if not ready_only:
@@ -744,7 +754,9 @@ def footer(plan: dict) -> list[str]:
     """What the plan leaves untouched, and what a failure leaves."""
     steps = plan["steps"]
     lines = ["Nothing is deleted."]
-    stops = [index for index, step in enumerate(steps, 1) if step["kind"] == "stop"]
+    serving = {item["conf"] for item in plan.get("stopped") or []}
+    stops = [index for index, step in enumerate(steps, 1)
+             if step["kind"] == "stop" and (step.get("facts") or {}).get("conf") in serving]
     start = next((index for index, step in enumerate(steps, 1) if step["kind"] == "start"), None)
     others = [item["name"] for item in plan.get("stopped") or []]
     if stops and others:
@@ -858,15 +870,28 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
 
 
 def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ran: list[str] = (),
-            stopped_ran: bool = False, width: int | None = None) -> tuple[str, list[tuple[str, str]]]:
+            stopped_ran: bool = False, halted: str | None = None,
+            width: int | None = None) -> tuple[str, list[tuple[str, str]]]:
     """What happened: the steps done, a failed step and what it leaves, then the
-    commands that ran under Same as. Returns (text, choices)."""
+    commands that ran under Same as. HALTED is why step FAILED did not run:
+    its own preview found it blocked, or doing what the plan did not say.
+    Returns (text, choices)."""
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
     steps = plan["steps"]
     choices_: list[tuple[str, str]] = []
     interrupted = rc in (3, 130) or 128 < rc < 160
-    if failed is None:
+    if halted is not None and failed is not None:
+        stopped = plan.get("stopped") or []
+        out.emit(f"Step {failed + 1} did not run: {halted}. Pulsar stopped before it, so it can ask again.",
+                 "✗ ", "  ", prefix_role="fail")
+        out.emit(f"Done: {_count(done, 'step')} before it." if done else "Nothing was changed.")
+        if stopped and not stopped_ran:
+            out.emit(f"Still serving: {_list([item['name'] for item in stopped])}.")
+        elif stopped_ran:
+            out.emit("Nothing is serving now: the plan stopped what was in the way before this step.")
+        choices_.append(("again", "Plan again from the state as it is now"))
+    elif failed is None:
         if plan.get("ready_only") or not any(step["kind"] == "start" for step in steps):
             out.emit(f"Ready: {plan['model_id']} has its files and image on {_list(plan['hosts'])}. "
                      "Nothing was started.", "✓ ", "  ")
@@ -912,6 +937,113 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
 
 
 # ---------------------------------------------------------------------------
+# What the menu runs before it composes
+# ---------------------------------------------------------------------------
+
+# The pre-serve change check reuses a discovery of the saved membership this recent.
+CHANGES_FRESH_SECONDS = 10 * 60
+
+
+def entry_state(repo: Path, now=None, *, discovered: bool = False) -> str:
+    """Where the pre-serve change check stands, from the saved records:
+
+    discover     no discovery of the saved membership in the last ten minutes;
+    unchanged    the last one saw the cluster as saved;
+    kept         it saw only members the operator kept as only down;
+    changed      it saw a change to review;
+    not-checked  it did not finish (or, after DISCOVERED, saved nothing)."""
+    from model_library.catalog import age_seconds
+    from scripts.cluster_status import Records
+    records = Records(repo, now)
+    changes = records.changes
+    if not discovered:
+        age = age_seconds(changes["observed_at"], records.now) if changes else None
+        if changes is None or age is None or age > CHANGES_FRESH_SECONDS:
+            return "discover"
+    if changes is None or changes["result"] == "not-checked":
+        return "not-checked"
+    if changes["result"] == "unchanged":
+        return "unchanged"
+    kept = set((changes.get("kept") or {}).get("missing") or [])
+    missing = changes.get("missing") or []
+    if (missing and not changes.get("found") and not changes.get("changed")
+            and all(not item.get("answered") and item["node_id"] in kept for item in missing)):
+        return "kept"
+    return "changed"
+
+
+def not_checked_text(repo: Path, now=None, *, width: int | None = None) -> str:
+    """Why the change check could not say whether the cluster changed."""
+    from scripts.cluster_status import Records
+    records = Records(repo, now)
+    issues = "; ".join((records.changes or {}).get("issues") or []) or "no reason was recorded"
+    output = io.StringIO()
+    TerminalWriter(width=width, stream=output).emit(
+        f"The cluster check did not finish: {issues}. Pulsar can still serve on the cluster as saved; a plan "
+        "that needs a node that does not answer stops before it changes anything.", "✗ ", "  ", prefix_role="fail")
+    return output.getvalue()
+
+
+def preview_requests(row: dict, entries: list[dict], *, names: NodeNames, node: str | None,
+                     sources: list[dict], files_scanned: bool, source: str | None,
+                     ready_only: bool = False) -> list[tuple[str, list[str]]]:
+    """The previews the first screen can run now, as (NAME, COMMAND), in order.
+
+    A files scan comes first and alone when a snapshot has no home and no
+    scan ran yet (unless the operator picked the archive or a download): the
+    sources depend on it. Then a restore plan per restored snapshot, `hf` with
+    the node_id a download goes to (its prerequisites, one Hub request), the
+    prepare plan once every snapshot has a home, the image plan, and Start's
+    dry run. A download's own plan resolves its source on the Hub, so it runs
+    only when its turn comes, after the hf check."""
+    serving = serving_nodes(row, names.order, node)
+    if not serving:
+        return []
+    if without_home(row) and not files_scanned and source is None:
+        return [("files", ["./pulsar", "model", "files", "--json"])]
+    ref = spec_ref(row["spec_id"], entries)
+    placement = ["--node", names(serving[0])] if row["geometry"]["nodes"] == 1 else []
+    requests: list[tuple[str, list[str]]] = []
+    for item in sources:
+        name = "-" if item["snapshot"] is None else str(item["snapshot"])
+        snapshot = ["--snapshot", name] if item["snapshot"] is not None else []
+        if item["kind"] == "restore":
+            requests.append((f"restore:{name}", ["./pulsar", "model", "restore", ref, *snapshot, "--node",
+                                                 names(item["node"]), "--plan", "--json"]))
+        elif item["kind"] == "download" and ("hf", [item["node"]]) not in requests:
+            requests.append(("hf", [item["node"]]))
+    if not sources:
+        requests.append(("prepare", ["./pulsar", "model", "prepare", ref, *placement, "--plan", "--json"]))
+    requests.append(("image", ["./pulsar", "image", "stage", ref, *placement, "--plan", "--json"]))
+    if not ready_only:
+        requests.append(("start", ["./pulsar", "start", ref, *placement, "--dry-run", "--json"]))
+    return requests
+
+
+def running_services(inventory: dict | None, entries: list[dict]) -> tuple[list[dict], list[str]]:
+    """Pulsar services with a running container, for stopping them before a save:
+    (stoppable services as {conf, name, hosts}, the ones Stop cannot be offered for)."""
+    from scripts.inventory_menu import project, project_others
+    if not inventory:
+        return [], []
+    catalog = [{"spec_id": entry["spec_id"], "model_id": entry["model_id"], "nodes": entry["geometry"]["nodes"]}
+               for entry in entries]
+    try:
+        services = {**project(inventory, catalog), **project_others(inventory, catalog)}
+    except ValueError:
+        return [], ["the service inventory could not be read"]
+    stops, refused = [], []
+    for conf, service in services.items():
+        if service["state"] not in ACTIVE:
+            continue
+        if service.get("stop_reason"):
+            refused.append(f"{service['model_id']}: {service['stop_reason']}")
+        else:
+            stops.append({"conf": conf, "name": clean(service["model_id"]), "hosts": service["hosts"]})
+    return stops, refused
+
+
+# ---------------------------------------------------------------------------
 
 def _entries(stream) -> list[dict]:
     try:
@@ -953,36 +1085,52 @@ def _api_key(repo: Path) -> str | None:
     return {"process": "the environment that started Pulsar", "dotenv": "this checkout's .env file"}[source]
 
 
+def _archive_location(repo: Path) -> str:
+    """The archive location's status as the catalog menu passes it; a setting
+    that cannot be read is no archive Pulsar can restore from."""
+    from scripts.setup_status import _archive_status
+    status = _archive_status(Path(repo), None)["status"]
+    return status if status in ARCHIVE_LOCATION else "not-configured"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    entry = sub.add_parser("entry", help="where the pre-serve change check stands")
+    entry.add_argument("--discovered", action="store_true", help="a discovery just ran")
+    entry.add_argument("--explain", action="store_true", help="why the check did not finish")
+    entry.add_argument("--save-flags", action="store_true", help="the topology configure flags that save it")
+    running = sub.add_parser("running", help="running Pulsar services, to stop before a save")
+    running.add_argument("--inventory")
     listing = sub.add_parser("list")
     listing.add_argument("--inventory")
     nodes = sub.add_parser("nodes")
     nodes.add_argument("--spec-id", required=True)
-    sources = sub.add_parser("sources")
+    previews = sub.add_parser("previews")
     compose_ = sub.add_parser("compose")
-    for command in (sources, compose_):
+    for command in (previews, compose_):
         command.add_argument("--spec-id", required=True)
         command.add_argument("--node")
         command.add_argument("--files")
         command.add_argument("--source", choices=("archive", "download"))
         command.add_argument("--files-node")
         command.add_argument("--not-found", action="append", default=[])
+        command.add_argument("--ready-only", action="store_true")
     compose_.add_argument("--inventory")
     compose_.add_argument("--inventory-error")
     compose_.add_argument("--preview", action="append", default=[], help="NAME=FILE: restore:SNAPSHOT, prepare, "
                           "image or start")
     compose_.add_argument("--hf")
-    compose_.add_argument("--ready-only", action="store_true")
     compose_.add_argument("--out", required=True)
-    for command in (listing, sources, compose_):
-        command.add_argument("--archive-location", default="not-configured", choices=sorted(ARCHIVE_LOCATION))
-    for name in ("render", "steps", "choices"):
+    for command in (listing, previews, compose_):
+        command.add_argument("--archive-location", choices=sorted(ARCHIVE_LOCATION))
+    for name in ("render", "steps", "choices", "facts"):
         sub.add_parser(name).add_argument("--plan", required=True)
     command_ = sub.add_parser("command")
     command_.add_argument("--plan", required=True)
-    command_.add_argument("--step", type=int, required=True)
+    which = command_.add_mutually_exclusive_group(required=True)
+    which.add_argument("--step", type=int)
+    which.add_argument("--restart", type=int, help="start the INDEXth stopped service again")
     command_.add_argument("--preview", action="store_true")
     check = sub.add_parser("check-step")
     check.add_argument("--plan", required=True)
@@ -994,8 +1142,8 @@ def main(argv: list[str] | None = None) -> int:
     result.add_argument("--done", type=int, required=True)
     result.add_argument("--failed", type=int)
     result.add_argument("--rc", type=int, default=0)
-    result.add_argument("--stopped", action="store_true", help="a Stop step of this plan ran")
-    result.add_argument("--ran", action="append", default=[], help="a command that ran, as shown")
+    result.add_argument("--ran-step", type=int, action="append", default=[], help="a step whose command ran")
+    result.add_argument("--halted", help="why the failed step did not run")
     result.add_argument("--choices", action="store_true")
     for command in sub.choices.values():
         command.add_argument("--repo-root", type=Path, default=ROOT)
@@ -1004,44 +1152,70 @@ def main(argv: list[str] | None = None) -> int:
     width = args.width or terminal_width()
     try:
         names = NodeNames.saved(args.repo_root)
+        location = getattr(args, "archive_location", None) or _archive_location(args.repo_root)
+        if args.command == "entry":
+            if args.save_flags:
+                # Saving the change leaves out the members that did not answer.
+                if _unanswered(args.repo_root, _topology_id(args.repo_root)):
+                    print("--remove-missing")
+                return 0
+            if args.explain:
+                sys.stdout.write(not_checked_text(args.repo_root, width=width))
+            else:
+                print(entry_state(args.repo_root, discovered=args.discovered))
+            return 0
+        if args.command == "running":
+            inventory = load_json(args.inventory)
+            stops, refused = running_services(inventory if isinstance(inventory, dict) else None,
+                                              _entries(sys.stdin))
+            # CONF, NAME and hosts for each service Stop can remove; "refused" and why for the others.
+            for stop in stops:
+                print(f"{stop['conf']}\t{stop['name']}\t{', '.join(stop['hosts'])}")
+            for reason in refused:
+                print(f"refused\t{clean(reason)}")
+            return 0
         if args.command == "list":
             entries = _entries(sys.stdin)
             inventory = load_json(args.inventory)
             for line in list_lines(entries, width=width - 2, inventory=inventory if isinstance(inventory, dict)
-                                   else None, archive_location=args.archive_location,
+                                   else None, archive_location=location,
                                    order=names.order, repo=args.repo_root,
                                    writer=TerminalWriter(width=width)):
                 print(line)
             return 0
         if args.command == "nodes":
+            # Nothing for a multi-node recipe: it serves on the saved order.
             row = _row(_entries(sys.stdin), args.spec_id)
-            print("\n".join(node_lines(row, names.order, names, width=width)))
+            if row["geometry"]["nodes"] == 1:
+                print("\n".join(node_lines(row, names.order, names, width=width)))
             return 0
-        if args.command in ("sources", "compose"):
+        if args.command in ("previews", "compose"):
             entries = _entries(sys.stdin)
             row = _row(entries, args.spec_id)
             serving = serving_nodes(row, names.order, args.node)
-            found = file_sources(row, serving=serving, order=names.order, archive_location=args.archive_location,
+            found = file_sources(row, serving=serving, order=names.order, archive_location=location,
                                  files=found_files(args.files), source=args.source, files_node=args.files_node,
                                  not_found=frozenset(None if item == "-" else item for item in args.not_found))
-            if args.command == "sources":
-                # SNAPSHOT (- for schema 2), KIND (register, restore or download) and the node_id.
-                for item in found:
-                    print(f"{'-' if item['snapshot'] is None else item['snapshot']}\t{item['kind']}\t{item['node']}")
+            if args.command == "previews":
+                # NAME, a tab, then the command's arguments, each after a tab;
+                # "hf" names the node_id to probe instead.
+                for name, command in preview_requests(row, entries, names=names, node=args.node, sources=found,
+                                                      files_scanned=bool(args.files), source=args.source,
+                                                      ready_only=args.ready_only):
+                    print("\t".join([name, *command]))
                 return 0
             # A schema-2 recipe's one snapshot has no name; its restore preview is restore:-.
-            previews = {}
+            loaded = {}
             for value in args.preview:
                 key, separator, path = value.partition("=")
                 if not separator:
                     raise ValueError("previews must use NAME=FILE")
-                previews["restore:None" if key == "restore:-" else key] = load_json(path)
+                loaded["restore:None" if key == "restore:-" else key] = load_json(path)
             inventory = load_json(args.inventory)
-            plan = compose(row, entries, names=names, node=args.node, archive_location=args.archive_location,
+            plan = compose(row, entries, names=names, node=args.node, archive_location=location,
                            sizes=snapshot_sizes(args.repo_root, row["spec_id"]),
                            inventory=inventory if isinstance(inventory, dict) else None,
-                           inventory_error=args.inventory_error, sources=found,
-                           previews=previews,
+                           inventory_error=args.inventory_error, sources=found, previews=loaded,
                            hf=load_json(args.hf) if args.hf else None,
                            unanswered=_unanswered(args.repo_root, _topology_id(args.repo_root)),
                            ready_only=args.ready_only, api_key=_api_key(args.repo_root))
@@ -1053,15 +1227,41 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "render":
             sys.stdout.write(render(plan, width=width))
         elif args.command == "steps":
-            # INDEX, KIND, whether it needs authority, and whether it has a preview.
+            # INDEX, KIND, whether it needs authority, whether it has a preview,
+            # its snapshot (- when none or unnamed) and its sentence.
             for index, step in enumerate(plan["steps"]):
-                print(f"{index}\t{step['kind']}\t{int(step['authority'])}\t{int(bool(step.get('preview')))}")
+                snapshot = step.get("snapshot")
+                print(f"{index}\t{step['kind']}\t{int(step['authority'])}\t{int(bool(step.get('preview')))}\t"
+                      f"{'-' if snapshot is None else snapshot}\t{clean(step['sentence'].replace(KEEP, ' '))}")
+        elif args.command == "facts":
+            # What Change… can offer, as KEY<TAB>VALUE lines.
+            kinds = {step["kind"] for step in plan["steps"]}
+            print(f"nodes\t{len(plan['serving']) if plan['serving'] else 0}")
+            print(f"files\t{int(bool(kinds & {'restore', 'download'}))}")
+            print(f"archive\t{int(any(step.get('kind') in FILE_STEPS and step.get('archive') for step in plan['steps']))}")
+            print(f"source\t{'restore' if 'restore' in kinds else 'download' if 'download' in kinds else '-'}")
+            print(f"stopped\t{len(plan.get('stopped') or [])}")
+            # Where restored or downloaded files can go: a serving node of a
+            # multi-node recipe, any node of a one-node recipe.
+            if kinds & {"restore", "download"}:
+                allowed = plan["serving"] if len(plan["serving"]) > 1 else names.order
+                current = next(step["node"] for step in plan["steps"] if step["kind"] in ("restore", "download"))
+                for node_id in allowed:
+                    print(f"destination\t{node_id}\t{names(node_id)}{' (now)' if node_id == current else ''}")
         elif args.command == "choices":
             for action, label in choices(plan):
                 print(f"{action}\t{label}")
         elif args.command == "command":
-            step = plan["steps"][args.step]
-            print("\n".join(step["preview"] if args.preview else step["command"]))
+            if args.restart is not None:
+                command = plan["stopped"][args.restart].get("restart")
+                if not command:
+                    raise ValueError("that service cannot be started again from this menu")
+            else:
+                step = plan["steps"][args.step]
+                command = step["preview"] if args.preview else step["command"]
+                if not command:
+                    raise ValueError("that step has no preview command")
+            print("\n".join(command))
         elif args.command == "check-step":
             entries = []
             from scripts.release_consumer import list_releases
@@ -1074,8 +1274,14 @@ def main(argv: list[str] | None = None) -> int:
                                          names=names, entries=entries)
             print(f"{verdict}\t{clean(reason)}")
         elif args.command == "outcome":
-            text, found = outcome(plan, done=args.done, failed=args.failed, rc=args.rc, ran=args.ran,
-                                  stopped_ran=args.stopped, width=width)
+            ran = [" ".join(plan["steps"][index]["command"]) for index in args.ran_step]
+            # Removing this recipe's own leftover containers stops nothing that served.
+            others = {item["conf"] for item in plan.get("stopped") or []}
+            stopped = any(plan["steps"][index]["kind"] == "stop"
+                          and (plan["steps"][index].get("facts") or {}).get("conf") in others
+                          for index in args.ran_step)
+            text, found = outcome(plan, done=args.done, failed=args.failed, rc=args.rc, ran=ran,
+                                  stopped_ran=stopped, halted=args.halted, width=width)
             if args.choices:
                 for action, label in found:
                     print(f"{action}\t{label}")
@@ -1086,7 +1292,6 @@ def main(argv: list[str] | None = None) -> int:
         from scripts.terminal_format import error_line
         error_line(exc, tag="serve plan")
         return 2
-
 
 
 if __name__ == "__main__":

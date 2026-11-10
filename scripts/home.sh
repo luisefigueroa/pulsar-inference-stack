@@ -5,9 +5,10 @@
 # saved records, each with its age (scripts/cluster_status.py home).
 #
 # After setup: Serve a model…, Running services…, Models and disk space…,
-# Cluster…, Help and troubleshooting…, Exit. Until later phases replace them,
-# the first three open today's catalog menu, inventory menu and Model files
-# page unchanged. Before setup: Set up this cluster… (or Start over: forget
+# Cluster…, Help and troubleshooting…, Exit. Serve a model… answers with a
+# plan (scripts/serve-menu.sh). Until later phases replace them, Running
+# services… and Models and disk space… open today's inventory menu and Model
+# files page unchanged. Before setup: Set up this cluster… (or Start over: forget
 # this cluster… when saved membership is invalid), read-only catalog
 # browsing, Help and troubleshooting… and Exit. Help and troubleshooting…
 # holds Advanced: single operations…, today's menus unchanged.
@@ -92,7 +93,9 @@ read -r complete topology_state < <(printf '%s' "$status_json" | python3 -c 'imp
 d=json.load(sys.stdin); print("1" if d.get("complete") else "0", d["topology"]["status"])')
 # Without Gum the menu does not open; name the commands behind its choices.
 if [ "$complete" = 1 ]; then
-  require_gum "the Pulsar menu" "./pulsar models menu" "serve a model: the catalog and its operations" \
+  require_gum "the Pulsar menu" "./pulsar models list" "serve a model: each recipe and its saved state" \
+    "./pulsar start SPEC --dry-run" "what Start would check; then ./pulsar start SPEC" \
+    "./pulsar models menu" "single operations: the catalog and each recipe's operations" \
     "./pulsar inventory menu" "running services: status and stop" \
     "./pulsar models files" "models and disk space on every node" \
     "./pulsar topology check" "check the cluster: saved nodes and fabric" \
@@ -149,7 +152,7 @@ if [ "$complete" = 1 ]; then
   # Each choice runs as a child; the menu returns here until Exit, Esc or Ctrl-C.
   set +e
   case "$choice" in
-    0) catalog_menu ;;
+    0) "$REPO_DIR/scripts/serve-menu.sh" ;;
     1) "$REPO_DIR/pulsar" inventory menu ;;
     2) "$REPO_DIR/pulsar" models files ;;
     3) "$REPO_DIR/scripts/cluster-menu.sh" ;;

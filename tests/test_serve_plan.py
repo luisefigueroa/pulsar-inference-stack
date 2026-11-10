@@ -232,7 +232,16 @@ class Compose(unittest.TestCase):
         self.assertEqual([step["kind"] for step in plan["steps"]], ["stop", "start"])
         self.assertEqual(plan["stopped"], [{"conf": OTHER, "name": "org/other", "hosts": ["spark-1", "spark-2",
                                                                                             "spark-3"],
-                                            "in_catalog": True, "node": None}])
+                                            "in_catalog": True, "node": None,
+                                            "restart": ["./pulsar", "start", OTHER[:12]]}])
+        # A modified recipe, or one outside the catalog, is not offered to start again.
+        live = other_running()
+        live["services"][0]["matches_selected_spec"] = False
+        modified = self.plan(state, live=live, previews={"start": start_blocked("port_in_use")})
+        self.assertIsNone(modified["stopped"][0]["restart"])
+        outside = self.plan(state, catalog=[state], live=other_running(), previews={"start": start_blocked("port_in_use")})
+        self.assertEqual(outside["steps"][0]["command"], ["./pulsar", "stop", OTHER])
+        self.assertFalse(outside["stopped"][0]["in_catalog"])
         self.assertEqual(plan["steps"][0]["sentence"].replace(serve.KEEP, " "), "Stop org/other on spark-1, spark-2 and spark-3. Its model "
                                                        "files are kept.")
         # Get it ready drops the Stop with the Start.
@@ -490,6 +499,22 @@ class Outcome(unittest.TestCase):
         self.assertEqual(choices, [("status", "Check the service now (read-only)"), ("back", "Back")])
 
 
+class Authority(unittest.TestCase):
+    def test_no_code_path_passes_replace_or_pull_image_and_a_pull_is_its_own_step(self):
+        for path in ("scripts/serve_plan.py", "scripts/serve-menu.sh"):
+            text = (ROOT / path).read_text()
+            for flag in ("--replace", "--pull-image", "--accept-memory-warn"):
+                self.assertNotIn(f'"{flag}"', text, path)
+                self.assertNotIn(f"'{flag}'", text, path)
+            code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+            if path.endswith(".sh"):
+                self.assertFalse([line for line in code if "--replace" in line or "--pull-image" in line], path)
+        # The one place --pull is added: the image step, which needs authority.
+        source = (ROOT / "scripts/serve_plan.py").read_text()
+        self.assertEqual(source.count('"--pull"'), 1)
+        self.assertIn('pull = ["--pull"] if mode == "pull" else []', source)
+
+
 class Cli(unittest.TestCase):
     """The menu's protocol: compose writes the plan; steps, command and choices read it."""
 
@@ -515,9 +540,13 @@ class Cli(unittest.TestCase):
                 serve.main(["steps", "--plan", str(out)])
                 serve.main(["command", "--plan", str(out), "--step", "0"])
                 serve.main(["choices", "--plan", str(out)])
-            self.assertEqual(printed.getvalue().splitlines(), [
-                "0\tstop\t1\t0", "1\tstart\t0\t0", "./pulsar", "stop", OTHER[:12],
-                "cancel\tCancel", "go\tGo ahead", "change\tChange…", "details\tDetails"])
+            lines = printed.getvalue().splitlines()
+            self.assertEqual([line.split("\t")[:5] for line in lines[:2]],
+                             [["0", "stop", "1", "0", "-"], ["1", "start", "0", "0", "-"]])
+            self.assertEqual(lines[0].split("\t")[5], "Stop org/other on spark-1, spark-2 and spark-3. Its model "
+                                                      "files are kept.")
+            self.assertEqual(lines[2:], ["./pulsar", "stop", OTHER[:12],
+                                         "cancel\tCancel", "go\tGo ahead", "change\tChange…", "details\tDetails"])
 
 
 if __name__ == "__main__":

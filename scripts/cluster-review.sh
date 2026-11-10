@@ -9,9 +9,17 @@
 # there and is not a second question. After a save, recording the nodes' SSH
 # identities keeps its own confirmation with the fingerprints
 # (./pulsar ssh-trust enroll). Nothing here probes a node until a choice runs.
+#
+# --serve is the screen Serve a model… shows when its change check found a
+# change. It adds two choices, which return to Serve a model…:
+#   Serve on the cluster as saved                  exits 20
+#   Stop MODEL, save the change, then continue     exits 21; shown when a
+#                                                  running service refuses the save
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
+SERVE=()
+[ "${1:-}" != --serve ] || SERVE=(--serve)
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
 require_gum "the review of cluster changes" \
@@ -63,7 +71,7 @@ labels=() actions=()
 while IFS=$'\t' read -r action label; do
   [ -n "$action" ] || continue
   actions+=("$action"); labels+=("$label")
-done < <(status review --choices)
+done < <(status review --choices "${SERVE[@]}")
 # The screen prints above its choices when both fit the terminal's rows, as
 # the recipe frame does (a blank line, the screen, then Gum's choices and its
 # five rows); otherwise it opens in the pager, rendered at the pager's width.
@@ -90,6 +98,8 @@ case "${actions[$choice]}" in
       printf '\nKept as a member. It stays under Attention until it answers, and Pulsar asks again only when a later check sees different changes.\n' \
         | python3 -m scripts.terminal_format --text
     fi ;;
+  serve) exit 20 ;;
+  stop-save) exit 21 ;;
   check)
     # Inside the check, the check runs again there; elsewhere it runs here.
     [ "${_PULSAR_REVIEW_FROM_CHECK:-0}" != 1 ] || exit 10

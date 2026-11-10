@@ -3,7 +3,7 @@
 
     python3 -m scripts.cluster_status home [--now TIME] [--width N] < CATALOG_JSON
     python3 -m scripts.cluster_status frame [--now TIME] [--width N]
-    python3 -m scripts.cluster_status review [--now TIME] [--width N] [--choices]
+    python3 -m scripts.cluster_status review [--now TIME] [--width N] [--choices] [--serve]
     python3 -m scripts.cluster_status api-key [--width N]
     python3 -m scripts.cluster_status saved-id|node-count
 
@@ -501,8 +501,24 @@ def projected_positions(records: Records) -> list[tuple[str, int | None, int | N
     return rows
 
 
-def review(records: Records, *, width: int | None = None) -> tuple[str, list[tuple[str, str]]]:
-    """The Review screen: saved against observed, then one question's choices."""
+def running_models(records: Records) -> list[str]:
+    """The model names of the Pulsar services with a running container in the saved inventory."""
+    if records.inventory is None:
+        return []
+    from scripts.inventory_menu import project
+    try:
+        services = {**project(records.inventory, []), **project_others(records.inventory, [])}
+    except ValueError:
+        return []
+    return [service["model_id"] for service in services.values() if service["state"] in ACTIVE_STATES]
+
+
+def review(records: Records, *, width: int | None = None, serve: bool = False) -> tuple[str, list[tuple[str, str]]]:
+    """The Review screen: saved against observed, then one question's choices.
+
+    SERVE is the screen Serve a model… shows before its list when the change
+    check found a change: it adds Serve on the cluster as saved and, when a
+    running service refuses the save, Stop it, save the change, then continue."""
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
 
@@ -601,6 +617,15 @@ def review(records: Records, *, width: int | None = None) -> tuple[str, list[tup
     if same:
         out.blank()
         field("Same as", "; ".join(same))
+    if serve:
+        # Serving on the cluster as saved needs no save; a plan whose nodes did
+        # not answer stops before it changes anything.
+        choices.append(("serve", "Serve on the cluster as saved"))
+        # The Refused line above names what runs; the saved inventory has no catalog to name it here.
+        models = running_models(records)
+        if running and can_save and models:
+            what = "the running service" if len(models) == 1 else "the running services"
+            choices.append(("stop-save", f"Stop {what}, save the change, then continue"))
     choices.append(("back", "Back"))
     return _plain(output.getvalue()), choices
 
@@ -677,6 +702,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--now", type=_instant)
         if name == "review":
             command.add_argument("--choices", action="store_true")
+            command.add_argument("--serve", action="store_true", help="the screen Serve a model… shows")
     args = parser.parse_args(argv)
     if args.command == "api-key":
         sys.stdout.write(api_key_text(args.repo_root, width=args.width))
@@ -704,7 +730,7 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(f"key\t{records.key()}\t{'review' if has_review(records) else '-'}\n"
                          f"{frame(records, width=args.width)}")
     else:
-        text, choices = review(records, width=args.width)
+        text, choices = review(records, width=args.width, serve=args.serve)
         if args.choices:
             sys.stdout.write("".join(f"{action}\t{label}\n" for action, label in choices))
         else:
