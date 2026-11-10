@@ -269,8 +269,9 @@ def emit_workflow(writer: TerminalWriter) -> None:
         writer.emit(sentence, initial_indent="     ", markup=True)
     writer.blank()
     writer.emit("The same steps as commands: `pulsar model acquire` or `model restore`, `model prepare`, "
-                "`image stage`, `start`, `status`, `stop` and `model purge`. Most commands accept `--help`. "
-                "The outcome of **Serve a model…** lists the commands it ran under Same as.", markup=True)
+                "`image stage`, `start`, `status`, `stop`, `model archive create` and `model purge`. Most commands "
+                "accept `--help`. The outcome of **Serve a model…**, and of each plan under **Models and disk "
+                "space…**, lists the commands it ran under Same as.", markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:
