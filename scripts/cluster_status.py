@@ -89,7 +89,7 @@ STATUS_WORDS = {
     "not-observed-yet": "not observed yet",
     "none-running": "none running",
     "unknown": "unknown",
-    "last-seen": "last seen",
+    "remain": "remain",
     "outside": "outside the catalog",
     "unreadable": "unreadable",
     "archive-unreadable": "the archive location setting could not be read",
@@ -286,28 +286,42 @@ def check_items(records: Records) -> list[str]:
 # Services and disk, from the saved inventory and budget
 # ---------------------------------------------------------------------------
 
+# Service states that hold a running container; the others only leave containers behind.
+ACTIVE_STATES = ("running", "partial", "degraded")
+
+
 def service_texts(records: Records, entries: list[dict], room: int,
                   states: tuple[str, ...] | None = None) -> tuple[list[str], str | None]:
-    """One text per Pulsar service (only those in STATES, when given), and what is unknown about the others."""
+    """One text per Pulsar service (only those in STATES, when given), and what is unknown about the others.
+
+    Services with a running container come first, as "MODEL running on
+    NODES"; a service with only exited or stopped containers left reads
+    "exited containers of MODEL remain on NODES". Every caller ends its line
+    with the inventory's age (`seen …`), so no text says "last seen" again."""
     inventory = records.inventory
     live = live_inventory(inventory, entries, now=records.now)
     catalog = [{"spec_id": row["spec_id"], "model_id": row["model_id"], "nodes": row["geometry"]["nodes"]}
                for row in entries]
-    fresh = saved._fresh(inventory, records.now)
-    texts = []
+    active, remains = [], []
     for outside, services in ((False, live["services"]), (True, project_others(inventory, catalog))):
         for service in services.values():
             if states is not None and service["state"] not in states:
                 continue
             state = SERVICE_STATES.get(service["state"], service["state"])
             where = ", ".join(service["hosts"]) or "nodes not identified"
-            text = f"{cut_middle(service['model_id'], room)} {'' if fresh else STATUS_WORDS['last-seen'] + ' '}"
-            text += f"{state} on {where}"
-            if service.get("port"):
-                text += f" ·{KEEP}{_kept('port', service['port'])}"
+            model = cut_middle(service["model_id"], room)
+            if service["state"] in ACTIVE_STATES:
+                text = f"{model} {state} on {where}"
+                if service.get("port"):
+                    text += f" ·{KEEP}{_kept('port', service['port'])}"
+            else:
+                text = f"{state} of {model} {STATUS_WORDS['remain']} on {where}"
             if outside and entries:
                 text += f" ·{KEEP}{_kept(*STATUS_WORDS['outside'].split())}"
-            texts.append(text)
+            (active if service["state"] in ACTIVE_STATES else remains).append(text)
+    texts = active + remains
+    if remains and not active:
+        texts[0] = f"{STATUS_WORDS['none-running']} · {texts[0]}"
     unknown = None
     if live["incomplete"]:
         unobserved = _list(live["unobserved"]) or "a node"

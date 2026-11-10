@@ -190,8 +190,9 @@ below are for reading.
 | Serving: not observed yet | No *service inventory* is saved on this controller yet, so home cannot say what runs. It does not mean nothing runs. **Running services…** looks and saves what it sees. |
 | Serving: running on … · port … | Each Pulsar *service* in the last saved service inventory, in the words of the **Running?** rows, with the nodes it runs on and its port. The saved inventory holds no API URL; **Running services…** has the details. |
 | Serving: outside the catalog | A Pulsar-managed service whose spec this checkout does not publish, for example one an experiment started or one started with `--spec-file`. **Running services…** shows it and offers Stop. |
-| Serving: last seen | The saved service inventory is older than ten minutes, so the service may have started, stopped or changed since. **Running services…** looks again. |
-| Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. |
+| Serving: seen … ago | When the saved service inventory was taken. Past ten minutes the service may have started, stopped or changed since; **Running services…** looks again. |
+| Serving: exited containers of … remain | No container of that service is running, but its exited or stopped containers are still on the node. **Stop** removes them; model files are kept. |
+| Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. Exited or stopped containers that remain are named after it. |
 | Serving: unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. |
 | Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
 | Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
@@ -1312,7 +1313,9 @@ tracked. A record that is missing reads `not observed yet` or `not checked
 yet`, never as fine, and a saved file that cannot be read says so and is
 replaced by the next check. The ages do not tick while the menu stays open;
 the block prints again only when a saved record changed or the inventory
-turned `last seen` after ten minutes. Saves of one record take turns under a
+grew older than ten minutes. The Serving line says its age once, at its end:
+`seen 30 minutes ago`. With no service running it leads with `none running`,
+then names any exited containers that remain. Saves of one record take turns under a
 lock file beside it, so an older inventory never replaces a newer one.
 
 Without Gum the menu does not open; `./pulsar` names the commands behind its

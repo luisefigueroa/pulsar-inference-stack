@@ -500,17 +500,30 @@ class StatusBlock(MenuHarness):
         self.assertNotIn("probe:", self.pulsar_log.read_text() if self.pulsar_log.exists() else "")
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
 
-    def test_an_old_inventory_reads_last_seen_and_none_running_says_so(self):
+    def test_an_old_inventory_says_its_age_once_and_none_running_says_so(self):
         old = datetime.now(timezone.utc) - timedelta(minutes=30)
         self.saved_inventory.write_text(saved_inventory(utc(old)))
         result = self.run_home(["Exit"])
-        self.assertIn("example/model last seen running on fixture-remote", self.block(result))
+        self.assertIn("Serving example/model running on fixture-remote · port 8000 · seen 30 minutes ago",
+                      self.block(result))
+        self.assertNotIn("last seen", result.stdout)
         document = json.loads(saved_inventory())
         document["services"] = []
         self.saved_inventory.write_text(json.dumps(document))
         self.again()
         result = self.run_home(["Exit"])
         self.assertIn("Serving none running · seen less than a minute ago", self.block(result))
+
+    def test_only_exited_containers_lead_with_none_running(self):
+        document = json.loads(saved_inventory(utc(datetime.now(timezone.utc) - timedelta(hours=6))))
+        document["services"][0]["state"] = "stale"
+        self.saved_inventory.write_text(json.dumps(document))
+        result = self.run_home(["Exit"])
+        text = self.block(result)
+        self.assertIn("Serving none running · exited containers of example/model remain on fixture-remote · "
+                      "seen 6 hours ago", text)
+        self.assertNotIn("last seen", text)
+        self.assertNotIn("port 8000", text)
 
     def test_a_node_that_did_not_answer_is_under_attention_and_unknown_is_not_absent(self):
         document = json.loads(saved_inventory())
