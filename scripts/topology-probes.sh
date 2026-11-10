@@ -93,3 +93,30 @@ PY
     done
   done
 }
+
+# topology_adapters_active HCAS: which of the adapters in HCAS (comma-separated:
+# the ones a launch gives one rank) `rdma link show` on stdin reports as
+# state ACTIVE. Prints the count active, the count selected, and the adapters
+# that are not active, comma-separated, tab-separated on one line. An adapter
+# missing from the listing, or no listing at all, is not active.
+topology_adapters_active() {
+  local hcas="$1" listing hca port_state active=0 total=0 missing=""
+  local -A state=()
+  listing=$(cat)
+  while read -r _link name _state value _rest; do
+    [ "$_link" = link ] && [ "$_state" = state ] || continue
+    state["${name%%/*}"]="$value"
+  done <<<"$listing"
+  local IFS=,
+  for hca in $hcas; do
+    [ -n "$hca" ] || continue
+    total=$((total + 1))
+    port_state="${state[$hca]:-}"
+    if [ "$port_state" = ACTIVE ]; then
+      active=$((active + 1))
+    else
+      missing="${missing:+$missing,}$hca"
+    fi
+  done
+  printf '%s\t%s\t%s\n' "$active" "$total" "$missing"
+}

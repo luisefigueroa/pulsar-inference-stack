@@ -282,5 +282,51 @@ class PreflightPings(unittest.TestCase):
         self.assertNotIn('RDMA links ACTIVE', text)
 
 
+def listing(*states):
+    """`rdma link show` lines for (adapter, state) pairs."""
+    return ''.join(f'link {hca}/1 state {state} physical_state LINK_UP netdev fab{index}\n'
+                   for index, (hca, state) in enumerate(states))
+
+
+def adapters_active(selected, text):
+    script = '. "$1/scripts/topology-probes.sh"; topology_adapters_active "$2"'
+    result = subprocess.run(['bash', '-c', script, 'rdma', str(ROOT), selected], input=text, capture_output=True,
+                            text=True, timeout=30)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return result.stdout.rstrip('\n').split('\t')
+
+
+class PreflightRdmaState(unittest.TestCase):
+    """Preflight checks that every adapter the launch gives a rank is an ACTIVE RDMA port."""
+
+    def test_all_selected_adapters_active(self):
+        text = listing(('rocep0a', 'ACTIVE'), ('rocep0b', 'ACTIVE'), ('rocep1a', 'ACTIVE'), ('rocep1b', 'ACTIVE'))
+        self.assertEqual(adapters_active('rocep0a,rocep0b', text), ['2', '2', ''])
+
+    def test_one_selected_adapter_down_is_named(self):
+        text = listing(('rocep0a', 'ACTIVE'), ('rocep0b', 'DOWN'))
+        self.assertEqual(adapters_active('rocep0a,rocep0b', text), ['1', '2', 'rocep0b'])
+
+    def test_no_rdma_devices_fail_however_pings_answer(self):
+        self.assertEqual(adapters_active('rocep0a,rocep0b', ''), ['0', '2', 'rocep0a,rocep0b'])
+
+    def test_an_unselected_adapter_down_does_not_fail_a_pair_that_does_not_use_it(self):
+        # Rank 0 of a neighbouring pair uses its port 0; its port 1 cable leads elsewhere.
+        fixture, _names = ring(self)
+        selected = ','.join(sorted(profile(fixture.topology, 0, 1)[0]))
+        text = listing(('rocep0a', 'ACTIVE'), ('rocep0b', 'ACTIVE'), ('rocep1a', 'DOWN'), ('rocep1b', 'DOWN'))
+        self.assertEqual(adapters_active(selected, text), ['2', '2', ''])
+
+    def test_preflight_checks_the_adapters_selected_for_each_rank(self):
+        text = (ROOT / 'cluster/preflight.sh').read_text()
+        self.assertIn('selected="${CLUSTER_PROFILE_HCAS[$rank]:-}"', text)
+        self.assertIn('node_exec "$rank" "rdma link show 2>/dev/null" 2>/dev/null | topology_adapters_active "$selected"',
+                      text)
+        self.assertIn('selected RDMA adapters ACTIVE; not ACTIVE: ', text)
+        # The selection is made by the launch check, which runs first.
+        self.assertLess(text.find('require_profile_topology'), text.find('check_node "$rank"'))
+
+
 if __name__ == '__main__':
     unittest.main()

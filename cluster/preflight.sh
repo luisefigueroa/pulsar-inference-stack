@@ -112,6 +112,20 @@ check_node() {
   fi
   rm -f "$probe_file"
 
+  # The adapters this launch gives the rank must be ACTIVE RDMA ports: a ping
+  # answers over IP even when the RDMA driver is not loaded.
+  local selected active total missing
+  selected="${CLUSTER_PROFILE_HCAS[$rank]:-}"
+  IFS=$'\t' read -r active total missing < <(
+    node_exec "$rank" "rdma link show 2>/dev/null" 2>/dev/null | topology_adapters_active "$selected")
+  if [ "$total" -gt 0 ] && [ "$active" = "$total" ]; then
+    ok "rank $rank: $active of $total selected RDMA adapters ACTIVE"
+  elif [ "$total" -gt 0 ]; then
+    bad "rank $rank: $active of $total selected RDMA adapters ACTIVE; not ACTIVE: ${missing//,/, }"
+  else
+    bad "rank $rank: no RDMA adapter is selected for this rank"
+  fi
+
   node_exec "$rank" "test -e $(printf '%q' "$PULSAR_RDMA_VERBS_DEVICE")" \
     2>/dev/null \
     && ok "rank $rank: /dev/infiniband present" \
