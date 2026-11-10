@@ -689,6 +689,17 @@ class Authority(unittest.TestCase):
                           and not line.lstrip().startswith("#")], [])
 
 
+class PageAuthority(unittest.TestCase):
+    def test_the_pages_built_on_the_plan_add_no_flag_that_needs_authority(self):
+        # Restart… and Switch… run through serve-menu.sh, whose own check is above.
+        for path in ("scripts/services-menu.sh", "scripts/services_page.py", "scripts/why-not-start.sh",
+                     "scripts/start_reasons.py"):
+            code = [line for line in (ROOT / path).read_text().splitlines() if not line.lstrip().startswith("#")]
+            for flag in ("--replace", "--pull-image", "--accept-memory-warn"):
+                self.assertEqual([line for line in code if re.search(re.escape(flag) + r"(?![-\w])", line)], [],
+                                 f"{path}: {flag}")
+
+
 class Cli(unittest.TestCase):
     """The menu's protocol: compose writes the plan; steps, command and choices read it."""
 

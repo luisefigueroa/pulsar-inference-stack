@@ -249,9 +249,10 @@ class TopologyCommands(unittest.TestCase):
     def test_gum_root_entry_and_back_does_not_probe(self):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
-        # Cluster… and Back; then Help and troubleshooting… → Advanced → Cluster
+        # Cluster… and Back; then Help and troubleshooting… → Advanced (after Why will a
+        # model not start?, which setup adds first) → Cluster
         # topology, Back three times to the home menu, then Exit.
-        self.use_gum(TOPOLOGY_GUM_HOME='3,4,5', TOPOLOGY_GUM_CLUSTER='3', TOPOLOGY_GUM_HELP='5,6',
+        self.use_gum(TOPOLOGY_GUM_HOME='3,4,5', TOPOLOGY_GUM_CLUSTER='3', TOPOLOGY_GUM_HELP='6,7',
                      TOPOLOGY_GUM_ADVANCED='3,5', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)

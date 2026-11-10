@@ -632,6 +632,25 @@ class Sources(Harness):
         self.assertFalse(any(line.startswith(("prerequisites", "model acquire")) for line in self.commands()))
         self.assertIn("1. Restore the model files from the archive to spark-1", " ".join(result.stdout.split()))
 
+    def test_starting_anyway_is_offered_after_a_refused_start_with_nothing_stopped_too(self):
+        # Open question for the maintainer: 3.5.1 names the outcome after a Stop; the
+        # choice follows the refusal, so it is offered where nothing was stopped as well.
+        self.entries(checked(home=HOME, local_state="ready"))
+        self.inventory(NOTHING_RUNNING)
+        self.fixture("prepare-plan", envelope(prepare_plan(("n0", "reuse"), ("n1", "reuse"), ("n2", "reuse"))))
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "ok"), (2, "ok"))))
+        self.fixture("start-plan", envelope({"checks": []}))
+        self.fixture("start", rc=1, nth=1)
+        (self.fixtures / "start.1.blockers").write_text(json.dumps(
+            {"blocker": "memory_warning", "stage": "check", "message": "memory_warning found", "detail": None}) + "\n")
+        result = self.run_menu(["0", "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[2], ["Serve a model", "Start org/model with less free memory than recommended",
+                                           "Back"])
+        self.assertIn("Start refused only because free memory is below the recommended headroom. Starting anyway",
+                      " ".join(result.stdout.split()))
+        self.assertEqual(self.ran(), [f"start {SPEC}"])
+
     def test_a_one_node_recipe_asks_its_machine_starting_where_its_files_are(self):
         self.entries(checked(geometry={"nodes": 1, "tp": 1, "pp": 1}, home={**HOME, "node_id": "n1"},
                              local_state="ready"))
