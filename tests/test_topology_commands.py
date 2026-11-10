@@ -819,6 +819,48 @@ class TopologyCommands(unittest.TestCase):
         self.assertTrue(commands[0].endswith(' --prerequisites-only'), commands[0])
         self.assertEqual(commands[1], commands[0][:-len(' --prerequisites-only')])
 
+    def test_node_prerequisites_asks_only_the_named_node_with_the_shared_probe(self):
+        # Serve a model… runs it for the node a plan downloads to (D14).
+        f = self.fixture
+        home = f.root / 'home'
+        home.mkdir()
+        hf = Path(f.env['PATH'].split(os.pathsep)[0]) / 'hf'
+        hf.write_text('#!/usr/bin/env bash\necho "hf $*" >> "$TOPOLOGY_FIXTURE/hf.log"\nexit 1\n')
+        hf.chmod(0o755)
+        env = dict(f.env, HOME=str(home))
+        answer = prerequisites_answer(1, hf='missing', login='unknown')
+        (f.root / 'prerequisites-1.json').write_text(json.dumps(answer))
+        script = str(ROOT / 'scripts/node-prerequisites.sh')
+        nodes = {node['hostname']: node['node_id'] for node in f.topology['nodes']}
+        for selector in (nodes['fixture-rank-1'], 'fixture-rank-1'):
+            with self.subTest(selector=selector):
+                f.log.unlink(missing_ok=True)
+                result = subprocess.run(['bash', script, selector], env=env, text=True, capture_output=True,
+                                        timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), answer)
+                asked = [args for tool, args in f.calls() if tool == 'ssh']
+                self.assertEqual(len(asked), 1)
+                self.assertIn('alias-1', asked[0])
+                self.assertTrue(asked[0][-1].endswith(' --prerequisites-only'), asked[0][-1])
+        # This machine is asked locally, without SSH.
+        f.log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', script, 'fixture-rank-0'], env=env, text=True, capture_output=True,
+                                timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), prerequisites_answer(0))
+        self.assertEqual([tool for tool, _ in f.calls()], ['python3'])
+        self.assertIn('--prerequisites-only', f.calls()[0][1])
+        # A machine that is not a member is refused before anything is asked.
+        f.log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', script, 'fixture-new'], env=env, text=True, capture_output=True,
+                                timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fixture-new is not a node of saved membership', result.stderr)
+        self.assertEqual(f.calls(), [])
+        # The answers came from the probe doubles: hf itself never ran here.
+        self.assertFalse((f.root / 'hf.log').exists())
+
     # Phase 1.2: every discovery against valid saved membership saves what it saw.
     def changes(self):
         path = self.fixture.root/'state/cluster-changes.json'
