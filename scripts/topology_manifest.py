@@ -832,11 +832,18 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
         field("Fabric", "single node · no cluster links required")
         field("Checks", "not needed · no other nodes found")
     else:
-        field(
-            "Fabric",
-            f"full mesh · at least {link_count} RoCE {link_word} "
-            "between each node pair",
-        )
+        if validation.get("class") == RING_CLASS:
+            field(
+                "Fabric",
+                f"ring · at least {link_count} RoCE {link_word} on each "
+                "cable between neighbours",
+            )
+        else:
+            field(
+                "Fabric",
+                f"full mesh · at least {link_count} RoCE {link_word} "
+                "between each node pair",
+            )
         if validation.get("connectivity_verified") is True:
             field(
                 "Checks",

@@ -5,6 +5,7 @@ Synthetic probes only; nothing here contacts a node.
 from datetime import datetime, timezone
 import ipaddress
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -643,6 +644,39 @@ class SavedRingLoaders(unittest.TestCase):
         self.assertIn('four=1\n', result.stdout)
         self.assertEqual(result.stderr.count('topology: confirmed topology is not a full mesh\n'), 2)
         self.assertNotIn('Traceback', result.stderr)
+
+
+def rendered(document, *, columns='80'):
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory)/'document.json'
+        path.write_text(json.dumps(document))
+        environment = {key: value for key, value in os.environ.items() if not key.startswith(('PULSAR_', 'NO_COLOR'))}
+        result = subprocess.run([sys.executable, str(ROOT/'scripts/topology_manifest.py'), 'render', str(path)],
+                                env=dict(environment, COLUMNS=columns, TERM='dumb'),
+                                capture_output=True, text=True, check=True)
+    return result.stdout
+
+
+class RingWords(unittest.TestCase):
+    """Nothing a person reads calls a ring a full mesh."""
+
+    def test_discovery_calls_a_ring_a_ring(self):
+        document = tm.mark_verified(discover(shuffled(ring_probes(4, single_link_cables={1}))))
+        text = rendered(document)
+        self.assertIn('Fabric      ring · at least 1 RoCE link on each cable between neighbours\n', text)
+        self.assertIn('Checks      PASS · 14/14 connections reachable\n', text)
+        self.assertNotIn('mesh', text)
+        self.assertNotIn('pair', text)
+        narrow = rendered(document, columns='44')
+        self.assertTrue(all(len(line) <= 44 for line in narrow.splitlines()), narrow)
+
+    def test_a_mesh_still_reads_as_before(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probes = [node_probe(rank) for rank in range(3)]
+            document = tm.mark_verified(tm.assemble(write_probes(directory, probes), None))
+        text = rendered(document)
+        self.assertIn('Fabric      full mesh · at least 1 RoCE link between each node pair\n', text)
+        self.assertIn('Checks      PASS · 6/6 connections reachable\n', text)
 
 
 if __name__ == '__main__':
