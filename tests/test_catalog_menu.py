@@ -2199,7 +2199,8 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
             "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "nothing": False})
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0,
+                                                             "nothing": False})
 
     def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
         plan = preparation(("n0", "home-view"), ("n1", "copy"), budgets={"n1": budget(limit=GIB)})
@@ -2219,11 +2220,35 @@ class PlanSummary(unittest.TestCase):
                               preparation(("n0", "home-view"), manifest="2" * 64, snapshot="draft")]}
         self.assertTrue(self.summary("prepare", both)[0].startswith("Nothing to copy: both snapshots are already on spark-1."))
 
+    def test_prepare_takes_over_copies_made_before_the_membership_changed(self):
+        # D13: a takeover (rebind) copies nothing and reads as taking over.
+        plan = preparation(("n0", "rebind"), ("n1", "rebind"))
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2,
+                                                             "nothing": True})
+        self.assertEqual(self.summary("prepare", plan), [
+            "Nothing to copy: the snapshot is already on spark-1, spark-2. "
+            "Prepare verifies the files and records them.",
+            "It takes over 2 copies made before the cluster's membership changed; nothing is copied or deleted."])
+        self.assertEqual(menu.question("prepare", checked(home=HOME), plan=plan, names=NAMES),
+                         "Prepare org/model on spark-1, spark-2? Nothing is copied; Prepare verifies and records "
+                         "the files already there. It takes over 2 copies made before the cluster's membership "
+                         "changed; nothing is copied or deleted.")
+        mixed = preparation(("n0", "rebind"), ("n1", "copy"), budgets={"n1": budget()})
+        self.assertEqual(self.summary("prepare", mixed)[0], "Copy 2.00 GiB to spark-2 (1 new copy, 0 reused, 1 taken over).")
+        self.assertEqual(menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES),
+                         "Prepare org/model on spark-1, spark-2? 1 new copy, 0 reused, 1 taken over. It takes over "
+                         "1 copy made before the cluster's membership changed; nothing is copied or deleted.")
+        # The full preview names the action, and the estimate counts it as existing files.
+        from model_library.render import preparation_estimate
+        _, nodes = preparation_estimate([mixed])
+        self.assertEqual((nodes["n0"]["new_copy"], nodes["n0"]["existing"]), (0, 2 * GIB))
+
     def test_a_manifest_shared_by_two_snapshots_is_copied_once_per_node(self):
         plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "nothing": False})
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0,
+                                                             "nothing": False})
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",
             "Estimated headroom after copying: 48.00 GiB on spark-2 (file sizes only; space is not reserved)."])

@@ -214,30 +214,92 @@ class Preparation(Details):
             "code": "changed-copy", "message": "n1: explicitly purge the changed prepared copy before preparing",
             "node_id": "n1", "fix": "purge the prepared copies, then prepare"}])
 
-    def test_after_a_membership_save_prepare_alone_does_not_update_the_records(self):
-        # Find-out (phase 1.3): a membership save changes the topology ID even
-        # when the same nodes keep their positions. Prepare then refuses every
-        # prepared copy made under the old ID, the home's own included, until
-        # they are purged; a pinned one needs unpinning first.
+    def membership_change(self, *, pinned=False, rank=1, n0=None, n1=None):
+        """Copies made under an earlier topology ID, the home's own included."""
         old = "e" * 64
         home_view = {**home(), "kind": "pulsar-prepared-view", "spec_id": self.spec["spec_id"], "topology_id": old,
                      "rank": 0, "pinned": False, "is_home_view": True}
+        copy_view = self.mine(topology=old, rank=rank, pinned=pinned)
+        observations = observed("n0", "n1", n0=n0 or {"view_verified": True}, n1=n1 or {"view_verified": True})
+        return self.plan(views=[home_view, copy_view], observations=observations)
+
+    def test_after_a_membership_save_prepare_takes_over_verified_copies(self):
+        # D13: a membership save changes the topology ID even when the same
+        # nodes keep their positions. Copies whose files verify on the same
+        # node are taken over: nothing is copied or deleted.
+        plan = self.membership_change()
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual(plan["blocker_details"], [])
+        self.assertEqual([(a["action"], a["previous"]) for a in plan["actions"]],
+                         [("rebind", {"topology_id": "e" * 64, "rank": 0}),
+                          ("rebind", {"topology_id": "e" * 64, "rank": 1})])
+        # Under the same topology ID they are reused, as before.
+        same = self.plan(views=[{**home(), "kind": "pulsar-prepared-view", "spec_id": self.spec["spec_id"],
+                                 "topology_id": TOPOLOGY, "rank": 0, "pinned": False, "is_home_view": True},
+                                self.mine()],
+                         observations=observed("n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in same["actions"]], ["reuse", "reuse"])
+        self.assertNotIn("previous", same["actions"][0])
+
+    def test_a_copy_whose_position_changed_is_taken_over_at_its_new_position(self):
+        plan = self.membership_change(rank=3)
+        self.assertEqual([(a["rank"], a["action"]) for a in plan["actions"]], [(0, "rebind"), (1, "rebind")])
+        self.assertEqual(plan["actions"][1]["previous"]["rank"], 3)
+        # A position change alone, under the same topology ID, is taken over too.
+        moved = self.plan(views=[self.mine(rank=3)], observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in moved["actions"]], ["home-view", "rebind"])
+
+    def test_a_pinned_copy_is_taken_over_and_stays_pinned(self):
+        plan = self.membership_change(pinned=True)
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([a["action"] for a in plan["actions"]], ["rebind", "rebind"])
+
+    def test_unverified_files_or_another_source_are_still_a_changed_copy(self):
+        unverified = self.membership_change(n1={"view_verified": False})
+        self.assertEqual([(item["code"], item["node_id"]) for item in unverified["blocker_details"]],
+                         [("changed-copy", "n1")])
+        self.assertEqual(unverified["blocker_details"][0]["fix"], "purge the prepared copies, then prepare")
+        pinned = self.membership_change(pinned=True, n1={"view_verified": False})
+        self.assertEqual([item["code"] for item in pinned["blocker_details"]], ["pinned"])
+        # The home's own record that does not name the home's files is another source.
+        old = "e" * 64
+        stray = {**self.mine(node="n0", rank=0, topology=old), "is_home_view": True}
+        mismatch = self.plan(views=[stray], observations=observed("n0", "n1", n0={"view_verified": True}))
+        self.assertEqual([(item["code"], item["node_id"]) for item in mismatch["blocker_details"]],
+                         [("changed-copy", "n0")])
+        # A container that mounts the copy still blocks, whatever its state.
         copy_view = self.mine(topology=old)
-        plan = self.plan(views=[home_view, copy_view], observations=observed(
-            "n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
-        self.assertFalse(plan["eligible"])
-        self.assertEqual([(item["code"], item["node_id"]) for item in plan["blocker_details"]],
-                         [("changed-copy", "n0"), ("changed-copy", "n1")])
-        # Under the same topology ID they are reused.
-        same = self.plan(views=[{**home_view, "topology_id": TOPOLOGY}, self.mine()], observations=observed(
-            "n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
-        self.assertEqual(([a["action"] for a in same["actions"]], same["eligible"]), (["reuse", "reuse"], True))
-        # Pinned: unpin, then purge.
-        pinned = self.plan(views=[home_view, self.mine(topology=old, pinned=True)])
-        self.assertEqual([item["code"] for item in pinned["blocker_details"]], ["changed-copy", "pinned"])
-        # After the purge removes the records, Prepare makes them again.
+        mounted = self.plan(views=[copy_view], observations=observed(
+            "n0", "n1", containers=[container(copy_view["hub_path"], running=False)], n1={"view_verified": True}))
+        self.assertEqual([item["code"] for item in mounted["blocker_details"]], ["container-reference"])
+        # After a purge removes the records, Prepare makes them again.
         fresh = self.plan(views=[])
         self.assertEqual(([a["action"] for a in fresh["actions"]], fresh["eligible"]), (["home-view", "copy"], True))
+
+    def test_a_takeover_needs_no_disk_space(self):
+        plan = self.membership_change()
+        full = self.plan(views=[self.mine(topology="e" * 64)], budgets={"n1": budget(available=0, limit=0)},
+                         observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertTrue(full["eligible"], full["blockers"])
+        self.assertTrue(plan["eligible"])
+
+    def test_only_prepare_resolves_an_interrupted_takeover(self):
+        from model_library.integrity import StorageError
+        from model_library.state import reconcile_views
+        controller = self.mine(topology="e" * 64, rank=1)
+        node = {**controller, "topology_id": TOPOLOGY, "rank": 1}
+        # Other readers still refuse records that disagree.
+        with self.assertRaisesRegex(StorageError, "disagree"):
+            reconcile_views([controller, node])
+        # Prepare takes the record that names the current membership.
+        merged = reconcile_views([controller, node], current_topology_id=TOPOLOGY)
+        self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [(TOPOLOGY, 1)])
+        merged = reconcile_views([node, controller], current_topology_id=TOPOLOGY)
+        self.assertEqual([v["topology_id"] for v in merged], [TOPOLOGY])
+        # Any other difference, or neither naming it, still refuses.
+        for other in ({**node, "path": node["path"] + "-elsewhere"}, {**node, "topology_id": "f" * 64}):
+            with self.subTest(other=other["path"][-10:]), self.assertRaisesRegex(StorageError, "disagree"):
+                reconcile_views([controller, other], current_topology_id=TOPOLOGY)
 
     def test_a_pinned_and_mounted_copy_lists_both_causes_under_one_message(self):
         old = self.mine(topology="e" * 64, pinned=True)

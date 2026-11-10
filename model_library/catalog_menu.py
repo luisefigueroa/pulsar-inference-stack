@@ -1560,7 +1560,11 @@ def plan_effect(action: str, plan: dict) -> dict:
         copies = {(step.get("node_id"), member.get("snapshot_manifest_id") or index)
                   for index, member in enumerate(members) for step in member.get("actions") or []
                   if step.get("action") == "copy"}
-        return {"copied": len(copies), "reused": len(steps) - len(copies), "nothing": bool(steps) and not copies}
+        # A takeover (rebind) copies nothing: it records files made before the
+        # cluster's membership changed under the current membership.
+        taken = sum(1 for step in steps if step.get("action") == "rebind")
+        return {"copied": len(copies), "reused": len(steps) - len(copies) - taken, "taken_over": taken,
+                "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -1588,6 +1592,15 @@ def plan_effect(action: str, plan: dict) -> dict:
     if action == "acquire":
         return {"nothing": document.get("action") == "reuse"}
     return {"nothing": False}
+
+
+def _taken_over(count: int) -> str:
+    """The sentence for Prepare's takeovers: copies made before the cluster's
+    membership changed, whose files still verify, recorded for the current
+    membership without copying or deleting anything."""
+    copies = "copy" if count == 1 else "copies"
+    return (f"It takes over {count} {copies} made before the cluster's membership changed; "
+            "nothing is copied or deleted.")
 
 
 def _short_ids(text: str, keep: str | None = None) -> str:
@@ -1675,12 +1688,16 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         if effect["nothing"]:
             what = "the snapshot is" if len(plans) == 1 else ("both snapshots are" if len(plans) == 2
                                                            else f"all {len(plans)} snapshots are")
-            return [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
-                    "Prepare verifies the files and records them."]
+            lines = [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
+                     "Prepare verifies the files and records them."]
+            if effect["taken_over"]:
+                lines.append(_taken_over(effect["taken_over"]))
+            return lines
         sizes = [nodes[node]["new_copy"] for node in copying]
         size = sum(sizes) if all(value is not None for value in sizes) else None
         lines = [f"Copy {size_text(size)} to {_node_list(copying, names)} "
-                 f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused)."]
+                 f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused"
+                 + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "") + ")."]
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])
@@ -1800,10 +1817,13 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         steps = _plan_actions(plan)
         effect = plan_effect(action, plan)
         where = _node_list([str(step["node_id"]) for step in steps if step.get("node_id")], names) or place or "its nodes"
+        taken = (f" {_taken_over(effect['taken_over'])}" if effect["taken_over"] else "")
         if effect["nothing"]:
-            return f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files already there."
+            return (f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files "
+                    f"already there.{taken}")
         return (f"Prepare {model} on {where}? {_count(effect['copied'], 'new copy', 'new copies')}, "
-                f"{effect['reused']} reused.")
+                f"{effect['reused']} reused" + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
+                + f".{taken}")
     if action in ("pin", "unpin"):
         effect = plan_effect(action, plan)
         verb = LABELS[action].split()[0]

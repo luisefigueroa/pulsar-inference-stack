@@ -338,11 +338,19 @@ by the proposed topology. The report is advisory and read-only; saving membershi
 does not silently move, purge, unpin, or rewrite model-library records.
 
 Any save changes the membership's `topology_id`, and prepared-copy records bind
-the `topology_id` they were made under. `model prepare` alone does not bring
-them up to date: its plan reports each such copy as `changed-copy` (or
-`pinned`), so purge them (unpinning first where pinned), then prepare again. A
-save also writes membership without recorded SSH identities, so every node,
-not only a new one, is enrolled again with `./pulsar ssh-trust enroll`.
+the `topology_id` and position they were made under, so start does not use them
+until Prepare records them again. Prepare takes over a copy made before the
+membership changed when it is on a node that still serves the spec and its
+files still verify: the plan shows the action `rebind` ("take over verified
+files prepared before the cluster's membership changed"), and only the records
+change, on the node and on this controller. Nothing is copied or deleted, the
+copy needs no free space, and a pin stays. A copy whose files no longer verify,
+or that a container still mounts, is reported as before (`changed-copy`,
+`pinned` or `container-reference`), to be purged before it is prepared again.
+A copy on a node that no longer serves the spec is left as it is; purge removes
+it with the spec's other copies. A save also writes membership without recorded
+SSH identities, so every node, not only a new one, is enrolled again with
+`./pulsar ssh-trust enroll`.
 
 A confirmed node that does not answer keeps membership from being saved, because
 Pulsar cannot tell a node that is down from one that is gone. When it is gone,

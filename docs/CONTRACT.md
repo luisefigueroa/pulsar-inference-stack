@@ -303,6 +303,15 @@ Change note, 2026-10-17: plans gained `blocker_details` beside the unchanged
 Change note, 2026-11-04: preparation plans gained the `unrecorded-destination`
 code; `prepare --yes` with such a plan exits 1 before it copies or records anything.
 
+Change note, 2026-11-09: preparation plans gained the action `rebind`: this
+spec's copy on a serving node, made under another `topology_id` or at another
+rank, whose files verify, is taken over under the current membership and rank.
+Its action carries `previous` (`topology_id` and `rank` it was made under).
+Only the records change; no file is copied or deleted, a pin stays, and the
+copy needs no budget. A copy that does not verify, does not match its source or
+is mounted by a container keeps today's `changed-copy`, `pinned` or
+`container-reference` blocker. Prepared-copy records keep their schema and keys.
+
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;
 `cleanup_incomplete` means worker exit could not be established. Neither result

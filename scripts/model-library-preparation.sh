@@ -29,7 +29,10 @@ prepare_snapshot() {
   [ "$home_rank" -lt "$CLUSTER_TOPOLOGY_COUNT" ] || die "snapshot home is outside confirmed membership"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
-  existing=$(merged_views snapshot) || die "node and controller preparation records cannot be reconciled"
+  # A takeover interrupted between the node and controller records leaves
+  # them naming different memberships; Prepare resolves only that case, toward
+  # the current membership, and takes the copy over again.
+  existing=$(merged_views snapshot "$CLUSTER_TOPOLOGY_ID") || die "node and controller preparation records cannot be reconciled"
   transactions=$(json_fields "$existing" transactions)
   existing=$(json_fields "$existing" views)
   ranks_tmp=$(mktemp); budgets_tmp=$(mktemp); views_tmp=$(mktemp)
@@ -46,7 +49,9 @@ prepare_snapshot() {
       row="$candidate"; break
     done < <(printf '%s' "$candidates" | python3 -c 'import json,sys; [print(json.dumps(v)) for v in json.load(sys.stdin)]')
     verified=false
-    if [ "$row" != null ] && { [ "$reuse_view" != null ] || [ "$(json_fields "$row" topology_id)" = "$CLUSTER_TOPOLOGY_ID" ]; }; then
+    # This recipe's copy is verified whatever membership it was made under:
+    # one made before the membership changed can be taken over (rebind).
+    if [ "$row" != null ]; then
       if result=$(verify_record "$row"); then
         verified=true
         # Keep the original pin and ownership metadata; only verification cache changes.
@@ -84,6 +89,7 @@ prepare_snapshot() {
     case "$action" in
       reuse) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): reusing verified files" ;;
       bind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): binding to existing verified files" ;;
+      rebind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed" ;;
       home-view) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): using files from the home" ;;
       *) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): copying and verifying files" ;;
     esac
@@ -95,7 +101,23 @@ prepare_snapshot() {
       fi
       continue
     fi
-    if [ "$action" = bind ]; then
+    if [ "$action" = rebind ]; then
+      # Records only: the verified record now names this membership and
+      # position, on the node first and on the controller with the others.
+      # Its pin and files are unchanged.
+      row=$(python3 -c '
+import json,sys
+rows=[json.loads(x) for x in open(sys.argv[1])]
+mine=[r for r in rows if r["node_id"]==sys.argv[2]]
+assert len(mine)==1, "taken-over copy was not verified during planning"
+print(json.dumps({**mine[0],"topology_id":sys.argv[3],"rank":int(sys.argv[4])}))
+with open(sys.argv[1],"w") as stream:
+    for r in rows:
+        if r["node_id"]!=sys.argv[2]: stream.write(json.dumps(r)+"\n")
+' "$views_tmp" "$node" "$CLUSTER_TOPOLOGY_ID" "$slot") || die "prepared copy could not be taken over; no file was changed"
+      model_node "$rank" "$(model_node_request save-view view: "$row")" >/dev/null \
+        || die "prepared copy could not be taken over on $(human_node_name "$rank"); no file was changed"
+    elif [ "$action" = bind ]; then
       row=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["actions"][int(sys.argv[1])]["source_view"]))' "$slot")
       model_ctl "$(model_json operation protect-shared-copy source_view: "$row")" >/dev/null || die "shared-copy protection could not be recorded"
       result=$(model_node "$rank" "$(model_node_request bind-view source_view: "$row" spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") || die "prepared-copy binding failed; original files retained"

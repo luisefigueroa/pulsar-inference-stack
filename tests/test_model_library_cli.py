@@ -316,6 +316,119 @@ class ModelLibraryCLI(unittest.TestCase):
         fixture.spec_path.write_bytes(pretty_json_bytes(fixture.spec))
         return previous
 
+    # D13: Prepare takes over verified copies made under an earlier membership.
+    def file_state(self, f):
+        """Every model file and folder on the nodes, with its inode and mtime; not the node's records."""
+        return {str(path): (path.stat().st_ino, path.stat().st_mtime_ns) for path in f.root.glob('rank-*/**/*')
+                if '/.pulsar-node' not in str(path)}
+
+    def start_reads(self, f):
+        """What start reads: the prepared set for the current membership."""
+        from scripts.runtime_binding import prepared_set
+        result = f.run('info', '--for-launch', spec=True)
+        if result.returncode != 0:
+            return None
+        info = json.loads(result.stdout)
+        prepared_set(info, f.spec, f.topology['topology_id'])
+        return info
+
+    def test_prepare_takes_over_copies_after_a_membership_change_without_copying(self):
+        f = self.fixture(nodes=2); self.acquire_candidate(f, nodes=2, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        self.success(f.run('pin', '--yes', spec=True))
+        before = Store(f.state).views(spec_id=f.spec['spec_id'])
+        old = f.topology['topology_id']
+        f.change_membership()
+        self.assertNotEqual(f.topology['topology_id'], old)
+        files, transfers = self.file_state(f), f.events('transfer')
+        # Before the takeover, start and the check do not use the copies.
+        self.assertIsNone(self.start_reads(f))
+        self.assertEqual(json.loads(f.run('check', spec=True).stdout)['observation']['local_state'], 'missing')
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertTrue(plan['eligible'], plan['blockers'])
+        self.assertEqual([(a['action'], a['previous']['topology_id']) for a in plan['actions']],
+                         [('rebind', old), ('rebind', old)])
+        self.success(f.run('prepare', '--yes', spec=True))
+        # Records only: the same files, no transfer, the pin kept.
+        self.assertEqual(self.file_state(f), files)
+        self.assertEqual(f.events('transfer'), transfers)
+        after = Store(f.state).views(spec_id=f.spec['spec_id'])
+        self.assertEqual({v['node_id']: (v['path'], v['rank'], v['topology_id'], v['pinned']) for v in after},
+                         {v['node_id']: (v['path'], v['rank'], f.topology['topology_id'], True) for v in before})
+        # Node and controller records agree: the next plan reuses both.
+        again = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertEqual([a['action'] for a in again['actions']], ['reuse', 'reuse'])
+        # Start accepts the taken-over copies, and the check reads them as ready.
+        info = self.start_reads(f)
+        self.assertIsNotNone(info)
+        self.assertEqual({v['node_id']: v['path'] for v in info['ranks']}, {v['node_id']: v['path'] for v in before})
+        self.assertEqual(self.success(f.run('check', spec=True))['observation']['local_state'], 'ready')
+        # Model files lists the same copies before and after: it does not read the membership ID.
+        self.assertTrue(self.success(f.run('files'))['snapshots'])
+
+    def test_an_interrupted_takeover_is_finished_by_the_next_prepare(self):
+        f = self.fixture(nodes=2); self.acquire_candidate(f, nodes=2, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        f.change_membership()
+        files = self.file_state(f)
+        # The nodes record the takeover; the controller's save is interrupted.
+        f.cfg['controller_fault'] = 'save-views'; f.save()
+        self.failure(f.run('prepare', '--yes', spec=True))
+        f.cfg.pop('controller_fault'); f.save()
+        self.assertTrue(all(v['topology_id'] != f.topology['topology_id']
+                            for v in Store(f.state).views(spec_id=f.spec['spec_id'])))
+        # Other commands still refuse records that disagree.
+        self.failure(f.run('purge', '--plan', spec=True), 'disagree')
+        # Prepare resolves only this case, toward the current membership.
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertEqual([a['action'] for a in plan['actions']], ['reuse', 'reuse'])
+        self.success(f.run('prepare', '--yes', spec=True))
+        self.assertTrue(all(v['topology_id'] == f.topology['topology_id']
+                            for v in Store(f.state).views(spec_id=f.spec['spec_id'])))
+        self.assertEqual(self.file_state(f), files)
+        self.success(f.run('purge', '--plan', spec=True))
+
+    def test_a_copy_whose_position_changed_is_taken_over_at_its_new_position(self):
+        f = self.fixture(nodes=3); self.acquire_candidate(f, nodes=3, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        ranks = {v['node_id']: v['rank'] for v in Store(f.state).views(spec_id=f.spec['spec_id'])}
+        f.change_membership([0, 2, 1])
+        files, transfers = self.file_state(f), f.events('transfer')
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertEqual([(a['action'], a['rank'], a['previous']['rank']) for a in plan['actions']],
+                         [('rebind', 0, 0), ('rebind', 1, 2), ('rebind', 2, 1)])
+        self.success(f.run('prepare', '--yes', spec=True))
+        self.assertEqual(self.file_state(f), files)
+        self.assertEqual(f.events('transfer'), transfers)
+        moved = {v['node_id']: v['rank'] for v in Store(f.state).views(spec_id=f.spec['spec_id'])}
+        nodes = [node['node_id'] for node in f.topology['nodes']]
+        self.assertEqual(moved, {node: rank for rank, node in enumerate(nodes)})
+        self.assertNotEqual(moved, ranks)
+        self.assertIsNotNone(self.start_reads(f))
+
+    def test_a_copy_on_a_node_that_no_longer_serves_is_left_and_purge_removes_it(self):
+        # Find-out (1.6.2): a two-node spec on three nodes. After the positions
+        # shift, its copy on the node that no longer serves it is ignored by
+        # Prepare, and Purge still removes that record with the others.
+        f = self.fixture(nodes=3); self.acquire_candidate(f, nodes=2, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        old = f.topology['topology_id']
+        left = f.topology['nodes'][1]['node_id']
+        f.change_membership([0, 2, 1])
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertEqual([(a['node_id'], a['action']) for a in plan['actions']],
+                         [(f.topology['nodes'][0]['node_id'], 'rebind'), (f.topology['nodes'][1]['node_id'], 'copy')])
+        self.success(f.run('prepare', '--yes', spec=True))
+        records = {v['node_id']: v for v in Store(f.state).views(spec_id=f.spec['spec_id'])}
+        self.assertEqual((records[left]['topology_id'], records[left]['rank']), (old, 1))
+        self.assertTrue(Path(records[left]['path']).is_dir())
+        self.assertIsNotNone(self.start_reads(f))
+        purge = self.success(f.run('purge', '--plan', spec=True))
+        self.assertIn(left, [a['node_id'] for a in purge['plan']['actions']])
+        self.success(f.run('purge', '--yes', spec=True))
+        self.assertEqual(Store(f.state).views(spec_id=f.spec['spec_id']), [])
+        self.assertFalse(Path(records[left]['path']).exists())
+
     def test_recipe_change_reuses_three_node_content_and_preserves_pins(self):
         f=self.fixture(nodes=3)
         self.acquire_candidate(f,nodes=3,home=2)

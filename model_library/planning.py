@@ -9,6 +9,10 @@ cause, alongside them: a ``code``, the ``message`` it explains, the
 names the container, its state, and the mount that covers the files. An
 ``unrecorded-destination`` blocker names the ``path`` of a folder that is
 already where Prepare would copy and that no record names.
+
+A preparation action ``rebind`` takes over this spec's copy on a serving node
+that was made under another membership or position and still verifies: only
+its records change, on the node and on the controller (decision D13).
 """
 from __future__ import annotations
 
@@ -224,7 +228,16 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
         if old and not view_ready:
             message = f'{node_id}: existing prepared copy is pinned or referenced'
             references = container_details(old, checked, message)
-            if old['pinned'] or references:
+            # D13: a copy on this node made under an earlier membership or
+            # position, whose files still verify, is taken over: only its
+            # record's topology_id and rank change. No file is copied or
+            # deleted, so a pin does not block it and stays. A container that
+            # mounts it still blocks, as before, whatever its state.
+            takeover = (source_matches and old['snapshot_manifest_id'] == manifest['manifest_id']
+                        and obs.get('view_verified') is True and not references)
+            if takeover:
+                action = 'rebind'
+            elif old['pinned'] or references:
                 blockers.append(message)
                 if old['pinned']:
                     details.append(detail('pinned', message, 'unpin the prepared copies first', node_id))
@@ -256,7 +269,9 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
                 details.append(detail('insufficient-space', blockers[-1],
                                       'free space or purge unused prepared copies on this node', node_id))
         actions.append({'rank': rank, 'node_id': node_id, 'action': action,
-                        **({'source_view':candidate} if action == 'bind' else {})})
+                        **({'source_view':candidate} if action == 'bind' else {}),
+                        **({'previous': {'topology_id': old['topology_id'], 'rank': old['rank']}}
+                           if action == 'rebind' else {})})
     return {'kind': 'pulsar-preparation-plan', 'spec_id': spec['spec_id'],
             'snapshot_manifest_id': manifest['manifest_id'], 'topology_id': topology_id,
             'eligible': not blockers, 'blockers': blockers, 'blocker_details': details, 'actions': actions,

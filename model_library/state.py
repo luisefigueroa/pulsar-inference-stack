@@ -231,8 +231,25 @@ def shared_view(record: dict) -> dict:
             'binding_schema': record.get('binding_schema', record['schema_version'])}
 
 
-def reconcile_views(records: list[dict]) -> list[dict]:
-    """Conservatively merge controller/node records, including partial upgrades."""
+def _interrupted_takeover(previous: dict, record: dict, current_topology_id: str | None) -> dict | None:
+    """The record naming CURRENT_TOPOLOGY_ID, when two records of one copy
+    differ only in topology_id and rank and exactly one names it: what a
+    takeover (Prepare's rebind) interrupted between the node and controller
+    leaves. Both name the same files; Prepare verifies them and takes the
+    copy over again. Any other disagreement still refuses."""
+    if not current_topology_id:
+        return None
+    if any(previous[f] != record[f] for f in VIEW_IDENTITY_FIELDS if f not in ('topology_id', 'rank')):
+        return None
+    current = [r for r in (previous, record) if r['topology_id'] == current_topology_id]
+    return current[0] if len(current) == 1 else None
+
+
+def reconcile_views(records: list[dict], *, current_topology_id: str | None = None) -> list[dict]:
+    """Conservatively merge controller/node records, including partial upgrades.
+
+    Only Prepare passes CURRENT_TOPOLOGY_ID, to resolve an interrupted takeover.
+    """
     result = {}
     for record in records:
         validate_view(record)
@@ -240,7 +257,10 @@ def reconcile_views(records: list[dict]) -> list[dict]:
         previous = result.get(key)
         if previous:
             if any(previous[f] != record[f] for f in VIEW_IDENTITY_FIELDS):
-                raise StorageError('controller and node view records disagree; inspect before mutation')
+                chosen = _interrupted_takeover(previous, record, current_topology_id)
+                if chosen is None:
+                    raise StorageError('controller and node view records disagree; inspect before mutation')
+                record = {**record, 'topology_id': chosen['topology_id'], 'rank': chosen['rank']}
             record = {**record, 'pinned': previous['pinned'] or record['pinned']}
             if previous['schema_version'] == 3:
                 record = shared_view(record)
