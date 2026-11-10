@@ -1586,7 +1586,7 @@ probe_node_remote_python_command() {
 
 # Run probe-node.py on a confirmed rank. Rank 0 is local; other ranks receive
 # the probe over SSH stdin so the remote host does not need a repo checkout.
-# probe_node_json_for_rank RANK [--prerequisites-only]: only doctor asks for
+# probe_node_json_for_rank RANK [--prerequisites-only]: only doctor and guided setup ask for
 # the prerequisites, a separate answer that never decides membership.
 probe_node_json_for_rank() {
   local rank="${1:?rank required}"

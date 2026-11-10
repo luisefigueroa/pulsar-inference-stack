@@ -68,7 +68,7 @@ def machine(hostname: str, probe: dict | None, prerequisites: dict | None, *, di
                               "**Check the cluster now** checks them again later"))
     else:
         passed = []
-        for level, identifier, message in rows(prerequisites):
+        for level, identifier, message in rows(prerequisites, noun="machine"):
             if level == "ok":
                 passed.append(f"{SHORT.get(identifier) or message} ✓")
             else:

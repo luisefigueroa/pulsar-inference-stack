@@ -435,11 +435,13 @@ class TopologyCommands(unittest.TestCase):
         step1 = text.split(steps[0], 1)[1].split(steps[1], 1)[0]
         self.assertIn('fixture-rank-0 (this machine) Docker and GPU access ✓ · RoCE links ✓ Python 3.12.3 ✓ · flock ✓ · rsync ✓ · '
                       'hf CLI ✓', step1)
-        self.assertIn('WARN hf is not logged in to the Hub on this node; public models download without a login.', step1)
+        self.assertIn('WARN hf is not logged in to the Hub on this machine; public models download without a login.', step1)
         step3 = text.split(steps[2], 1)[1].split(steps[3], 1)[0]
         self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every other machine ✓', step3)
-        self.assertIn('FAIL rsync not found; install rsync on this node', step3)
-        self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this node; it can still serve.', step3)
+        self.assertIn('FAIL rsync not found; install rsync on this machine', step3)
+        self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this machine; it can still serve.', step3)
+        # Before they are members they are machines; discovery's own output is unchanged.
+        self.assertNotIn('this node', step1 + step3)
         # A missing prerequisite never blocks saving; the closing summary lists what is left.
         self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?',
                                                        'Enroll these SSH identities?'])
@@ -447,6 +449,11 @@ class TopologyCommands(unittest.TestCase):
         summary = text.split('Still to fix', 1)[1]
         self.assertIn('FAIL fixture-rank-1: rsync not found', summary)
         self.assertIn('Warnings do not stop serving', summary)
+        # Design rule 1: the setup review's choices use no low-level term.
+        from tests.test_cluster_menu import FORBIDDEN
+        review = self.menu_choices()['Review discovered machines']
+        self.assertIn('Continue to membership review', review)
+        self.assertEqual([label for label in review if FORBIDDEN.search(label)], [])
         # Step 3 asks with discovery's strict SSH policy, never accepting a host key.
         asked = [args for tool, args in f.calls() if tool == 'ssh' and '--prerequisites-only' in args[-1]]
         self.assertEqual(len(asked), 1)

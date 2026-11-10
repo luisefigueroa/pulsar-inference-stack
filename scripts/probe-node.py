@@ -171,7 +171,8 @@ def node_identifier(hostname: str, control_ip: str) -> str:
 
 # The node's operator prerequisites beyond the platform: the tools the
 # installation table lists and the `hf` CLI that Download runs on this node.
-# Only `pulsar doctor` asks for them (--prerequisites-only). They never feed
+# Only `pulsar doctor`, the menu's Check the cluster now (through doctor) and
+# guided setup's steps 1 and 3 ask for them (--prerequisites-only). They never feed
 # `qualified` or `reject_reasons`, so a node without them can still be a
 # member and serve; and the Hub request never runs in discovery, `topology
 # check` or start's probes.

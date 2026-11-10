@@ -69,6 +69,7 @@ STATUS_WORDS = {
     "all-answered": "all answered",
     "answered": "answered",
     "did-not-answer": "did not answer",
+    "not-observed": "not observed",
     "only-down": "kept as only down",
     "not-a-member": "not a member",
     "cannot-be-member": "answered but cannot be a member",
@@ -205,6 +206,14 @@ def answered_text(records: Records) -> str:
     if check and checked and (observed is None or checked >= observed):
         answered = sum(1 for node in check["nodes"] if node["answered"] is True)
         when = _ago(check["checked_at"], records.now)
+        # Unknown is not absent: a node the check could not observe did not
+        # fail to answer; it is counted apart.
+        unknown = sum(1 for node in check["nodes"] if node["answered"] is None)
+        if unknown:
+            if unknown >= len(check["nodes"]):
+                return f"{STATUS_WORDS['not-observed']} at the last check {when}; {CHECK} looks again"
+            return (f"{answered} of {total} {STATUS_WORDS['answered']}, {unknown} {STATUS_WORDS['not-observed']} "
+                    f"{when}")
     else:
         if changes["result"] == "not-checked":
             return f"{STATUS_WORDS['did-not-finish']} ({_ago(changes['observed_at'], records.now)})"
@@ -277,8 +286,9 @@ def check_items(records: Records) -> list[str]:
 # Services and disk, from the saved inventory and budget
 # ---------------------------------------------------------------------------
 
-def service_texts(records: Records, entries: list[dict], room: int) -> tuple[list[str], str | None]:
-    """One text per Pulsar service, and what is unknown about the others."""
+def service_texts(records: Records, entries: list[dict], room: int,
+                  states: tuple[str, ...] | None = None) -> tuple[list[str], str | None]:
+    """One text per Pulsar service (only those in STATES, when given), and what is unknown about the others."""
     inventory = records.inventory
     live = live_inventory(inventory, entries, now=records.now)
     catalog = [{"spec_id": row["spec_id"], "model_id": row["model_id"], "nodes": row["geometry"]["nodes"]}
@@ -287,6 +297,8 @@ def service_texts(records: Records, entries: list[dict], room: int) -> tuple[lis
     texts = []
     for outside, services in ((False, live["services"]), (True, project_others(inventory, catalog))):
         for service in services.values():
+            if states is not None and service["state"] not in states:
+                continue
             state = SERVICE_STATES.get(service["state"], service["state"])
             where = ", ".join(service["hosts"]) or "nodes not identified"
             text = f"{cut_middle(service['model_id'], room)} {'' if fresh else STATUS_WORDS['last-seen'] + ' '}"
@@ -445,11 +457,14 @@ def has_review(records: Records) -> bool:
 
 
 def running_services(records: Records) -> list[str]:
-    """Pulsar services the saved inventory saw, as "model on nodes"; they block a save."""
+    """Pulsar services with running containers in the saved inventory, as "model running on nodes".
+
+    They block a save, as the rewrite's idle rule does (`docker ps`, running
+    containers only); exited or stopped containers do not."""
     if records.inventory is None:
         return []
     try:
-        texts, _ = service_texts(records, [], 40)
+        texts, _ = service_texts(records, [], 40, states=("running", "partial", "degraded"))
     except ValueError:
         return []
     return texts
@@ -582,14 +597,13 @@ _KEY_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?(VLLM_API_KEY|API_KEY)\s*=(.*)$
 
 
 def api_key_source(repo: Path, environ: dict | None = None) -> tuple[str | None, str | None]:
-    """Where an API key is configured: (variable, "process" | "dotenv"), or (None, None).
+    """Where the API key start uses is configured: (variable, "process" | "dotenv"), or (None, None).
 
-    The value is never returned or printed. A .env that cannot be read gives
-    ("unreadable", "dotenv")."""
+    As `pulsar_api_key` in scripts/lib.sh reads it: `VLLM_API_KEY`, else
+    `API_KEY`, after this checkout's .env is sourced over the environment, so
+    an assignment in .env wins, even an empty one. The value is never returned
+    or printed. A .env that cannot be read gives ("unreadable", "dotenv")."""
     env = os.environ if environ is None else environ
-    for name in ("VLLM_API_KEY", "API_KEY"):
-        if env.get(name):
-            return name, "process"
     from model_library.configuration import _read
     from model_library.integrity import StorageError
     try:
@@ -597,15 +611,18 @@ def api_key_source(repo: Path, environ: dict | None = None) -> tuple[str | None,
         text = data.decode("utf-8")
     except (StorageError, OSError, UnicodeError):
         return "unreadable", "dotenv"
-    found = {}
+    assigned = {}
     for line in text.splitlines():
         match = _KEY_ASSIGNMENT.match(line)
         if match:
             value = match.group(2).split("#", 1)[0].strip().strip("'\"").strip()
-            found[match.group(1)] = bool(value)
+            assigned[match.group(1)] = bool(value)
     for name in ("VLLM_API_KEY", "API_KEY"):
-        if found.get(name):
-            return name, "dotenv"
+        if name in assigned:
+            if assigned[name]:
+                return name, "dotenv"
+        elif env.get(name):
+            return name, "process"
     return None, None
 
 

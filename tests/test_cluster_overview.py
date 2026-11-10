@@ -123,7 +123,7 @@ class Overview(unittest.TestCase):
 
     def test_each_node_shows_status_identity_checks_memory_disk_and_services(self):
         text = self.render(self.sources())
-        self.assertTrue(text.startswith("Cluster check\n  Membership ready · 3 saved nodes\n  Checked   "), text)
+        self.assertTrue(text.startswith("Cluster check\n  Nodes     3 saved · ready\n  Checked   "), text)
         self.assertIn("; the checks took 19 s\n  Links     verified between every pair of nodes\n", text)
         self.assertIn("\nChanges noticed\n  none: every member answered as saved\n", text)
         local = self.section(text, "rank-0 (this node)")
@@ -387,6 +387,9 @@ choose_index() {
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[0], ["Cluster check", "Review what changed…", "Show the report again",
                                            "Check again", "Back"])
+        # Design rule 1: no choice outside Advanced uses a low-level term.
+        from tests.test_cluster_menu import FORBIDDEN
+        self.assertEqual([label for label in self.menus()[0][1:] if FORBIDDEN.search(label)], [])
         self.assertEqual(self.log(), self.SOURCES + ["review from-check=1"])
         # The review's Check the cluster now checks again here.
         (self.root / "pulsar.log").unlink()

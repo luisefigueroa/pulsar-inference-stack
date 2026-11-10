@@ -104,7 +104,7 @@ must not overlap directories managed as removable homes or prepared copies.
 
 Commands and guides use these terms. Public flags, environment variables,
 JSON fields, and container labels retain their existing names. The menu's
-**Help → What the words mean** and `./pulsar help terms` show this table.
+**Help and troubleshooting… → What the words mean** and `./pulsar help terms` show this table.
 
 | Term | Meaning |
 | --- | --- |
@@ -135,7 +135,7 @@ with these words; the **Model files and disk space** page and `./pulsar model
 files` describe each model's files with the *Model files* rows. The home
 screen's status uses the *Cluster*, *Serving*, *Disk* and *Attention* rows, and
 the **Cluster…** frame the *Checked*, *Changes* and *Issues* rows. Each label is
-written as `Field: words`; the field is where the words appear. The menu's **Help → What the labels mean**, the catalog list's
+written as `Field: words`; the field is where the words appear. The menu's **Help and troubleshooting… → What the labels mean**, the catalog list's
 **What the labels mean** and `./pulsar help labels` show this table. JSON output
 keeps its own values (`local_state`, `archive_state`, `state`); only the words
 below are for reading.
@@ -171,6 +171,7 @@ below are for reading.
 | Lifecycle: running | The service was seen running in this menu session. |
 | Cluster: … nodes, all answered … ago | The saved membership's node count, and how many nodes answered the last **Check the cluster now**, or the last discovery when it is newer, with its age. Opening the menu checks nothing; **Cluster…** → **Check the cluster now** checks again. |
 | Cluster: … of … answered | Some nodes did not answer the last check or discovery. Each one is named under **Attention**; **Cluster…** → **Review what changed…** keeps it or saves the cluster without it. |
+| Cluster: not observed | The last check could not tell whether a node answered, for example because the membership check itself did not run. It does not mean the node is down; **Check the cluster now** looks again. |
 | Cluster: not checked yet | No check or discovery has been saved for this membership. It does not mean the nodes are down. **Cluster…** → **Check the cluster now** looks. |
 | Cluster: not checked since membership was saved | The saved check describes the membership before its last save, so it is not shown as current. **Check the cluster now** checks the membership as it is. |
 | Cluster: the last discovery did not finish | Discovery stopped before it could compare the machines with saved membership, for the reason given. Nothing was saved from it; **Check the cluster now** tries again. |
@@ -1498,7 +1499,7 @@ menu. Cancelling a launch or storage sub-action keeps its submenu open. Archive
 configuration also stays open after a saved or declined change until **Back**.
 Long read-only output opens in a pager when it runs past a few lines: **Show
 details**, **Published results**, a comparison, a full storage preview,
-**Help**, **Host diagnostics**, **Detailed status**, the full inventory, and
+the **Help and troubleshooting…** pages, **Run diagnostics**, **Host diagnostics**, **Detailed status**, the full inventory, and
 saved membership or its check.
 ↑/↓ scroll, `/` searches, and q or Esc returns to the menu; shorter output
 prints in place. Ctrl-C at a choose, input, confirmation, **Continue** or pager

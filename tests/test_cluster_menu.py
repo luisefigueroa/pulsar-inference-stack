@@ -327,6 +327,16 @@ class Review(Harness):
                       text)
         self.assertEqual(self.commands(), ["cluster check"])
 
+    def test_exited_containers_do_not_refuse_the_save(self):
+        # The rewrite's idle rule asks for running containers only.
+        self.save(body(found=FOUND))
+        document = json.loads(saved_inventory())
+        document["services"][0]["state"] = "stale"
+        self.inventory.write_text(json.dumps(document))
+        result = self.run_script("cluster-review.sh", ["Back"])
+        self.assertEqual(self.menus()[0], ["Review what changed", "Save the cluster as it is now", "Back"])
+        self.assertNotIn("Refused", result.stdout)
+
     def test_a_member_that_answered_but_cannot_be_a_member_is_never_left_out(self):
         rejected = [{**MISSING[0], "answered": True, "reasons": ["Docker NVIDIA runtime missing"]}]
         self.save(body(missing=rejected))
@@ -377,9 +387,14 @@ class ApiKey(unittest.TestCase):
             self.assertEqual(cluster_status.api_key_source(repo, {}), (None, None))
             (repo / ".env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\nexport VLLM_API_KEY='fixture-secret'\n")
             self.assertEqual(cluster_status.api_key_source(repo, {}), ("VLLM_API_KEY", "dotenv"))
+            # .env is sourced over the environment, as start reads the key: its assignment wins.
+            self.assertEqual(cluster_status.api_key_source(repo, {"VLLM_API_KEY": "x"}), ("VLLM_API_KEY", "dotenv"))
+            (repo / ".env").write_text("PULSAR_COLD_ROOT=/var/tmp/archives\n")
             self.assertEqual(cluster_status.api_key_source(repo, {"API_KEY": "x"}), ("API_KEY", "process"))
             (repo / ".env").write_text("VLLM_API_KEY=\nAPI_KEY=''\n")
             self.assertEqual(cluster_status.api_key_source(repo, {}), (None, None))
+            # An empty assignment in .env clears the environment's key, as sourcing it does.
+            self.assertEqual(cluster_status.api_key_source(repo, {"VLLM_API_KEY": "x", "API_KEY": "y"}), (None, None))
             (repo / ".env").write_text("API_KEY=fixture-secret # the fallback\n")
             text = cluster_status.api_key_text(repo, width=44, environ={})
             self.assertIn("API_KEY is set in this checkout's .env file", " ".join(text.split()))

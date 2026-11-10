@@ -245,7 +245,7 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
     out.emit("Cluster check", role="heading")
     if report.topology:
         state = report.topology.get("status") or "unknown"
-        top("Membership", f"{state} · {len(shown)} saved node{'' if len(shown) == 1 else 's'}",
+        top("Nodes", f"{len(shown)} saved · {state}",
             None if state == "ready" else "fail")
     when = datetime.fromtimestamp(started).strftime("%H:%M:%S")
     took = max(0, round(finished - started))

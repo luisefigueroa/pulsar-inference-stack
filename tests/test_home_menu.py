@@ -525,6 +525,22 @@ class StatusBlock(MenuHarness):
         self.assertIn("Attention fixture-remote did not answer (less than a minute ago); Cluster… → Review what "
                       "changed…", text)
 
+    def test_a_node_the_last_check_could_not_observe_is_not_counted_as_silent(self):
+        # Without the membership check, the check saves no answer: unknown, not "did not answer".
+        self.saved_changes.write_text(saved_changes(check=[checked("fixture-local", answered=None),
+                                                           checked("fixture-remote", answered=None)]))
+        result = self.run_home(["Exit"])
+        text = self.block(result)
+        self.assertIn("Cluster 2 nodes · not observed at the last check less than a minute ago; Cluster… looks "
+                      "again", text)
+        self.assertNotIn("0 of 2", text)
+        self.assertNotIn("Attention", text)
+        self.saved_changes.write_text(saved_changes(check=[checked("fixture-local"),
+                                                           checked("fixture-remote", answered=None)]))
+        self.again()
+        self.assertIn("Cluster 2 nodes · 1 of 2 answered, 1 not observed less than a minute ago",
+                      self.block(self.run_home(["Exit"])))
+
     def test_a_kept_node_stays_under_attention(self):
         self.saved_changes.write_text(saved_changes(missing=["fixture-remote"], kept=True))
         result = self.run_home(["Exit"])
