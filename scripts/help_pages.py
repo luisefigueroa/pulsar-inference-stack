@@ -263,7 +263,9 @@ def emit_workflow(writer: TerminalWriter) -> None:
                 "order; each step checks first, and Pulsar stops and asks again if one would do more than the "
                 "plan says. **Running services…** shows what runs and how to connect to it, and restarts, switches "
                 "or stops it, after a plan that starts on Cancel or a question that starts on No. **Cluster…** checks the nodes and "
-                "saves a change to the cluster. **Help and troubleshooting… → Why will a model not start?** runs "
+                "saves a change to the cluster. After Pulsar's records were lost, **Models and disk space… → Look for "
+                "model files Pulsar has no record of…** records the files the nodes still hold, checking every file "
+                "first. **Help and troubleshooting… → Why will a model not start?** runs "
                 "Start's checks without starting and offers each fix. **Help and troubleshooting… → Advanced: "
                 "single operations…** runs each step on its own.", markup=True)
     writer.blank()

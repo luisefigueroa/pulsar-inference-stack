@@ -12,14 +12,16 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tests.test_models_page import (DRAFT, G, MODEL, OTHER, OTHER_FILES, SPEC, archived, binding, budget,  # noqa: E402
-                                    entry, files, home, node, ready_model, recipe)
+                                    entry, files, found_home, home, lost_copy, node, prepare_preview, ready_model,
+                                    recipe)
 from tests.test_serve_menu import Harness, build_root, root_environment  # noqa: E402
 from tests.test_serve_plan import envelope  # noqa: E402
 
+FIND = "Look for model files Pulsar has no record of…"
 PAGE = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", "Keep a model ready…",
-        "Look again (checks nodes now)", "Back"]
+        FIND, "Look again (checks nodes now)", "Back"]
 WITH_ARCHIVES = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", "Keep a model ready…",
-                 "Back up a model…", "Check the archives…", "Look again (checks nodes now)", "Back"]
+                 "Back up a model…", "Check the archives…", FIND, "Look again (checks nodes now)", "Back"]
 SCAN = ["model files --json", "model budget --json"]
 
 
@@ -238,6 +240,43 @@ class Intents(Menu):
         self.assertEqual(self.commands().count("model files --json"), 1)
 
 
+class LookForFiles(Menu):
+    def test_it_records_a_home_through_downloads_reuse_then_takes_over_the_copies_with_the_flag(self):
+        self.entries(recipe(home_node=None))
+        self.fixture("files", envelope(files([entry(MODEL, "org/model", [found_home("n0"), lost_copy("n1"),
+                                                                         lost_copy("n2")], specs=[SPEC])])))
+        self.fixture("acquire-plan", envelope({"kind": "pulsar-acquisition-plan", "action": "reuse",
+                                               "home": {"node_id": "n0"}}))
+        self.fixture("prepare-plan", prepare_preview(("n0", "home-view"), ("n1", "adopt"), ("n2", "adopt")))
+        result = self.run_menu([FIND, "Go ahead", "Continue", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[1], ["Look for model files", "Cancel", "Go ahead"])
+        self.assertIn("Look for model files" + chr(9) + "0", self.default_log.read_text().splitlines())
+        text = self.text(result)
+        self.assertIn("1. Record the files of org/model found on spark-1 (212 GiB) as its home, the copy Pulsar keeps. "
+                      "Download checks them first; nothing is downloaded.", text)
+        self.assertIn("2. Take over the copies of org/model found on spark-2 and spark-3 after checking every file",
+                      text)
+        # Nothing ran before Go ahead: each step's own preview runs at its turn, then the step.
+        self.assertEqual(self.commands(), SCAN + [
+            f"model acquire {SPEC} --node spark-1 --plan --json", f"model acquire {SPEC} --node spark-1 --yes",
+            f"model prepare {SPEC} --adopt-unrecorded --plan --json", f"model prepare {SPEC} --adopt-unrecorded --yes"]
+            + SCAN)
+        self.assertIn(f"Same as: ./pulsar model acquire {SPEC[:12]} --node spark-1 --yes ./pulsar model prepare "
+                      f"{SPEC[:12]} --adopt-unrecorded --yes", text)
+        self.assert_plain_choices()
+
+    def test_files_download_would_fetch_instead_of_reusing_stop_the_plan_before_anything_runs(self):
+        self.entries(recipe(home_node=None))
+        self.fixture("files", envelope(files([entry(MODEL, "org/model", [found_home("n0")], specs=[SPEC])])))
+        self.fixture("acquire-plan", envelope({"kind": "pulsar-acquisition-plan", "selected_node": "n0"}))
+        result = self.run_menu([FIND, "Go ahead", "Continue", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertIn("✗ Step 1 did not run: the files found on spark-1 do not match the recipe, so Download would "
+                      "fetch them from Hugging Face; this plan never downloads.", self.text(result))
+
+
 class WithoutGum(unittest.TestCase):
     def test_the_page_names_the_commands_behind_its_choices(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -252,7 +291,8 @@ class WithoutGum(unittest.TestCase):
             for command in ("./pulsar model files", "./pulsar model budget", "./pulsar model purge SPEC --plan",
                             "./pulsar model remove SPEC --plan", "./pulsar model move SPEC --node NODE --plan",
                             "./pulsar model pin SPEC --plan", "./pulsar model archive create SPEC --plan",
-                            "./pulsar model archive verify SPEC"):
+                            "./pulsar model archive verify SPEC", "./pulsar model acquire SPEC --node NODE --plan",
+                            "./pulsar model prepare SPEC --adopt-unrecorded --plan"):
                 self.assertIn(f"  {command}", result.stderr)
             self.assertFalse((root / "pulsar.log").exists())
 

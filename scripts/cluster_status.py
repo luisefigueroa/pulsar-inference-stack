@@ -60,6 +60,7 @@ REVIEW = "**Review what changed…**"
 SETTINGS = "**Settings…**"
 RUNNING = "**Running services…**"
 MODELS = "**Models and disk space…**"
+FIND = "**Look for model files Pulsar has no record of…**"
 
 # The status words these screens print. Each has a row under Catalog labels
 # in docs/OPERATIONS.md; tests/test_help.py checks it.
@@ -94,6 +95,7 @@ STATUS_WORDS = {
     "unreadable": "unreadable",
     "archive-unreadable": "the archive location setting could not be read",
     "more": "more",
+    "no-files-recorded": "no model has files recorded on the cluster yet",
 }
 
 
@@ -397,23 +399,44 @@ def disk_text(records: Records) -> str:
 # Home
 # ---------------------------------------------------------------------------
 
-def attention_items(records: Records) -> list[str]:
-    """What needs a look, in order: the archive setting, changes noticed, then the last check's issues.
+def files_suggestion(entries: list[dict]) -> str | None:
+    """Look for model files…, suggested when no catalog recipe has its files recorded on the cluster
+    (no home in the catalog's saved records). Membership is saved wherever home shows this. An
+    empty or unreadable catalog says nothing: unknown is not absent."""
+    rows = [row for row in entries or [] if isinstance(row, dict) and not row.get("historical")]
+    if not rows:
+        return None
 
-    The last item shown names where to look; the archive item names its own fix."""
+    def recorded(row: dict) -> bool:
+        members = row["snapshots"] if isinstance(row.get("snapshots"), dict) else {None: row}
+        return any(isinstance(member, dict) and member.get("home") for member in members.values())
+    if any(recorded(row) for row in rows):
+        return None
+    return (f"{STATUS_WORDS['no-files-recorded']}; {MODELS} → {FIND} records any files already on the nodes")
+
+
+def attention_items(records: Records, entries: list[dict] = ()) -> list[str]:
+    """What needs a look, in order: the archive setting, changes noticed, the last check's issues, then
+    the suggestion to look for model files when no model has its files recorded.
+
+    The last cluster item shown names where to look; the archive item names its own fix. The
+    suggestion keeps its own row, so the cluster items give it one when they overflow."""
     archive = []
     if records.archives["status"] == "unreadable":
         archive.append(f"{STATUS_WORDS['archive-unreadable']}; {CLUSTER} → {SETTINGS} says how to fix it")
     changes, issues = change_items(records), check_items(records)
     items = archive + changes + issues
+    suggestion = files_suggestion(list(entries))
     if len(items) > ATTENTION_ROWS:
-        return items[:ATTENTION_ROWS] + [f"and {len(items) - ATTENTION_ROWS} {STATUS_WORDS['more']}; "
-                                         f"{CLUSTER} shows them"]
-    if changes:
-        items[len(archive) + len(changes) - 1] += f"; {CLUSTER} → {REVIEW}"
-    if issues:
-        items[-1] += f"; {CLUSTER} has the details"
-    return items
+        # At most three rows: two items, or one and the count when the suggestion takes the third.
+        rows = ATTENTION_ROWS - (1 if suggestion else 0)
+        items = items[:rows] + [f"and {len(items) - rows} {STATUS_WORDS['more']}; {CLUSTER} shows them"]
+    else:
+        if changes:
+            items[len(archive) + len(changes) - 1] += f"; {CLUSTER} → {REVIEW}"
+        if issues:
+            items[-1] += f"; {CLUSTER} has the details"
+    return items + ([suggestion] if suggestion else [])
 
 
 def home_block(records: Records, entries: list[dict], *, width: int | None = None) -> str:
@@ -430,7 +453,7 @@ def home_block(records: Records, entries: list[dict], *, width: int | None = Non
     for index, row in enumerate(serving_rows(records, entries, max(16, out.width - LABEL_WIDTH - 24))):
         field("Serving" if index == 0 else "", row)
     field("Disk", disk_text(records))
-    for index, item in enumerate(attention_items(records)):
+    for index, item in enumerate(attention_items(records, entries)):
         field("Attention" if index == 0 else "", item, "warn" if index == 0 else None)
     return _plain(output.getvalue())
 
@@ -739,7 +762,9 @@ def main(argv: list[str] | None = None) -> int:
             entries = json.load(sys.stdin).get("entries") or []
         except (ValueError, AttributeError):
             entries = []
-        sys.stdout.write(f"key\t{records.key()}\n{home_block(records, entries, width=args.width)}")
+        # The suggestion to look for model files comes from the catalog, not a saved record: it is part of the key.
+        key = records.key() + ("-find" if files_suggestion(entries) else "")
+        sys.stdout.write(f"key\t{key}\n{home_block(records, entries, width=args.width)}")
     elif args.command == "frame":
         # The first line tells the menu when to draw the frame again and
         # whether Review what changed… has something to show.

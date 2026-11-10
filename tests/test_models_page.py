@@ -430,6 +430,181 @@ class Plans(unittest.TestCase):
                       "above. Done: 1 step before it.", failed)
 
 
+def found_home(node):
+    """A home folder no record names."""
+    return location(node, "home", hub_path=f"/fixture/homes/{MODEL}", path=f"/fixture/homes/{MODEL}/snapshots/x")
+
+
+def lost_copy(node, spec=SPEC, **fields):
+    """A prepared copy's folder no record names, at the path Prepare uses for SPEC (a schema-2 spec's ID)."""
+    return location(node, "prepared", hub_path=f"/fixture/views/{spec}", path=f"/fixture/views/{spec}/snapshots/x",
+                    **fields)
+
+
+def prepare_preview(*actions):
+    return {"ok": True, "result": {"kind": "pulsar-preparation-plan", "eligible": True, "blockers": [],
+                                   "blocker_details": [], "total_bytes": 212 * G, "budgets": {},
+                                   "actions": [{"rank": rank, "node_id": node, "action": action}
+                                               for rank, (node, action) in enumerate(actions)]}}
+
+
+class LookForFiles(unittest.TestCase):
+    """Look for model files Pulsar has no record of…: one plan from the page's scan."""
+
+    def test_the_page_offers_it_and_says_where_files_with_no_record_are(self):
+        found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")], specs=[SPEC])]))
+        self.assertIn(("find", "Look for model files Pulsar has no record of…"), mp.page_choices(found))
+        self.assertIn("Files Pulsar has no record of are on spark-2; Look for model files Pulsar has no record of… "
+                      "records them.", flat(mp.page(found, width=100)))
+
+    def test_a_home_found_with_no_record_is_one_step_through_downloads_own_reuse(self):
+        found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")], specs=[SPEC])]))
+        plan = mp.compose(found, "find")
+        step, = plan["steps"]
+        self.assertEqual((step["kind"], step["command"], step["preview"]),
+                         ("register", ["./pulsar", "model", "acquire", SPEC, "--node", "spark-2", "--yes"],
+                          ["./pulsar", "model", "acquire", SPEC, "--node", "spark-2", "--plan", "--json"]))
+        # Download's own check hashes every file, so its preview runs when the step's turn comes.
+        self.assertEqual((step["preview_now"], plan["projected"]), (False, []))
+        text = flat(mp.render(plan, width=100))
+        self.assertIn("1. Record the files of org/model found on spark-2 (212 GiB) as its home, the copy Pulsar keeps. "
+                      "Download checks them first; nothing is downloaded.", text)
+        self.assertIn("Every file is hashed when no record names the folder, so each step can take a while.", text)
+        self.assertEqual(mp.plan_choices(plan), [("cancel", "Cancel"), ("go", "Go ahead")])
+
+    def test_the_register_step_holds_only_when_download_reuses_the_files_found(self):
+        step = mp.compose(cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")],
+                                                                         specs=[SPEC])])), "find")["steps"][0]
+        reuse = {"ok": True, "result": {"kind": "pulsar-acquisition-plan", "action": "reuse", "home": {"node_id": "n1"}}}
+        self.assertEqual(mp.assess(step, reuse, 0, NAMES), ("same", ""))
+        fetch = {"ok": True, "result": {"kind": "pulsar-acquisition-plan", "selected_node": "n1"}}
+        verdict, reason = mp.assess(step, fetch, 0, NAMES)
+        self.assertEqual(verdict, "differs")
+        self.assertIn("this plan never downloads", reason)
+        elsewhere = {"ok": True, "result": {"kind": "pulsar-acquisition-plan", "action": "reuse",
+                                            "home": {"node_id": "n2"}}}
+        self.assertEqual(mp.assess(step, elsewhere, 0, NAMES)[0], "differs")
+        self.assertEqual(mp.assess(step, {"ok": False, "error": {"message": "multiple managed homes match"}}, 1,
+                                   NAMES), ("blocked", "multiple managed homes match"))
+
+    def test_a_copy_no_record_names_is_taken_over_by_prepare_with_its_flag_after_a_preview(self):
+        document = files([entry(MODEL, "org/model", [home("n0", binding()), location("n1", "prepared", binding()),
+                                                     lost_copy("n2")], specs=[SPEC])])
+        found = cluster([recipe()], document)
+        plan = mp.compose(found, "find")
+        step, = plan["steps"]
+        self.assertEqual(step["command"], ["./pulsar", "model", "prepare", SPEC, "--adopt-unrecorded", "--yes"])
+        self.assertEqual(step["preview"], ["./pulsar", "model", "prepare", SPEC, "--adopt-unrecorded", "--plan",
+                                           "--json"])
+        self.assertTrue(step["preview_now"])
+        self.assertEqual(flat(step["sentence"]), "Take over the copy of org/model found on spark-3 after checking "
+                                                 "every file (212 GiB). Pulsar records it only if every file matches; "
+                                                 "nothing is copied or deleted.")
+        # Prepare's own plan must answer adopt there; it then holds, and anything it would copy is said.
+        preview = prepare_preview(("n0", "home-view"), ("n1", "reuse"), ("n2", "adopt"))
+        same = mp.compose(found, "find", previews={"0": (preview, 0)})
+        self.assertEqual((same["blocked"], same["steps"][0]["facts"]["copy_to"]), ([], []))
+        copying = mp.compose(found, "find", previews={"0": (prepare_preview(("n0", "home-view"), ("n1", "copy"),
+                                                                            ("n2", "adopt")), 0)})
+        self.assertIn("nothing is deleted. Prepare also copies the files to spark-2, which has no copy, since every "
+                      "serving node needs them before any copy is recorded.", flat(copying["steps"][0]["sentence"]))
+        self.assertEqual(copying["steps"][0]["facts"]["copy_to"], ["n1"])
+        nothing = mp.compose(found, "find", previews={"0": (prepare_preview(("n0", "home-view"), ("n1", "reuse"),
+                                                                            ("n2", "reuse")), 0)})
+        self.assertEqual(nothing["steps"], [])
+
+    def test_when_its_turn_comes_a_take_over_that_would_copy_more_than_it_said_stops(self):
+        document = files([entry(MODEL, "org/model", [home("n0", binding()), location("n1", "prepared", binding()),
+                                                     lost_copy("n2")], specs=[SPEC])])
+        found = cluster([recipe()], document)
+        plan = mp.compose(found, "find", previews={"0": (prepare_preview(("n0", "home-view"), ("n1", "reuse"),
+                                                                         ("n2", "adopt")), 0)})
+        step = plan["steps"][0]
+        later = prepare_preview(("n0", "home-view"), ("n1", "copy"), ("n2", "adopt"))
+        self.assertEqual(mp.assess(step, later, 0, NAMES),
+                         ("differs", "it would also copy the files to spark-2, which the plan did not say"))
+        blocked = {"ok": True, "result": {"kind": "pulsar-preparation-plan", "eligible": False,
+                                          "blockers": ["n2: a folder"], "actions": [],
+                                          "blocker_details": [{"code": "unrecorded-destination", "message": "n2: a folder",
+                                                               "node_id": "n2", "path": f"/fixture/views/{SPEC}",
+                                                               "fix": "It cannot be taken over: its set of files "
+                                                                      "differs from the manifest. Remove it."}]}}
+        verdict, reason = mp.assess(step, blocked, 0, NAMES)
+        self.assertEqual(verdict, "blocked")
+        self.assertIn("its set of files differs from the manifest", reason)
+
+    def test_a_home_to_record_comes_first_and_the_take_over_after_it_is_an_estimate(self):
+        document = files([entry(MODEL, "org/model", [found_home("n0"), lost_copy("n1"), lost_copy("n2")],
+                                specs=[SPEC])])
+        plan = mp.compose(cluster([recipe(home_node=None)], document), "find")
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["register", "adopt"])
+        self.assertEqual(plan["projected"], [1])
+        self.assertEqual(plan["steps"][1]["facts"]["nodes"], ["n1", "n2"])
+        self.assertIn("2. Take over the copies of org/model found on spark-2 and spark-3 after checking every file "
+                      "(212 GiB each).", flat(mp.render(plan, width=100)))
+        # With no preview before the home is recorded, any copy Prepare then wants is more than the plan said.
+        self.assertEqual(mp.assess(plan["steps"][1], prepare_preview(("n0", "home-view"), ("n1", "adopt"),
+                                                                     ("n2", "copy")), 0, NAMES)[0], "differs")
+
+    def test_what_cannot_be_recorded_is_listed_with_why_and_what_gets_the_model_back(self):
+        rows = [recipe(home_node=None), recipe(OTHER, "org/other", OTHER_FILES, home_node=None)]
+        document = files([
+            entry(MODEL, "org/model", [found_home("n1"), found_home("n2")], specs=[SPEC]),
+            entry(OTHER_FILES, "org/other", [lost_copy("n1", OTHER)], 60 * G, specs=[OTHER]),
+            entry(LOOSE, "org/forgotten", [found_home("n2")], 50 * G),
+            entry(DRAFT, "org/draft", [lost_copy("n2", THIRD)], 4 * G, specs=[OTHER])])
+        plan = mp.compose(cluster(rows, document), "find")
+        self.assertEqual(plan["steps"], [])
+        text = flat(mp.render(plan, width=100))
+        self.assertIn("Nothing was found that Pulsar can record.", text)
+        self.assertIn("Found, but Pulsar cannot record it here:", text)
+        self.assertIn("Files of org/model were found on spark-2 and spark-3. Download records one home and stops when "
+                      "it finds two, so neither is recorded", text)
+        self.assertIn("A copy of org/other on spark-2: the model has no home on the cluster, the copy Pulsar keeps, "
+                      "to record it against. Get a model ready ahead of time… restores or downloads it", text)
+        self.assertIn("org/forgotten @ cccccccc on spark-3 (50.0 GiB): no recipe in this catalog uses these files",
+                      text)
+        self.assertIn("A copy of org/draft @ cccccccc on spark-3 that no record names was made for a recipe outside "
+                      "this catalog", text)
+        self.assertEqual(mp.plan_choices(plan), [("cancel", "Cancel")])
+
+    def test_a_node_that_did_not_answer_is_unknown_and_never_read_as_having_no_files(self):
+        nodes = [node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3", unread=True)]
+        found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n2")], specs=[SPEC])],
+                                                        nodes=nodes))
+        plan = mp.compose(found, "find")
+        self.assertEqual(plan["steps"], [])
+        text = flat(mp.render(plan, width=100))
+        self.assertIn("Not checked: spark-3 could not be checked, so the files there are unknown, not absent, and "
+                      "nothing is offered there.", text)
+        self.assertIn("Nothing was found that Pulsar can record on the nodes that answered.", text)
+
+    def test_a_schema_3_recipes_copy_is_found_by_the_key_prepare_uses(self):
+        from model_library.state import view_key
+        member = {"model_id": "org/model", "model_commit": "c" * 40, "archive": None}
+        row = recipe(snapshots={"target": {**member, "snapshot_manifest_id": MODEL, "home": {"node_id": "n0"}},
+                                "draft": {**member, "model_id": "org/draft", "snapshot_manifest_id": DRAFT,
+                                          "home": {"node_id": "n0"}}})
+        name = view_key(SPEC, "n1", MODEL)
+        copy = location("n1", "prepared", hub_path=f"/fixture/views/{name}", path=f"/fixture/views/{name}/s")
+        document = files([entry(MODEL, "org/model", [home("n0", binding()), copy], specs=[SPEC]),
+                          entry(DRAFT, "org/draft", [home("n0", binding())], 4 * G, specs=[SPEC])])
+        plan = mp.compose(cluster([row], document), "find")
+        self.assertEqual([(step["kind"], step["facts"]["nodes"]) for step in plan["steps"]], [("adopt", ["n1"])])
+
+    def test_only_this_plan_passes_the_take_over_flag(self):
+        # D7: Serve, Get ready and every other menu never pass it.
+        allowed = {"models_page.py", "model-library.sh", "model-library-preparation.sh", "help_pages.py",
+                   "models-menu.sh"}
+        users = sorted(path.name for path in (ROOT / "scripts").iterdir()
+                       if path.is_file() and "--adopt-unrecorded" in path.read_text(errors="replace"))
+        self.assertEqual([name for name in users if name not in allowed], [])
+        commands = [step["command"] for target in ("find",)
+                    for step in mp.compose(cluster([recipe()], files([entry(MODEL, "org/model", [
+                        home("n0", binding()), lost_copy("n1")], specs=[SPEC])])), target)["steps"]]
+        self.assertTrue(all("--adopt-unrecorded" in command for command in commands), commands)
+
+
 class Widths(unittest.TestCase):
     def test_every_screen_fits_80_60_and_44_columns(self):
         rows = [recipe(archive=archived()), recipe(OTHER, "organization-with-a-long-name/model-family-instruct-fp8",
@@ -445,6 +620,20 @@ class Widths(unittest.TestCase):
                 texts += [mp.render(mp.compose(found, target), width=width)
                           for target, _ in mp.free_choices(found) if target != "back"]
                 for text in texts:
+                    self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+
+    def test_the_look_for_files_plan_fits_80_60_and_44_columns(self):
+        long = "organization-with-a-long-name/model-family-instruct-fp8"
+        rows = [recipe(home_node=None), recipe(OTHER, long, OTHER_FILES, home_node=None)]
+        document = files([entry(MODEL, "org/model", [found_home("n0"), lost_copy("n1"), lost_copy("n2")],
+                                specs=[SPEC]),
+                          entry(OTHER_FILES, long, [lost_copy("n1", OTHER)], 60 * G, specs=[OTHER]),
+                          entry(LOOSE, "org/forgotten", [found_home("n2")], 50 * G)])
+        plan = mp.compose(cluster(rows, document), "find")
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["register", "adopt"])
+        for width in (80, 60, 44):
+            with self.subTest(width=width):
+                for text in (mp.render(plan, width=width), mp.page(cluster(rows, document), width=width)):
                     self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
 
 

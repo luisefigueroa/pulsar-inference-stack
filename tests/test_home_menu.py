@@ -487,7 +487,51 @@ class StatusBlock(MenuHarness):
     def setUp(self):
         super().setUp()
         self.enroll()
+        # A model whose files are recorded on the cluster, so home suggests no look for files.
+        self.catalog.write_text(json.dumps({"entries": [{**never_checked("a"), "model_id": "example/model",
+                                                         "home": {"node_id": "node-0", "path": "/fixture/home"}}]}))
+
+    def without_recorded_files(self):
         self.catalog.write_text(json.dumps({"entries": [{**never_checked("a"), "model_id": "example/model"}]}))
+
+    def test_with_no_model_files_recorded_attention_suggests_looking_for_them(self):
+        self.without_recorded_files()
+        result = self.run_home(["Exit"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Attention no model has files recorded on the cluster yet; Models and disk space… → Look for "
+                      "model files Pulsar has no record of… records any files already on the nodes",
+                      self.block(result))
+        # From the catalog's saved records alone: opening home probes nothing.
+        self.assertEqual(self.commands(), [])
+        # An empty or unreadable catalog says nothing: unknown is not absent.
+        self.catalog.write_text(json.dumps({"entries": []}))
+        self.again()
+        self.assertNotIn("Attention", self.run_home(["Exit"]).stdout)
+
+    def test_the_suggestion_keeps_its_row_after_the_cluster_items(self):
+        self.without_recorded_files()
+        self.saved_changes.write_text(saved_changes(missing=["fixture-remote", "fixture-third", "fixture-fourth"]))
+        # One cluster item, the count of the rest, then the suggestion: still three items.
+        lines = [line for line in self.run_home(["Exit"], COLUMNS="80").stdout.splitlines() if line.strip()]
+        attention = lines[[line.split()[0] for line in lines].index("Attention"):]
+        self.assertIn("did not answer", attention[0])
+        self.assertIn("and 2 more; Cluster… shows them", attention[1])
+        self.assertIn("Look for model files Pulsar has no record of… records any files already on the nodes",
+                      " ".join(" ".join(attention[2:]).split()))
+
+    def test_the_suggestion_fits_80_by_24_and_wraps_at_44(self):
+        self.without_recorded_files()
+        self.saved_inventory.write_text(saved_inventory())
+        self.saved_budget.write_text(saved_budget())
+        self.saved_changes.write_text(saved_changes(missing=["fixture-remote"]))
+        for width in (80, 60, 44):
+            with self.subTest(width=width):
+                self.again()
+                result = self.run_home(["Exit"], COLUMNS=str(width))
+                lines = result.stdout.splitlines()
+                self.assertTrue(all(len(line) <= width for line in lines), result.stdout)
+                if width == 80:
+                    self.assertLessEqual(len(lines) + 5 + 6, 24, result.stdout)
 
     def block(self, result):
         """The status block as printed, one string with single spaces."""

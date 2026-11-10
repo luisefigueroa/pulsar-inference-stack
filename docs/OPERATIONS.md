@@ -240,6 +240,7 @@ below are for reading.
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
 | Attention: the archive location setting could not be read | The archive location setting in `.env` or the environment is not a readable literal path. **Cluster…** → **Settings…** says where it is set. |
 | Attention: and … more | More items need attention than home shows; **Cluster…** shows them all. |
+| Attention: no model has files recorded on the cluster yet | No recipe in the catalog has a *home* recorded, from Pulsar's saved records alone; the nodes may still hold model files, for example after the controller's records were lost. **Models and disk space…** → **Look for model files Pulsar has no record of…** scans the nodes and records what verifies. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -1086,8 +1087,23 @@ a second matching folder.
 ./pulsar model acquire <spec-id> --snapshot target --node <node> --plan
 ```
 
-In the catalog menu, choose **Model files and disk space (checks nodes now)**
-in the catalog list first. When that scan found the home folder of a
+Prepared copies on the serving nodes can survive too. While each node keeps
+its own records, Prepare reuses them once the home is recorded again. When a
+node's records were lost with the controller's, Prepare stops at that folder;
+`./pulsar model prepare <spec-id> --adopt-unrecorded` takes it over after
+hashing every file, and never changes a folder that does not match (see
+[Prepare all serving nodes](#prepare-all-serving-nodes)).
+
+From the menu, **Models and disk space…** → **Look for model files Pulsar has
+no record of…** does both from one scan: a step per home folder found, through
+Download's reuse, then a step per recipe whose copies no record names, with
+what it cannot record and why. Home's **Attention** line suggests it while no
+model has its files recorded; see [Models and disk
+space…](#models-and-disk-space).
+
+Under **Help and troubleshooting…** → **Advanced: single operations…**, the
+catalog menu works one spec at a time: choose **Model files and disk space
+(checks nodes now)** in the catalog list first. When that scan found the home folder of a
 required snapshot with no recorded home, the recipe's Files field reads `files
 found on <host>, not in Pulsar's records; Download checks them`, and the
 suggestion is **Download**, ahead of **Restore**. It needs no saved or current
@@ -1602,6 +1618,7 @@ offering **Back up a model…** and **Check the archives…**.
 | **Keep a model ready…** | **Keep MODEL ready** marks its copies as kept so **Free up space…** never offers them; **Stop keeping MODEL ready** lifts it. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
 | **Back up a model…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME` |
 | **Check the archives…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME` |
+| **Look for model files Pulsar has no record of…** | One plan from the same scan: record each home folder found through Download's own reuse, then take over each recipe's copies no record names after checking every file; what neither can record is listed with why. | `./pulsar model acquire SPEC --node NODE`, `./pulsar model prepare SPEC --adopt-unrecorded` |
 | **Look again (checks nodes now)** | A new scan and budget. | `./pulsar model files`, `./pulsar model budget` |
 
 **Free up space…** lists outcomes, not operations:
@@ -1637,8 +1654,41 @@ keeping MODEL ready**, its own plan), copies another recipe shares (their files
 stay), a container Pulsar did not start that mounts the files (named,
 read-only), a model whose copies could not all be checked on a node that
 answered (what it would free there is unknown, so nothing is offered for it),
-unfinished downloads no record names, and files no catalog recipe uses. Nothing is ever unpinned on its own, no archive is deleted, and no file
-Pulsar has no record of is deleted.
+unfinished downloads no record names, and files no catalog recipe uses. Nothing that is kept stops being kept on its
+own, no archive is deleted, and no file Pulsar has no record of is deleted.
+
+**Look for model files Pulsar has no record of…** is for files the nodes hold
+that Pulsar's records do not name, for example after the controller's records,
+or a node's, were lost. Home's **Attention** line suggests it when membership
+is saved and no catalog recipe has a home recorded. It reads the same scan as
+the page, and the page itself says on which nodes it found such files. Its plan:
+
+- `Record the files of MODEL found on NODE (SIZE) as its home`, one step per
+  home folder of a required snapshot that no record names: Download's own
+  reuse (`model acquire SPEC [--snapshot NAME] --node NODE`). The step holds
+  only if Download's preview answers `reuse` for that node; it never
+  downloads. A recipe that serves on several nodes keeps its home on one of
+  them, so the folder must be on one of its serving nodes.
+- `Take over the copies of MODEL found on NODES after checking every file`, one
+  step per recipe: `model prepare SPEC --adopt-unrecorded` (see [Prepare all
+  serving nodes](#prepare-all-serving-nodes)), the only place the menu passes
+  that flag. It comes after any step that records the model's home, since
+  Prepare needs one, and is an estimate until then. When Prepare's preview
+  also copies the files to a serving node that has none, the step says so.
+
+Every file is hashed when no record names the folder, so each step can take a
+while. Each step checks first when its turn comes and stops the run when it is
+blocked or would do more than it says, for example download or copy to a node
+the plan did not name. Under the steps, what it found but cannot record, each
+with why and what gets the model back: the same files found on two nodes
+(Download records one home), files that could not be read as a complete copy,
+a copy whose model has no home to record it against, a copy on a node that
+does not serve its recipe, files and copies of recipes outside this catalog,
+and unfinished downloads or copies. **Get a model ready ahead of time…**
+restores or downloads a model instead. A node that did not answer is named:
+its files are unknown, not absent, and nothing is offered there. Nothing is
+downloaded, deleted or moved. When **Serve a model…** or **Get a model ready
+ahead of time…** meets such a copy, its plan stops and names this choice.
 
 Every plan has the form **Serve a model…**'s has: the steps and what each
 changes, a sentence on what stays and what a failure leaves, **Cancel** where

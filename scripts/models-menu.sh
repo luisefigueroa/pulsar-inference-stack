@@ -18,6 +18,12 @@
 #   Keep a model ready… model pin, or model unpin to stop keeping it
 #   Back up a model…    model archive create, one step per required snapshot
 #   Check the archives… model archive verify, one step per archived snapshot
+#   Look for model files Pulsar has no record of…
+#                       one plan from the same scan: model acquire (Download's
+#                       own reuse; it never downloads) for each home folder
+#                       found, then model prepare --adopt-unrecorded for each
+#                       recipe's copies no record names (the only choice that
+#                       passes that flag), and what neither can record, with why
 # Back up and Check need the archive location; without one the page says where
 # it is set instead of offering them. Each plan lists its steps and what each
 # changes, starts on Cancel, runs each step's own preview when its turn comes
@@ -41,7 +47,9 @@ require_gum "Models and disk space…" \
   "./pulsar model pin SPEC --plan" "keep a model ready (model unpin stops keeping it); then --yes" \
   "./pulsar model archive create SPEC --plan" "back up a model; then --yes" \
   "./pulsar model archive verify SPEC" "check a model's archives" \
-  "./pulsar model prepare SPEC --plan" "get a model ready ahead of time; then --yes"
+  "./pulsar model prepare SPEC --plan" "get a model ready ahead of time; then --yes" \
+  "./pulsar model acquire SPEC --node NODE --plan" "look for model files: record a home found with no record; then --yes" \
+  "./pulsar model prepare SPEC --adopt-unrecorded --plan" "look for model files: take over a copy no record names; then --yes"
 ui_keep_styles
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-models.XXXXXX")
@@ -265,6 +273,8 @@ while true; do
     keep) intent_page keep "Keep a model ready" || rc=$? ;;
     backup) intent_page backup "Back up a model" || rc=$? ;;
     check) intent_page check "Check the archives" || rc=$? ;;
+    # One plan from the page's scan: what it can record, then what it cannot.
+    find) plan_page "Look for model files" find || rc=$? ;;
     ready)
       # Serve a model…'s list and plan, without Start. It exits 4 when its plan
       # ran; then the page looks again, and otherwise reuses its scan.

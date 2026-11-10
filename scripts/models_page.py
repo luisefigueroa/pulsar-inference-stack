@@ -32,6 +32,13 @@ a step's turn comes the menu runs its own preview again, and `check-step` says
 whether it still does what the plan said (`same`, `skip`, `differs` or
 `blocked`). No plan unpins on its own, deletes an archive, deletes files no
 record names, or moves a home unless the operator chose that move.
+
+Look for model files Pulsar has no record of… (`compose --target find`) is one
+plan from the same scan: a step per home folder no record names, through
+Download's own reuse (it holds only if `model acquire … --plan --json` answers
+`reuse`), then a step per recipe whose prepared copies no record names, through
+`model prepare … --adopt-unrecorded`, the only menu step that passes that flag
+(D7). What neither can record is listed with why and what gets the model back.
 """
 from __future__ import annotations
 
@@ -357,6 +364,12 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         where = cluster.hosts(location["node_id"] for location in entry.get("locations") or [])
         out.emit(f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]} · "
                  f"{_size(entry.get('payload_bytes'))} on {where} · {STATUS_WORDS['unused']}", label(), more)
+    found = find_items(cluster)
+    holders = [item["node"] for item in found["register"]] + [node for item in found["adopt"] for node in item["nodes"]]
+    if holders:
+        # Catalog files the scan found that no record names: on no line above, so said here.
+        out.emit(f"Files Pulsar has no record of are on {cluster.hosts(holders)}; {FIND_LABEL} records them.",
+                 label(), more)
     if first:
         out.emit("No model in the catalog has files on the cluster. Serve a model… or Get a model ready ahead of "
                  "time… brings one.", label(), indent)
@@ -377,7 +390,7 @@ def page_choices(cluster: Cluster) -> list[tuple[str, str]]:
              ("keep", "Keep a model ready…")]
     if cluster.archive_location == "configured":
         found += [("backup", "Back up a model…"), ("check", "Check the archives…")]
-    return found + [("again", "Look again (checks nodes now)"), ("back", "Back")]
+    return found + [("find", FIND_LABEL), ("again", "Look again (checks nodes now)"), ("back", "Back")]
 
 
 # ---------------------------------------------------------------------------
@@ -810,6 +823,141 @@ def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) ->
     return output.getvalue().replace(KEEP, " ")
 
 
+# ---------------------------------------------------------------------------
+# Look for model files Pulsar has no record of…
+# ---------------------------------------------------------------------------
+
+FIND_LABEL = "Look for model files Pulsar has no record of…"
+GET_BACK = "Get a model ready ahead of time… restores it from the archive or downloads it instead"
+
+
+def _folder_recipe(cluster: Cluster, entry: dict, location: dict) -> tuple[str, Any] | None:
+    """(spec, snapshot) of the catalog recipe whose prepared copy path is LOCATION's folder, or None.
+
+    Prepare places a recipe's copy at a path made from the spec (a schema-2 spec's ID; for
+    schema 3, a key of the spec, the node and the snapshot), so the folder's name says whose it is."""
+    from model_library.state import view_key
+    name = Path(str(location.get("hub_path") or "")).name
+    for item in entry.get("catalog_specs") or []:
+        spec = item.get("spec_id")
+        row = cluster.catalog.get(spec)
+        if row is None:
+            continue
+        expected = (view_key(spec, location["node_id"], entry["snapshot_manifest_id"])
+                    if isinstance(row.get("snapshots"), dict) else spec)
+        if name == expected:
+            return spec, item.get("snapshot")
+    return None
+
+
+def _model(entry: dict) -> str:
+    return f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]}"
+
+
+def find_items(cluster: Cluster) -> dict:
+    """What the page's scan found that no record names, on the nodes that answered:
+
+    register  one item per found home folder Download can record (its own reuse)
+    adopt     one item per recipe whose prepared copies no record names, with their nodes
+    cannot    (text) for each found folder neither can record, with why and what gets it back
+    unknown   nodes that did not answer, whose files are unknown, not absent
+    """
+    register, adopt, cannot = [], {}, []
+    order = cluster.names.order
+    for entry in cluster.snapshots:
+        manifest = entry.get("snapshot_manifest_id")
+        found = [location for location in entry.get("locations") or []
+                 if location.get("kind") == "home" and not location.get("registered_home")
+                 and not location.get("bindings") and location.get("node_id") not in cluster.unread
+                 and location.get("state") != "missing"]
+        if not found:
+            continue
+        where = cluster.hosts(location["node_id"] for location in found)
+        if not entry.get("catalog_specs"):
+            cannot.append(f"{_model(entry)} on {where} ({_size(entry.get('payload_bytes'))}): "
+                          f"{STATUS_WORDS['unused']}, so there is no recipe to record them for (read-only).")
+            continue
+        name = clean(entry.get("model_id") or "the model")
+        recorded = [location for location in entry.get("locations") or [] if location.get("registered_home")]
+        if recorded:
+            cannot.append(f"Files of {name} on {where}: its home, the copy Pulsar keeps, is already on "
+                          f"{cluster.hosts(location['node_id'] for location in recorded)}, and Pulsar records one "
+                          "home, so it does not record these (read-only).")
+            continue
+        broken = [location for location in found if location.get("state") != "present"]
+        if broken:
+            reason = clean(broken[0].get("error") or "not every file is there at its expected size")
+            cannot.append(f"Files of {name} on {cluster.hosts(item['node_id'] for item in broken)} could not be "
+                          f"read as a complete copy ({reason}). {GET_BACK}.")
+            continue
+        if len(found) > 1:
+            cannot.append(f"Files of {name} were found on {where}. Download records one home and stops when it "
+                          "finds two, so neither is recorded; remove the one you do not need outside Pulsar, then "
+                          "Look again.")
+            continue
+        location = found[0]
+        choice = move_spec(cluster, entry, location["node_id"])
+        if choice is None:
+            cannot.append(f"Files of {name} on {cluster.host(location['node_id'])}: its recipes keep their files on "
+                          f"their serving nodes, and this node serves none of them. {GET_BACK}.")
+            continue
+        spec, snapshot = choice
+        register.append({"spec": spec, "snapshot": snapshot, "node": location["node_id"], "manifest": manifest,
+                         "size": entry.get("payload_bytes"), "name": name})
+    registered = {item["manifest"] for item in register}
+    for entry in cluster.snapshots:
+        for location in entry.get("locations") or []:
+            if (location.get("kind") != "prepared" or location.get("bindings")
+                    or location.get("node_id") in cluster.unread or location.get("state") == "missing"):
+                continue
+            node = location["node_id"]
+            name = clean(entry.get("model_id") or "the model")
+            if not location.get("bindings_observed", True):
+                cannot.append(f"A copy of {name} on {cluster.host(node)}: the records there could not be read, so "
+                              "whether Pulsar has a record of it is unknown. Choose Look again.")
+                continue
+            match = _folder_recipe(cluster, entry, location)
+            if match is None:
+                cannot.append(f"A copy of {_model(entry)} on {cluster.host(node)} that no record names was made for "
+                              "a recipe outside this catalog, so nothing here can record it (read-only).")
+                continue
+            spec, _ = match
+            recipe = cluster.name(spec)
+            if location.get("state") != "present":
+                reason = clean(location.get("error") or "not every file is there at its expected size")
+                cannot.append(f"A copy of {recipe} on {cluster.host(node)} could not be read as a complete copy "
+                              f"({reason}), so it cannot be taken over. Pulsar never deletes it.")
+                continue
+            row = cluster.catalog[spec]
+            nodes = row["geometry"]["nodes"]
+            if nodes > 1 and (node not in order or order.index(node) >= nodes):
+                cannot.append(f"A copy of {recipe} on {cluster.host(node)}: this node does not serve that recipe, "
+                              "so Prepare never looks there (read-only).")
+                continue
+            homes = cluster.homes(spec)
+            missing = [snapshot for snapshot, home in homes.items() if not home
+                       and cluster.manifests(spec).get(snapshot) not in registered]
+            if missing:
+                cannot.append(f"A copy of {recipe} on {cluster.host(node)}: the model has no home on the cluster, "
+                              "the copy Pulsar keeps, to record it against. Get a model ready ahead of time… "
+                              "restores or downloads it; then this choice can take the copy over.")
+                continue
+            key = (spec, None if nodes > 1 else node)
+            item = adopt.setdefault(key, {"spec": spec, "nodes": [], "size": entry.get("payload_bytes"),
+                                          "one_node": nodes == 1,
+                                          "projected": any(not home for home in homes.values())})
+            if node not in item["nodes"]:
+                item["nodes"].append(node)
+    for node in cluster.nodes:
+        loose = [item for item in node.get("unidentified") or []
+                 if item.get("kind") == "incomplete" and not item.get("preparation_spec_id")]
+        if loose and node["node_id"] not in cluster.unread:
+            cannot.append(f"{_count(len(loose), 'unfinished download or copy', 'unfinished downloads or copies')} on "
+                          f"{cluster.host(node['node_id'])} never finished, so there is nothing complete to record. "
+                          "Pulsar never deletes files it has no record of.")
+    return {"register": register, "adopt": list(adopt.values()), "cannot": cannot, "unknown": list(cluster.unread)}
+
+
 def intent_choices(cluster: Cluster, intent: str) -> list[tuple[str, str]]:
     if intent == "free":
         return free_choices(cluster)
@@ -833,12 +981,15 @@ def _what(row: dict, name) -> str:
 
 
 def _step(kind: str, sentence: str, command: list[str], preview: list[str] | None, facts: dict, *,
-          authority: bool, now: bool = True, entries: list[dict] = (), summary: str | None = None) -> dict:
-    """One step. SUMMARY is what the outcome calls it; by default the sentence up to its first stop."""
+          authority: bool, now: bool = True, entries: list[dict] = (), summary: str | None = None,
+          at_turn: bool = False) -> dict:
+    """One step. SUMMARY is what the outcome calls it; by default the sentence up to its first stop.
+    AT_TURN: its preview runs only when its turn comes (it is slow), though nothing before it changes it."""
     summary = summary or sentence.split(". ")[0].split(": ")[0].rstrip(".")
     return {"kind": kind, "sentence": sentence, "summary": summary, "command": command, "preview": preview,
             "facts": facts,
-            "authority": authority, "preview_now": bool(preview) and now, "projected": bool(preview) and not now,
+            "authority": authority, "preview_now": bool(preview) and now and not at_turn,
+            "projected": bool(preview) and not now and not at_turn,
             "shown": shown(command, list(entries))}
 
 
@@ -853,7 +1004,8 @@ def compose(cluster: Cluster, target: str, *, previews: dict | None = None, arch
         plan["blocked"].append(f"{cluster.hosts(cluster.unread)} could not be checked, and this needs every node "
                                "to answer. Choose Look again once it does.")
     builder = {"purge": _purge_plan, "clear": _purge_plan, "cluster": _cluster_plan, "move": _move_plan,
-               "keep": _pin_plan, "unkeep": _pin_plan, "backup": _backup_plan, "check": _check_plan}.get(kind)
+               "keep": _pin_plan, "unkeep": _pin_plan, "backup": _backup_plan, "check": _check_plan,
+               "find": _find_plan}.get(kind)
     if builder is None:
         raise ValueError(f"no plan for {target}")
     builder(cluster, plan, rest)
@@ -1113,6 +1265,58 @@ def _check_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     plan["done"] = f"every archive of {name} matched its expected file hashes"
 
 
+def _find_plan(cluster: Cluster, plan: dict, _: str) -> None:
+    """Record what the scan found that no record names: each home folder through Download's own reuse,
+    then each recipe's prepared copies through Prepare's --adopt-unrecorded, the only place the menu
+    passes it (D7). What neither can record is listed with why and what gets the model back."""
+    items = find_items(cluster)
+    plan["title"] = FIND_LABEL.rstrip("…")
+    plan["cannot"] = items["cannot"]
+    if items["unknown"]:
+        hosts = cluster.hosts(items["unknown"])
+        plan["unknown"] = (f"{hosts} could not be checked, so the files there are unknown, not absent, and nothing "
+                           f"is offered there. Choose Look again once {'it answers' if len(items['unknown']) == 1 else 'they answer'}.")
+    for item in items["register"]:
+        row = cluster.catalog[item["spec"]]
+        host = cluster.host(item["node"])
+        args = _snapshot_args(row, item["snapshot"])
+        command = ["./pulsar", "model", "acquire", item["spec"], *args, "--node", host]
+        # Download's own preview hashes every file of a folder no record names: it runs at the step's turn.
+        plan["steps"].append(_step(
+            "register", f"Record the files of {item['name']} found on {host} ({_size(item['size'])}) as its home, "
+                        "the copy Pulsar keeps. Download checks them first; nothing is downloaded.",
+            [*command, "--yes"], [*command, "--plan", "--json"],
+            {"spec": item["spec"], "snapshot": item["snapshot"], "node": item["node"],
+             "changes": f"records the files on {host}"},
+            authority=False, at_turn=True, entries=cluster.entries,
+            summary=f"Record the files of {item['name']} found on {host}"))
+    for item in items["adopt"]:
+        spec = item["spec"]
+        name = cluster.name(spec)
+        where = cluster.hosts(item["nodes"])
+        copies = "the copy" if len(item["nodes"]) == 1 else "the copies"
+        placement = ["--node", cluster.host(item["nodes"][0])] if item["one_node"] else []
+        command = ["./pulsar", "model", "prepare", spec, *placement, "--adopt-unrecorded"]
+        # Prepare has no preview before the model's home is recorded: an estimate until the steps before it ran.
+        later = item["projected"]
+        plan["steps"].append(_step(
+            "adopt", f"Take over {copies} of {name} found on {where} after checking every file "
+                     f"({_size(item['size'])}{' each' if len(item['nodes']) > 1 else ''}). Pulsar records "
+                     f"{'it' if len(item['nodes']) == 1 else 'each'} only if every file matches; nothing is copied "
+                     "or deleted.",
+            [*command, "--yes"], [*command, "--plan", "--json"],
+            {"spec": spec, "nodes": list(item["nodes"]), "copy_to": [] if later else None,
+             "changes": f"records copies on {where}"},
+            authority=False, now=not later, entries=cluster.entries,
+            summary=f"Take over {copies} of {name} found on {where}"))
+    plan["footer"] = ["Every file is hashed when no record names the folder, so each step can take a while. "
+                      "Nothing is downloaded, deleted or moved, and a folder whose files do not match stays as it is, "
+                      "unrecorded. Each step checks first when its turn comes; if it is blocked or would do more than "
+                      "it says, Pulsar stops and asks again. If a step fails, the steps before it stay done and the "
+                      "plan stops there."]
+    plan["done"] = "the files found are recorded"
+
+
 # ---------------------------------------------------------------------------
 # A step's own preview
 # ---------------------------------------------------------------------------
@@ -1172,6 +1376,39 @@ def assess(step: dict, preview: Any, rc: int = 0, names: NodeNames | None = None
         if (document.get("home") or {}).get("node_id") != facts.get("node"):
             return "differs", f"it would copy from {names((document.get('home') or {}).get('node_id'))}"
         return "same", ""
+    if kind == "register":
+        # The step holds only if Download's own plan reuses the files found: it never downloads.
+        if document.get("kind") != "pulsar-acquisition-plan":
+            return "blocked", "Download's preview did not return its plan"
+        if document.get("action") != "reuse":
+            return "differs", (f"the files found on {names(facts.get('node'))} do not match the recipe, so Download "
+                               "would fetch them from Hugging Face; this plan never downloads")
+        node = (document.get("home") or {}).get("node_id")
+        if node != facts.get("node"):
+            return "differs", f"Download would record the files on {names(node)}, not {names(facts.get('node'))}"
+        return "same", ""
+    if kind == "adopt":
+        if plan_blocked(document):
+            lines = plan_summary("prepare", {"model_id": "it"}, document, names=names)
+            return "blocked", " ".join(line.removeprefix("Blocked: ").rstrip(".") for line in lines)
+        inner = _plan_document(document)
+        if inner.get("kind") not in ("pulsar-preparation-plan", "pulsar-preparation-set-plan"):
+            return "blocked", "Prepare's preview did not return its plan"
+        actions = _plan_actions(document)
+        adopted = {str(action["node_id"]) for action in actions if action.get("action") == "adopt"}
+        copied = {str(action["node_id"]) for action in actions if action.get("action") == "copy"}
+        wanted = set(facts.get("nodes") or [])
+        if not adopted:
+            return "skip", "no copy is left that no record names"
+        extra = sorted(adopted - wanted)
+        if extra:
+            return "differs", f"it would also take over a copy on {_list([names(node) for node in extra])}"
+        if facts.get("copy_to") is not None:
+            more = sorted(copied - set(facts["copy_to"]))
+            if more:
+                return "differs", (f"it would also copy the files to {_list([names(node) for node in more])}, "
+                                   "which the plan did not say")
+        return "same", ""
     return "same", ""
 
 
@@ -1182,6 +1419,20 @@ def refine(step: dict, preview: Any, cluster: Cluster) -> None:
         size = plan_effect("purge", document).get("removed_bytes")
         if type(size) is int and STATUS_WORDS["size-unknown"] in step["sentence"]:
             step["sentence"] = step["sentence"].replace(STATUS_WORDS["size-unknown"], _size(size), 1)
+    if step["kind"] == "adopt" and isinstance(document, dict) and step["facts"].get("copy_to") is None:
+        # Prepare acts on every serving node at once: a node with neither files nor a copy to take over
+        # gets a copy in the same run. The plan says so, so the run never copies what it did not say.
+        copied = cluster.ordered(str(action["node_id"]) for action in _plan_actions(document)
+                                 if action.get("action") == "copy")
+        step["facts"]["copy_to"] = copied
+        if copied:
+            where = cluster.hosts(copied)
+            step["sentence"] = step["sentence"].replace("; nothing is copied or deleted.", "; nothing is deleted.")
+            step["sentence"] += (f" Prepare also copies the files to {where}, which has no copy, since every "
+                                 "serving node needs them before any copy is recorded." if len(copied) == 1 else
+                                 f" Prepare also copies the files to {where}, which have no copy, since every "
+                                 "serving node needs them before any copy is recorded.")
+            step["facts"]["changes"] += f" and writes a copy on {where}"
 
 
 # ---------------------------------------------------------------------------
@@ -1194,7 +1445,14 @@ def render(plan: dict, *, width: int | None = None) -> str:
     out.emit(plan["title"], role="heading")
     out.blank()
     steps = plan["steps"]
-    if not steps:
+    if plan.get("unknown"):
+        out.emit(plan["unknown"], "Not checked: ", "  ", prefix_role="warn")
+        out.blank()
+    if not steps and plan["intent"] == "find":
+        # Only what the nodes that answered hold: never that a model has no files.
+        out.emit("Nothing was found that Pulsar can record" + (" on the nodes that answered." if plan.get("unknown")
+                                                              else "."))
+    elif not steps:
         out.emit("Nothing to do: " + ("; ".join(note.rstrip(".") for note in plan["notes"]) or "nothing is left to change")
                  + ".")
     else:
@@ -1213,6 +1471,11 @@ def render(plan: dict, *, width: int | None = None) -> str:
                      "and asks again if one is blocked or would do more than it says.")
         for note in plan["notes"]:
             out.emit(note)
+    if plan.get("cannot"):
+        out.blank()
+        out.emit("Found, but Pulsar cannot record it here:")
+        for text in plan["cannot"]:
+            out.emit(text, "  • ", "    ")
     if plan["blocked"]:
         out.blank()
         for reason in plan["blocked"]:
