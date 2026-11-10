@@ -131,6 +131,12 @@ cmd_check() {
   exec python3 "$TRUST_TOOL" "${args[@]}"
 }
 
+# topology_id_of FILE: the saved document's topology_id, or nothing.
+topology_id_of() {
+  python3 -c 'import json,sys
+d=json.load(open(sys.argv[1])); print((d.get("topology") or d).get("topology_id") or "")' "$1" 2>/dev/null || true
+}
+
 cmd_enroll() {
   local yes=0 accept_key_change=0 tmpdir staged_topology staged_config
   local -a probe_files=() enroll_args=()
@@ -203,9 +209,20 @@ cmd_enroll() {
   require_topology_rewrite_idle "$CLUSTER_TOPOLOGY_FILE" || die "existing cluster is not idle"
   require_topology_rewrite_idle "$staged_topology" || die "proposed cluster is not idle"
 
+  local topology_id_before topology_id_after
+  topology_id_before=$(topology_id_of "$CLUSTER_TOPOLOGY_FILE")
+  topology_id_after=$(topology_id_of "$staged_topology")
   python3 "$MANIFEST_TOOL" write-trust-bundle \
     "$staged_topology" "$CLUSTER_TOPOLOGY_FILE" "$CLUSTER_SSH_CONFIG_FILE"
   log "topology-bound SSH identity enrolled"
+  # Enrollment changes the topology_id but not the nodes: an unchanged
+  # changes-noticed record stays current. Tests write only where
+  # PULSAR_CLUSTER_CHANGES_FILE points; this never fails enrollment.
+  if [ -n "$topology_id_before" ] && [ -n "$topology_id_after" ] \
+      && { [ "${PULSAR_SELFTEST:-0}" != 1 ] || [ -n "${PULSAR_CLUSTER_CHANGES_FILE:-}" ]; }; then
+    python3 "$REPO_DIR/scripts/saved_observations.py" carry-cluster-changes --repo-root "$REPO_DIR" \
+      --from "$topology_id_before" --to "$topology_id_after" >&2 || true
+  fi
   python3 "$TRUST_TOOL" check \
     --topology "$CLUSTER_TOPOLOGY_FILE" \
     --ssh-config "$CLUSTER_SSH_CONFIG_FILE" \

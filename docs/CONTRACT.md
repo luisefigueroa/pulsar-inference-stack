@@ -363,7 +363,9 @@ could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
 `possible_reinstall`); `missing` (`hostname`, `node_id`, `position`,
 `answered`, optional `reasons`); `changed` (`hostname`, `node_id`, and
 `changes` with `control`, `links` or `position`, each `old` and `new`); and
-`untrusted` (`address`, `possible_reinstall`).
+`untrusted` (`address`, `possible_reinstall`). A successful `ssh-trust enroll`
+rewrites only an `unchanged` record that names the membership from before
+enrollment, to the new `topology_id`, keeping `observed_at`.
 
 `topology configure --remove-missing` saves membership without confirmed nodes
 that did not answer discovery. It refuses with exit 1 when a missing member

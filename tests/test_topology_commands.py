@@ -1038,10 +1038,47 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         states = [line.split()[-1] for line in result.stdout.splitlines() if line.strip().startswith('State')]
         self.assertEqual(states, ['new', 'new', 'new'])
-        # Enrollment changes the topology ID again, so the changes record from
-        # the save now names an earlier membership.
+        # Enrollment changes the topology ID again (1.6.3: an unchanged changes
+        # record is carried forward to it; see the test below).
         self.assertNotEqual(json.loads(f.path.read_text())['topology_id'], saved['topology_id'])
-        self.assertEqual(self.changes()['topology_id'], saved['topology_id'])
+
+    def test_recording_ssh_identities_keeps_an_unchanged_record_current(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        record = self.changes()
+        saved = json.loads(f.path.read_text())
+        self.assertEqual((record['result'], record['topology_id']), ('unchanged', saved['topology_id']))
+        result = f.run('ssh-trust', 'enroll', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        enrolled = json.loads(f.path.read_text())['topology_id']
+        self.assertNotEqual(enrolled, saved['topology_id'])
+        # Carried forward: the new ID, the same observation and time.
+        self.assertEqual(self.changes(), {**record, 'topology_id': enrolled})
+        self.assertFalse((ROOT/'.pulsar').exists())
+
+    def test_recording_ssh_identities_leaves_any_other_record_as_it_is(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        path = f.root/'state/cluster-changes.json'
+        # A change noticed after the save: a machine that is not a member.
+        self.add_machine(2)
+        f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(self.changes()['result'], 'changed')
+        before = path.read_bytes()
+        self.assertEqual(f.run('ssh-trust', 'enroll', '--yes').returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+        # An unchanged record that names another membership is left too.
+        record = json.loads(before)
+        path.write_text(json.dumps({**record, 'result': 'unchanged', 'found': [], 'topology_id': 'a' * 64}))
+        before = path.read_bytes()
+        self.assertEqual(f.run('ssh-trust', 'enroll', '--yes').returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+        # Without the test override nothing is written into the checkout.
+        env = dict(f.env); env.pop('PULSAR_CLUSTER_CHANGES_FILE')
+        result = subprocess.run([str(ROOT/'pulsar'), 'ssh-trust', 'enroll', '--yes'], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((ROOT/'.pulsar').exists())
 
     # Phase 1.4: forget this cluster.
     def cluster_state(self):

@@ -15,8 +15,9 @@ before it is saved. Nothing here contacts a node.
 The "changes noticed" record (`cluster-changes`) is what the last discovery
 against valid saved membership saw, compared with that membership's
 `topology_id` (scripts/topology_actions.py changes_noticed); it is stamped
-`observed_at` when saved. A record whose `topology_id` is not the saved
-membership's describes an earlier membership.
+`observed_at` when saved. Recording SSH identities carries an `unchanged`
+record to the new `topology_id` (carry-cluster-changes). A record whose
+`topology_id` is not the saved membership's describes an earlier membership.
 
 `home` prints `key<TAB>KEY` on its first line, then the Running block. Both
 come from one read of each record at one instant, so the home menu compares
@@ -194,6 +195,23 @@ def save_changes(body: Any, path: Path, *, clock: Callable[[], str] = utc_now) -
     with record_lock(path):
         record = {**body, "schema_version": SCHEMA_VERSION, "kind": CHANGES_KIND, "observed_at": clock()}
         check_changes_record(record)
+        atomic_json(path, record)
+    return True
+
+
+def carry_changes(path: Path, old_topology_id: str, new_topology_id: str) -> bool:
+    """Recording SSH identities changes the membership's topology_id without
+    changing its nodes. An `unchanged` record that names OLD_TOPOLOGY_ID is
+    carried forward to NEW_TOPOLOGY_ID, keeping its observed_at; any other
+    record is left exactly as it is. True when the record was rewritten."""
+    path = Path(path)
+    if not os.path.lexists(path):
+        return False
+    with record_lock(path):
+        record = load_changes(path)
+        if record is None or record["topology_id"] != old_topology_id or record["result"] != "unchanged":
+            return False
+        record = check_changes_record({**record, "topology_id": new_topology_id})
         atomic_json(path, record)
     return True
 
@@ -537,6 +555,10 @@ def main(argv: list[str] | None = None) -> int:
                           ("save-cluster-changes", "save one discovery's changes noticed from stdin")):
         save = sub.add_parser(command, help=text)
         save.add_argument("--path", help="save here instead of the default path")
+    carry = sub.add_parser("carry-cluster-changes",
+                           help="after SSH enrollment: carry an unchanged record to the new topology_id")
+    carry.add_argument("--from", dest="old", required=True)
+    carry.add_argument("--to", dest="new", required=True)
     home = sub.add_parser("home", help="a `key\\tKEY` line, then the Running block; catalog JSON on stdin")
     home.add_argument("--width", type=int)
     home.add_argument("--now", type=_instant, help="the time ages are taken at (UTC); the current time by default")
@@ -549,6 +571,15 @@ def main(argv: list[str] | None = None) -> int:
         return _save(args, BUDGET_NAME, "the storage budget", save_budget)
     if args.command == "save-cluster-changes":
         return _save(args, CHANGES_NAME, "the cluster changes noticed", save_changes)
+    if args.command == "carry-cluster-changes":
+        # Like a save, this never fails its caller: a problem is one warning.
+        path: object = os.environ.get(CHANGES_ENV, "")
+        try:
+            path = record_path(args.repo_root, CHANGES_NAME)
+            carry_changes(path, args.old, args.new)
+        except (ValueError, OSError) as exc:
+            _warning("the cluster changes noticed", path, exc)
+        return 0
     # One read of each record and one instant give both the block and its
     # change key, so a save while the menu draws can never split them.
     now = args.now or datetime.now(timezone.utc)

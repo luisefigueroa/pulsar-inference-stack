@@ -309,9 +309,12 @@ machines. Pulsar identifies a node by its OS machine ID, so a reinstalled
 machine is one node gone and one new: a found machine or untrusted address with
 the hostname or address of a member that did not answer is marked
 `possible_reinstall`; a candidate that is the other mDNS name or address of a
-member that answered is not listed. A successful save rewrites the record as unchanged. SSH
-enrollment changes the `topology_id` too, so a record that names another
-`topology_id` than the saved membership describes an earlier membership.
+member that answered is not listed. A successful save rewrites the record as
+unchanged. Recording SSH identities changes the `topology_id` but not the
+nodes, so it carries an `unchanged` record that names the membership from
+before enrollment forward to the new `topology_id`, keeping its time; it leaves
+any other record as it is. A record that names another `topology_id` than the
+saved membership describes an earlier membership.
 `detect --json` carries the same body as `changes_noticed`. Saving the record
 never changes discovery's output or exit status; it holds hostnames and
 addresses and stays private under the ignored `.pulsar/` folder.

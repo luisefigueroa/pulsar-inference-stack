@@ -147,6 +147,25 @@ class Records(unittest.TestCase):
             self.assertEqual(saved.record_path(self.root, "cluster-changes"),
                              self.root / ".pulsar" / "cluster-changes.json")
 
+    def test_an_unchanged_record_is_carried_to_the_enrolled_topology_id(self):
+        path = self.root / "cluster-changes.json"
+        self.assertFalse(saved.carry_changes(path, "a" * 64, "b" * 64))
+        self.assertFalse(path.exists())
+        body = {"topology_id": "a" * 64, "result": "unchanged", "issues": [], "found": [], "missing": [],
+                "changed": [], "untrusted": [{"address": "printer.local", "possible_reinstall": False}]}
+        saved.save_changes(body, path, clock=lambda: "2026-11-09T00:00:00Z")
+        self.assertTrue(saved.carry_changes(path, "a" * 64, "b" * 64))
+        self.assertEqual(saved.load_changes(path), {**body, "topology_id": "b" * 64, "schema_version": 1,
+                                                    "kind": "pulsar-cluster-changes",
+                                                    "observed_at": "2026-11-09T00:00:00Z"})
+        # Another ID, or any other result, is left exactly as it is.
+        before = path.read_bytes()
+        self.assertFalse(saved.carry_changes(path, "a" * 64, "c" * 64))
+        saved.save_changes({**body, "result": "changed", "topology_id": "b" * 64}, path)
+        before = path.read_bytes()
+        self.assertFalse(saved.carry_changes(path, "b" * 64, "c" * 64))
+        self.assertEqual(path.read_bytes(), before)
+
     def test_change_key_moves_only_with_a_new_observation_or_turning_last_seen(self):
         inventory, budget = observed(), budget_record()
         self.assertEqual(saved.change_key(None, None), "none none")
