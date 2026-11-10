@@ -10,6 +10,8 @@ before it is saved. Nothing here contacts a node.
     python3 -m scripts.saved_observations save-inventory < INVENTORY_JSON
     python3 -m scripts.saved_observations save-budget < BUDGET_NODES_JSON
     python3 -m scripts.saved_observations save-cluster-changes < CHANGES_BODY_JSON
+    python3 -m scripts.saved_observations keep-cluster-changes
+    python3 -m scripts.saved_observations save-cluster-check < CHECK_BODY_JSON
     python3 -m scripts.saved_observations home [--now TIME] [--width N] < CATALOG_JSON
 
 The "changes noticed" record (`cluster-changes`) is what the last discovery
@@ -18,6 +20,14 @@ against valid saved membership saw, compared with that membership's
 `observed_at` when saved. Recording SSH identities carries an `unchanged`
 record to the new `topology_id` (carry-cluster-changes). A record whose
 `topology_id` is not the saved membership's describes an earlier membership.
+
+Two optional fields sit beside the changes, each stamped when written and
+carried forward by every later save for the same `topology_id`:
+`kept` (keep-cluster-changes) is the operator's answer that the members that
+did not answer are only down; it is dropped as soon as a discovery sees
+different changes, so the question is asked again only then. `check`
+(save-cluster-check) is what the last Check the cluster now found on each
+node: whether it answered, and its blocking issues and warnings.
 
 `home` prints `key<TAB>KEY` on its first line, then the Running block. Both
 come from one read of each record at one instant, so the home menu compares
@@ -35,6 +45,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import io
 import json
 import os
@@ -68,6 +79,9 @@ BUDGET_KIND = "pulsar-saved-storage-budget"
 CHANGES_KIND = "pulsar-cluster-changes"
 CHANGE_RESULTS = ("unchanged", "changed", "not-checked")
 CHANGE_LISTS = ("issues", "found", "missing", "changed", "untrusted")
+# The optional `check` field: each node's answer and findings, and the
+# cluster-wide links and SSH identity results.
+CHECK_STATES = ("verified", "failed", "not-checked")
 SCHEMA_VERSION = 1
 BUDGET_SIZES = ("available", "total", "used", "reserve", "limit")
 
@@ -175,7 +189,54 @@ def check_changes_record(record: Any) -> dict:
     for key in CHANGE_LISTS:
         if not isinstance(record.get(key), list):
             raise ValueError(f"the saved cluster changes have no {key} list")
+    if "kept" in record:
+        kept = record["kept"]
+        if (not isinstance(kept, dict) or not isinstance(kept.get("signature"), str)
+                or not isinstance(kept.get("missing"), list)
+                or not all(isinstance(item, str) and item for item in kept["missing"])):
+            raise ValueError("the saved cluster changes have an invalid kept answer")
+        _stamp(kept.get("kept_at"), "the kept answer's kept_at")
+    if "check" in record:
+        _check_check(record["check"])
     return record
+
+
+def _check_check(check: Any) -> dict:
+    """The optional `check` field: what the last cluster check found."""
+    if not isinstance(check, dict) or not isinstance(check.get("nodes"), list):
+        raise ValueError("the saved cluster check has no nodes list")
+    _stamp(check.get("checked_at"), "the cluster check's checked_at")
+    for key in ("links", "identities"):
+        if check.get(key) not in CHECK_STATES:
+            raise ValueError(f"the saved cluster check has no valid {key} result")
+    for node in check["nodes"]:
+        if (not isinstance(node, dict) or not isinstance(node.get("hostname"), str) or not node["hostname"]
+                or node.get("answered") not in (True, False, None)):
+            raise ValueError("a saved cluster check node has no hostname or answer")
+        for key in ("failures", "warnings"):
+            if not isinstance(node.get(key), list) or not all(isinstance(item, str) for item in node[key]):
+                raise ValueError(f"a saved cluster check node has no {key} list")
+    return check
+
+
+def changes_signature(record: dict) -> str:
+    """What a discovery saw, without its time: machines found, members that
+    did not answer or were rejected, and members that changed. A kept answer
+    stays only while this is the same."""
+    seen = {
+        "found": sorted(str(item.get("node_id") or item.get("hostname")) for item in record.get("found") or []),
+        "missing": sorted(f"{item.get('node_id')}:{bool(item.get('answered'))}" for item in record.get("missing") or []),
+        "changed": sorted(json.dumps(item, sort_keys=True) for item in record.get("changed") or []),
+    }
+    return hashlib.sha256(json.dumps(seen, sort_keys=True).encode()).hexdigest()
+
+
+def _unreadable_as_none(path: Path) -> dict | None:
+    """The saved changes, or None when there are none or they cannot be read."""
+    try:
+        return load_changes(path)
+    except (ValueError, OSError):
+        return None
 
 
 def load_changes(path: Path) -> dict | None:
@@ -193,7 +254,52 @@ def save_changes(body: Any, path: Path, *, clock: Callable[[], str] = utc_now) -
     path = Path(path)
     ensure_directory(path.parent)
     with record_lock(path):
-        record = {**body, "schema_version": SCHEMA_VERSION, "kind": CHANGES_KIND, "observed_at": clock()}
+        record = {key: value for key, value in body.items() if key not in ("kept", "check")}
+        record.update(schema_version=SCHEMA_VERSION, kind=CHANGES_KIND, observed_at=clock())
+        # The last check and a kept answer belong to this membership: they stay
+        # with it, and a kept answer only while the changes are the same.
+        previous = _unreadable_as_none(path)
+        if previous is not None and previous["topology_id"] == record.get("topology_id"):
+            if "check" in previous:
+                record["check"] = previous["check"]
+            if "kept" in previous and previous["kept"]["signature"] == changes_signature(record):
+                record["kept"] = previous["kept"]
+        check_changes_record(record)
+        atomic_json(path, record)
+    return True
+
+
+def keep_changes(path: Path, *, clock: Callable[[], str] = utc_now) -> dict:
+    """Record that the members that did not answer are only down: the menu
+    keeps them and does not ask again until a discovery sees other changes."""
+    path = Path(path)
+    with record_lock(path):
+        record = load_changes(path)
+        unanswered = [item["node_id"] for item in (record or {}).get("missing") or [] if not item.get("answered")]
+        if record is None or record["result"] != "changed" or not unanswered:
+            raise ValueError("the saved cluster changes name no member that did not answer")
+        record = {**record, "kept": {"kept_at": clock(), "signature": changes_signature(record),
+                                     "missing": unanswered}}
+        check_changes_record(record)
+        atomic_json(path, record)
+    return record
+
+
+def save_check(body: Any, path: Path, *, clock: Callable[[], str] = utc_now) -> bool:
+    """Keep what one cluster check found beside the changes its discovery saved.
+
+    BODY names the membership it checked; a record for another membership,
+    or none, cannot hold it."""
+    if not isinstance(body, dict) or not isinstance(body.get("topology_id"), str):
+        raise ValueError("the cluster check names no topology_id")
+    path = Path(path)
+    with record_lock(path):
+        record = load_changes(path)
+        if record is None or record["topology_id"] != body["topology_id"]:
+            raise ValueError("the saved cluster changes describe another membership")
+        check = {key: value for key, value in body.items() if key != "topology_id"}
+        check["checked_at"] = clock()
+        record = {**record, "check": _check_check(check)}
         check_changes_record(record)
         atomic_json(path, record)
     return True
@@ -555,6 +661,10 @@ def main(argv: list[str] | None = None) -> int:
                           ("save-cluster-changes", "save one discovery's changes noticed from stdin")):
         save = sub.add_parser(command, help=text)
         save.add_argument("--path", help="save here instead of the default path")
+    sub.add_parser("keep-cluster-changes",
+                   help="keep the members that did not answer: they are only down")
+    sub.add_parser("save-cluster-check", help="save one cluster check's findings from stdin").add_argument(
+        "--path", help="save here instead of the default path")
     carry = sub.add_parser("carry-cluster-changes",
                            help="after SSH enrollment: carry an unchanged record to the new topology_id")
     carry.add_argument("--from", dest="old", required=True)
@@ -571,6 +681,16 @@ def main(argv: list[str] | None = None) -> int:
         return _save(args, BUDGET_NAME, "the storage budget", save_budget)
     if args.command == "save-cluster-changes":
         return _save(args, CHANGES_NAME, "the cluster changes noticed", save_changes)
+    if args.command == "save-cluster-check":
+        return _save(args, CHANGES_NAME, "the cluster check", save_check)
+    if args.command == "keep-cluster-changes":
+        # The menu asked; a record that cannot hold the answer is an error it shows.
+        try:
+            keep_changes(record_path(args.repo_root, CHANGES_NAME))
+        except (ValueError, OSError) as exc:
+            error_line(exc, tag="saved observations")
+            return 1
+        return 0
     if args.command == "carry-cluster-changes":
         # Like a save, this never fails its caller: a problem is one warning.
         path: object = os.environ.get(CHANGES_ENV, "")

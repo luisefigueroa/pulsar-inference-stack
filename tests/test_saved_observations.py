@@ -166,6 +166,86 @@ class Records(unittest.TestCase):
         self.assertFalse(saved.carry_changes(path, "b" * 64, "c" * 64))
         self.assertEqual(path.read_bytes(), before)
 
+    def missing_body(self, topology="a" * 64, **extra):
+        return {"topology_id": topology, "result": "changed", "issues": [], "found": [],
+                "missing": [{"hostname": "fixture-rank-2", "node_id": "fixture-node-2", "position": 2,
+                             "answered": False}], "changed": [], "untrusted": [], **extra}
+
+    def test_a_kept_answer_stays_until_a_discovery_sees_other_changes(self):
+        path = self.root / "cluster-changes.json"
+        with self.assertRaisesRegex(ValueError, "no member that did not answer"):
+            saved.keep_changes(path)
+        saved.save_changes({**self.missing_body(), "result": "unchanged", "missing": []}, path)
+        with self.assertRaisesRegex(ValueError, "no member that did not answer"):
+            saved.keep_changes(path)
+        saved.save_changes(self.missing_body(), path, clock=lambda: "2026-11-09T00:00:00Z")
+        record = saved.keep_changes(path, clock=lambda: "2026-11-09T00:01:00Z")
+        self.assertEqual(record["kept"]["missing"], ["fixture-node-2"])
+        self.assertEqual(record["kept"]["kept_at"], "2026-11-09T00:01:00Z")
+        self.assertEqual(saved.load_changes(path), record)
+        # The same changes seen again later keep the answer, with a new observed_at.
+        saved.save_changes(self.missing_body(), path, clock=lambda: "2026-11-09T01:00:00Z")
+        again = saved.load_changes(path)
+        self.assertEqual((again["observed_at"], again["kept"]), ("2026-11-09T01:00:00Z", record["kept"]))
+        # A caller cannot write a kept answer or a check itself.
+        saved.save_changes(self.missing_body(kept={"bogus": True}, check={"bogus": True}), path)
+        self.assertEqual(saved.load_changes(path)["kept"], record["kept"])
+        self.assertNotIn("check", saved.load_changes(path))
+        # Other changes, or another membership, drop it: the question is asked again.
+        found = {"hostname": "fixture-new", "node_id": "fixture-node-9", "ssh_host": "fixture-new.local",
+                 "possible_reinstall": False}
+        for body in (self.missing_body(found=[found]), self.missing_body(topology="b" * 64)):
+            with self.subTest(topology=body["topology_id"][:1], found=bool(body["found"])):
+                saved.save_changes(self.missing_body(), path)
+                saved.keep_changes(path)
+                saved.save_changes(body, path)
+                self.assertNotIn("kept", saved.load_changes(path))
+
+    def check_body(self, topology="a" * 64):
+        return {"topology_id": topology, "links": "verified", "identities": "verified",
+                "nodes": [{"hostname": "fixture-rank-0", "node_id": "fixture-node-0", "answered": True,
+                           "failures": [], "warnings": ["hf CLI not found"]},
+                          {"hostname": "fixture-rank-1", "node_id": "fixture-node-1", "answered": False,
+                           "failures": [], "warnings": []}]}
+
+    def test_a_cluster_check_is_kept_beside_the_changes_of_its_membership(self):
+        path = self.root / "cluster-changes.json"
+        with self.assertRaisesRegex(ValueError, "another membership"):
+            saved.save_check(self.check_body(), path)
+        saved.save_changes(self.missing_body(), path, clock=lambda: "2026-11-09T00:00:00Z")
+        with self.assertRaisesRegex(ValueError, "another membership"):
+            saved.save_check(self.check_body("b" * 64), path)
+        self.assertTrue(saved.save_check(self.check_body(), path, clock=lambda: "2026-11-09T00:00:30Z"))
+        check = saved.load_changes(path)["check"]
+        self.assertEqual(check["checked_at"], "2026-11-09T00:00:30Z")
+        self.assertNotIn("topology_id", check)
+        self.assertEqual([node["answered"] for node in check["nodes"]], [True, False])
+        # A later discovery of the same membership keeps it; a save of another drops it.
+        saved.save_changes(self.missing_body(), path, clock=lambda: "2026-11-09T02:00:00Z")
+        self.assertEqual(saved.load_changes(path)["check"], check)
+        saved.save_changes(self.missing_body("b" * 64), path)
+        self.assertNotIn("check", saved.load_changes(path))
+        for broken in ({**self.check_body(), "links": "maybe"},
+                       {**self.check_body(), "nodes": [{"hostname": "", "answered": True, "failures": [],
+                                                        "warnings": []}]},
+                       {**self.check_body(), "nodes": [{"hostname": "x", "answered": "yes", "failures": [],
+                                                        "warnings": []}]}, []):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                saved.save_changes(self.missing_body(), path)
+                saved.save_check(broken, path)
+        # The command line saves it, and a mismatch is one warning that never fails its caller.
+        saved.save_changes(self.missing_body(), path)
+        env = {**os.environ, "PULSAR_CLUSTER_CHANGES_FILE": str(path), "PYTHONPATH": str(ROOT)}
+        result = subprocess.run([sys.executable, "-m", "scripts.saved_observations", "save-cluster-check"],
+                                input=json.dumps(self.check_body("b" * 64)), env=env, text=True,
+                                capture_output=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("the cluster check was not saved", result.stderr)
+        result = subprocess.run([sys.executable, "-m", "scripts.saved_observations", "keep-cluster-changes"],
+                                env=env, text=True, capture_output=True, cwd=ROOT)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(saved.load_changes(path)["kept"]["missing"], ["fixture-node-2"])
+
     def test_change_key_moves_only_with_a_new_observation_or_turning_last_seen(self):
         inventory, budget = observed(), budget_record()
         self.assertEqual(saved.change_key(None, None), "none none")
