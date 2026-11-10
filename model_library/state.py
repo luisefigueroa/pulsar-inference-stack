@@ -232,17 +232,20 @@ def shared_view(record: dict) -> dict:
 
 
 def _interrupted_takeover(previous: dict, record: dict, current_topology_id: str | None) -> dict | None:
-    """The record naming CURRENT_TOPOLOGY_ID, when two records of one copy
-    differ only in topology_id and rank and exactly one names it: what a
-    takeover (Prepare's rebind) interrupted between the node and controller
-    leaves. Both name the same files; Prepare verifies them and takes the
-    copy over again. Any other disagreement still refuses."""
+    """The record that does not name CURRENT_TOPOLOGY_ID, when two records of
+    one copy differ only in topology_id and rank and exactly one names it:
+    what a takeover (Prepare's rebind) interrupted between the node and
+    controller leaves. Both name the same files. Prepare then plans a rebind,
+    which verifies them and writes the node's record and the controller's
+    again, whichever side was left behind; taking the current one would plan
+    a reuse, which rewrites only the controller. Any other disagreement still
+    refuses."""
     if not current_topology_id:
         return None
     if any(previous[f] != record[f] for f in VIEW_IDENTITY_FIELDS if f not in ('topology_id', 'rank')):
         return None
-    current = [r for r in (previous, record) if r['topology_id'] == current_topology_id]
-    return current[0] if len(current) == 1 else None
+    stale = [r for r in (previous, record) if r['topology_id'] != current_topology_id]
+    return stale[0] if len(stale) == 1 else None
 
 
 def reconcile_views(records: list[dict], *, current_topology_id: str | None = None) -> list[dict]:

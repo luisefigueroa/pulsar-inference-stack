@@ -30,8 +30,9 @@ prepare_snapshot() {
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
   # A takeover interrupted between the node and controller records leaves
-  # them naming different memberships; Prepare resolves only that case, toward
-  # the current membership, and takes the copy over again.
+  # them naming different memberships; Prepare resolves only that case. It
+  # keeps the record left behind, so its plan takes the copy over again and
+  # writes both the node's record and the controller's.
   existing=$(merged_views snapshot "$CLUSTER_TOPOLOGY_ID") || die "node and controller preparation records cannot be reconciled"
   transactions=$(json_fields "$existing" transactions)
   existing=$(json_fields "$existing" views)

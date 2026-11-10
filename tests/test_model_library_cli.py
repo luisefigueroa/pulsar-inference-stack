@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests/support")]
 from model_library_fixture import Fixture, contained, node_request
 from model_library.integrity import read_json, verify_tree
-from model_library.state import Store, view_key
+from model_library.state import Store, view_key, view_record_key
 from model_library.local import copy_snapshot, payload
 from release_spec import build_snapshot_manifest, pretty_json_bytes, spec_id_for, verify_spec
 from release_spec.identity import argv_from_identity
@@ -379,12 +379,42 @@ class ModelLibraryCLI(unittest.TestCase):
                             for v in Store(f.state).views(spec_id=f.spec['spec_id'])))
         # Other commands still refuse records that disagree.
         self.failure(f.run('purge', '--plan', spec=True), 'disagree')
-        # Prepare resolves only this case, toward the current membership.
+        # Prepare resolves only this case: it takes the copies over again,
+        # writing the nodes' records and the controller's.
         plan = self.success(f.run('prepare', '--plan', spec=True))
-        self.assertEqual([a['action'] for a in plan['actions']], ['reuse', 'reuse'])
+        self.assertEqual([a['action'] for a in plan['actions']], ['rebind', 'rebind'])
         self.success(f.run('prepare', '--yes', spec=True))
-        self.assertTrue(all(v['topology_id'] == f.topology['topology_id']
-                            for v in Store(f.state).views(spec_id=f.spec['spec_id'])))
+        self.assertEqual(self.record_topologies(f), {f.topology['topology_id']})
+        self.assertEqual(self.file_state(f), files)
+        self.success(f.run('purge', '--plan', spec=True))
+
+    def record_topologies(self, f):
+        """The membership IDs every record of this spec names, on the controller and on each node."""
+        names = {v['topology_id'] for v in Store(f.state).views(spec_id=f.spec['spec_id'])}
+        for node in f.cfg['nodes']:
+            names |= {v['topology_id'] for v in Store(Path(node['view_root']) / '.pulsar-node').views(
+                spec_id=f.spec['spec_id'])}
+        return names
+
+    def test_a_takeover_left_behind_on_a_node_is_finished_on_both_sides(self):
+        # The other order: the controller names the current membership and a
+        # node's record still names the earlier one. A reuse would rewrite
+        # only the controller and leave the node behind.
+        f = self.fixture(nodes=2); self.acquire_candidate(f, nodes=2, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        old = f.topology['topology_id']
+        f.change_membership()
+        self.success(f.run('prepare', '--yes', spec=True))
+        files = self.file_state(f)
+        node = Store(Path(f.cfg['nodes'][1]['view_root']) / '.pulsar-node')
+        record, = node.views(spec_id=f.spec['spec_id'])
+        node.put('views', view_record_key(record), {**record, 'topology_id': old})
+        self.assertEqual(self.record_topologies(f), {old, f.topology['topology_id']})
+        self.failure(f.run('purge', '--plan', spec=True), 'disagree')
+        plan = self.success(f.run('prepare', '--plan', spec=True))
+        self.assertEqual([a['action'] for a in plan['actions']], ['reuse', 'rebind'])
+        self.success(f.run('prepare', '--yes', spec=True))
+        self.assertEqual(self.record_topologies(f), {f.topology['topology_id']})
         self.assertEqual(self.file_state(f), files)
         self.success(f.run('purge', '--plan', spec=True))
 

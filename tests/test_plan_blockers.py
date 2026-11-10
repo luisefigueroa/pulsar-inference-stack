@@ -291,11 +291,19 @@ class Preparation(Details):
         # Other readers still refuse records that disagree.
         with self.assertRaisesRegex(StorageError, "disagree"):
             reconcile_views([controller, node])
-        # Prepare takes the record that names the current membership.
-        merged = reconcile_views([controller, node], current_topology_id=TOPOLOGY)
-        self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [(TOPOLOGY, 1)])
-        merged = reconcile_views([node, controller], current_topology_id=TOPOLOGY)
-        self.assertEqual([v["topology_id"] for v in merged], [TOPOLOGY])
+        # Prepare takes the record that does not name the current membership,
+        # in either order, so its plan is a takeover that writes both sides
+        # again, never a reuse that rewrites only the controller.
+        for records in ([controller, node], [node, controller]):
+            with self.subTest(first=records[0] is node and "node" or "controller"):
+                merged = reconcile_views(records, current_topology_id=TOPOLOGY)
+                self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [("e" * 64, 1)])
+        # The stale side's position is kept too, so a moved copy is taken over at its new one.
+        moved = {**node, "rank": 0}
+        merged = reconcile_views([controller, moved], current_topology_id=TOPOLOGY)
+        self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [("e" * 64, 1)])
+        plan = self.plan(views=merged, observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "rebind"])
         # Any other difference, or neither naming it, still refuses.
         for other in ({**node, "path": node["path"] + "-elsewhere"}, {**node, "topology_id": "f" * 64}):
             with self.subTest(other=other["path"][-10:]), self.assertRaisesRegex(StorageError, "disagree"):
