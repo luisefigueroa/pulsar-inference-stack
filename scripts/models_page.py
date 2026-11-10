@@ -697,7 +697,8 @@ def free_screen(cluster: Cluster, *, width: int | None = None) -> str:
         for text, _ in blocked:
             out.emit(text, "  • ", "    ")
     out.blank()
-    out.emit("Nothing is unpinned, no archive is deleted, and no file Pulsar has no record of is deleted.")
+    out.emit("Nothing that is kept stops being kept, no archive is deleted, and no file Pulsar has no record of is "
+             "deleted.")
     return output.getvalue().replace(KEEP, " ")
 
 

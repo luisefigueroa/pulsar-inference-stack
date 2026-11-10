@@ -200,6 +200,10 @@ class FreeUpSpace(unittest.TestCase):
 
     def test_a_kept_model_is_not_removable_and_offers_to_stop_keeping_it_never_unpinning_on_its_own(self):
         removable, blocked = self.options([recipe()], files([ready_model(pinned=True)]))
+        # The screen says it in the page's own word: kept, not unpinned.
+        text = flat(mp.free_screen(cluster([recipe()], files([ready_model(pinned=True)])), width=100))
+        self.assertIn("Nothing that is kept stops being kept, no archive is deleted", text)
+        self.assertNotIn("unpinned", text)
         self.assertEqual(removable, [])
         self.assertIn(("org/model is kept ready on spark-1, spark-2 and spark-3, so Free up space… does not offer it.",
                        (f"unkeep:{SPEC}", "Stop keeping org/model ready")), blocked)
