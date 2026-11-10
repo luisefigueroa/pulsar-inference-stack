@@ -188,9 +188,10 @@ class Help(unittest.TestCase):
         """A new status word fails here until docs/OPERATIONS.md explains it."""
         from model_library import catalog, catalog_menu
         from release_spec import schema
-        from scripts import cluster_status, serve_plan, services_page, start_reasons
+        from scripts import cluster_status, models_page, serve_plan, services_page, start_reasons
         words = {catalog.NOT_CHECKED, *catalog.FILE_STATES.values(), *catalog.SNAPSHOT_FILE_STATES.values(),
                  *cluster_status.STATUS_WORDS.values(), *services_page.STATUS_WORDS.values(),
+                 *models_page.STATUS_WORDS.values(),
                  *start_reasons.STATUS_WORDS.values(),
                  # Serve a model…'s readiness phrases, each value written as … in its row.
                  *(re.sub(r"\{[a-z]+\}", "…", phrase) for key, phrase in serve_plan.READINESS.items()
@@ -231,7 +232,7 @@ class Help(unittest.TestCase):
         text = self.run_help(("help", "workflow"), 100)
         steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)
         self.assertEqual(steps, [("1", "Download or Restore"), ("2", "Prepare"), ("3", "Start"),
-                                 ("4", "Connect"), ("5", "Stop"), ("6", "Purge prepared copies")])
+                                 ("4", "Connect"), ("5", "Stop"), ("6", "Back up"), ("7", "Purge prepared copies")])
         for step, sentence in help_pages.workflow():
             with self.subTest(step=step):
                 self.assertTrue(sentence.endswith(".") and ". " not in sentence, sentence)

@@ -658,5 +658,63 @@ class BundledGumServe(BundledGum):
                 self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["inventory --json"])
 
 
+class BundledGumModels(BundledGum):
+    """Models and disk space… with real Gum over fixture records and the ./pulsar double: Esc leaves
+    every screen, so nothing is approved."""
+
+    def fixture(self):
+        import shlex
+        from tests.test_models_page import budget, files, ready_model, recipe  # noqa: PLC0415
+        from tests.test_serve_menu import build_root, root_environment  # noqa: PLC0415
+        from tests.test_serve_plan import envelope  # noqa: PLC0415
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        build_root(root, ("models-menu.sh", "serve-menu.sh"), gum=True)
+        (root / "catalog.json").write_text(json.dumps({"entries": [recipe()]}))
+        for key, document in (("files", envelope(files([ready_model()]))), ("budget", envelope(budget())),
+                              ("purge-plan", envelope({"plan": {
+                                  "kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
+                                  "actions": [{"node_id": "n1", "action": "remove-copy"},
+                                              {"node_id": "n2", "action": "remove-copy"}]},
+                                  "incomplete_preparations": []}))):
+            (root / "fixtures" / f"{key}.json").write_text(json.dumps(document))
+        exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
+        return root, exports + f'exec bash {shlex.quote(str(root / "scripts/models-menu.sh"))}\n'
+
+    def test_the_page_draws_room_and_models_above_its_choices_at_80_by_24(self):
+        root, script = self.fixture()
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                (root / "pulsar.log").unlink(missing_ok=True)
+                code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns)
+                self.assertEqual(code, 0, output)
+                screen = views(output, 24, columns)[-2]
+                text = "\n".join(screen)
+                for line in ("Models and disk space · checked less than a minute ago", "Models and disk space",
+                             "> Free up space…", "  Keep a model ready…", "  Back"):
+                    self.assertIn(line, screen, text)
+                self.assertTrue(any(line.startswith("Room      spark-1  2.00 TiB free") for line in screen), text)
+                self.assertTrue(any(line.startswith("Models    org/model · 212 GiB") for line in screen), text)
+                self.assertNotIn("\x1b[?1049h", output)
+                self.assertTrue(all(len(line) <= columns for line in screen))
+                self.assertEqual((root / "pulsar.log").read_text().splitlines(),
+                                 ["model files --json", "model budget --json"])
+
+    def test_a_free_up_space_plan_prints_above_its_choices_with_the_cursor_on_cancel(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\r", ready=b"Look again",
+                                  then=[(b"> Remove org/model from the cluster", b"\x1b[B\r"), (b"> Cancel", b"\x1b"),
+                                        (b"> Remove org/model from the cluster", b"\x1b"),
+                                        (b"> Free up space", b"\x1b")])
+        self.assertEqual(code, 0, output)
+        plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
+        text = "\n".join(plan)
+        for line in ("Remove org/model from spark-2 and spark-3", "Pulsar will:", "> Cancel", "  Go ahead"):
+            self.assertIn(line, plan, text)
+        self.assertLess(plan.index("Pulsar will:"), plan.index("> Cancel"))
+        self.assertTrue(all(len(line) <= 80 for line in plan))
+        commands = (root / "pulsar.log").read_text().splitlines()
+        self.assertFalse([line for line in commands if "--json" not in line], commands)
+
+
 if __name__ == "__main__":
     unittest.main()

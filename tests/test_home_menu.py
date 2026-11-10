@@ -135,13 +135,16 @@ wait_continue() {
         # The Cluster menu and the topology menu are their own scripts.
         for name, word in (("cluster-menu.sh", "cluster menu"), ("topology.sh", "topology"),
                            ("serve-menu.sh", "serve menu"), ("services-menu.sh", "services menu"),
-                           ("why-not-start.sh", "why menu")):
+                           ("models-menu.sh", "models menu"), ("why-not-start.sh", "why menu")):
             script = scripts / name
             script.write_text(f'#!/usr/bin/env bash\necho "{word} $*" >> "$PULSAR_LOG"\n'
                               '[ -z "${CHANGES_AFTER:-}" ] || cp "$CHANGES_AFTER" "$PULSAR_CLUSTER_CHANGES_FILE"\n'
                               # Running services… saves the inventory it takes.
                               + ('[ -z "${INVENTORY_AFTER:-}" ] || cp "$INVENTORY_AFTER" '
                                  '"$PULSAR_SERVICE_INVENTORY_FILE"\n' if name == "services-menu.sh" else '')
+                              # Models and disk space… saves the storage budget it reads.
+                              + ('[ -z "${BUDGET_AFTER:-}" ] || cp "$BUDGET_AFTER" '
+                                 '"$PULSAR_STORAGE_BUDGET_FILE"\n' if name == "models-menu.sh" else '')
                               + 'exit "${MENU_RC:-0}"\n')
             script.chmod(0o755)
         for name in ("detect-fabric.sh", "topology-ssh-trust.sh", "cluster-overview.sh"):
@@ -401,12 +404,12 @@ class Home(MenuHarness):
         self.assertEqual(self.catalog_log.read_text(), "list --json\n")
         self.assertEqual(list((self.root / "saved").iterdir()), [])
 
-    def test_each_intent_opens_its_flow_or_todays_menu_until_later_phases_replace_it(self):
+    def test_each_intent_opens_its_own_flow(self):
         result = self.run_home(["Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        # Serve a model… answers with a plan and Running services… is its own page; today's
-        # catalog menu and inventory menu stay under Advanced.
-        self.assertEqual(self.commands(), ["serve menu ", "services menu ", "models files", "cluster menu "])
+        # Each intent is its own page; today's catalog menu, inventory menu and Model files page
+        # stay under Advanced.
+        self.assertEqual(self.commands(), ["serve menu ", "services menu ", "models menu ", "cluster menu "])
         self.assertEqual(self.menus(), [HOME] * 5)
 
     def test_serve_a_model_returns_home_and_ctrl_c_there_exits(self):

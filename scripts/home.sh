@@ -7,8 +7,9 @@
 # After setup: Serve a model…, Running services…, Models and disk space…,
 # Cluster…, Help and troubleshooting…, Exit. Serve a model… answers with a
 # plan (scripts/serve-menu.sh); Running services… shows what runs and how to
-# reach it (scripts/services-menu.sh). Until a later phase replaces it, Models
-# and disk space… opens today's Model files page unchanged. Before setup: Set up this cluster… (or Start over: forget
+# reach it (scripts/services-menu.sh); Models and disk space… shows room and
+# models and answers each of its choices with a plan (scripts/models-menu.sh).
+# Today's Model files page stays under Advanced. Before setup: Set up this cluster… (or Start over: forget
 # this cluster… when saved membership is invalid), read-only catalog
 # browsing, Help and troubleshooting… and Exit. Help and troubleshooting…
 # holds Advanced: single operations…, today's menus unchanged.
@@ -104,7 +105,8 @@ if [ "$complete" = 1 ]; then
     "./pulsar models menu" "single operations: the catalog and each recipe's operations" \
     "./pulsar inventory" "running services; then ./pulsar status SPEC, logs SPEC or stop SPEC" \
     "./pulsar inventory menu" "single operations: one service's status, logs and stop" \
-    "./pulsar models files" "models and disk space on every node" \
+    "./pulsar model files" "models and disk space on every node; then model purge, pin or archive create" \
+    "./pulsar models files" "single operations: the Model files page" \
     "./pulsar topology check" "check the cluster: saved nodes and fabric" \
     "./pulsar topology detect" "look for changes to the cluster; saves nothing" \
     "./pulsar doctor" "diagnostics with every node's prerequisites" \
@@ -162,7 +164,7 @@ if [ "$complete" = 1 ]; then
   case "$choice" in
     0) "$REPO_DIR/scripts/serve-menu.sh" ;;
     1) "$REPO_DIR/scripts/services-menu.sh" ;;
-    2) "$REPO_DIR/pulsar" models files ;;
+    2) "$REPO_DIR/scripts/models-menu.sh" ;;
     3) "$REPO_DIR/scripts/cluster-menu.sh" ;;
     4) help_menu ;;
     *) exit 0 ;;

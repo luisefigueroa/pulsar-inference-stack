@@ -198,9 +198,14 @@ def workflow() -> list[tuple[str, str]]:
          f"after **{LABELS['start']}** and under **Running services… → How to connect**."),
         (LABELS["stop"], "Remove the *service*'s containers from every node; model files, *pins* and "
                          "*archives* are kept."),
+        ("Back up",
+         "Copy each *home* of a model into the *archive* (**Models and disk space… → Back up a model…**), so "
+         "a model removed from the cluster comes back without the internet; **Check the archives…** verifies "
+         "them."),
         (LABELS["purge"],
-         "Remove the spec's *prepared copies* to free space; pinned or in-use copies are refused, "
-         "and the *home* and *archives* are kept."),
+         "Remove the spec's *prepared copies* to free space, keeping the *home* and *archives*; pinned or "
+         "in-use copies are refused, and **Models and disk space… → Free up space…** lists what can go, "
+         "largest gain first, with what each frees and what it costs to get back."),
     ]
 
 
