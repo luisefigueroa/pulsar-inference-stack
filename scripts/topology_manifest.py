@@ -347,8 +347,49 @@ def ring_walk(
         order.append(following)
 
 
+def first_cable_neighbour(
+    nodes: list[dict[str, Any]], neighbours: list[set[int]]
+) -> int:
+    """The neighbour of node 0 on the cable that carries its first RoCE adapter.
+
+    Adapters are taken in sorted name order; one that carries no link to a
+    neighbour is passed over for the next."""
+    local = nodes[0]
+    for hca in sorted({link["hca"] for link in local.get("rdma") or []}):
+        for index in sorted(neighbours[0]):
+            if any(
+                rail["a"]["hca"] == hca
+                for rail in rails_between(local, nodes[index])
+            ):
+                return index
+    return min(neighbours[0])
+
+
+def saved_ring_cables(old: dict[str, Any]) -> tuple[list[str], set[frozenset[str]]] | None:
+    """A saved ring's node_ids in rank order and its cables as node_id pairs.
+
+    None unless OLD is a well-formed saved ring; it is read only to keep the
+    ring's direction, never to decide membership."""
+    if (old.get("validation") or {}).get("class") != RING_CLASS:
+        return None
+    nodes = old.get("nodes") or []
+    try:
+        order = [str(node["node_id"]) for node in sorted(nodes, key=lambda node: node["rank"])]
+        if [node["rank"] for node in sorted(nodes, key=lambda node: node["rank"])] != list(range(len(nodes))):
+            return None
+        cables = {
+            frozenset((order[link["ranks"][0]], order[link["ranks"][1]]))
+            for link in old.get("links") or []
+        }
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return order, cables
+
+
 def cluster_shape(
-    local: dict[str, Any], remotes: list[dict[str, Any]]
+    local: dict[str, Any],
+    remotes: list[dict[str, Any]],
+    saved_ring: tuple[list[str], set[frozenset[str]]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """The shape of the cabled group that contains LOCAL, and its nodes in rank order.
 
@@ -356,6 +397,11 @@ def cluster_shape(
     before by `largest_mesh`. `ring` when the group is four or more nodes in
     one closed loop, each cabled to exactly two others. Anything else is
     `fallback`: the largest full mesh containing LOCAL, as before.
+
+    A ring's ranks follow its cables from LOCAL, rank 0. Rank 1 is the
+    neighbour on the cable of LOCAL's first RoCE adapter, unless SAVED_RING
+    (from `saved_ring_cables`) has exactly these cables: then its direction
+    is kept, so a rediscovery does not reverse the order.
     """
     nodes = [local, *remotes]
     neighbours = cabled_neighbours(nodes)
@@ -366,7 +412,20 @@ def cluster_shape(
         len(neighbours[index]) == 2 for index in group
     ):
         # Connected, and every node of degree two: a single closed loop.
-        first = min(neighbours[0])
+        ids = [node["node_id"] for node in nodes]
+        cables = {
+            frozenset((ids[index], ids[other]))
+            for index in group
+            for other in neighbours[index]
+        }
+        first = None
+        if saved_ring is not None and saved_ring[1] == cables:
+            order = saved_ring[0]
+            if local["node_id"] in order:
+                following = order[(order.index(local["node_id"]) + 1) % len(order)]
+                first = ids.index(following)
+        if first is None:
+            first = first_cable_neighbour(nodes, neighbours)
         return "ring", [nodes[index] for index in ring_walk(nodes, neighbours, first)]
     return "fallback", largest_mesh(local, remotes)
 
@@ -475,10 +534,12 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
         by_id[probe["node_id"]] = probe
 
     existing_order: dict[str, int] = {}
+    saved_ring = None
     if existing_path and pathlib.Path(existing_path).is_file():
         old = load_json(existing_path)
         if "topology" in old:
             old = old.get("topology") or {}
+        saved_ring = saved_ring_cables(old)
         for item in old.get("nodes") or []:
             node_id = str(item.get("node_id") or "")
             rank = item.get("rank")
@@ -493,7 +554,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
             node["node_id"],
         )
     )
-    shape, selected = cluster_shape(local, remotes)
+    shape, selected = cluster_shape(local, remotes, saved_ring)
     left_out = {
         "full-mesh": [MESH_LEFT_OUT],
         "ring": [RING_LEFT_OUT],

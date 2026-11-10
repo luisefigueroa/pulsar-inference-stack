@@ -13,7 +13,7 @@ import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
-from support.topology_fixture import node_probe, ring_probes, shuffled
+from support.topology_fixture import Fixture, node_probe, ring_probes, shuffled
 import topology_manifest as tm
 
 GOLDEN = ROOT/'tests/fixtures/topology'
@@ -366,6 +366,98 @@ class SavedRingFormat(unittest.TestCase):
 
     def test_an_unknown_class_is_refused(self):
         self.refused(lambda t: t['validation'].update({'class': 'roce-star'}), 'links do not cover every rank pair')
+
+
+def order_of(document, probes):
+    """The cable positions of PROBES, in the discovered rank order."""
+    topology = document.get('topology', document)
+    positions = {probe['node_id']: index for index, probe in enumerate(probes)}
+    return [positions[node['node_id']] for node in topology['nodes']]
+
+
+def with_port_names_swapped(probe):
+    """PROBE with its port 0 and port 1 adapter names exchanged."""
+    swap = {'rocep0a': 'rocep1a', 'rocep0b': 'rocep1b', 'rocep1a': 'rocep0a', 'rocep1b': 'rocep0b'}
+    probe = json.loads(json.dumps(probe))
+    for link in probe['rdma']:
+        link['hca'] = swap.get(link['hca'], link['hca'])
+    probe['rdma'].sort(key=lambda item: item['hca'])
+    return probe
+
+
+class RingRanks(unittest.TestCase):
+    """Ranks follow the cables; a saved ring keeps its direction while its cables match."""
+
+    def test_ranks_follow_the_cables_from_this_node_whatever_the_probe_order(self):
+        for count, local, expected in ((4, 0, [0, 1, 2, 3]), (4, 2, [2, 3, 0, 1]),
+                                       (6, 4, [4, 5, 0, 1, 2, 3]), (6, 1, [1, 2, 3, 4, 5, 0])):
+            with self.subTest(count=count, local=local):
+                probes = ring_probes(count, local=local)
+                listed = shuffled(probes)
+                self.assertEqual(order_of(discover(listed), probes), expected)
+                self.assertEqual(order_of(discover([listed[0], *reversed(listed[1:])]), probes), expected)
+
+    def test_discovery_through_the_command_saves_cable_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probes = ring_probes(4)
+            fixture = Fixture(Path(directory), probes=shuffled(probes))
+            fixture.path.unlink()
+            candidates = [argument for probe in shuffled(probes)[1:] for argument in ('--candidate', probe['ssh_host'])]
+            result = fixture.run('topology', 'detect', *candidates, '--json')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            document = json.loads(result.stdout)
+            self.assertEqual(document['topology']['validation']['class'], 'roce-ring')
+            self.assertEqual(order_of(document, probes), [0, 1, 2, 3])
+
+    def test_rank_1_is_on_the_cable_of_the_first_adapter_by_name(self):
+        # This node's port 1 adapters now sort first, so rank 1 is the node
+        # cabled to port 1: the loop is walked the other way.
+        probes = ring_probes(4)
+        probes[0] = with_port_names_swapped(probes[0])
+        self.assertEqual(order_of(discover(shuffled(probes)), probes), [0, 3, 2, 1])
+
+    def test_an_adapter_that_carries_no_link_is_passed_over(self):
+        probes = ring_probes(4)
+        probes[0] = with_port_names_swapped(probes[0])
+        # An adapter that sorts before every other one, on a subnet no other node has.
+        probes[0]['rdma'].insert(0, dict(hca='rocep00', netdev='fab00', cidrs=['203.0.113.241/28']))
+        self.assertEqual(order_of(discover(shuffled(probes)), probes), [0, 3, 2, 1])
+
+    def test_a_saved_ring_keeps_its_direction_on_rediscovery(self):
+        reversed_probes = ring_probes(4)
+        reversed_probes[0] = with_port_names_swapped(reversed_probes[0])
+        saved = tm.mark_verified(discover(shuffled(reversed_probes)))['topology']
+        self.assertEqual(order_of(saved, reversed_probes), [0, 3, 2, 1])
+        # Without the saved ring, the same cables would be walked the other way.
+        probes = ring_probes(4)
+        self.assertEqual(order_of(discover(shuffled(probes)), probes), [0, 1, 2, 3])
+        self.assertEqual(order_of(discover(shuffled(probes), saved), probes), [0, 3, 2, 1])
+        # A cable that lost one of its links is still the same cable.
+        fewer = ring_probes(4, single_link_cables={0, 2})
+        self.assertEqual(order_of(discover(shuffled(fewer), saved), fewer), [0, 3, 2, 1])
+        enrolled = tm.enroll_ssh_trust(saved, reversed_probes)
+        self.assertEqual(order_of(discover(shuffled(probes), {'topology': enrolled}), probes), [0, 3, 2, 1])
+
+    def test_a_saved_ring_whose_cables_changed_takes_the_rule_again(self):
+        reversed_probes = ring_probes(4)
+        reversed_probes[0] = with_port_names_swapped(reversed_probes[0])
+        saved = tm.mark_verified(discover(shuffled(reversed_probes)))['topology']
+        # The machines at positions 2 and 3 exchange places in the loop.
+        recabled = ring_probes(4)
+        identity = ('node_id', 'hostname', 'ssh_host', 'control', 'ssh_host_keys')
+        for key in identity:
+            recabled[2][key], recabled[3][key] = recabled[3][key], recabled[2][key]
+        document = discover(shuffled(recabled), saved)
+        self.assertEqual(order_of(document, recabled), [0, 1, 2, 3])
+        self.assertEqual([node['hostname'] for node in document['topology']['nodes']],
+                         ['fixture-ring-dorado', 'fixture-ring-bravo', 'fixture-ring-alpha', 'fixture-ring-echo'])
+
+    def test_a_saved_mesh_does_not_set_a_rings_direction(self):
+        probes = ring_probes(4)
+        saved = {'validation': {'class': 'roce-full-mesh'},
+                 'nodes': [{'node_id': probes[index]['node_id'], 'rank': rank}
+                           for rank, index in enumerate((0, 3, 2, 1))]}
+        self.assertEqual(order_of(discover(shuffled(probes), saved), probes), [0, 1, 2, 3])
 
 
 if __name__ == '__main__':
