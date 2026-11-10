@@ -354,12 +354,13 @@ class Page:
                     else recorded_api_auth(result.get("service_id"))
                 field("Key", f"{keys[auth]} · checked {when}")
             elif seen:
-                # As status itself falls back to the inventory: rank 0's observed port on its node. The
-                # Seen row names the inventory and its age, so the row stays one line at 60 columns.
-                field("API", f"`{seen}/v1`" + self._loopback(seen, raw))
+                # As status itself falls back to the inventory: rank 0's observed port on its node.
+                # "seen" names the source, as the Seen row has it with its age; short enough that the
+                # row stays one line at 60 columns.
+                field("API", f"`{seen}/v1` · seen" + self._loopback(seen, raw))
                 auth = plan_api_auth(self._plan_id(raw))
                 field("Key", f"{keys[auth]} · {STATUS_WORDS['launch-record']}" if auth is not None
-                      else STATUS_WORDS["not-checked"])
+                      else keys[None])
             else:
                 field("API", STATUS_WORDS["not-checked"] if not checked else
                       f"not found by Check it now {when}")

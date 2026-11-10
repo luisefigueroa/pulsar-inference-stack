@@ -97,9 +97,9 @@ class OneService(Page):
         self.assertIn("Model served-model, the model name requests use", text)
         # The API comes from the inventory the Seen row names, as status itself has it: rank 0's port
         # on its node, here this machine, so the Connect card's loopback note applies. With no launch
-        # plan named, the key and health need Check it now.
-        self.assertIn("API http://127.0.0.1:8000/v1, only from spark-1", text)
-        self.assertIn("Key not checked here; choose Check it now", text)
+        # plan named, the key is not recorded; health needs Check it now.
+        self.assertIn("API http://127.0.0.1:8000/v1 · seen, only from spark-1", text)
+        self.assertIn("Key not recorded: add the key header if the service was started with one", text)
         self.assertIn("Health not checked here; choose Check it now", text)
         self.assertNotIn("192.0.2.1", text)
         self.assertEqual(self.commands(), ["inventory --json"])
@@ -121,7 +121,7 @@ class OneService(Page):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 text = self.text(result)
                 self.assertIn(words, text)
-                self.assertIn("API http://192.0.2.2:8000/v1 Key", text)
+                self.assertIn("API http://192.0.2.2:8000/v1 · seen Key", text)
                 self.assertNotIn("only from", text)
                 # Still one probe: the card reads the saved record, not the service.
                 self.assertEqual(self.commands(), ["inventory --json"])

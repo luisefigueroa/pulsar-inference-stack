@@ -203,8 +203,8 @@ below are for reading.
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
-| Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
-| Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port or launch record either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
+| Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. An API address marked `· seen` comes from it too. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
+| Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
 | Services: from its launch record | Whether the service needs a key, read from the launch plan its containers name, as the Connect card reads it. **Check it now** confirms it with the service. |
 | Services: only from … | The API address is a loopback address (`127.0.0.1`), because the service's first node is this machine. It works from that node only; from another machine use an address that reaches it. |
 | Services: not in the service inventory; choose Check it now | The inventory did not record the name requests use for this service. **Check it now** asks the service. |
@@ -1504,19 +1504,19 @@ publish. A name too long for the line keeps its end. Its card:
 <model> running on <node-1>, <node-2> · port 8000
   Seen      by the service inventory 2 minutes ago
   Model     <served name>, the model name requests use
-  API       http://<address>:8000/v1
+  API       http://<address>:8000/v1 · seen
   Key       none: the API accepts requests without a key · from its launch record
   Health    not checked here; choose Check it now
 ```
 
-The API address comes from the inventory the Seen row dates, the way `./pulsar
-status` falls back to it: the port the first serving node's container runs
-with, at that node's address. When that node is this machine the address is a
-loopback address, and the card says it works only from there. Whether a key is
-required comes from the launch plan the service's containers name, as the
-Connect card reads it; with no plan named it waits for **Check it now**. Health
-needs the service itself, so it waits for **Check it now** too, which also
-replaces the API and key with what it found, each with its age. GPU
+The API address comes from the inventory the Seen row dates (`· seen`), the
+way `./pulsar status` falls back to it: the port the first serving node's
+container runs with, at that node's address. When that node is this machine the
+address is a loopback address, and the card says it works only from there.
+Whether a key is required comes from the launch plan the service's containers
+name, as the Connect card reads it, and reads `not recorded` when they name
+none. Health needs the service itself, so it waits for **Check it now**, which
+also replaces the API and key with what it found, each with its age. GPU
 work and containers Pulsar did not start are named under the card, read-only,
 and offered nothing. The choices:
 
