@@ -59,16 +59,27 @@ SAVED
   wait_continue "Cluster saved" || return
 }
 
-# The screen is rendered where it is shown, so it fits the pager's width.
-rc=0
-page_output "" python3 -m scripts.cluster_status review --repo-root "$REPO_DIR" || rc=$?
-[ "$rc" -ne 130 ] || exit 130
-[ "$rc" -eq 0 ] || { printf '✗ The review could not be shown; review the error above.\n'; exit 1; }
 labels=() actions=()
 while IFS=$'\t' read -r action label; do
   [ -n "$action" ] || continue
   actions+=("$action"); labels+=("$label")
 done < <(status review --choices)
+# The screen prints above its choices when both fit the terminal's rows, as
+# the recipe frame does (a blank line, the screen, then Gum's choices and its
+# five rows); otherwise it opens in the pager, rendered at the pager's width.
+# The width is read before the capture: a captured stdout hides the terminal.
+columns=$(_ui_terminal_columns) || columns=""
+rc=0
+screen=$(status review ${columns:+--width "$columns"}) || rc=$?
+[ "$rc" -eq 0 ] || { printf '✗ The review could not be shown; review the error above.\n'; exit 1; }
+lines=$(printf '%s\n' "$screen" | wc -l)
+if rows=$(_ui_terminal_rows) && [ $((lines + 1 + ${#labels[@]} + 5)) -gt "$rows" ]; then
+  page_output "" python3 -m scripts.cluster_status review --repo-root "$REPO_DIR" || rc=$?
+  [ "$rc" -ne 130 ] || exit 130
+  [ "$rc" -eq 0 ] || { printf '✗ The review could not be shown; review the error above.\n'; exit 1; }
+else
+  printf '\n%s\n' "$screen"
+fi
 choice=$(choose_index "Review what changed" "${labels[@]}") \
   || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
 case "${actions[$choice]}" in

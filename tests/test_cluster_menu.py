@@ -106,7 +106,9 @@ choose_index() {
       echo "UNEXPECTED MENU ANSWER: $answer" >> "$CHOOSE_LOG"; return 1 ;;
   esac
 }
-page_output() { shift; "$@"; }
+# ROWS is the terminal's height; unset, it is not known. PAGE_LOG records each page.
+_ui_terminal_rows() { [ -n "${ROWS:-}" ] || return 1; printf '%s\n' "$ROWS"; }
+page_output() { [ -z "${PAGE_LOG:-}" ] || echo paged >> "$PAGE_LOG"; shift; "$@"; }
 wait_continue() {
   local rc=0
   choose_index "${1:-Review the output above}" "Continue" >/dev/null || rc=$?
@@ -270,6 +272,20 @@ class Review(Harness):
                       "again.", text)
         self.assertIn("Same as ./pulsar topology configure, then ./pulsar ssh-trust enroll", text)
         self.assertEqual(self.menus()[1], ["Cluster saved", "Continue"])
+
+    def test_review_prints_above_its_choices_when_it_fits_and_pages_when_it_does_not(self):
+        self.save(body(found=FOUND))
+        pages = self.root / "pages.log"
+        for rows, paged in (("60", False), (None, False), ("12", True)):
+            with self.subTest(rows=rows):
+                pages.unlink(missing_ok=True)
+                extra = {"PAGE_LOG": str(pages), **({"ROWS": rows} if rows else {})}
+                result = self.run_script("cluster-review.sh", ["Back"], **extra)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(pages.exists(), paged)
+                # Either way the screen is shown once, before its choices.
+                self.assertEqual(result.stdout.count("Review what changed"), 1)
+                self.assertIn("New machine", result.stdout)
 
     def test_a_declined_or_failed_save_changes_nothing_and_records_no_identities(self):
         self.save(body(found=FOUND))

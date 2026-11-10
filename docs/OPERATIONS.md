@@ -1362,7 +1362,9 @@ when a saved record changed. Its choices:
   discovery noticed a change, **Show the report again**, **Check again** and
   **Back**. It replaces the earlier home menu's **Cluster overview**.
 - **Review what changed…**, shown when the saved changes hold a change, shows
-  saved membership against what the last discovery saw, then one question:
+  saved membership against what the last discovery saw, printed above its
+  choices when both fit the terminal and in the pager when they do not, then
+  one question:
   - every member answered: **Save the cluster as it is now** (`./pulsar
     topology configure`);
   - a member did not answer: **Keep NODE; it is only down**, which records
