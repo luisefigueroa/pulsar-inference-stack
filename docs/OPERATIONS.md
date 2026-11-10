@@ -273,8 +273,9 @@ every prerequisite before it can fail later; it installs nothing:
    links to every other machine discovery verified, is asked for the same
    prerequisites over SSH with discovery's strict host-key policy.
 4. **Save**: configuration's fresh checks and its question.
-5. **Identities**: the SSH identity check, and enrollment with its own
-   key-confirmation question when identities are missing.
+5. **Identities**: the SSH identity check, and recording them
+   (`./pulsar ssh-trust enroll`) with its own question, `Record these SSH
+   identities?`, after the fingerprints, when identities are missing.
 
 Setup then finishes with a topology readiness check and lists what is still to
 fix on each machine. A missing prerequisite never blocks saving; only the

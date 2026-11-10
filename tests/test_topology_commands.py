@@ -356,7 +356,7 @@ class TopologyCommands(unittest.TestCase):
         result, output = self.interactive(['topology', 'menu'], '', '')
         self.assertEqual(result, 0, output)
         self.assertIn('not enrolled; choose Change membership… → Enroll SSH trust', ' '.join(output.split()))
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_service_started_during_confirmation_blocks_save(self):
@@ -400,7 +400,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='1')
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertNotEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
         self.assertEqual(f.path.read_bytes(), before)
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup'], '', '')
@@ -414,7 +414,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?', 'Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?', 'Record these SSH identities?'])
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         self.assertTrue(f.config.is_file())
@@ -444,7 +444,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertNotIn('this node', step1 + step3)
         # A missing prerequisite never blocks saving; the closing summary lists what is left.
         self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?',
-                                                       'Enroll these SSH identities?'])
+                                                       'Record these SSH identities?'])
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         summary = text.split('Still to fix', 1)[1]
         self.assertIn('FAIL fixture-rank-1: rsync not found', summary)
@@ -491,7 +491,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertNotIn('Step 3 of 5', text)
         self.assertIn('Step 5 of 5 · Identities', text)
         self.assertIn('Still to fix Nothing: every machine has its prerequisites.', text)
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
 
     def test_fresh_setup_cancel_never_reaches_enrollment(self):
         f = self.fixture
@@ -519,7 +519,7 @@ class TopologyCommands(unittest.TestCase):
         result, output = self.interactive(['ssh-trust', 'enroll'], '', '')
         self.assertEqual(result, 130, output)
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
 
     def test_fresh_setup_ctrl_c_never_reaches_enrollment(self):
         f = self.fixture
@@ -613,7 +613,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(len(saved['nodes']), 3)
         self.assertEqual(saved['schema_version'], 2)
         self.assertEqual(self.gum_prompts('confirm'), [
-            'Save cluster membership with 3 machines?', 'Enroll these SSH identities?'])
+            'Save cluster membership with 3 machines?', 'Record these SSH identities?'])
         calls = f.calls()
         self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in calls), 5)
         addresses = [args[args.index('--')+1] for tool, args in calls if tool == 'ssh']
@@ -629,7 +629,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(result, 0, output)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 1)
         self.assertEqual(self.gum_prompts('confirm'), [
-            'Save cluster membership with 1 machine?', 'Enroll these SSH identities?'])
+            'Save cluster membership with 1 machine?', 'Record these SSH identities?'])
 
     def test_review_and_address_cancellation_do_not_save_or_enroll(self):
         cases = [('4', '', 1), ('esc', '', 1), ('ctrl-c', '', 130),
