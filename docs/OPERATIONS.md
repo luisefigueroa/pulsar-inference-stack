@@ -514,8 +514,9 @@ Select an existing archive location with:
 ./pulsar configure archive-root set <existing-directory> --yes
 ```
 
-The same workflow is available through **Archive storage configuration** after
-cluster setup. `PULSAR_COLD_ROOT` is the explicit configuration
+The same workflow is available through **Cluster… → Settings…** after cluster
+setup, and as **Archive storage configuration** under **Help and
+troubleshooting… → Advanced: single operations…**. `PULSAR_COLD_ROOT` is the explicit configuration
 variable: process value first, then the repository's `.env`; empty disables
 archives. Pulsar does not create, mount or administer the selected directory.
 The operator owns its access controls and choice of independent storage.

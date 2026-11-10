@@ -159,13 +159,13 @@ def render_text(
             out.field("SSH trust", trust, indent=2)
         out.field("Archives", archives, indent=2)
         if document["archives"]["status"] == "not-configured":
-            out.emit("Archive actions need a location; choose **Archive storage configuration** when needed.",
+            out.emit("Archive actions need a location; **Cluster…** → **Settings…** sets one when needed.",
                      markup=True)
         elif document["archives"]["status"] == "unreadable":
             where = ("the environment that started Pulsar" if document["archives"].get("source") == "process"
                      else "this checkout's .env file")
-            out.emit(f"Fix PULSAR_COLD_ROOT in {where}, then open **Archive storage configuration** "
-                     "to check it.", markup=True)
+            out.emit(f"Fix PULSAR_COLD_ROOT in {where}, then check it in **Cluster…** → **Settings…**.",
+                     markup=True)
         out.blank()
         out.emit("Catalog", role="heading")
         out.emit(catalog, initial_indent="  ", subsequent_indent="  ")

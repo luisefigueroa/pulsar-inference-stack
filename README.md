@@ -51,7 +51,9 @@ needs attention), then offers what you came to do: **Serve a model…**, which
 shows the steps a model still needs as one plan to approve, **Running services…**, **Models and disk space…**, **Cluster…** (where **Check
 the cluster now** checks every node) and **Help and troubleshooting…**, whose
 **Advanced: single operations…** keeps each single operation. Archive storage
-is optional.
+is optional. After Pulsar's records were lost, **Models and disk space… → Look
+for model files Pulsar has no record of…** records the model files the nodes
+still hold, checking every file first.
 **Models and disk space…** on the home menu, and **Model files and disk space
 (checks nodes now)** in the catalog, list managed downloads and prepared copies across all confirmed nodes,
 including uncataloged downloads, with each node's storage budget and what each

@@ -117,7 +117,9 @@ class SetupStatus(unittest.TestCase):
                 self.assertIn("Cluster\n", output.getvalue())
                 self.assertNotIn("not bound", output.getvalue())
                 self.assertIn("optional", output.getvalue())
-                self.assertIn("Archive storage configuration", " ".join(output.getvalue().split()))
+                # The home menu's own path to the archive location, not a choice of the earlier home.
+                self.assertIn("Cluster… → Settings… sets one when needed", " ".join(output.getvalue().split()))
+                self.assertNotIn("Archive storage configuration", output.getvalue())
                 self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()))
 
     def test_two_node_schema1_needs_ssh_trust_even_with_archives_configured(self):
@@ -160,7 +162,7 @@ class SetupStatus(unittest.TestCase):
         render_text(document, writer=TerminalWriter(width=44, stream=output))
         text = " ".join(output.getvalue().split())
         self.assertIn("Archives setting could not be read — ", text)
-        self.assertIn("then open Archive storage configuration to check it", text)
+        self.assertIn("then check it in Cluster… → Settings…", text)
         self.assertNotIn("not configured", text)
         self.assertTrue(all(len(line) <= 44 for line in output.getvalue().splitlines()), output.getvalue())
         (self.repo / ".env").unlink()

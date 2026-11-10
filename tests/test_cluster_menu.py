@@ -396,6 +396,105 @@ class Vocabulary(Harness):
         self.assertEqual([label for label in words if FORBIDDEN.search(label)], [])
 
 
+# Every menu in scripts/, by its script and the title its choose_index call is
+# given as written. ADVANCED: a menu kept unchanged under Help and
+# troubleshooting… → Advanced: single operations… (D11), where operation names
+# stay. Every other menu names the tests that check its labels against FORBIDDEN.
+ADVANCED = "advanced"
+MENUS = {
+    ("home.sh", '"Pulsar Inference Stack"'): ["tests.test_home_menu.Vocabulary"],
+    ("home.sh", '"Help and troubleshooting"'): ["tests.test_home_menu.Vocabulary"],
+    ("home.sh", '"Advanced: single operations"'): ADVANCED,
+    ("cluster-menu.sh", '"Cluster"'): ["tests.test_cluster_menu.Vocabulary"],
+    ("cluster-menu.sh", '"Settings"'): ["tests.test_cluster_menu.EveryMenu"],
+    ("cluster-overview.sh", '"Cluster check"'): ["tests.test_cluster_overview"],
+    ("cluster-review.sh", '"Review what changed"'): ["tests.test_cluster_menu.Vocabulary"],
+    # Cluster… → Settings… → Archive location…: its labels are literals, checked below.
+    ("configure-archive.sh", '"Archive storage"'): ["tests.test_cluster_menu.EveryMenu"],
+    ("serve-menu.sh", '"$TITLE"'): ["tests.test_serve_menu", "tests.test_serve_plan"],
+    ("serve-menu.sh", '"$title"'): ["tests.test_serve_menu"],
+    ("serve-menu.sh", '"Stop, save, then continue"'): ["tests.test_serve_menu"],
+    ("serve-menu.sh", '"Change the plan"'): ["tests.test_serve_menu"],
+    ("serve-menu.sh", '"Which node should keep the files?"'): ["tests.test_serve_menu"],
+    ("serve-menu.sh", '"Compare with another recipe"'): ["tests.test_serve_menu"],
+    ("serve-menu.sh", '"Details"'): ["tests.test_serve_menu"],
+    ("services-menu.sh", '"Running services"'): ["tests.test_services_menu"],
+    ("models-menu.sh", '"Models and disk space"'): ["tests.test_models_page", "tests.test_models_menu"],
+    ("models-menu.sh", '"$title"'): ["tests.test_models_page", "tests.test_models_menu"],
+    ("why-not-start.sh", '"$title"'): ["tests.test_why_not_start"],
+    ("why-not-start.sh", '"$TITLE"'): ["tests.test_why_not_start"],
+    # Set up this cluster…'s review of the machines found (topology setup).
+    ("topology.sh", '"Review discovered machines"'): ["tests.test_topology_commands"],
+    ("topology.sh", '"Remove which added address?"'): ["tests.test_topology_commands"],
+    ("topology.sh", '"Cluster topology"'): ADVANCED,
+    ("topology.sh", '"Change membership"'): ADVANCED,
+    ("inventory-menu.sh", '"$title"'): ADVANCED,
+    ("inventory-menu.sh", '"Select a service"'): ADVANCED,
+    # The catalog menu. Before setup, home's Browse the catalog (read-only) opens
+    # it read-only, so its cards, which begin with a spec's 12-character prefix,
+    # are reached outside Advanced too: an open question in the 4b report.
+    **{("model-storage.sh", title): ADVANCED for title in (
+        '"$title"', '"Stage the serving image (exact digest)"', '"Blocked plan"', '"Select a required snapshot"',
+        '"Compare the selected spec with another catalog spec"', '"Launch options for the selected catalog spec"',
+        '"Storage and archive"', '"Free disk space from this spec"', '"Clean up through which spec?"',
+        '"Model files and disk space"')},
+}
+CALL = re.compile(r'choose_index\s+("(?:[^"\\]|\\.)*"|\S+)((?:\\\n|[^\n])*)')
+
+
+def menu_calls():
+    """(script, title as written, the literal labels on its line) for every choose_index call."""
+    found = []
+    for path in sorted((ROOT / "scripts").glob("*.sh")):
+        if path.name == "ui.sh":
+            continue
+        for match in CALL.finditer(path.read_text(encoding="utf-8")):
+            # with_effect "LABEL" "EFFECT": the label is its first argument.
+            rest = re.sub(r'with_effect\s+("(?:[^"\\]|\\.)*")\s+"(?:[^"\\]|\\.)*"', r"\1", match.group(2))
+            literals = [text for text in re.findall(r'"((?:[^"\\]|\\.)*)"', rest) if "$" not in text]
+            found.append((path.name, match.group(1), literals))
+    return found
+
+
+class EveryMenu(unittest.TestCase):
+    """The vocabulary test covers every menu outside Advanced, not only those a phase remembered."""
+
+    def test_every_menu_is_either_advanced_or_checked_against_the_rule(self):
+        import importlib
+        import inspect
+        calls = menu_calls()
+        self.assertEqual(sorted({(script, title) for script, title, _ in calls}), sorted(MENUS),
+                         "a menu was added or renamed: classify it in MENUS")
+        for (script, title), tests in MENUS.items():
+            if tests == ADVANCED:
+                continue
+            for name in tests:
+                with self.subTest(menu=f"{script} {title}", test=name):
+                    module_name, _, qualname = name.partition(".test_")[2].partition(".")
+                    module = importlib.import_module("tests.test_" + module_name)
+                    target = getattr(module, qualname) if qualname else module
+                    source = inspect.getsource(target)
+                    self.assertTrue("FORBIDDEN" in source or "assert_plain_choices" in source, name)
+
+    def test_literal_labels_outside_advanced_use_plain_words(self):
+        checked = []
+        for script, title, literals in menu_calls():
+            if MENUS.get((script, title)) == ADVANCED:
+                continue
+            for label in literals:
+                checked.append(label)
+                self.assertIsNone(FORBIDDEN.search(label), f"{script}: {label}")
+        # Settings and the archive location menu have only literal labels.
+        for label in ("Archive location…", "API key", "Set archive location", "Disable archives",
+                      "Serve a model…", "Help and troubleshooting…", "Recipe details"):
+            self.assertIn(label, checked)
+
+    def test_the_rule_catches_each_forbidden_term(self):
+        for label in ("Enroll SSH trust", "Remove home", "Purge prepared copies", "Pin prepared copies",
+                      "rank 1", "Select a required snapshot", "Show 5e5e5e5e5e5e"):
+            self.assertRegex(label, FORBIDDEN)
+
+
 class ApiKey(unittest.TestCase):
     def test_where_a_key_is_set_is_said_and_the_key_never_is(self):
         with tempfile.TemporaryDirectory() as temporary:
