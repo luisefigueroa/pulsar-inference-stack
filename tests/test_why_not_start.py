@@ -57,9 +57,8 @@ class WhyNotStart(Harness):
         self.assertIn("Why will org/model not start? Start's checks, run just now without starting: ✓ recipe ✓ nodes "
                       "✗ model files: model files are not prepared on every serving rank – serving image: not run: an "
                       "earlier blocker ended the checks", text)
-        self.assertIn("Blocked: The model files are not on every serving node yet. Fix: Serve a model… plans what the "
-                      "recipe still needs", text)
-        self.assertIn("Checks after the first blocker did not run; after the fix, Check again runs them.", text)
+        self.assertIn("Blocked: The model files are not on every serving node yet. Fix: Serve a model… plans the "
+                      "files, the copies and the serving image it needs", text)
         self.assertIn("Same as: ./pulsar start abababababab --dry-run", text)
         # The record's own fix names flags only an explicit choice may add: it is never shown.
         self.assertNotIn("--replace", result.stdout)
@@ -96,6 +95,21 @@ class WhyNotStart(Harness):
         self.assertEqual(self.menus()[1], [TITLE, "Run diagnostics", "Check again", "Back"])
         self.assertEqual(self.commands(), [f"start {SPEC} --dry-run --json", f"start {SPEC} --dry-run --json",
                                            "doctor"])
+
+    def test_a_screen_that_does_not_fit_the_rows_opens_in_the_pager(self):
+        many = [check(name, "pass") for name in ("recipe", "topology", "fabric", "image", "service")]
+        self.blocked("node_unreachable", "port_in_use", "image_missing", "memory_insufficient", "preflight_failed",
+                     checks=many + [check("model-files", "fail", "x"), check("memory", "fail", "y"),
+                                    check("port", "fail", "z")])
+        pages = self.root / "pages.log"
+        for rows, paged in (("60", False), ("24", True)):
+            with self.subTest(rows=rows):
+                for path in (pages, self.choose_log, self.answers.with_suffix(".n")):
+                    path.unlink(missing_ok=True)
+                result = self.run_menu(["0", "Back", "Back"], ROWS=rows, PAGE_LOG=str(pages))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(pages.exists(), paged)
+                self.assertEqual(result.stdout.count("Start's checks, run just now"), 1)
 
     def test_a_one_node_recipe_asks_which_machine(self):
         self.entries(checked(geometry={"nodes": 1, "tp": 1, "pp": 1}, home={**HOME, "node_id": "n1"},

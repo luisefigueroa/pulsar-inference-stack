@@ -67,9 +67,9 @@ REASONS = {
 }
 # Each fix: its choice and what it does, said where the blocker is.
 FIXES = {
-    "serve": ("Serve a model…", "plans what the recipe still needs: its files, the copies to every serving node "
-                                "and the serving image, and a Stop of a Pulsar service in its way, after one approval"),
-    "services": ("Running services…", "shows what runs on the nodes, with its health and Stop"),
+    "serve": ("Serve a model…", "plans the files, the copies and the serving image it needs, and a Stop of a "
+                                "Pulsar service in its way"),
+    "services": ("Running services…", "shows what runs on the nodes, with Stop"),
     "cluster": ("Check the cluster now", "finds which node or link, with its fix"),
     "diagnostics": ("Run diagnostics", "checks Docker, the GPUs and every node's prerequisites"),
 }
@@ -93,6 +93,23 @@ def read(document: Any, rc: int) -> tuple[list[dict], list[dict], str | None]:
     if not records:
         return checks, [], clean(error.get("message") or f"exit {rc}")
     return checks, records, None
+
+
+KEEP = "\u00a0"  # a no-break space keeps one check's mark and words together
+
+
+def compact(lines: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """The passed checks on one line and the checks not run on one line, so the
+    screen fits a terminal with its choices; failures and notes keep a line each."""
+    passed = [text for mark, text in lines if mark == MARKS["pass"]]
+    skipped = [text.split(":", 1)[0] for mark, text in lines if mark == MARKS["not_run"]]
+    found = []
+    if passed:
+        found.append(("", "  ".join(f"{MARKS['pass']}{KEEP}{text.replace(' ', KEEP)}" for text in passed)))
+    found += [(mark, text) for mark, text in lines if mark not in (MARKS["pass"], MARKS["not_run"])]
+    if skipped:
+        found.append((MARKS["not_run"], f"{', '.join(skipped)}: {STATUS_WORDS['not-run']}"))
+    return found
 
 
 def check_lines(checks: list[dict]) -> list[tuple[str, str]]:
@@ -148,7 +165,10 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
                  "every node's prerequisites.", "✗ ", "  ", prefix_role="fail", markup=True)
         return output.getvalue()
     out.emit("Start's checks, run just now without starting:")
-    for mark, text in check_lines(checks):
+    for mark, text in compact(check_lines(checks)):
+        if not mark:
+            out.emit(text, "  ", "  ")
+            continue
         out.emit(text, f"  {mark} ", "    ", prefix_role="fail" if mark == "✗" else None)
     out.blank()
     if failure is not None:
@@ -160,10 +180,7 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
         for sentence, action in blockers(records):
             fix = (f"Fix: **{FIXES[action][0]}** {FIXES[action][1]}." if action else NO_FIX)
             out.emit(f"{sentence} {fix}", "Blocked: ", "  ", prefix_role="fail", markup=True)
-        if any(check.get("outcome") == "not_run" for check in checks):
-            out.emit("Checks after the first blocker did not run; after the fix, **Check again** runs them.",
-                     markup=True)
-    return output.getvalue()
+    return output.getvalue().replace(KEEP, " ")
 
 
 def choices(document: Any, rc: int) -> list[tuple[str, str]]:

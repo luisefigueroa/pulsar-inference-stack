@@ -72,7 +72,7 @@ choose_node() {
 
 # check SPEC HOST: the dry run, its answer above its fixes, until Back or a fix ran.
 check() {
-  local spec="$1" host="$2" rc choice action label
+  local spec="$1" host="$2" rc choice action label screen rows
   local -a placement=() actions=() labels=()
   [ -z "$host" ] || placement=(--node "$host")
   while true; do
@@ -80,12 +80,17 @@ check() {
     spin "Running Start's checks without starting…" bash -c '"$@" 2>"$0"' "$WORK/start.err" \
       "$REPO_DIR/pulsar" start "$spec" "${placement[@]}" --dry-run --json >"$WORK/start.json" || rc=$?
     [ "$rc" -ne 130 ] || return 130
-    echo
-    printf '%s' "$CATALOG" | reasons screen --document "$WORK/start.json" --rc "$rc" --spec-id "$spec"
-    printf '\nSame as: ./pulsar start %s%s --dry-run\n' "${spec:0:12}" "${host:+ --node $host}" | text
     actions=() labels=()
     while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
       < <(reasons choices --document "$WORK/start.json" --rc "$rc")
+    screen=$(printf '%s' "$CATALOG" | reasons screen --document "$WORK/start.json" --rc "$rc" --spec-id "$spec")
+    screen+=$'\n\n'$(printf 'Same as: ./pulsar start %s%s --dry-run\n' "${spec:0:12}" "${host:+ --node $host}" | text)
+    # Above its choices when both fit the terminal's rows, as a plan is; else in the pager.
+    if rows=$(_ui_terminal_rows) && [ $(($(printf '%s\n' "$screen" | wc -l) + 1 + ${#labels[@]} + 5)) -gt "$rows" ]; then
+      page_output "" bash -c 'printf "%s\n" "$1"' _ "$screen" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    else
+      printf '\n%s\n' "$screen"
+    fi
     choice=$(choose_index "$TITLE" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "${actions[$choice]}" in

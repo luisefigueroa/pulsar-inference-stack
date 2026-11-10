@@ -53,8 +53,9 @@ from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, termin
 LABEL_WIDTH = 10
 # Reused while younger than this, as Serve a model… reuses its capture.
 FRESH_SECONDS = 60
-# Containers Pulsar did not start are named up to this many, then counted.
-READ_ONLY_ROWS = 3
+# Containers Pulsar did not start: the first is named, the rest counted, so the
+# card and its choices fit 80x24.
+READ_ONLY_ROWS = 1
 
 # The words this page prints about a service. Each has a row under Catalog
 # labels in docs/OPERATIONS.md (Services: …); tests/test_help.py checks it.
@@ -311,10 +312,11 @@ class Page:
         mine = set(self.services) | set(self.others)
         read_only = [item for item in self.inventory["services"] if isinstance(item, dict)
                      and item.get("conf") not in mine]
-        for index, item in enumerate(read_only[:READ_ONLY_ROWS]):
-            field("Others" if index == 0 else "", read_only_line(item))
+        named = [read_only_line(item) for item in read_only[:READ_ONLY_ROWS]]
         if len(read_only) > READ_ONLY_ROWS:
-            field("", f"and {len(read_only) - READ_ONLY_ROWS} more; ./pulsar inventory lists them")
+            named[-1] += f"; and {len(read_only) - READ_ONLY_ROWS} more, which `./pulsar inventory` lists"
+        for index, line in enumerate(named):
+            field("Others" if index == 0 else "", line)
 
     def _card(self, conf: str, out: TerminalWriter, field, *, heading: bool) -> None:
         service, outside = self.service(conf)
