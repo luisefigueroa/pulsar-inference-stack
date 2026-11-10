@@ -251,7 +251,10 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
     took = max(0, round(finished - started))
     top("Checked", f"{when}; the checks took {took} s")
     links = report.links()
-    link_text = {"verified": "verified between every pair of nodes",
+    # A ring's links run only between neighbours, over its cables.
+    ring = (((report.topology or {}).get("topology") or {}).get("validation") or {}).get("class") == "roce-ring"
+    link_text = {"verified": "verified on every cable between neighbours" if ring
+                 else "verified between every pair of nodes",
                  "failed": "failed between some nodes; check the cables and the links' addresses, then choose "
                            "**Check again**",
                  "not-checked": "not checked"}[links]

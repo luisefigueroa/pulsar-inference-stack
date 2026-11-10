@@ -151,6 +151,13 @@ class Overview(unittest.TestCase):
                                       "fix.\nSame as   ./pulsar topology detect, topology check, ssh-trust "
                                       "check, doctor,\n          inventory and model budget\n"), text)
 
+    def test_a_ring_is_not_said_to_link_every_pair(self):
+        ring = topology()
+        ring["topology"]["validation"] = {"class": "roce-ring", "full_mesh": False}
+        text = self.render(self.sources(topology=(ring, 0, "")))
+        self.assertIn("  Links     verified on every cable between neighbours\n", text)
+        self.assertNotIn("every pair", text)
+
     def test_changes_noticed_name_their_fix_and_an_untrusted_machine_its_check(self):
         noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}],
                             found=[{"hostname": "rank-2", "node_id": "node-9", "ssh_host": "rank-2.local",
