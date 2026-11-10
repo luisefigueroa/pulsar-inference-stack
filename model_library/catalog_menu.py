@@ -3,8 +3,7 @@
 Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
 it), the catalog list's cards, the required-snapshot choices, the summary that
-leads each storage preview, the wording of confirmation questions, and the
-home screen's Next line. Input
+leads each storage preview and the wording of confirmation questions. Input
 is the catalog projection (``pulsar models show --json``) and the
 archive-location status, plus what this menu session observed about services:
 a service inventory the menu captured on request and its own Live status, Start
@@ -1907,55 +1906,6 @@ def inventory_line(live: dict) -> str:
     return line + "."
 
 
-# The home screen's Next line groups each spec's suggested step. Each entry is
-# (singular, plural) wording after the spec count, in display order.
-HOME_NEXT = {"not-checked": (NOT_CHECKED, NOT_CHECKED),
-             "check": ("needs a check", "need a check"),
-             "acquire": ("needs Download", "need Download"),
-             "restore": ("needs Restore", "need Restore"),
-             "prepare": ("needs Prepare", "need Prepare"),
-             "start": ("ready to Start", "ready to Start")}
-
-
-def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool = False) -> str | None:
-    """One line for the home screen: what the saved records suggest, and their age.
-
-    Uses the same suggestion as each recipe menu, without session outcomes or
-    service observations; nothing here probes nodes. When some spec has a
-    recorded home, the check counts cover only specs with one, so recipes
-    this cluster never downloaded are not counted. None when no spec has a
-    suggested step.
-    """
-    def has_home(row: dict) -> bool:
-        return any(member.get("home") for member in members(row).values())
-
-    any_home = any(has_home(row) for row in rows)
-    counts: dict[str, int] = {}
-    for row in rows:
-        offered, _, _ = operations(row, archive_location)
-        found = suggestion(row, offered, archive_location, now=now)
-        if not found or found[0] not in HOME_NEXT:
-            continue
-        key = "not-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
-        if key in ("not-checked", "check") and any_home and not has_home(row):
-            continue
-        counts[key] = counts.get(key, 0) + 1
-    if not counts:
-        return None
-    parts = []
-    for key, (one, many) in HOME_NEXT.items():
-        if key in counts:
-            count = counts[key]
-            parts.append(f"{count} spec{'' if count == 1 else 's'} {one if count == 1 else many}")
-    choice = "**Catalog and storage**" if marked else "Catalog and storage"
-    line = "Next: " + " · ".join(parts) + f" — open {choice}."
-    ages = [row["observation_age_seconds"] for row in rows
-            if row.get("checked_at") and type(row.get("observation_age_seconds")) is int]
-    if ages:
-        line += f" Newest saved check: {age_text(min(ages))}."
-    return line
-
-
 def read_row(stream, spec_id: str) -> tuple[dict, list[dict]]:
     """The selected recipe and every entry of the catalog document on STREAM."""
     entries = json.load(stream).get("entries") or []
@@ -2028,8 +1978,6 @@ def main(argv: list[str] | None = None) -> int:
     preview.add_argument("--plan-file", required=True)
     blocked = sub.add_parser("blocked-choices", help="choices for a blocked plan; catalog JSON on stdin")
     blocked.add_argument("--plan-file", required=True)
-    home = sub.add_parser("next", help="the home screen's Next line; catalog JSON on stdin")
-    home.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
@@ -2092,12 +2040,6 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("plan must be a JSON object")
             for choice in blocked_choices(plan, json.load(sys.stdin).get("entries") or []):
                 print("\t".join(clean(part) for part in choice))
-            return 0
-        if args.command == "next":
-            # The home screen renders the menu choice's mark (terminal_format.py --text).
-            line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location, marked=True)
-            if line:
-                print(clean(line))
             return 0
         row, entries = read_row(sys.stdin, args.spec_id)
         if args.command == "start-choices":
