@@ -43,7 +43,9 @@ from scripts import saved_observations as saved  # noqa: E402
 from scripts.inventory_menu import project_others  # noqa: E402
 from scripts.setup_status import _archive_status, topology_file  # noqa: E402
 from scripts.terminal_format import TerminalWriter, cut_middle  # noqa: E402
-from scripts.topology_manifest import extract_topology, topology_has_ssh_trust  # noqa: E402
+from scripts.topology_manifest import (  # noqa: E402
+    MESH_LEFT_OUT, RING_CLASS, RING_LEFT_OUT, RING_MEANING, extract_topology, left_out_for_cabling, reason_words, ring_loop,
+    topology_has_ssh_trust)
 
 LABEL_WIDTH = 11
 # Attention shows this many items, then a count of the rest.
@@ -96,7 +98,13 @@ STATUS_WORDS = {
     "archive-unreadable": "the archive location setting could not be read",
     "more": "more",
     "no-files-recorded": "no model has files recorded yet",
+    "shape-changed": "cluster shape changed",
+    "no-link-now": "share no link now",
+    "cabled-now": "are cabled now",
 }
+# Each saved validation.class in words.
+SHAPES = {"roce-full-mesh": "full mesh", RING_CLASS: "ring"}
+FORGET = "**Start over: forget this cluster…**"
 
 
 def _kept(*words: object) -> str:
@@ -242,7 +250,7 @@ def change_items(records: Records, *, review: bool = False) -> list[str]:
     items = []
     for item in changes["missing"]:
         if item.get("answered"):
-            reasons = "; ".join(item.get("reasons") or []) or "not qualified"
+            reasons = reason_words(item.get("reasons") or [])
             items.append(f"{item['hostname']} {STATUS_WORDS['cannot-be-member']}: {reasons} {when}")
         elif item["node_id"] in kept:
             items.append(f"{item['hostname']} {STATUS_WORDS['did-not-answer']} {when}; {STATUS_WORDS['only-down']}")
@@ -257,7 +265,31 @@ def change_items(records: Records, *, review: bool = False) -> list[str]:
         what = {"control": "address", "links": "links", "position": "position"}
         fields = [what[key] for key in ("control", "links", "position") if key in item.get("changes", {})]
         items.append(f"{item['hostname']} {_list(fields) or 'details'} {STATUS_WORDS['changed']} {when}")
+    shape = changes.get("shape")
+    if shape:
+        items.append(f"{STATUS_WORDS['shape-changed']}: {shape_words(shape.get('old'))} → "
+                     f"{shape_words(shape.get('new'))} {when}")
+    cables = changes.get("cables") or {}
+    for first, second in cables.get("gone") or []:
+        items.append(f"{first} and {second} {STATUS_WORDS['no-link-now']} {when}")
+    for first, second in cables.get("new") or []:
+        items.append(f"{first} and {second} {STATUS_WORDS['cabled-now']} {when}")
     return items
+
+
+def shape_words(shape: Any) -> str:
+    return SHAPES.get(shape, "an unknown shape")
+
+
+def nodes_text(records: Records) -> str:
+    """The saved membership's count, shape and machines: a ring's in cable order, as a loop."""
+    names = [node["hostname"] for node in records.nodes]
+    shape = ((records.topology or {}).get("validation") or {}).get("class")
+    if len(names) < 2 or shape not in SHAPES:
+        return f"{len(names)} · {', '.join(names)}"
+    if shape == RING_CLASS:
+        return f"{len(names)} · ring · {ring_loop(names)}"
+    return f"{len(names)} · full mesh · {', '.join(names)}"
 
 
 def check_items(records: Records) -> list[str]:
@@ -481,8 +513,7 @@ def frame(records: Records, *, width: int | None = None) -> str:
     def field(label: str, value: str, role: str | None = None) -> None:
         out.field(label, value, label_width=LABEL_WIDTH, label_role=role, markup=True)
 
-    count = len(records.nodes)
-    field("Nodes", f"{count} · {', '.join(node['hostname'] for node in records.nodes)}")
+    field("Nodes", nodes_text(records))
     checked = answered_text(records)
     check = _check(records)
     extras = []
@@ -525,6 +556,14 @@ def projected_positions(records: Records) -> list[tuple[str, int | None, int | N
     discovery orders them (scripts/topology_manifest.py assemble)."""
     changes = records.changes or {}
     gone = {item["node_id"] for item in changes.get("missing") or [] if not item.get("answered")}
+    if changes.get("order"):
+        # Discovery's own ranks, which a save keeps; on a ring they follow the cables.
+        saved_rank = {node.get("node_id"): node["rank"] for node in records.nodes}
+        rows = [(item["hostname"], saved_rank.get(item["node_id"]), position)
+                for position, item in enumerate(changes["order"])]
+        ordered = {item["node_id"] for item in changes["order"]}
+        return rows + [(node["hostname"], node["rank"], None) for node in records.nodes
+                       if node.get("node_id") not in ordered]
     kept = [node for node in records.nodes if node.get("node_id") not in gone]
     found = sorted(changes.get("found") or [], key=lambda item: (item["hostname"].lower(), item["node_id"]))
     rows: list[tuple[str, int | None, int | None]] = [
@@ -575,6 +614,26 @@ def review(records: Records, *, width: int | None = None, serve: bool = False,
                              f"Nothing can be saved from it; {CHECK} tries again.", "warn")
         return _plain(output.getvalue()), [("check", "Check the cluster now"), ("back", "Back")]
     out.blank()
+    shape = changes.get("shape")
+    order = [item["hostname"] for item in changes.get("order") or []]
+    new_shape = shape.get("new") if shape else ((records.topology or {}).get("validation") or {}).get("class")
+    if shape:
+        text = (f"{shape_words(shape.get('old'))} of {len(records.nodes)} → {shape_words(shape.get('new'))} of "
+                f"{len(order)}")
+        found = [item["hostname"] for item in changes["found"]]
+        if shape.get("new") == RING_CLASS and found:
+            text += f"; {_list(found)} {'joins' if len(found) == 1 else 'join'}, and the cables close the loop"
+        field("Shape", text + ".")
+    if new_shape == RING_CLASS and order and (shape or changes.get("cables")):
+        field("Ring order", ring_loop(order))
+        if shape:
+            field("Serving", RING_MEANING)
+    cables = changes.get("cables") or {}
+    for first, second in cables.get("gone") or []:
+        field("Cable", f"{first} and {second} {STATUS_WORDS['no-link-now']}; the saved cluster has them cabled.",
+              "warn")
+    for first, second in cables.get("new") or []:
+        field("Cable", f"{first} and {second} {STATUS_WORDS['cabled-now']}.")
     unanswered = [item for item in changes["missing"] if not item.get("answered")]
     rejected = [item for item in changes["missing"] if item.get("answered")]
     kept = set((changes.get("kept") or {}).get("missing") or [])
@@ -585,8 +644,22 @@ def review(records: Records, *, width: int | None = None, serve: bool = False,
             text += (f" You kept it as only down {_ago(changes['kept']['kept_at'], records.now)}; it stays under "
                      "Attention until it answers.")
         field("Not answering", text, "warn")
+    unfit = [item for item in rejected if left_out_for_cabling(item)]
+    if unfit:
+        # A machine that answered is never left out: the save waits for its cables.
+        one = len(unfit) == 1
+        names = _list([f"{item['hostname']} (position {item['position']})" for item in unfit])
+        cabling = "; ".join(dict.fromkeys(reason_words([reason for reason in item["reasons"]
+                                                        if reason in (MESH_LEFT_OUT, RING_LEFT_OUT)])
+                                          for item in unfit))
+        field("Not usable", f"{names} answered, but {'is' if one else 'are'} {cabling}. Pulsar does not save the "
+                            f"cluster without a machine that answered: restore the cables and choose {CHECK}. To "
+                            f"set the cluster up anew instead, {FORGET} under {CLUSTER} removes the saved cluster "
+                            "first.", "fail")
     for item in rejected:
-        reasons = "; ".join(item.get("reasons") or []) or "not qualified"
+        if item in unfit:
+            continue
+        reasons = reason_words(item.get("reasons") or [])
         field("Not usable", f"{item['hostname']} (position {item['position']}) answered but cannot be a member: "
                             f"{reasons}. Fix it on that machine first; Pulsar never leaves out a node that "
                             "answered.", "fail")
@@ -617,7 +690,7 @@ def review(records: Records, *, width: int | None = None, serve: bool = False,
                              "It is not added until SSH trusts it.")
     choices: list[tuple[str, str]] = []
     running = running_services(records)
-    can_save = (changes["found"] or changes["changed"] or unanswered) and not rejected
+    can_save = (changes["found"] or changes["changed"] or unanswered or shape or cables) and not rejected
     positions = projected_positions(records)
     if can_save and any(old != new for _, old, new in positions):
         out.blank()

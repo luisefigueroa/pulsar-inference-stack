@@ -34,6 +34,8 @@ if str(ROOT) not in sys.path:
 
 from model_library.render import can_still_copy, short_size  # noqa: E402
 from scripts.terminal_format import TerminalWriter  # noqa: E402
+from scripts.topology_manifest import (  # noqa: E402
+    RING_CLASS, RING_MEANING, failure_words, reason_words, ring_loop)
 
 SOURCES = {"discovery": "topology detect", "topology": "topology check", "identities": "ssh-trust check",
            "diagnostics": "doctor", "inventory": "inventory", "budget": "model budget"}
@@ -195,7 +197,7 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
         rows.append((f"discovery did not finish: {issues}. Fix it, then choose **Check again**.", "fail"))
     for item in changes.get("missing") or []:
         if item.get("answered"):
-            reasons = "; ".join(item.get("reasons") or []) or "not qualified"
+            reasons = reason_words(item.get("reasons") or [])
             rows.append((f"{item['hostname']} answered but cannot be a member: {reasons}; fix it on that machine",
                          "fail"))
         else:
@@ -211,6 +213,16 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
                 for key in ("control", "links", "position") if key in (item.get("changes") or {})]
         rows.append((f"{item['hostname']}: {', '.join(what) or 'details'} changed; {review} shows old against "
                      "new and saves it", "warn"))
+    shape = changes.get("shape")
+    if shape:
+        words = {"roce-full-mesh": "full mesh", RING_CLASS: "ring"}
+        rows.append((f"the cluster's shape changed: {words.get(shape.get('old'), 'unknown')} → "
+                     f"{words.get(shape.get('new'), 'unknown')}; {review} shows it and saves it", "warn"))
+    cables = changes.get("cables") or {}
+    for first, second in cables.get("gone") or []:
+        rows.append((f"{first} and {second} share no link now; the saved cluster has them cabled", "warn"))
+    for first, second in cables.get("new") or []:
+        rows.append((f"{first} and {second} are cabled now; {review} saves it", "warn"))
     for item in changes.get("untrusted") or []:
         rows.append((f"{item['address']} answers, but SSH on this machine does not trust it yet; check its host key "
                      f"with `ssh -o StrictHostKeyChecking=ask {item['address']}`, then choose **Check again**",
@@ -243,22 +255,29 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
 
     counts = {"fail": 0, "warn": 0}
     out.emit("Cluster check", role="heading")
+    saved = (report.topology or {}).get("topology") or {}
+    ring = (saved.get("validation") or {}).get("class") == RING_CLASS
     if report.topology:
         state = report.topology.get("status") or "unknown"
-        top("Nodes", f"{len(shown)} saved · {state}",
+        shape = {"roce-full-mesh": "full mesh", RING_CLASS: "ring"}.get((saved.get("validation") or {}).get("class"), "")
+        top("Nodes", " · ".join(part for part in (f"{len(shown)} saved", shape, state) if part),
             None if state == "ready" else "fail")
+        if ring and saved.get("nodes"):
+            top("Order", ring_loop([node["hostname"] for node in saved.get("nodes") or []]))
+            top("Serving", RING_MEANING)
     when = datetime.fromtimestamp(started).strftime("%H:%M:%S")
     took = max(0, round(finished - started))
     top("Checked", f"{when}; the checks took {took} s")
     links = report.links()
     # A ring's links run only between neighbours, over its cables.
-    ring = (((report.topology or {}).get("topology") or {}).get("validation") or {}).get("class") == "roce-ring"
     link_text = {"verified": "verified on every cable between neighbours" if ring
                  else "verified between every pair of nodes",
                  "failed": "failed between some nodes; check the cables and the links' addresses, then choose "
                            "**Check again**",
                  "not-checked": "not checked"}[links]
     top("Links", link_text, {"failed": "fail"}.get(links), markup=True)
+    for failure in (report.topology or {}).get("fabric_failures") or []:
+        top("", failure_words(failure))
     counts["fail"] += links == "failed"
     for issue in (report.topology or {}).get("issues") or []:
         if issue not in (FABRIC_FAILED, FABRIC_UNCHECKED):
