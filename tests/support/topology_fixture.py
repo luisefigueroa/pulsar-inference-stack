@@ -22,6 +22,73 @@ def node_probe(rank):
         ssh_host_keys=[dict(algorithm='ssh-ed25519', public_key=key)])
 
 
+# Ring fixtures. Each node has two fabric ports; each port is two network
+# devices with an RDMA adapter each. Port 0 of node i is cabled to port 1 of
+# node i+1, and the last node's port 0 closes the loop to node 0's port 1. A
+# cable carries two links, each on its own small subnet, so opposite nodes
+# share no subnet. Hostnames do not sort in cable order, so rank order is
+# exercised rather than inherited from names.
+RING_NAMES = ('dorado', 'bravo', 'echo', 'alpha', 'foxtrot', 'charlie')
+RING_PORTS = {0: (('rocep0a', 'fab0a'), ('rocep0b', 'fab0b')),
+              1: (('rocep1a', 'fab1a'), ('rocep1b', 'fab1b'))}
+
+
+def ring_subnet(index):
+    """Link subnet INDEX: a /28 from the documentation ranges, 32 in all."""
+    block, base = (index, '198.51.100') if index < 16 else (index - 16, '203.0.113')
+    if not 0 <= block < 16:
+        raise ValueError('the ring fixture has 32 link subnets')
+    return base, block * 16
+
+
+def ring_probes(count, *, local=0, dead_cables=(), single_link_cables=(), extra_links=()):
+    """Probes of COUNT nodes cabled in a loop, listed in cable order.
+
+    Cable c joins node c (port 0) to node c+1 (port 1); cable COUNT-1 closes
+    the loop. DEAD_CABLES carry no link (both ends show no adapter on them);
+    SINGLE_LINK_CABLES carry only their first link. EXTRA_LINKS are pairs of
+    nodes given one more shared subnet, a stray link beside the ring. LOCAL is
+    the node that runs discovery. An open chain is a loop with its closing
+    cable dead."""
+    probes = []
+    for node in range(count):
+        name = RING_NAMES[node]
+        algorithm = b'ssh-ed25519'
+        key = base64.b64encode(len(algorithm).to_bytes(4, 'big') + algorithm
+                               + f'fixture-ring-key-{node}'.encode()).decode()
+        probes.append(dict(probe_schema_version=2, local=node == local,
+                           ssh_host='local' if node == local else f'ring-{name}',
+                           node_id=f'fixture-ring-node-{node}', hostname=f'fixture-ring-{name}',
+                           arch='aarch64', gpu='NVIDIA GB10', docker_ok=True, docker_nvidia=True,
+                           qualified=True, reject_reasons=[],
+                           control=dict(interface='mgmt0', ip=f'192.0.2.{30 + node}'),
+                           rdma=[], ssh_host_keys=[dict(algorithm='ssh-ed25519', public_key=key)]))
+    for cable in range(count):
+        if cable in dead_cables:
+            continue
+        ends = ((cable, 0, 1), ((cable + 1) % count, 1, 2))
+        for link in range(1 if cable in single_link_cables else 2):
+            base, offset = ring_subnet(2 * cable + link)
+            for node, port, host in ends:
+                hca, netdev = RING_PORTS[port][link]
+                probes[node]['rdma'].append(dict(hca=hca, netdev=netdev, cidrs=[f'{base}.{offset + host}/28']))
+    for index, (first, second) in enumerate(extra_links):
+        base, offset = ring_subnet(2 * count + index)
+        for node, host in ((first, 1), (second, 2)):
+            probes[node]['rdma'].append(dict(hca=f'rocex{index}', netdev=f'fabx{index}',
+                                             cidrs=[f'{base}.{offset + host}/28']))
+    for probe in probes:
+        probe['rdma'].sort(key=lambda item: item['hca'])
+    return probes
+
+
+def shuffled(probes):
+    """The local probe first, then the others in an order that is not cable order."""
+    local = [probe for probe in probes if probe['local']]
+    others = sorted((probe for probe in probes if not probe['local']), key=lambda probe: probe['hostname'])
+    return local + others[1::2] + others[0::2]
+
+
 def prerequisites_answer(rank, *, hf='ok', login='accepted', rsync=True):
     """A `probe-node.py --prerequisites-only` answer for fixture rank RANK."""
     return dict(probe_schema_version=1, kind='pulsar-node-prerequisites', local=rank == 0,
@@ -32,9 +99,12 @@ def prerequisites_answer(rank, *, hf='ok', login='accepted', rsync=True):
 
 
 class Fixture:
-    def __init__(self, root, nodes=2, enrolled=True):
+    def __init__(self, root, nodes=2, enrolled=True, probes=None):
+        """PROBES, when given, replace the mesh probes; the local probe comes first."""
         self.root = root
-        self.probes = [node_probe(rank) for rank in range(nodes)]
+        self.probes = [node_probe(rank) for rank in range(nodes)] if probes is None else list(probes)
+        if not self.probes[0]['local']:
+            raise ValueError('the local probe must be listed first')
         self.files = []
         for rank, probe in enumerate(self.probes):
             path = root / f'probe-{rank}.json'

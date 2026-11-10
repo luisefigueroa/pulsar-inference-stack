@@ -13,7 +13,7 @@ import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
-from support.topology_fixture import node_probe
+from support.topology_fixture import node_probe, ring_probes, shuffled
 import topology_manifest as tm
 
 GOLDEN = ROOT/'tests/fixtures/topology'
@@ -141,6 +141,62 @@ class MeshDocumentsArePinned(unittest.TestCase):
         three = [node_probe(rank) for rank in range(3)]
         shuffled = [three[0], three[2], three[1]]
         self.assertEqual(mesh_documents(shuffled), mesh_documents(three))
+
+
+def cabled(probes):
+    """Pairs of probe indexes that share at least one link, with the link count."""
+    return {(a, b): len(tm.rails_between(probes[a], probes[b]))
+            for a in range(len(probes)) for b in range(a + 1, len(probes))
+            if tm.rails_between(probes[a], probes[b])}
+
+
+class RingFixtures(unittest.TestCase):
+    """The ring fixtures have the probe shape of a cabled ring."""
+
+    def test_each_node_has_four_adapters_on_four_subnets(self):
+        for count in (4, 6):
+            probes = ring_probes(count)
+            for probe in probes:
+                networks = [cidr for link in probe['rdma'] for cidr in link['cidrs']]
+                self.assertEqual(len(probe['rdma']), 4)
+                self.assertEqual(len(set(tm.rdma_endpoints(probe))), 4)
+                self.assertEqual(len(networks), 4)
+            subnets = {network for probe in probes for network in tm.rdma_endpoints(probe)}
+            self.assertEqual(len(subnets), 2 * count)
+
+    def test_neighbours_share_two_links_and_opposite_nodes_none(self):
+        for count in (4, 6):
+            expected = {tuple(sorted((node, (node + 1) % count))): 2 for node in range(count)}
+            self.assertEqual(cabled(ring_probes(count)), expected)
+
+    def test_broken_rings_and_the_three_node_loop(self):
+        self.assertEqual(cabled(ring_probes(4, dead_cables={3})), {(0, 1): 2, (1, 2): 2, (2, 3): 2})
+        self.assertEqual(cabled(ring_probes(4, dead_cables={1})), {(0, 1): 2, (2, 3): 2, (0, 3): 2})
+        self.assertEqual(cabled(ring_probes(4, single_link_cables={2})), {(0, 1): 2, (1, 2): 2, (2, 3): 1, (0, 3): 2})
+        self.assertEqual(cabled(ring_probes(4, extra_links=((0, 2),))),
+                         {(0, 1): 2, (1, 2): 2, (2, 3): 2, (0, 3): 2, (0, 2): 1})
+        self.assertEqual(cabled(ring_probes(3)), {(0, 1): 2, (1, 2): 2, (0, 2): 2})
+
+    def test_shuffled_probes_are_not_in_cable_or_name_order(self):
+        for count in (4, 6):
+            probes = ring_probes(count, local=1)
+            listed = shuffled(probes)
+            self.assertTrue(listed[0]['local'])
+            self.assertEqual(sorted(p['node_id'] for p in listed), sorted(p['node_id'] for p in probes))
+            positions = [probes.index(probe) for probe in listed]
+            self.assertNotEqual(positions[1:], sorted(positions[1:]))
+            names = [probe['hostname'] for probe in listed[1:]]
+            self.assertNotEqual(names, sorted(names))
+            cable_order = [probes[(1 + step) % count]['hostname'] for step in range(1, count)]
+            self.assertNotEqual(sorted(names), cable_order)
+
+    def test_addresses_stay_in_documentation_ranges(self):
+        probes = ring_probes(6, extra_links=((0, 3),))
+        for probe in probes:
+            for link in probe['rdma']:
+                for cidr in link['cidrs']:
+                    self.assertTrue(cidr.startswith(('198.51.100.', '203.0.113.')), cidr)
+            self.assertTrue(probe['control']['ip'].startswith('192.0.2.'))
 
 
 if __name__ == '__main__':
