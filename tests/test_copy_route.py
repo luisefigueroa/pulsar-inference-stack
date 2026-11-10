@@ -83,7 +83,9 @@ refuse=os.environ.get('TRANSFER_SSH_REFUSE','')
 if refuse and any(refuse in a for a in args if a.startswith('ProxyCommand=')):
  print('channel 0: open failed: administratively prohibited: open failed',file=sys.stderr)
  print('kex_exchange_identification: Connection closed by remote host',file=sys.stderr);sys.exit(255)
-sys.exit(0)
+# The remote command runs here, as the node would run it (the relay's streams, a proof's true).
+import shlex,subprocess
+raise SystemExit(subprocess.run(shlex.split(args[-1])).returncode if '--' in args else 0)
 '''
 
 
@@ -158,7 +160,17 @@ def summary(calls):
                 shown.append(['rsync', args])
         else:
             shown.append(call)
-    return shown
+    # Streams run side by side: SSH calls in a run of them are compared in sorted order.
+    ordered, run = [], []
+    for call in shown + [None]:
+        if call is not None and call[0] == 'ssh':
+            run.append(call)
+            continue
+        ordered += sorted(run, key=json.dumps)
+        run = []
+        if call is not None:
+            ordered.append(call)
+    return ordered
 
 
 class PinnedCopiesWithoutAHop(unittest.TestCase):
@@ -176,6 +188,12 @@ class PinnedCopiesWithoutAHop(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(summary(calls), RING_NEIGHBOUR_PUSH)
 
+    def test_a_relay_between_two_remote_nodes_of_a_mesh(self):
+        result, calls, received = Harness(self, mesh_topology(3)).run(1, 2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(received, ['part-0.bin', 'part-1.bin', 'part-2.bin'])
+        self.assertEqual(summary(calls), RELAY['MESH_RELAY'])
+
     def test_a_ring_neighbour_pull(self):
         result, calls, received = Harness(self, ring_topology(self)).run(3, 0)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -186,6 +204,7 @@ class PinnedCopiesWithoutAHop(unittest.TestCase):
 PINNED = json.loads((ROOT / 'tests/fixtures/transfer/copies-without-a-hop.json').read_text())
 MESH_PUSH, RING_NEIGHBOUR_PUSH, RING_NEIGHBOUR_PULL = (
     PINNED['MESH_PUSH'], PINNED['RING_NEIGHBOUR_PUSH'], PINNED['RING_NEIGHBOUR_PULL'])
+RELAY = json.loads((ROOT / 'tests/fixtures/transfer/relay-without-a-hop.json').read_text())
 
 
 class TheRoute(unittest.TestCase):
@@ -234,9 +253,12 @@ class Dump(unittest.TestCase):
     @unittest.skipUnless(os.environ.get('COPY_ROUTE_DUMP'), 'writes the recorded calls only when asked')
     def test_dump(self):
         out = {}
+        target = Path(os.environ['COPY_ROUTE_DUMP']).resolve()
+        # The pins are recorded once, from the code before routes; never over them.
+        self.assertFalse(target.is_relative_to(ROOT), 'write the recording outside the checkout')
         for name, (topology, source, destination) in {
                 'MESH_PUSH': (mesh_topology(3), 0, 2), 'RING_NEIGHBOUR_PUSH': (ring_topology(self), 0, 1),
-                'RING_NEIGHBOUR_PULL': (ring_topology(self), 3, 0)}.items():
+                'RING_NEIGHBOUR_PULL': (ring_topology(self), 3, 0), 'MESH_RELAY': (mesh_topology(3), 1, 2)}.items():
             result, calls, _ = Harness(self, topology).run(source, destination)
             self.assertEqual(result.returncode, 0, result.stderr)
             out[name] = summary(calls)
