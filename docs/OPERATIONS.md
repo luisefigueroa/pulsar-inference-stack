@@ -202,6 +202,8 @@ below are for reading.
 | Serve: needs restoring from its archive | No home (the copy Pulsar keeps) is recorded, and its archive is there: the plan restores the files from it, without the internet. |
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
+| Serve: needs every one of its nodes cabled to the others; the cluster is a ring | The saved cluster is a *ring*: each machine is cabled only to its two *neighbours*. This recipe needs every one of its nodes cabled to the others, so Start refuses it here. |
+| Serve: starts on two nodes only on a full mesh; the cluster is a ring | The saved cluster is a *ring*. Neighbouring machines are cabled, but this Stack starts a two-node recipe only on a full mesh, so Start refuses it here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
 | Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. An API address marked `· seen` comes from it too. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
 | Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |

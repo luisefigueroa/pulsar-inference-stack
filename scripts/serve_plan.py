@@ -75,6 +75,8 @@ READINESS = {
     "restore": "needs restoring from its archive",
     "download": "needs downloading · {size}",
     "too-big": "needs {needed}; the cluster has {have}",
+    "ring": "needs every one of its nodes cabled to the others; the cluster is a ring",
+    "ring-pair": "starts on two nodes only on a full mesh; the cluster is a ring",
     "unsupported": "start unsupported",
     "unknown": "size unknown",
 }
@@ -170,8 +172,10 @@ def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict 
 # ---------------------------------------------------------------------------
 
 def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict,
-              service: dict | None) -> str:
-    """One phrase for where the recipe stands, from saved records and the inventory."""
+              service: dict | None, ring: bool = False) -> str:
+    """One phrase for where the recipe stands, from saved records and the inventory.
+
+    RING: the saved cluster is a ring, where Start refuses a multi-node recipe."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -182,6 +186,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         return READINESS["unsupported"]
     if order and nodes > len(order):
         return READINESS["too-big"].format(needed=node_count(nodes), have=node_count(len(order)))
+    if ring and nodes > 1:
+        return READINESS["ring-pair" if nodes == 2 else "ring"]
     missing = without_home(row)
     if missing:
         if all(archive_available(row, name, archive_location) for name in missing):
@@ -235,7 +241,7 @@ def _facts(rows: list[dict]) -> dict[str, list[str]]:
 
 def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archive_location: str,
                order: list[str], repo: Path, writer: TerminalWriter | None = None,
-               leave_out: frozenset = frozenset()) -> list[str]:
+               leave_out: frozenset = frozenset(), ring: bool = False) -> list[str]:
     """The Serve list: a card per recipe grouped by model, each line the facts
     that tell it apart, its node count and one readiness phrase. Lines are
     KIND<TAB>TEXT, as the catalog list's cards: heading, spec, line, gap.
@@ -255,7 +261,7 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
         parts = list(facts.get(row["spec_id"]) or [])
         phrase = readiness(row, order=order, archive_location=archive_location,
                            sizes=snapshot_sizes(repo, row["spec_id"]),
-                           service=own_service(row, inventory, entries))
+                           service=own_service(row, inventory, entries), ring=ring)
         # The node count, unless a fact or the phrase already names it.
         count = node_count(row["geometry"]["nodes"])
         if count not in parts and not phrase.startswith(f"needs {count}"):
@@ -477,6 +483,11 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     if not serving:
         blocked.append(f"It needs {node_count(nodes)}; the cluster has {node_count(len(order))}."
                        if nodes > 1 else "No machine was chosen to serve it.")
+        return plan
+    if names.ring and nodes > 1:
+        from scripts.topology_manifest import ring_refusal
+        refusal = ring_refusal(nodes)
+        blocked.append(f"Start refuses it: {refusal}.")
         return plan
     silent = [names(item) for item in serving if item in unanswered]
     if silent:
@@ -1356,7 +1367,8 @@ def main(argv: list[str] | None = None) -> int:
             for line in list_lines(entries, width=width - 2, inventory=inventory if isinstance(inventory, dict)
                                    else None, archive_location=location,
                                    order=names.order, repo=args.repo_root,
-                                   writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out)):
+                                   writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out),
+                                   ring=names.ring):
                 print(line)
             return 0
         if args.command == "nodes":

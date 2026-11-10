@@ -74,6 +74,10 @@ FIXES = {
     "diagnostics": ("Run diagnostics", "checks Docker, the GPUs and every node's prerequisites"),
 }
 NO_FIX = "No menu choice resolves it: this Stack cannot start this recipe."
+# A ring's refusal comes from the launch check's own words (ring_refusal in
+# scripts/topology_manifest.py); no menu choice changes the cabling.
+RING = "the cluster is a ring"
+RING_NO_FIX = "No menu choice resolves it on this cluster."
 
 
 def clean(value: Any) -> str:
@@ -146,6 +150,8 @@ def blockers(records: list[dict]) -> list[tuple[str, str | None]]:
                                             "diagnostics"))
         where = clean(record.get("node") or "")
         detail = clean(record.get("detail") or "")
+        if code == "fabric_incomplete" and detail.startswith(RING):
+            reason, action, detail = detail[0].upper() + detail[1:] + ".", "ring", ""
         extra = "; ".join(part for part in (f"on {where}" if where else "", detail) if part)
         sentence = reason[:-1] + f" ({extra})." if extra else reason
         if (sentence, action) in seen:
@@ -178,7 +184,8 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
                  "✓ ", "  ", markup=True)
     else:
         for sentence, action in blockers(records):
-            fix = (f"Fix: **{FIXES[action][0]}** {FIXES[action][1]}." if action else NO_FIX)
+            fix = (RING_NO_FIX if action == "ring" else
+                   f"Fix: **{FIXES[action][0]}** {FIXES[action][1]}." if action else NO_FIX)
             out.emit(f"{sentence} {fix}", "Blocked: ", "  ", prefix_role="fail", markup=True)
     return output.getvalue().replace(KEEP, " ")
 
@@ -186,7 +193,7 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
 def choices(document: Any, rc: int) -> list[tuple[str, str]]:
     checks, records, failure = read(document, rc)
     found: list[tuple[str, str]] = []
-    actions = [action for _, action in blockers(records) if action]
+    actions = [action for _, action in blockers(records) if action in FIXES]
     if failure is not None:
         actions.append("diagnostics")
     elif not records:

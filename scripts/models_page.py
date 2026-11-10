@@ -254,7 +254,7 @@ class Cluster:
         sizes = {name: (self.entry(manifest) or {}).get("payload_bytes")
                  for name, manifest in self.manifests(spec).items()}
         return readiness(self.catalog[spec], order=self.names.order, archive_location=self.archive_location,
-                         sizes=sizes, service=None)
+                         sizes=sizes, service=None, ring=self.names.ring)
 
     # -- containers that use files --------------------------------------------
 
