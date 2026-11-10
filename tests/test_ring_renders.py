@@ -17,9 +17,10 @@ from model_library.catalog import entries as catalog_entries
 from model_library.state import Store
 from scripts import cluster_status, serve_plan, start_reasons
 from scripts import topology_manifest as tm
+from tests import test_ring_launch_check as launch
 from tests import test_ring_pages as pages
 from tests import test_ring_readers as readers
-from tests import test_ui_confirm
+from tests import test_start_blockers, test_ui_confirm
 from tests.test_ring_saved_readers import ring_names
 
 WIDTHS = (80, 60)
@@ -103,7 +104,56 @@ class Renders(unittest.TestCase):
                           width, 'Blocked: spark-1 and spark-3 are not cabled to each other: the cluster is a ring')
                 lines = serve_plan.list_lines(entries, width=width - 2, inventory=None, archive_location='disabled',
                                               order=names.order, repo=ROOT, ring=True)
-                self.fits('\n'.join(line.split('\t')[-1] for line in lines), width, serve_plan.READINESS['ring'])
+                text = '\n'.join(line.split('\t')[-1] for line in lines)
+                self.fits(text, width, serve_plan.READINESS['ring'])
+                # A two-node recipe reads as on any cluster; only three or more name the cabling.
+                self.assertNotIn('only on a full mesh', text)
+
+    def test_the_refusals_name_the_two_machines(self):
+        fixture, names = launch.ring(self)
+        for width in WIDTHS:
+            with self.subTest(width=width):
+                result = launch.placement(fixture, 2, f'{names[0]},{names[2]}')
+                self.fits(result.stderr, 200, f'{names[0]} and {names[2]} are not cabled to each other')
+                three = launch.gate(fixture, 3)[0][1]
+                self.assertIn(tm.ring_refusal(names[0], names[2]), three)
+
+
+def write_renders(directory):
+    """Plain renders for the report, written under DIRECTORY (RING_RENDERS_DIR)."""
+    import io
+    from support.topology_fixture import ring_probes  # noqa: F401
+    test = Renders()
+    test._cleanups = []
+    fixture, names = launch.ring(test)
+    out = {}
+    result = launch.placement(fixture, 2, f'{names[0]},{names[2]}')
+    out['placement-opposite-pair'] = result.stderr + 'error: confirmed serving placement is unavailable\n'
+    out['gate-three-nodes'] = launch.gate(fixture, 3)[0][1] + '\n'
+    entries = catalog_entries(ROOT, Store(Path(test.enterContext(tempfile.TemporaryDirectory()))))
+    ring = ring_names(fixture)
+    for width in WIDTHS:
+        lines = serve_plan.list_lines(entries, width=width - 2, inventory=None, archive_location='disabled',
+                                      order=ring.order, repo=ROOT, ring=True)
+        out[f'serve-list-{width}'] = '\n'.join(line.split('\t')[-1] for line in lines if line != 'gap') + '\n'
+        out[f'why-{width}'] = start_reasons.screen(why_document(), 1, 'Why will example/model not start?',
+                                                   width=width)
+    test.setUp = test_start_blockers.StartScenarios.setUp.__get__(test)
+    test.setUp()
+    start = test_start_blockers.StartScenarios.start.__get__(test)
+    started, _codes = start(nodes=3, fabric=tm.ring_refusal(names[0], names[2]), extra_env={'FIXTURE_REFUSAL': 'cabling'})
+    out['start-three-nodes'] = started.stdout + started.stderr
+    target = Path(directory)
+    target.mkdir(parents=True, exist_ok=True)
+    for name, text in out.items():
+        (target / f'{name}.txt').write_text(text)
+    test.doCleanups()
+
+
+class Dump(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('RING_RENDERS_DIR'), 'writes the report renders only when asked')
+    def test_write_renders(self):
+        write_renders(os.environ['RING_RENDERS_DIR'])
 
 
 @unittest.skipUnless(platform.system() == 'Linux' and platform.machine() == 'aarch64',
