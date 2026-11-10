@@ -607,42 +607,58 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         self.assertIn('  ok    hf logged in to the Hub',section)
         self.assertTrue(all(len(line)<=48 for line in human.stdout.splitlines()),human.stdout)
 
-    def test_each_hf_login_outcome_is_a_state_word_with_its_fix(self):
-        for mode,level,words in (('missing','fail','hf is not logged in to the Hub; run hf auth login on this node'),
-                                 ('rejected','fail',"the Hub rejected this node's hf login; run hf auth login on this node"),
-                                 ('unreachable','warn','hf login not checked: the Hub could not be reached from this node'),
-                                 ('server-error','warn','hf login not checked: the Hub could not be reached from this node')):
+    def test_each_hf_login_outcome_is_a_warning_worded_by_what_it_affects(self):
+        # hf matters only on a node that receives a download; none blocks.
+        for mode,words in (('missing','hf is not logged in to the Hub on this node; public models download without '
+                                      'a login. To add one, run hf auth login on this node'),
+                           ('rejected','the Hub rejected the hf login saved on this node; downloads to this node may '
+                                       'fail until you run hf auth login there again'),
+                           ('unreachable','hf login not checked: the Hub could not be reached from this node'),
+                           ('server-error','hf login not checked: the Hub could not be reached from this node')):
             with self.subTest(mode=mode):
                 result,rows=self.doctor_rows({'DIAG_HF_MODE_1':mode})
-                self.assertEqual(rows['rank_1_hf_login']['level'],level)
+                self.assertEqual(rows['rank_1_hf_login']['level'],'warn')
                 self.assertEqual(rows['rank_1_hf_login']['message'],'rank-1: '+words)
                 self.assertEqual(rows['hf_login']['level'],'ok')
-                self.assertEqual(result.returncode,1 if level=='fail' else 0,result.stdout)
-                self.assertEqual(json.loads(result.stdout)['result'],'fail' if level=='fail' else 'pass_with_warnings')
-        # The local login is classified the same way, in this node's section.
+                self.assertEqual(result.returncode,0,result.stdout)
+                self.assertEqual(json.loads(result.stdout)['result'],'pass_with_warnings')
+        # The local login is classified the same way, in this node's section,
+        # and the verdict counts it as a warning, never as blocking serving.
         human=self.run_tool('doctor.sh',extra={'DIAG_HF_MODE_0':'rejected'})
         self.assert_no_secret(human)
+        self.assertEqual(human.returncode,0,human.stdout)
         local=human.stdout.split('\n\n')[0]
-        self.assertIn("FAIL  the Hub rejected this node's hf",local)
+        self.assertIn('warn  the Hub rejected the hf login',local)
+        self.assertIn('READY — host checks passed',' '.join(human.stdout.split()))
+        self.assertNotIn('NOT READY',human.stdout)
 
-    def test_hf_cli_missing_unusable_or_too_old_names_its_fix(self):
+    def test_hf_cli_missing_unusable_or_too_old_is_a_warning_that_names_its_fix(self):
         (self.root/'hf-2/bin/hf').unlink()
         result,rows=self.doctor_rows({'DIAG_HF_MODE_1':'broken','DIAG_HF_MODE_0':'too-old'})
-        self.assertEqual(result.returncode,1)
-        self.assertEqual(rows['rank_2_hf_cli']['level'],'fail')
-        self.assertIn('hf CLI not found; install the Hugging Face hf CLI on this node',rows['rank_2_hf_cli']['message'])
+        self.assertEqual(result.returncode,0,result.stdout)
+        self.assertEqual(json.loads(result.stdout)['result'],'pass_with_warnings')
+        affects='so models cannot be downloaded to this node; it can still serve. To download here, '
+        self.assertEqual(rows['rank_2_hf_cli']['level'],'warn')
+        self.assertIn('hf CLI not found, '+affects+'install the Hugging Face hf CLI on this node',
+                      rows['rank_2_hf_cli']['message'])
+        self.assertIn('(docs/OPERATIONS.md#installation-prerequisites)',rows['rank_2_hf_cli']['message'])
         # Without hf the login cannot be checked: not observed, never failed.
         self.assertEqual(rows['rank_2_hf_login']['level'],'warn')
         self.assertEqual(rows['rank_2_hf_login']['message'],'rank-2: hf login not checked because the hf CLI is not usable')
-        self.assertEqual(rows['rank_1_hf_cli']['level'],'fail')
-        self.assertIn('its Python cannot load the Hugging Face library; install the hf CLI again',rows['rank_1_hf_cli']['message'])
-        self.assertEqual(rows['hf_cli']['level'],'fail')
-        self.assertIn('hf CLI 9.9.0-fixture lacks what Download uses; install a newer hf CLI',rows['hf_cli']['message'])
+        self.assertEqual(rows['rank_1_hf_cli']['level'],'warn')
+        self.assertIn('its Python cannot load the Hugging Face library, '+affects+'install the hf CLI again',
+                      rows['rank_1_hf_cli']['message'])
+        self.assertEqual(rows['hf_cli']['level'],'warn')
+        self.assertIn('hf CLI 9.9.0-fixture lacks what Download uses, '+affects+'install a newer hf CLI',
+                      rows['hf_cli']['message'])
         self.assertEqual(hf_double.calls(self.root/'hf-2'),[])
+        human=self.run_tool('doctor.sh',extra={'DIAG_HF_MODE_1':'broken'})
+        self.assertNotIn('before serving',human.stdout)
+        self.assertTrue(all(len(line)<=48 for line in human.stdout.splitlines()),human.stdout)
         # Only the older huggingface-cli: named, with the same fix.
         (self.root/'hf-2/bin/huggingface-cli').write_text('#!/bin/sh\n');(self.root/'hf-2/bin/huggingface-cli').chmod(0o755)
         _,rows=self.doctor_rows()
-        self.assertIn('hf CLI not found, only the older huggingface-cli; install the current hf CLI',
+        self.assertIn('hf CLI not found, only the older huggingface-cli, '+affects+'install the current hf CLI',
                       rows['rank_2_hf_cli']['message'])
 
     def test_hf_is_found_where_download_finds_it(self):
@@ -654,7 +670,7 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         # A first line naming no Python is not guessed at.
         fallback.write_text('#!/bin/sh\necho executed\n')
         _,rows=self.doctor_rows()
-        self.assertEqual(rows['rank_1_hf_cli']['level'],'fail')
+        self.assertEqual(rows['rank_1_hf_cli']['level'],'warn')
         self.assertIn('its Python cannot load',rows['rank_1_hf_cli']['message'])
 
     def test_python_flock_and_rsync_are_checked_on_every_node(self):

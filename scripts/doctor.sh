@@ -88,27 +88,31 @@ for tool, package in (("flock", "util-linux"), ("rsync", "rsync")):
         print(f"ok|{tool}|{tool} present")
     else:
         print(f"fail|{tool}|{tool} not found; install {package} on this node" + docs)
+# hf matters only on a node chosen to receive a download (its home); a node
+# without it can still serve and hold prepared copies. So every hf finding
+# is a warning that says what it affects, never a blocking issue.
 hf = facts["hf"]
 state, version = hf.get("state"), str(hf.get("version") or "")
+cannot = ", so models cannot be downloaded to this node; it can still serve. To download here, "
 if state == "ok":
     print("ok|hf_cli|hf CLI " + (version or "present"))
 elif state == "missing" and hf.get("legacy_cli"):
-    print("fail|hf_cli|hf CLI not found, only the older huggingface-cli; install the current hf CLI on this node" + docs)
+    print("warn|hf_cli|hf CLI not found, only the older huggingface-cli" + cannot + "install the current hf CLI on this node" + docs)
 elif state == "missing":
-    print("fail|hf_cli|hf CLI not found; install the Hugging Face hf CLI on this node" + docs)
+    print("warn|hf_cli|hf CLI not found" + cannot + "install the Hugging Face hf CLI on this node" + docs)
 elif state == "unusable":
-    print("fail|hf_cli|hf CLI found, but its Python cannot load the Hugging Face library; install the hf CLI again on this node" + docs)
+    print("warn|hf_cli|hf CLI found, but its Python cannot load the Hugging Face library" + cannot + "install the hf CLI again on this node" + docs)
 elif state == "too-old":
-    print("fail|hf_cli|hf CLI " + (version + " " if version else "") + "lacks what Download uses; install a newer hf CLI on this node" + docs)
+    print("warn|hf_cli|hf CLI " + (version + " " if version else "") + "lacks what Download uses" + cannot + "install a newer hf CLI on this node" + docs)
 else:
     print("warn|hf_cli|hf CLI not checked: the check did not finish on this node")
 login = hf.get("login")
 if login == "accepted":
     print("ok|hf_login|hf logged in to the Hub")
 elif login == "missing":
-    print("fail|hf_login|hf is not logged in to the Hub; run `hf auth login` on this node")
+    print("warn|hf_login|hf is not logged in to the Hub on this node; public models download without a login. To add one, run `hf auth login` on this node")
 elif login == "rejected":
-    print("fail|hf_login|the Hub rejected this node'"'"'s hf login; run `hf auth login` on this node")
+    print("warn|hf_login|the Hub rejected the hf login saved on this node; downloads to this node may fail until you run `hf auth login` there again")
 elif login == "not-reached":
     print("warn|hf_login|hf login not checked: the Hub could not be reached from this node")
 else:

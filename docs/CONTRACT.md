@@ -330,10 +330,12 @@ messages to make lifecycle decisions.
 has `level` (`ok`, `warn` or `fail`), `id` and `message`, which is for people.
 The prerequisite checks run on this node with the ids `python`, `flock`,
 `rsync`, `hf_cli` and `hf_login`, and on every other confirmed node as
-`rank_N_<id>`, such as `rank_2_hf_login`. `hf_login` fails when the node has
-no `hf` login or the Hub rejected it, and warns when the Hub could not be
-reached or `hf` itself is not usable. A node that did not answer the
-prerequisite check has one `warn` row, `prerequisites` or
+`rank_N_<id>`, such as `rank_2_hf_login`. `python`, `flock` and `rsync`
+fail when they are missing. `hf_cli` and `hf_login` are never `fail`: `hf`
+matters only on a node that receives a download, so a missing, unusable or
+too old `hf`, a missing or rejected login, and a Hub that could not be reached
+are each `warn`, and do not make doctor's `result` `fail`. A node that did
+not answer the prerequisite check has one `warn` row, `prerequisites` or
 `rank_N_prerequisites`, instead. No message carries a token or an account name.
 These facts never change what makes a machine a member.
 

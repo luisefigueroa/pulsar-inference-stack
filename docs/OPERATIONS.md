@@ -40,24 +40,28 @@ that checkout. Catalog browsing and document commands need no configured cluster
 
 Pulsar enrolls SSH host identities; it does not install remote login keys.
 Choose a recipe whose hardware geometry matches the available confirmed nodes.
+Inspect storage with `./pulsar model budget` after setup and with each operation's
+preview before copying files.
 
 `./pulsar doctor` checks these prerequisites on this machine and on every
 confirmed node, each in its node's section: Python 3.11 or newer, `flock`,
-`rsync`, and the `hf` CLI. It finds `hf` as Download does: `hf` on the login
-user's `PATH`, else `~/.hf-cli/venv/bin/hf`. It then asks the Hub, once and
-with a short timeout, whether that node's own `hf` login is accepted, using
-the Python of that `hf` installation; nothing is forwarded between nodes. The
-rows say only `hf logged in to the Hub`, not logged in, or rejected, each
-with its fix (`hf auth login` on that node), and never print the token or the
-account name. A Hub that cannot be reached is reported as not checked, never
-as failed. An `hf` that cannot load its library, or one whose library lacks
-what Download uses, fails with its fix; a node with only the older
-`huggingface-cli` is told to install the current `hf`. These facts are only
-reported: they never decide whether a machine can be a member, and
+`rsync`, and the `hf` CLI. A missing Python 3.11, `flock` or `rsync` is a
+blocking issue. It finds `hf` as Download does: `hf` on the login user's
+`PATH`, else `~/.hf-cli/venv/bin/hf`. It then asks the Hub, once and with a
+short timeout, whether that node's own `hf` login is accepted, using the
+Python of that `hf` installation; nothing is forwarded between nodes. `hf`
+matters only on a node that receives a download, so every `hf` finding is a
+warning that says what it affects, never a blocking issue. Without a usable
+`hf` (missing, only the older `huggingface-cli`, unable to load its library,
+or lacking what Download uses), models cannot be downloaded to that node; it
+can still serve and hold prepared copies, and the row names the fix. Without
+a login, public models still download; `hf auth login` on that node adds one.
+A login the Hub rejected may make downloads to that node fail until you log in
+there again. A Hub that cannot be reached is reported as not checked, never as
+failed. The rows never print the token or the account name. These facts are
+only reported: they never decide whether a machine can be a member, and
 discovery, `topology check` and start never contact the Hub. Pulsar installs
 nothing.
-Inspect storage with `./pulsar model budget` after setup and with each operation's
-preview before copying files.
 
 ### Interactive and noninteractive commands
 
@@ -1144,7 +1148,7 @@ remain explicit decisions.
 | Setup incomplete or a node unreachable | `./pulsar topology show`, then `./pulsar topology check` | Repair membership, SSH trust, or connectivity using [topology setup](#configure-topology-and-storage). |
 | A confirmed node is gone for good | `./pulsar topology detect`, which names it as missing | Save membership without it with `./pulsar topology configure --remove-missing`; see [Inspect or change membership](#inspect-or-change-membership). |
 | Saved membership is invalid, or this checkout should start over | `./pulsar topology forget --plan` | `./pulsar topology forget` keeps a private backup copy; then run `./pulsar topology setup`. |
-| `hf` missing, not logged in or rejected on a node | `./pulsar doctor`, in that node's section | Install the `hf` CLI, or run `hf auth login`, on that node as the login user. A Hub that could not be reached is not checked, not failed. |
+| Download to a node fails, or doctor warns about `hf` there | `./pulsar doctor`, in that node's section | Install the `hf` CLI, or run `hf auth login`, on that node as the login user. These are warnings: the node can still serve. A Hub that could not be reached is not checked, not failed. |
 | Docker unavailable | `./pulsar doctor` | Resolve the reported Docker or GPU-access prerequisite on the affected node. |
 | Pinned image missing | `./pulsar image check <spec-id> --node <node>` | Review [image staging](#check-and-stage-the-image) for the same spec and nodes. |
 | Model files missing or not prepared | `./pulsar model info <spec-id> --node <node>` | Acquire or restore missing homes, then prepare every required snapshot and rank. |
