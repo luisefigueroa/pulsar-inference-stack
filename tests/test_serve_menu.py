@@ -45,24 +45,10 @@ OTHER_RUNNING = inventory((OTHER, "running", ["head", "w1", "w2"]))
 NOTHING_RUNNING = inventory()
 
 
-class Harness(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
-        scripts = self.root / "scripts"
-        scripts.mkdir()
-        (self.root / "releases").mkdir()
-        for name in ("serve-menu.sh", "cluster-review.sh"):
-            shutil.copyfile(ROOT / "scripts" / name, scripts / name)
-            (scripts / name).chmod(0o755)
-        self.fixtures = self.root / "fixtures"
-        self.fixtures.mkdir()
-        self.choose_log = self.root / "choose.log"
-        self.default_log = self.root / "default.log"
-        self.answers = self.root / "answers"
-        self.log = self.root / "pulsar.log"
-        (scripts / "ui.sh").write_text(r'''
+# The ui.sh double: choose_index answers from ANSWERS, by label or position,
+# and logs each menu to CHOOSE_LOG; confirm logs its question to CONFIRM_LOG
+# and answers from the same list (yes or no).
+UI_DOUBLE = r'''
 emit_frame() { cat; }
 _ui_terminal_columns() { return 1; }
 _ui_terminal_rows() { [ -n "${ROWS:-}" ] || return 1; printf '%s\n' "$ROWS"; }
@@ -97,12 +83,24 @@ wait_continue() {
   choose_index "${1:-Review the output above}" "Continue" >/dev/null || rc=$?
   [ "$rc" -ne 130 ] || return 130
 }
-''')
-        # ./pulsar: records each command, prints FIXTURES/KEY.N.json (the Nth
-        # call) or KEY.json, exits with KEY.N.rc or KEY.rc (default 0), and
-        # after a successful call with KEY.inventory, that becomes the inventory.
-        pulsar = self.root / "pulsar"
-        pulsar.write_text(r'''#!/usr/bin/env bash
+confirm() {
+  local n answer
+  printf '%s\n' "$1" >> "${CONFIRM_LOG:-/dev/null}"
+  n=$(cat "$ANSWERS.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$ANSWERS.n"
+  answer=$(sed -n "$((n + 1))p" "$ANSWERS")
+  case "$answer" in
+    yes) return 0 ;;
+    no|esc) return 1 ;;
+    ctrl-c) return 130 ;;
+    *) echo "UNEXPECTED MENU ANSWER to a question: $answer" >> "$CHOOSE_LOG"; return 1 ;;
+  esac
+}
+'''
+
+# ./pulsar: records each command, prints FIXTURES/KEY.N.json (the Nth
+# call) or KEY.json, exits with KEY.N.rc or KEY.rc (default 0), and
+# after a successful call with KEY.inventory, that becomes the inventory.
+PULSAR_DOUBLE = r'''#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PULSAR_LOG"
 case "$*" in
   "inventory --json") key=inventory ;;
@@ -138,30 +136,82 @@ if [ "$rc" = 0 ] && [ "$key" = configure ] && [ -n "${SAVED_TOPOLOGY:-}" ]; then
   cp "$SAVED_TOPOLOGY" "$CLUSTER_TOPOLOGY_FILE"
 fi
 exit "$rc"
-''')
-        pulsar.chmod(0o755)
-        for name, body in (("node-prerequisites.sh", 'echo "prerequisites $1" >> "$PULSAR_LOG"; cat "$FIXTURES/hf.json"'),
-                           ("with-connect-card.sh", 'exec "$@"'),
-                           ("cluster-overview.sh", 'echo "cluster check" >> "$PULSAR_LOG"')):
-            script = scripts / name
+'''
+
+
+def build_root(root: Path, menus=("serve-menu.sh", "cluster-review.sh"), *, gum: bool = False) -> None:
+    """A scratch checkout under ROOT: copies of MENUS, doubles for ./pulsar,
+    the node tools and the catalog, and ui.sh (the real one when GUM, for
+    BundledGum.drive in tests/test_ui_confirm.py, else UI_DOUBLE). Nothing
+    run from it reaches Docker, SSH, a GPU or the Hub."""
+    scripts = root / "scripts"
+    scripts.mkdir()
+    (root / "releases").mkdir()
+    for name in menus:
+        shutil.copyfile(ROOT / "scripts" / name, scripts / name)
+        (scripts / name).chmod(0o755)
+    fixtures = root / "fixtures"
+    fixtures.mkdir()
+    if gum:
+        shutil.copyfile(ROOT / "scripts" / "ui.sh", scripts / "ui.sh")
+    else:
+        (scripts / "ui.sh").write_text(UI_DOUBLE)
+    pulsar = root / "pulsar"
+    pulsar.write_text(PULSAR_DOUBLE)
+    pulsar.chmod(0o755)
+    for name, body in (("node-prerequisites.sh", 'echo "prerequisites $1" >> "$PULSAR_LOG"; cat "$FIXTURES/hf.json"'),
+                       ("with-connect-card.sh", 'exec "$@"'),
+                       ("cluster-overview.sh", 'echo "cluster check" >> "$PULSAR_LOG"')):
+        script = scripts / name
+        if not script.exists():
             script.write_text(f"#!/usr/bin/env bash\n{body}\n")
             script.chmod(0o755)
-        (self.fixtures / "hf.json").write_text(json.dumps(HF_OK))
-        # The catalog is a double: list --json prints CATALOG_FILE; show and results print a line.
-        binary = self.root / "bin"
-        binary.mkdir()
-        python = binary / "python3"
-        python.write_text('#!/usr/bin/env bash\n'
-                          'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
-                          '  case "${3:-}" in list) exec cat "$CATALOG_FILE" ;; *) echo "catalog ${*:3}"; exit 0 ;; esac\n'
-                          f'fi\nexec {sys.executable} "$@"\n')
-        python.chmod(0o755)
-        for name in ("ssh", "docker", "curl", "nvidia-smi", "hf"):
-            (binary / name).write_text('#!/usr/bin/env bash\necho "probe: $0" >> "$PULSAR_LOG"\nexit 1\n')
-            (binary / name).chmod(0o755)
+    (fixtures / "hf.json").write_text(json.dumps(HF_OK))
+    # The catalog is a double: list --json prints CATALOG_FILE; show and results print a line.
+    binary = root / "bin"
+    binary.mkdir()
+    python = binary / "python3"
+    python.write_text('#!/usr/bin/env bash\n'
+                      'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
+                      '  case "${3:-}" in list) exec cat "$CATALOG_FILE" ;; *) echo "catalog ${*:3}"; exit 0 ;; esac\n'
+                      f'fi\nexec {sys.executable} "$@"\n')
+    python.chmod(0o755)
+    for name in ("ssh", "docker", "curl", "nvidia-smi", "hf"):
+        (binary / name).write_text('#!/usr/bin/env bash\necho "probe: $0" >> "$PULSAR_LOG"\nexit 1\n')
+        (binary / name).chmod(0o755)
+    (root / "topology.json").write_text(json.dumps(topology()))
+
+
+def root_environment(root: Path) -> dict:
+    """The variables a menu run from build_root's ROOT needs: every saved record is the fixture's."""
+    return dict(PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1", PULSAR_LOG=str(root / "pulsar.log"),
+                FIXTURES=str(root / "fixtures"), CATALOG_FILE=str(root / "catalog.json"),
+                PATH=f"{root / 'bin'}{os.pathsep}{os.environ['PATH']}",
+                CLUSTER_TOPOLOGY_FILE=str(root / "topology.json"),
+                PULSAR_CLUSTER_CHANGES_FILE=str(root / "cluster-changes.json"),
+                PULSAR_SERVICE_INVENTORY_FILE=str(root / "service-inventory.json"),
+                PULSAR_STORAGE_BUDGET_FILE=str(root / "storage-budget.json"),
+                PULSAR_MODEL_LIBRARY_DIR=str(root / "model-library"),
+                PULSAR_COLD_ROOT="", TMPDIR=str(root))
+
+
+class Harness(unittest.TestCase):
+    MENUS = ("serve-menu.sh", "cluster-review.sh")
+    MENU = "serve-menu.sh"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        build_root(self.root, self.MENUS)
+        self.fixtures = self.root / "fixtures"
+        self.choose_log = self.root / "choose.log"
+        self.confirm_log = self.root / "confirm.log"
+        self.default_log = self.root / "default.log"
+        self.answers = self.root / "answers"
+        self.log = self.root / "pulsar.log"
         self.catalog = self.root / "catalog.json"
         self.topology = self.root / "topology.json"
-        self.topology.write_text(json.dumps(topology()))
         self.changes = self.root / "cluster-changes.json"
         self.save_changes(*changes())
         self.inventory(OTHER_RUNNING)
@@ -184,21 +234,16 @@ exit "$rc"
     def inventory(self, document):
         self.fixture("inventory", document)
 
-    def run_menu(self, answers, **extra):
+    def run_menu(self, answers, *arguments, **extra):
         self.answers.write_text("".join(f"{answer}\n" for answer in answers))
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PULSAR_", "CLUSTER_", "GUM_")) and key not in ("VLLM_API_KEY", "API_KEY")}
-        env.update(PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1", CHOOSE_LOG=str(self.choose_log),
-                   DEFAULT_LOG=str(self.default_log), ANSWERS=str(self.answers), PULSAR_LOG=str(self.log),
-                   FIXTURES=str(self.fixtures), CATALOG_FILE=str(self.catalog),
-                   PATH=f"{self.root / 'bin'}{os.pathsep}{os.environ['PATH']}",
-                   CLUSTER_TOPOLOGY_FILE=str(self.topology), PULSAR_CLUSTER_CHANGES_FILE=str(self.changes),
-                   PULSAR_SERVICE_INVENTORY_FILE=str(self.root / "service-inventory.json"),
-                   PULSAR_STORAGE_BUDGET_FILE=str(self.root / "storage-budget.json"),
-                   PULSAR_COLD_ROOT="", TMPDIR=str(self.root))
+        env.update(root_environment(self.root))
+        env.update(CHOOSE_LOG=str(self.choose_log), CONFIRM_LOG=str(self.confirm_log),
+                   DEFAULT_LOG=str(self.default_log), ANSWERS=str(self.answers))
         env.update(extra)
-        result = subprocess.run(["bash", str(self.root / "scripts/serve-menu.sh")], env=env, cwd=str(self.root),
-                                text=True, capture_output=True, timeout=120)
+        result = subprocess.run(["bash", str(self.root / "scripts" / self.MENU), *arguments], env=env,
+                                cwd=str(self.root), text=True, capture_output=True, timeout=120)
         self.assertNotIn("UNEXPECTED MENU", self.choose_log.read_text() if self.choose_log.exists() else "",
                          result.stdout + result.stderr)
         return result

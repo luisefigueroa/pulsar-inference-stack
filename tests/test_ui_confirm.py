@@ -562,5 +562,70 @@ class BundledGumIntentHome(BundledGum):
             self.assertIn(text, plain)
 
 
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumServe(BundledGum):
+    """Serve a model… with real Gum in a scratch checkout of doubles (tests/test_serve_menu.build_root):
+    every command the menu runs is the ./pulsar double over fixture records. Enter opens a fixture
+    recipe's plan; Esc leaves every screen, so nothing is approved."""
+
+    def fixture(self):
+        import shlex
+        from tests.test_serve_menu import (OTHER_RUNNING, build_root, changes, root_environment,  # noqa: PLC0415
+                                           NOW, utc)
+        from tests.test_serve_plan import OTHER, envelope, image_plan, prepare_plan, start_blocked  # noqa: PLC0415
+        from tests.test_catalog_menu import HOME, checked  # noqa: PLC0415
+        from scripts import saved_observations as saved  # noqa: PLC0415
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        build_root(root, gum=True)
+        fixtures = root / "fixtures"
+        (root / "catalog.json").write_text(json.dumps({"entries": [
+            checked(home=HOME, local_state="ready"),
+            checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready")]}))
+        saved.save_changes(changes()[0], root / "cluster-changes.json", clock=lambda: utc(NOW))
+        for key, document in (("inventory", OTHER_RUNNING),
+                              ("prepare-plan", envelope(prepare_plan(("n0", "reuse"), ("n1", "reuse"),
+                                                                     ("n2", "reuse")))),
+                              ("image-plan", envelope(image_plan((0, "ok"), (1, "ok"), (2, "ok")))),
+                              ("start-plan", start_blocked("port_in_use"))):
+            (fixtures / f"{key}.json").write_text(json.dumps(document))
+        (fixtures / "start-plan.rc").write_text("1")
+        exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
+        return root, exports + f'exec bash {shlex.quote(str(root / "scripts/serve-menu.sh"))}\n'
+
+    def test_the_serve_list_draws_its_cards_at_80_by_24(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\x1b", ready=b"running on spark-1")
+        self.assertEqual(code, 0, output)
+        screen = views(output, 24, 80)[-2]
+        self.assertIn("Serve a model", screen)
+        self.assertIn("↑/↓ move · enter choose · esc back", screen)
+        self.assertIn("> org/model", screen)
+        self.assertIn("    3 nodes · ready to start", screen)
+        self.assertIn("  org/other", screen)
+        self.assertIn("    3 nodes · running on spark-1, spark-2, spark-3", screen)
+        self.assertTrue(all(len(line) <= 80 for line in screen))
+        # Only the inventory ran; nothing was approved.
+        self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["inventory --json"])
+
+    def test_a_plan_prints_above_its_choices_with_the_cursor_on_cancel_at_80_by_24(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\r", ready=b"running on spark-1",
+                                  then=[(b"Details", b"\x1b"), (b"running on spark-1", b"\x1b")])
+        self.assertEqual(code, 0, output)
+        plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
+        text = "\n".join(plan)
+        for line in ("Serve org/model on spark-1, spark-2 and spark-3", "Pulsar will:",
+                     "  1. Stop org/other on spark-1, spark-2 and spark-3. Its model files are kept.",
+                     "> Cancel", "  Go ahead", "  Details"):
+            self.assertIn(line, plan, text)
+        # The plan is printed in place, above the choices, not in the pager.
+        self.assertNotIn("\x1b[?1049h", output)
+        self.assertLess(plan.index("Pulsar will:"), plan.index("> Cancel"))
+        self.assertTrue(all(len(line) <= 80 for line in plan))
+        commands = (root / "pulsar.log").read_text().splitlines()
+        self.assertFalse([line for line in commands if "--json" not in line], commands)
+
+
 if __name__ == "__main__":
     unittest.main()
