@@ -390,7 +390,8 @@ refuses while a Pulsar service runs on a node that answers; a node that cannot
 be asked is named as not observed and does not block, since forget is the way
 out when a node is gone. With invalid saved membership, or an SSH configuration
 that cannot be used, it asks only this machine and says so. On a terminal it
-asks first, starting on No; off a terminal it needs `--yes`, and `--json`
+asks first, starting on No, and asks the nodes again after a yes, so a service
+started meanwhile still refuses; off a terminal it needs `--yes`, and `--json`
 prints the plan or the result. Afterwards the setup status reads as before
 first use; run `./pulsar topology setup`.
 

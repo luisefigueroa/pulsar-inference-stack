@@ -1199,6 +1199,19 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertFalse(f.path.exists())
 
+    def test_forget_asks_the_nodes_again_after_its_question(self):
+        f = self.fixture
+        files = self.cluster_state()
+        # Two nodes are asked before the question; a service starts on the next ask.
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', TOPOLOGY_ACTIVE_AFTER='2')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 1, output)
+        self.assertEqual(self.gum_prompts('confirm'), ["Forget this cluster's saved membership and observations?"])
+        self.assertIn('a Pulsar service started on a node that answered', ' '.join(output.split()))
+        self.assert_kept(files)
+        docker = [tool for tool, args in f.calls() if tool == 'docker' or (tool == 'ssh' and args[-1].startswith('docker ps '))]
+        self.assertGreaterEqual(len(docker), 3)
+
     def test_forget_with_unusable_saved_state_checks_only_this_machine(self):
         for broken in ('membership', 'ssh-config'):
             with self.subTest(broken=broken):

@@ -82,21 +82,27 @@ ask_node_services() {
 checked_only_here=()
 this_machine=$(hostname -s 2>/dev/null || hostname)
 membership=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["membership"])' "$plan")
-if [ "$membership" = saved ] && load_cluster_topology >/dev/null 2>&1; then
-  for ((rank = 0; rank < CLUSTER_TOPOLOGY_COUNT; rank++)); do
-    if [ "$rank" = 0 ]; then
-      ask_node_services "${CLUSTER_NODE_HOSTNAMES[0]}"
-    else
-      ask_node_services "${CLUSTER_NODE_HOSTNAMES[$rank]}" "${CLUSTER_NODE_SSH_HOSTS[$rank]}" \
-        "${CLUSTER_NODE_CONTROL_IPS[$rank]}"
-    fi
-  done
-else
-  # Invalid membership, or an SSH configuration that cannot be used: never
-  # fall back to other SSH trust; only this machine can be asked.
-  ask_node_services "$this_machine"
-  [ "$membership" = missing ] || checked_only_here=(--checked-only-here)
-fi
+# ask_services: one row per node that can be asked, into $services.
+ask_services() {
+  local rank
+  : >"$services"
+  if [ "$membership" = saved ] && load_cluster_topology >/dev/null 2>&1; then
+    for ((rank = 0; rank < CLUSTER_TOPOLOGY_COUNT; rank++)); do
+      if [ "$rank" = 0 ]; then
+        ask_node_services "${CLUSTER_NODE_HOSTNAMES[0]}"
+      else
+        ask_node_services "${CLUSTER_NODE_HOSTNAMES[$rank]}" "${CLUSTER_NODE_SSH_HOSTS[$rank]}" \
+          "${CLUSTER_NODE_CONTROL_IPS[$rank]}"
+      fi
+    done
+  else
+    # Invalid membership, or an SSH configuration that cannot be used: never
+    # fall back to other SSH trust; only this machine can be asked.
+    ask_node_services "$this_machine"
+    [ "$membership" = missing ] || checked_only_here=(--checked-only-here)
+  fi
+}
+ask_services
 
 render_args=(render "$plan" --services "$services" "${checked_only_here[@]}")
 nothing=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["result"] == "nothing")' "$plan")
@@ -135,6 +141,12 @@ if [ "$YES" != 1 ]; then
     log "not forgotten — no files changed"
     [ "$confirmation_rc" -ne 130 ] || exit 130
     exit 0
+  fi
+  # Ask again after the question, as configure does: a service started while
+  # the operator read the plan still refuses.
+  ask_services
+  if grep -q $'\trunning$' "$services"; then
+    die "a Pulsar service started on a node that answered; stop it first (./pulsar stop --all --yes), then forget again. No files changed." 1
   fi
 fi
 
