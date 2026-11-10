@@ -18,6 +18,16 @@
 # 5. The run: each step runs its own preview first and stops the run when it
 #    is blocked or would do what the plan did not say. A step that fails or is
 #    interrupted ends the run; the outcome names the commands that ran.
+#
+# Running services… opens it in two more ways, sharing its service inventory
+# (--inventory FILE --inventory-at EPOCH; on exit FILE.at holds the capture's
+# time, 0 once a Stop or Start made it stale):
+#   --switch-from SPEC  Switch to another model…: the list, then a plan that
+#                       stops that service directly before Start, wherever it
+#                       runs (serve_plan.py compose --stop).
+#   --restart SPEC [--node NODE_ID]
+#                       Restart…: no change check and no list; a plan of Stop
+#                       then Start of that recipe on the nodes it runs on.
 # Stopping another service and pulling an image are listed steps, approved
 # with the plan (D1). Nothing here passes --replace or --pull-image. Only the
 # outcome of a Start refused for nothing but its memory warning offers Start
@@ -41,8 +51,29 @@ require_gum "Serve a model…" \
   "./pulsar spec compare --before releases/SPEC.json --after releases/OTHER.json" "compare two recipes"
 ui_keep_styles
 
+MODE=serve SWITCH_FROM="" RESTART_SPEC="" RESTART_NODE="" SHARED="" SHARED_AT=0
+usage() { printf 'error: %s\n' "$1" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --switch-from) [ -n "${2:-}" ] || usage "--switch-from needs a spec ID"; MODE=switch SWITCH_FROM=$2; shift ;;
+    --restart) [ -n "${2:-}" ] || usage "--restart needs a spec ID"; MODE=restart RESTART_SPEC=$2; shift ;;
+    --node) [ -n "${2:-}" ] || usage "--node needs a node ID"; RESTART_NODE=$2; shift ;;
+    --inventory) [ -n "${2:-}" ] || usage "--inventory needs a file"; SHARED=$2; shift ;;
+    --inventory-at) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage "--inventory-at needs a time"; SHARED_AT=$2; shift ;;
+    *) usage "unknown argument: $1" ;;
+  esac
+  shift
+done
+# The list's and the plan's title.
+case "$MODE" in
+  switch) TITLE="Switch to another model" ;;
+  restart) TITLE="Restart a service" ;;
+  *) TITLE="Serve a model" ;;
+esac
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-serve.XXXXXX")
-trap 'rm -rf -- "$WORK"' EXIT
+# A shared capture tells Running services… whether it is still current.
+trap 'rm -rf -- "$WORK"; [ -z "$SHARED" ] || printf "%s\n" "$INVENTORY_AT" >"$SHARED.at"' EXIT
 # The width is read once, before any capture: a captured stdout hides the terminal.
 COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 serve_plan() { python3 -m scripts.serve_plan "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
@@ -59,7 +90,7 @@ resolve() {
 # One service inventory, reused while it is under a minute old and no Stop or
 # Start ran since. A failed capture leaves INVENTORY_ERROR, and the plan says
 # what runs is unknown.
-INVENTORY="$WORK/inventory.json" INVENTORY_AT=0 INVENTORY_ERROR=""
+INVENTORY="${SHARED:-$WORK/inventory.json}" INVENTORY_AT=$SHARED_AT INVENTORY_ERROR=""
 capture_inventory() {
   local now rc=0
   now=$(date +%s)
@@ -104,7 +135,7 @@ entry_check() {
       not-checked)
         echo
         serve_plan entry --explain
-        choice=$(choose_index "Serve a model" "Serve on the cluster as saved" "Back") \
+        choice=$(choose_index "$TITLE" "Serve on the cluster as saved" "Back") \
           || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 1; }
         [ "$choice" = 0 ] || return 1
         return 0 ;;
@@ -264,6 +295,8 @@ build_plan() {
   [ -z "$SOURCE" ] || args+=(--source "$SOURCE")
   [ -z "$FILES_NODE" ] || args+=(--files-node "$FILES_NODE")
   [ -z "$IMAGE_SOURCE" ] || args+=(--image-source "$IMAGE_SOURCE")
+  [ -z "$SWITCH_FROM" ] || args+=(--stop "$SWITCH_FROM")
+  [ "$MODE" != restart ] || args+=(--restart)
   for name in "${NOT_FOUND[@]}"; do args+=(--not-found "$name"); done
   [ ! -e "$WORK/files.json" ] || args+=(--files "$WORK/files.json")
   capture_inventory || return $?
@@ -412,7 +445,12 @@ serve_recipe() {
   SPEC="$1" NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE="" NOT_FOUND=()
   local rc=0 action label choice
   local -a actions=() labels=()
-  NODE=$(choose_node "$SPEC") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  if [ "$MODE" = restart ]; then
+    # The node it runs on, as Running services… saw it; Start uses the saved order otherwise.
+    NODE=$RESTART_NODE
+  else
+    NODE=$(choose_node "$SPEC") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  fi
   while true; do
     build_plan "$SPEC" || { rc=$?; [ "$rc" -ne 130 ] || return 130; wait_continue "Plan not made" || return $?; return 0; }
     actions=() labels=()
@@ -420,7 +458,7 @@ serve_recipe() {
       < <(serve_plan choices --plan "$PLAN")
     show_plan "${#labels[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     # The cursor starts on Cancel (D1): approving a plan takes a deliberate move.
-    choice=$(PULSAR_CHOOSE_DEFAULT=0 choose_index "Serve a model" "${labels[@]}") \
+    choice=$(PULSAR_CHOOSE_DEFAULT=0 choose_index "$TITLE" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "${actions[$choice]}" in
@@ -519,7 +557,7 @@ run_plan() {
   actions=() labels=()
   while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
     < <(serve_plan outcome "${result[@]}" --choices)
-  choice=$(choose_index "Serve a model" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return "$RAN"; }
+  choice=$(choose_index "$TITLE" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return "$RAN"; }
   rc=0
   case "${actions[$choice]}" in
     again) return 5 ;;
@@ -559,6 +597,16 @@ run_plan() {
 
 SPEC=""
 rc=0
+if [ "$MODE" = restart ]; then
+  if ! CATALOG=$(python3 -m model_library.catalog list --json); then
+    printf '\n✗ The catalog could not be read; the reason is above.\n'
+    wait_continue "Catalog error" || exit $?
+    exit 0
+  fi
+  serve_recipe "$RESTART_SPEC" || rc=$?
+  [ "$rc" -ne 130 ] || exit 130
+  exit 0
+fi
 entry_check || rc=$?
 [ "$rc" -ne 130 ] || exit 130
 [ "$rc" -eq 0 ] || exit 0
@@ -577,7 +625,7 @@ while true; do
     wait_continue "Serve a model" || exit $?
     exit 0
   fi
-  index=$(choose_index "Serve a model" "${CARD_OPTIONS[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
+  index=$(choose_index "$TITLE" "${CARD_OPTIONS[@]}" "Back") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   [ "$index" -lt "${#CARD_IDS[@]}" ] || exit 0
   rc=0
   serve_recipe "${CARD_IDS[$index]}" || rc=$?

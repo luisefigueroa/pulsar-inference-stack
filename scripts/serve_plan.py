@@ -6,7 +6,8 @@
     python3 -m scripts.serve_plan list [--inventory FILE] [--leave-out SPEC]... < CATALOG_JSON
     python3 -m scripts.serve_plan nodes --spec-id S < CATALOG_JSON
     python3 -m scripts.serve_plan previews --spec-id S [--node ID] [--files FILE] [--source WHERE]
-            [--files-node ID] [--not-found NAME] [--ready-only] [--image-source pull] < CATALOG_JSON
+            [--files-node ID] [--not-found NAME] [--ready-only] [--image-source pull]
+            [--stop SPEC | --restart] < CATALOG_JSON
     python3 -m scripts.serve_plan compose --spec-id S --out FILE [same options, --inventory FILE,
             --preview NAME=FILE..., --hf FILE] < CATALOG_JSON
     python3 -m scripts.serve_plan render|steps|choices|facts --plan FILE
@@ -435,7 +436,8 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             inventory: dict | None = None, inventory_error: str | None = None,
             sources: list[dict] | None = None, previews: dict | None = None,
             hf: Any = None, unanswered: list[str] = (), ready_only: bool = False,
-            api_key: str | None = None, image_source: str | None = None) -> dict:
+            api_key: str | None = None, image_source: str | None = None, stop: str | None = None,
+            restart: bool = False) -> dict:
     """The plan for serving ROW, from saved records and the previews given.
 
     PREVIEWS maps "restore:NAME", "prepare", "image" and "start" to their
@@ -444,7 +446,12 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     destination's prerequisites answer. UNANSWERED lists node_ids that did not
     answer the last discovery: a plan that serves on one does not run.
     IMAGE_SOURCE "pull" is the operator's Change… to pull the serving image
-    from its registry where a copy from this machine is possible too."""
+    from its registry where a copy from this machine is possible too.
+
+    STOP names a service the operator chose to stop, by its spec ID: Switch
+    to another model… stops it directly before Start even when it runs on
+    other nodes. RESTART plans Stop then Start of ROW's own service on the
+    nodes it runs on, and nothing else: no files, copies or image."""
     previews = previews or {}
     sizes = sizes or {}
     spec = row["spec_id"]
@@ -457,7 +464,8 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     placement = ["--node", hosts[0]] if nodes == 1 and hosts else []
     told = [part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
     plan: dict = {"kind": PLAN_KIND, "spec_id": spec, "model_id": model, "ready_only": ready_only,
-                  "title": (f"{'Get' if ready_only else 'Serve'} {model}"
+                  "restart": restart,
+                  "title": (f"{'Get' if ready_only else 'Restart' if restart else 'Serve'} {model}"
                             + (f" ({' · '.join(told)})" if told else "")
                             + (" ready" if ready_only else "") + (f" on {_list(hosts)}" if hosts else "")),
                   "serving": serving, "hosts": hosts, "steps": [], "blocked": [], "warnings": [], "notes": [],
@@ -481,7 +489,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                        "Unknown is not absent, so the plan does not run.")
         return plan
     service = own_service(row, inventory, entries)
-    if service and service["state"] == "running" and not ready_only:
+    if service and service["state"] == "running" and not ready_only and not restart:
         plan["already"] = f"{model} is already running on {_list(service['hosts'])}."
         return plan
     from scripts.service_status import unobserved_nodes
@@ -504,6 +512,10 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         blocked.append(f"The service inventory could not be read: {exc}.")
         return plan
+    if restart:
+        return _restart(plan, row, entries, inventory, service, stops, hosts, placement, ref)
+    if stop and stop != spec:
+        _switch_from(plan, stop, stops, inventory, catalog)
     for note in notes:
         if "GPU process" in note or "more GPU processes" in note:
             plan["notes"].append(note)
@@ -677,12 +689,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                 sentence = (f"Remove {left} on {where}; Start does not replace a service. Model files are "
                             "kept.")
             else:
-                sentence = (f"Stop {stop['name']} on {where}." + (f" It holds {_list(held)}." if held else "")
-                            + " Its model files are kept.")
+                sentence = (f"Stop {stop['name']} on {where}"
+                            + ("; you are switching from it." if stop.get("requested") else ".")
+                            + (f" It holds {_list(held)}." if held else "") + " Its model files are kept.")
             own = next((entry for entry in entries if entry["spec_id"] == stop["conf"]), None)
             single = own is not None and own["geometry"]["nodes"] == 1
             steps.append({"kind": "stop", "authority": True, "projected": False, "node": None,
-                          "facts": {"conf": stop["conf"]}, "sentence": sentence,
+                          "facts": {"conf": stop["conf"], "requested": bool(stop.get("requested"))},
+                          "sentence": sentence,
                           "changes": f"removes the service containers on {where}",
                           "command": ["./pulsar", "stop", spec_ref(stop["conf"], entries)],
                           "preview": None})
@@ -744,6 +758,74 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     for index, step in enumerate(steps):
         if step["projected"]:
             plan["projected"].append(index)
+    return plan
+
+
+def _switch_from(plan: dict, conf: str, stops: list[dict], inventory: dict, catalog: list[dict]) -> None:
+    """Add the service the operator is switching from to STOPS, last, so it is
+    stopped directly before Start wherever it runs; or say why it cannot be."""
+    from scripts.inventory_menu import project, project_others
+    found = next((stop for stop in stops if stop["conf"] == conf), None)
+    if found is not None:
+        stops.remove(found)
+        stops.append({**found, "requested": True})
+        return
+    services = {**project(inventory, catalog), **project_others(inventory, catalog)}
+    target = services.get(conf)
+    if target is None:
+        plan["notes"].append("The service you are switching from was not seen just now, so there is nothing to "
+                             "stop for it.")
+    elif target["stop_reason"]:
+        plan["blocked"].append(f"Pulsar cannot stop {clean(target['model_id'])}, which you are switching from: "
+                               f"{clean(target['stop_reason']).rstrip('.')}.")
+    else:
+        stops.append({"conf": conf, "name": clean(target["model_id"]), "hosts": list(target["hosts"]),
+                      "port": target["port"], "mib": None, "requested": True})
+
+
+def _restart(plan: dict, row: dict, entries: list[dict], inventory: dict, service: dict | None,
+             beside: list[dict], hosts: list[str], placement: list[str], ref: str) -> dict:
+    """Restart: Stop then Start of ROW's own service on the nodes it runs on.
+
+    BESIDE are the other services on those nodes; they ran beside it, so
+    the Stop step's own check does not count them as new."""
+    from scripts.inventory_menu import project
+    spec, model = row["spec_id"], plan["model_id"]
+    blocked = plan["blocked"]
+    catalog = [{"spec_id": entry["spec_id"], "model_id": entry["model_id"], "nodes": entry["geometry"]["nodes"]}
+               for entry in entries]
+    observed = project(inventory, catalog).get(spec)
+    if service is None or observed is None:
+        blocked.append(f"{model} was not seen running just now, so there is nothing to restart; Serve a model… "
+                       "starts it.")
+        return plan
+    if observed["stop_reason"]:
+        blocked.append(f"Pulsar cannot stop {model}: {clean(observed['stop_reason']).rstrip('.')}.")
+    if observed["modified"]:
+        blocked.append(f"{model} was started from a modified recipe, so Start would not start the same service.")
+    if list(observed["hosts"]) != list(hosts):
+        blocked.append(f"{model} runs on {_list(observed['hosts'])}, but Start serves it on {_list(hosts)}, so a "
+                       "restart would not use the same nodes.")
+    plan["coexisting"] = [item["conf"] for item in beside]
+    where = _list(observed["hosts"]) or "its nodes"
+    start = ["./pulsar", "start", ref, *placement]
+    plan["steps"] += [
+        {"kind": "stop", "authority": True, "projected": False, "node": None,
+         "facts": {"conf": spec, "requested": True},
+         "sentence": f"Stop {model} on {where}. Its model files are kept.",
+         "changes": f"removes the service containers on {where}",
+         "command": ["./pulsar", "stop", spec_ref(spec, entries)], "preview": None},
+        {"kind": "start", "authority": False, "projected": True, "node": None, "facts": {},
+         "sentence": ("Start it again on the same nodes and wait until it answers. This can take several "
+                      "minutes. " + ("The API will require the key set in " + plan["api_key"] + "."
+                                     if plan.get("api_key") else "The API will accept requests without a key.")),
+         "changes": f"starts the service on {where}", "command": start, "preview": None}]
+    plan["stopped"].append({"conf": spec, "name": model, "hosts": list(observed["hosts"]), "in_catalog": True,
+                            "node": observed.get("node_id"), "restart": start,
+                            "restart_shown": shown(start, entries)})
+    for step in plan["steps"]:
+        step["shown"] = shown(step["command"], entries)
+    plan["projected"] = [1]
     return plan
 
 
@@ -821,6 +903,9 @@ def choices(plan: dict) -> list[tuple[str, str]]:
     found = [("cancel", "Cancel")]
     if plan.get("already"):
         return found + [("details", "Details")]
+    if plan.get("restart"):
+        return found + ([("go", "Go ahead")] if plan["steps"] and not plan["blocked"] else []) + [
+            ("details", "Details")]
     runnable = plan["steps"] and not plan["blocked"]
     if runnable and not plan.get("ready_only"):
         found.append(("go", "Go ahead"))
@@ -862,12 +947,16 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
         except (ValueError, KeyError, TypeError, AttributeError):
             return "blocked", "the service inventory could not be read, so what runs now is unknown"
         found = {stop["conf"] for stop in stops}
+        # A service the operator chose to stop is found wherever it runs.
+        present = {item.get("conf") for item in document.get("services") or [] if isinstance(item, dict)}
+        found |= {item["facts"]["conf"] for item in plan["steps"]
+                  if item["kind"] == "stop" and (item.get("facts") or {}).get("requested")} & present
         if facts["conf"] == plan["spec_id"]:
             mine = any(service.get("conf") == plan["spec_id"] for service in document.get("services") or [])
             found.discard(plan["spec_id"])
             if mine:
                 found.add(plan["spec_id"])
-        extra = sorted(found - approved)
+        extra = sorted(found - approved - set(plan.get("coexisting") or []))
         if extra:
             other = next((stop["name"] for stop in stops if stop["conf"] == extra[0]), extra[0][:12])
             return "differs", f"{other} now runs on a serving node too, and the plan did not say to stop it"
@@ -1065,7 +1154,7 @@ def not_checked_text(repo: Path, now=None, *, width: int | None = None) -> str:
 
 def preview_requests(row: dict, entries: list[dict], *, names: NodeNames, node: str | None,
                      sources: list[dict], files_scanned: bool, source: str | None,
-                     ready_only: bool = False) -> list[tuple[str, list[str]]]:
+                     ready_only: bool = False, restart: bool = False) -> list[tuple[str, list[str]]]:
     """The previews the first screen can run now, as (NAME, COMMAND), in order.
 
     A files scan comes first and alone when a snapshot has no home and no
@@ -1076,7 +1165,7 @@ def preview_requests(row: dict, entries: list[dict], *, names: NodeNames, node: 
     dry run. A download's own plan resolves its source on the Hub, so it runs
     only when its turn comes, after the hf check."""
     serving = serving_nodes(row, names.order, node)
-    if not serving:
+    if not serving or restart:
         return []
     if without_home(row) and not files_scanned and source is None:
         return [("files", ["./pulsar", "model", "files", "--json"])]
@@ -1197,6 +1286,8 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--not-found", action="append", default=[])
         command.add_argument("--ready-only", action="store_true")
         command.add_argument("--image-source", choices=("pull",), help="pull the serving image instead of a copy")
+        command.add_argument("--stop", help="a service to stop directly before Start (Switch to another model…)")
+        command.add_argument("--restart", action="store_true", help="Stop, then Start, of the recipe's own service")
     compose_.add_argument("--inventory")
     compose_.add_argument("--inventory-error")
     compose_.add_argument("--preview", action="append", default=[], help="NAME=FILE: restore:SNAPSHOT, prepare, "
@@ -1286,7 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
                 # "hf" names the node_id to probe instead.
                 for name, command in preview_requests(row, entries, names=names, node=args.node, sources=found,
                                                       files_scanned=bool(args.files), source=args.source,
-                                                      ready_only=args.ready_only):
+                                                      ready_only=args.ready_only, restart=args.restart):
                     print("\t".join([name, *command]))
                 return 0
             # A schema-2 recipe's one snapshot has no name; its restore preview is restore:-.
@@ -1304,7 +1395,7 @@ def main(argv: list[str] | None = None) -> int:
                            hf=load_json(args.hf) if args.hf else None,
                            unanswered=_unanswered(args.repo_root, _topology_id(args.repo_root)),
                            ready_only=args.ready_only, api_key=_api_key(args.repo_root),
-                           image_source=args.image_source)
+                           image_source=args.image_source, stop=args.stop, restart=args.restart)
             Path(args.out).write_text(json.dumps(plan, sort_keys=True), encoding="utf-8")
             return 0
         plan = load_json(args.plan)

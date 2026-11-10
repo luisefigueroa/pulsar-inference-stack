@@ -411,6 +411,59 @@ class Compose(unittest.TestCase):
         self.assertTrue(any("no Stop offered" in reason for reason in plan["blocked"]))
         self.assertTrue(any("GPU process xorg" in note for note in plan["notes"]))
 
+    def test_switch_stops_the_service_it_leaves_directly_before_start_wherever_it_runs(self):
+        # The new recipe serves on spark-3 alone; the old one runs on spark-1 only.
+        state = checked(home={**HOME, "node_id": "n2"}, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        live = inventory((OTHER, "running", ["head"]))
+        plan = self.plan(state, node="n2", live=live, stop=OTHER, previews={"start": envelope({"checks": []})})
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["stop", "start"])
+        stop = plan["steps"][0]
+        self.assertEqual(stop["facts"], {"conf": OTHER, "requested": True})
+        self.assertTrue(stop["authority"])
+        self.assertEqual(stop["command"], ["./pulsar", "stop", OTHER])
+        self.assertIn("you are switching from it", stop["sentence"])
+        self.assertEqual([item["conf"] for item in plan["stopped"]], [OTHER])
+        self.assertIn("org/other keeps serving until step 1.", " ".join(serve.footer(plan)))
+        # Without the switch, nothing on spark-1 is in its way.
+        self.assertEqual([step["kind"] for step in self.plan(state, node="n2", live=live,
+                                                             previews={"start": envelope({"checks": []})})["steps"]],
+                         ["start"])
+        # One that cannot be stopped blocks the plan; one no longer seen is only noted.
+        live["services"][0]["safe_to_stop"] = False
+        self.assertIn("which you are switching from", " ".join(self.plan(state, node="n2", live=live,
+                                                                        stop=OTHER)["blocked"]))
+        self.assertIn("was not seen just now", " ".join(self.plan(state, node="n2", live=inventory(),
+                                                                 stop=OTHER)["notes"]))
+        self.assert_no_unapproved_authority(plan)
+
+    def test_restart_is_stop_then_start_of_the_same_recipe_on_the_same_nodes(self):
+        state = checked(home=HOME, local_state="missing")
+        live = inventory((SPEC, "running", ["head", "w1", "w2"]), (OTHER, "running", ["w2"]))
+        plan = self.plan(state, live=live, restart=True)
+        self.assertEqual(plan["title"], "Restart org/model on spark-1, spark-2 and spark-3")
+        self.assertEqual(plan["blocked"], [])
+        # Nothing else: no copies even though the saved records say files are missing.
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["stop", "start"])
+        self.assertEqual(plan["steps"][0]["command"], ["./pulsar", "stop", SPEC])
+        self.assertEqual(plan["steps"][1]["command"], ["./pulsar", "start", SPEC])
+        self.assertEqual(plan["coexisting"], [OTHER])
+        self.assertEqual(serve.choices(plan), [("cancel", "Cancel"), ("go", "Go ahead"), ("details", "Details")])
+        self.assertEqual(plan["stopped"][0]["restart"], ["./pulsar", "start", SPEC])
+        self.assertEqual(serve.preview_requests(state, everything(state), names=NAMES, node=None, sources=[],
+                                                files_scanned=True, source=None, restart=True), [])
+        self.assert_no_unapproved_authority(plan)
+
+    def test_restart_refuses_other_nodes_a_modified_recipe_or_nothing_running(self):
+        state = checked(home=HOME, local_state="ready")
+        moved = self.plan(state, live=inventory((SPEC, "running", ["w1", "w2", "head"])), restart=True)
+        self.assertIn("but Start serves it on spark-1, spark-2 and spark-3", moved["blocked"][0])
+        modified = self.plan(state, live=inventory((SPEC, "running", ["head", "w1", "w2"], False)), restart=True)
+        self.assertIn("modified recipe", " ".join(modified["blocked"]))
+        gone = self.plan(state, live=inventory(), restart=True)
+        self.assertIn("nothing to restart", gone["blocked"][0])
+        for plan in (moved, modified, gone):
+            self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
+
     def test_a_key_is_named_where_it_is_set(self):
         plan = self.plan(checked(home=HOME, local_state="ready"), api_key="this checkout's .env file")
         self.assertIn("The API will require the key set in this checkout's .env file.",
@@ -503,6 +556,20 @@ class CheckStep(unittest.TestCase):
         self.assertEqual(verdict, "differs")
         self.assertIn("the plan did not say to stop it", reason)
         self.assertEqual(self.check(plan, None)[0], "blocked")
+
+    def test_a_service_switched_from_is_found_wherever_it_runs(self):
+        # A one-node recipe on spark-3; the service switched from runs on spark-1 only.
+        plan = {**self.plan(self.step("stop", conf=OTHER, requested=True)), "serving": ["n2"]}
+        self.assertEqual(self.check(plan, inventory((OTHER, "running", ["head"]))), ("same", ""))
+        self.assertEqual(self.check(plan, inventory()), ("skip", "it no longer runs"))
+
+    def test_a_restart_does_not_count_what_ran_beside_it_as_new(self):
+        third = "ef" * 32
+        plan = {**self.plan(self.step("stop", conf=SPEC, requested=True)), "coexisting": [OTHER]}
+        beside = inventory((SPEC, "running", ["head", "w1", "w2"]), (OTHER, "running", ["w2"]))
+        self.assertEqual(self.check(plan, beside), ("same", ""))
+        arrived = inventory((SPEC, "running", ["head", "w1", "w2"]), (third, "running", ["w2"]))
+        self.assertEqual(self.check(plan, arrived)[0], "differs")
 
 
 class Outcome(unittest.TestCase):
