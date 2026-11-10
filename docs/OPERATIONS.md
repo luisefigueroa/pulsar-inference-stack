@@ -130,12 +130,12 @@ JSON fields, and container labels retain their existing names. The menu's
 
 ## Catalog labels
 
-The catalog list, a spec's frame, `./pulsar models list` and the home screen
-describe each spec with these words; the **Model files and disk space** page
-and `./pulsar model files` describe each model's files with the *Model files*
-rows. The home screen's Running block uses the *Running*, *Memory*, *GPU work*,
-*Disk* and *Observed* rows. Each label is written as `Field: words`; the field is where the words
-appear. The menu's **Help → What the labels mean**, the catalog list's
+The catalog list, a spec's frame and `./pulsar models list` describe each spec
+with these words; the **Model files and disk space** page and `./pulsar model
+files` describe each model's files with the *Model files* rows. The home
+screen's status uses the *Cluster*, *Serving*, *Disk* and *Attention* rows, and
+the **Cluster…** frame the *Checked*, *Changes* and *Issues* rows. Each label is
+written as `Field: words`; the field is where the words appear. The menu's **Help → What the labels mean**, the catalog list's
 **What the labels mean** and `./pulsar help labels` show this table. JSON output
 keeps its own values (`local_state`, `archive_state`, `state`); only the words
 below are for reading.
@@ -169,23 +169,35 @@ below are for reading.
 | Lifecycle: files not checked | The files have a home, but no check says whether every serving node is prepared. Choose **Check now**. |
 | Lifecycle: not offered here | The files are ready, but this Stack cannot start the spec. See **List: start unsupported**. |
 | Lifecycle: running | The service was seen running in this menu session. |
-| Next: not checked yet, needs a check | The home screen's count of specs whose saved check is missing or out of date. Once any spec has a home, it counts only specs with one, so recipes this cluster never downloaded are left out. Open **Catalog and storage** and choose **Check now** on each. |
-| Next: needs Download, needs Restore or needs Prepare | The step the saved records suggest for those specs. The operation rechecks everything before it changes files. |
-| Next: ready to Start | The last saved check found every file prepared, however long ago. **Start** rechecks the files, image, nodes and memory before launching. |
-| Running: not observed yet | No *service inventory* or *storage budget* is saved on this controller yet, so the home screen cannot say what runs. It does not mean nothing runs. **Cluster overview (checks nodes now)** probes the nodes and saves what it sees. |
-| Running: running, exited containers … on nodes, port, GPU memory | Each Pulsar *service* in the last saved service inventory: its state, in the words of the **Running?** rows, the nodes it was seen on, its port and, when every rank measured it, its GPU memory. **Observed** says when; **Live service inventory** shows it and offers Stop. |
-| Running: last seen … | The saved service inventory is older than ten minutes, so the service may have started, stopped or changed since. **Cluster overview (checks nodes now)** rechecks. |
-| Running: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. |
-| Running: unknown, others unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. The **Memory** row gives the reason. |
-| Running: modified recipe | The service runs with execution overrides, so its recipe differs from the selected catalog spec. **Live service inventory** opens the service, and **Verify running service** in its catalog menu rechecks the recipe. |
-| Running: outside the catalog | A Pulsar-managed service whose spec this checkout does not publish, for example one an experiment started or one started with `--spec-file`. **Live service inventory** shows it and offers Stop. |
-| Running: saved inventory unreadable, saved budget unreadable | The saved file could not be read, so its rows are left out. The next check replaces it; the choice on the line runs one. |
-| Memory: … GiB available of … | Each node's available memory and its total, in GiB, from the last saved service inventory. GB10 shares this memory between the GPU and the host. |
-| Memory: not observed, memory not measured | The node did not answer, for the reason given, or answered without a memory reading. Its services are then unknown, not absent. |
-| GPU work: … Pulsar did not start | Processes using the GPU that Pulsar did not start, counted, with their GPU memory on each node. Pulsar leaves them alone; **Live service inventory** lists them. |
-| Disk: can still copy, free | Each node's disk in the last saved storage budget, in the budget table's terms: what it can still copy (the smaller of disk free after the reserve and the copy budget left) and its disk free. It reads `not observed yet` until a budget is saved; **Observed** gives its age. |
-| Disk: past its reserve or copy budget, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. **Model files and disk space (checks nodes now)** shows the whole table. |
-| Observed: services … ago, disk … ago; last seen, not current | When the saved service inventory and storage budget were taken. The ages do not change while the menu stays open; a check that saves a new observation prints the block again. After ten minutes the inventory is `last seen, not current`. |
+| Cluster: … nodes, all answered … ago | The saved membership's node count, and how many nodes answered the last **Check the cluster now**, or the last discovery when it is newer, with its age. Opening the menu checks nothing; **Cluster…** → **Check the cluster now** checks again. |
+| Cluster: … of … answered | Some nodes did not answer the last check or discovery. Each one is named under **Attention**; **Cluster…** → **Review what changed…** keeps it or saves the cluster without it. |
+| Cluster: not checked yet | No check or discovery has been saved for this membership. It does not mean the nodes are down. **Cluster…** → **Check the cluster now** looks. |
+| Cluster: not checked since membership was saved | The saved check describes the membership before its last save, so it is not shown as current. **Check the cluster now** checks the membership as it is. |
+| Cluster: the last discovery did not finish | Discovery stopped before it could compare the machines with saved membership, for the reason given. Nothing was saved from it; **Check the cluster now** tries again. |
+| Cluster: saved check unreadable | The saved changes record could not be read. The next **Check the cluster now** replaces it. |
+| Checked: links verified, links failed | Whether the last check found working RoCE links between every pair of nodes. Failed links name their fix in the check's report. |
+| Checked: SSH identities verified, SSH identities did not match | Whether each node presented the SSH identity Pulsar recorded for it at the last check. A mismatch means a reinstalled machine or a changed host key; the report says how to verify and record it again. |
+| Checked: SSH identities recorded, SSH identities not recorded | Pulsar has recorded the nodes' SSH identities (*SSH trust*), but no check has verified them yet; or it has not recorded them, and **Set up this cluster…** does. |
+| Changes: none noticed | The last discovery found the machines exactly as saved, with its age. |
+| Changes: did not answer | A node in saved membership did not answer the last discovery. Pulsar cannot tell whether it is down or gone; **Review what changed…** keeps it or saves the cluster without it. |
+| Changes: kept as only down | You chose to keep a node that did not answer. It stays under **Attention** until it answers, and Pulsar asks again only when a later check sees different changes. |
+| Changes: found …, not a member | Discovery found a machine that qualifies and is not in saved membership. **Review what changed…** can add it. A machine with the hostname of a node that did not answer may be that node reinstalled: Pulsar knows a node by its OS machine ID, so it joins as a new node. |
+| Changes: answered but cannot be a member | A node in saved membership answered but no longer qualifies, for the reasons given. Fix it on that machine; Pulsar never leaves out a node that answered. |
+| Changes: address, links or position changed | A node's control address, its RoCE links or its position in the saved order differs from saved membership. **Review what changed…** shows old against new before it saves. |
+| Changes: SSH on this machine does not trust it yet | A machine answered, but OpenSSH on this machine does not trust its host key, so Pulsar could not check it. Verify the key with `ssh -o StrictHostKeyChecking=ask HOST`; Pulsar never accepts a host key for you. |
+| Issues: … | A blocking issue the last check found on a node, with its fix. Warnings, such as a missing `hf` CLI, are in the check's report, not here. |
+| Serving: not observed yet | No *service inventory* is saved on this controller yet, so home cannot say what runs. It does not mean nothing runs. **Running services…** looks and saves what it sees. |
+| Serving: running on … · port … | Each Pulsar *service* in the last saved service inventory, in the words of the **Running?** rows, with the nodes it runs on and its port. The saved inventory holds no API URL; **Running services…** has the details. |
+| Serving: outside the catalog | A Pulsar-managed service whose spec this checkout does not publish, for example one an experiment started or one started with `--spec-file`. **Running services…** shows it and offers Stop. |
+| Serving: last seen | The saved service inventory is older than ten minutes, so the service may have started, stopped or changed since. **Running services…** looks again. |
+| Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. |
+| Serving: unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. |
+| Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
+| Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
+| Disk: past its reserve or copy budget by, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. |
+| Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
+| Attention: the archive location setting could not be read | The archive location setting in `.env` or the environment is not a readable literal path. **Cluster…** → **Settings…** says where it is set. |
+| Attention: and … more | More items need attention than home shows; **Cluster…** shows them all. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |

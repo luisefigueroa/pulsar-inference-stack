@@ -176,7 +176,9 @@ case "$action" in
           verb=was; [ "${#rejected[@]}" -eq 1 ] || verb=were
           printf "error: setup doesn't add machines to saved membership; %s %s not added.\n" "$hosts" "$verb"
           printf '  To add a machine, run ./pulsar topology configure %s\n' "$candidate_args"
-          printf '  or choose Cluster topology → Change membership… →\n    Configure membership or add a machine.\n'
+          printf '  or in the menu choose Help and troubleshooting… → Advanced: single\n'
+          printf '    operations… → Cluster topology → Change membership… →\n'
+          printf '    Configure membership or add a machine.\n'
           printf '  To discover without saving, run ./pulsar topology detect %s\n' "$candidate_args"
         } >&2
         exit 2

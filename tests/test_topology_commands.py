@@ -248,12 +248,18 @@ class TopologyCommands(unittest.TestCase):
     def test_gum_root_entry_and_back_does_not_probe(self):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
-        # Cluster topology, Back to the home menu, then Exit.
-        self.use_gum(TOPOLOGY_GUM_HOME='6,8', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
+        # Cluster… and Back; then Help and troubleshooting… → Advanced → Cluster
+        # topology, Back three times to the home menu, then Exit.
+        self.use_gum(TOPOLOGY_GUM_HOME='3,4,5', TOPOLOGY_GUM_CLUSTER='3', TOPOLOGY_GUM_HELP='5,6',
+                     TOPOLOGY_GUM_ADVANCED='3,5', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(self.gum_prompts('choose'),
-                         ['Pulsar Inference Stack', 'Cluster topology', 'Pulsar Inference Stack'])
+                         ['Pulsar Inference Stack', 'Cluster', 'Pulsar Inference Stack', 'Help and troubleshooting',
+                          'Advanced: single operations', 'Cluster topology', 'Advanced: single operations',
+                          'Help and troubleshooting', 'Pulsar Inference Stack'])
+        # The Cluster menu's frame comes from saved membership; opening it probes nothing.
+        self.assertIn('fixture-rank-0, fixture-rank-1', output)
         self.assertEqual(self.probes(), [])
 
     def summary(self, fixture):
@@ -483,7 +489,8 @@ class TopologyCommands(unittest.TestCase):
                 candidates = ' '.join(args)
                 self.assertIn(f"error: setup doesn't add machines to saved membership; {hosts} not added.", text)
                 self.assertIn(f'To add a machine, run ./pulsar topology configure {candidates}', text)
-                self.assertIn('Cluster topology → Change membership… → Configure membership or add a machine', text)
+                self.assertIn('Help and troubleshooting… → Advanced: single operations… → Cluster topology → '
+                              'Change membership… → Configure membership or add a machine', text)
                 self.assertIn(f'To discover without saving, run ./pulsar topology detect {candidates}', text)
                 self.assertNotIn('interactive terminal', text)
         self.assertEqual(f.calls(), [])

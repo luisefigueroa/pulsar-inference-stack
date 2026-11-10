@@ -81,14 +81,16 @@ class SetupStatus(unittest.TestCase):
         self.assertEqual(document["archives"]["status"], "not-configured")
 
     def test_without_membership_one_step_sets_up_membership_and_trust(self):
-        for contents in (None, "{"):
-            if contents is not None:
-                (self.repo / ".cluster-topology.json").write_text(contents)
-            document = build(self.repo, {})
-            self.assertEqual(document["next_action"], "set-up-topology")
-            self.assertEqual(document["next_label"], "Set up cluster membership and SSH trust")
+        document = build(self.repo, {})
+        self.assertEqual(document["next_action"], "set-up-topology")
+        self.assertEqual(document["next_label"], "Set up this cluster…")
+        # Saved membership without identities is the same choice: setup records them.
         self.write_topology(schema1(2))
-        self.assertEqual(build(self.repo, {})["next_label"], "Enroll SSH trust")
+        document = build(self.repo, {})
+        self.assertEqual((document["next_action"], document["next_label"]), ("enroll-ssh-trust", "Set up this cluster…"))
+        # Invalid membership cannot be set up again; starting over is the way out.
+        (self.repo / ".cluster-topology.json").write_text("{")
+        self.assertEqual(build(self.repo, {})["next_label"], "Start over: forget this cluster…")
 
     def test_catalog_counts_specs(self):
         for count, expected in ((1, "1 spec"), (2, "2 specs")):
@@ -212,7 +214,7 @@ class SetupStatus(unittest.TestCase):
 
     def test_incomplete_status_names_the_actual_setup_gap(self):
         cases = ((None, "Cluster membership is not configured.", "set-up-topology"),
-                 ({}, "Saved cluster membership is invalid.", "set-up-topology"),
+                 ({}, "Saved cluster membership is invalid, and setup cannot replace it.", "set-up-topology"),
                  (schema1(2), "Cluster membership is confirmed; SSH trust is not enrolled.", "enroll-ssh-trust"))
         for topology, explanation, next_action in cases:
             with self.subTest(topology=topology):

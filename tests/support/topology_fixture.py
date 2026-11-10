@@ -97,6 +97,9 @@ def double_main():
             header = args[args.index('--header')+1].split('\n')[0]
             # A comma-separated choice list answers successive visits to one menu.
             choice_env = {'Pulsar Inference Stack': 'TOPOLOGY_GUM_HOME',
+                          'Cluster': 'TOPOLOGY_GUM_CLUSTER',
+                          'Help and troubleshooting': 'TOPOLOGY_GUM_HELP',
+                          'Advanced: single operations': 'TOPOLOGY_GUM_ADVANCED',
                           'Review discovered machines': 'TOPOLOGY_GUM_REVIEW',
                           'Change membership': 'TOPOLOGY_GUM_CHANGE'}.get(header, 'TOPOLOGY_GUM_CHOICE')
             choices = os.environ.get(choice_env, '0').split(',')
