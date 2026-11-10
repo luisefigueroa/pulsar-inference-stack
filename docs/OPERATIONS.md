@@ -1381,8 +1381,7 @@ needs, which the operator approves once.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
    after a blocking check) are named as estimates. A memory warning that
    Start's dry run accepted is shown before approval: Start itself refuses on
-   it, and this menu never passes `--accept-memory-warn` (the recipe's own
-   Start under Advanced asks about it). The screen says what a failure leaves
+   it, and no plan passes `--accept-memory-warn`. The screen says what a failure leaves
    and whether the API will require a key. Commands name the spec by its
    complete ID; the outcome shows a catalog spec's 12-character prefix where
    the command accepts one. Choices: **Cancel**
@@ -1395,7 +1394,11 @@ needs, which the operator approves once.
    stops the run before it changes anything and offers **Plan again from the
    state as it is now**. A failed step says what is done and what still
    serves; after the Stop, a failed Start says nothing is serving and offers
-   to start the stopped service again. An interrupted step is inspected before
+   to start the stopped service again. A Start refused for nothing but its
+   memory warning says what the warning was and also offers **Start MODEL
+   with less free memory than recommended**, which runs `./pulsar start SPEC
+   --accept-memory-warn`; that choice appears on no other outcome and is never
+   part of a plan approved beforehand. An interrupted step is inspected before
    any retry: **Check its files now (read-only)** or **Check the service now
    (read-only)**. The outcome lists the commands that ran, in order, under
    `Same as:`.

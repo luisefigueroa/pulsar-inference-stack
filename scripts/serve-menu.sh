@@ -19,7 +19,9 @@
 #    is blocked or would do what the plan did not say. A step that fails or is
 #    interrupted ends the run; the outcome names the commands that ran.
 # Stopping another service and pulling an image are listed steps, approved
-# with the plan (D1). Nothing here passes --replace or --pull-image.
+# with the plan (D1). Nothing here passes --replace or --pull-image. Only the
+# outcome of a Start refused for nothing but its memory warning offers Start
+# with --accept-memory-warn, as a choice of its own.
 set -euo pipefail
 REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
@@ -453,7 +455,13 @@ run_plan() {
     esac
     mapfile -t COMMAND < <(serve_plan command --plan "$PLAN" --step "$index")
     resolve "${COMMAND[@]}"
-    [ "$kind" != start ] || COMMAND=("$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}")
+    if [ "$kind" = start ]; then
+      # Start records why it refused; only a refusal for nothing but its
+      # memory warning offers starting anyway, on the outcome screen.
+      : >"$WORK/blockers.jsonl"
+      COMMAND=(env PULSAR_START_BLOCKERS_FILE="$WORK/blockers.jsonl" "$REPO_DIR/scripts/with-connect-card.sh"
+        "${COMMAND[@]}")
+    fi
     printf '\n→ Step %s of %s: %s Ctrl-C requests interruption; this menu returns when the command exits.\n' \
       $((index + 1)) "$total" "${sentences[$index]}" | text
     interrupted=0
@@ -474,6 +482,7 @@ run_plan() {
   if [ -n "$failed" ]; then
     result+=(--failed "$failed" --rc "$rc")
     [ -z "$halted" ] || result+=(--halted "$halted")
+    [ "${kinds[$failed]}" != start ] || [ -n "$halted" ] || result+=(--blockers "$WORK/blockers.jsonl")
   fi
   echo
   serve_plan outcome "${result[@]}"
@@ -489,9 +498,21 @@ run_plan() {
       resolve "${COMMAND[@]}"
       printf '\n→ Starting %s again.\n' "${labels[$choice]#Start }" | text
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
+      forget_inventory
       [ "$rc" -ne 130 ] || return 130
       printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)" | text
       wait_continue "Start again" || return $? ;;
+    memory)
+      # Start's own acknowledgement of its memory warning, chosen here by name;
+      # it is never part of a plan approved beforehand.
+      mapfile -t COMMAND < <(serve_plan command --plan "$PLAN" --accept-memory-warning)
+      resolve "${COMMAND[@]}"
+      printf '\n→ %s.\n' "${labels[$choice]}" | text
+      "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
+      forget_inventory
+      [ "$rc" -ne 130 ] || return 130
+      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --accept-memory-warning --shown)" | text
+      wait_continue "Start" || return $? ;;
     inspect)
       "$REPO_DIR/pulsar" models check "${SPEC:0:12}" || rc=$?
       [ "$rc" -ne 130 ] || return 130

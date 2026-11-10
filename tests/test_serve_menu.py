@@ -131,6 +131,9 @@ file="$FIXTURES/$key.$n.json"; [ -e "$file" ] || file="$FIXTURES/$key.json"
 rcfile="$FIXTURES/$key.$n.rc"; [ -e "$rcfile" ] || rcfile="$FIXTURES/$key.rc"
 rc=0; [ ! -e "$rcfile" ] || rc=$(cat "$rcfile")
 if [ "$rc" = 0 ] && [ -e "$FIXTURES/$key.inventory" ]; then cp "$FIXTURES/$key.inventory" "$FIXTURES/inventory.json"; fi
+# Start records its blockers where PULSAR_START_BLOCKERS_FILE says, as the real one does.
+blockers="$FIXTURES/$key.$n.blockers"; [ -e "$blockers" ] || blockers="$FIXTURES/$key.blockers"
+if [ -n "${PULSAR_START_BLOCKERS_FILE:-}" ] && [ -e "$blockers" ]; then cat "$blockers" >> "$PULSAR_START_BLOCKERS_FILE"; fi
 if [ "$rc" = 0 ] && [ "$key" = configure ] && [ -n "${SAVED_TOPOLOGY:-}" ]; then
   cp "$SAVED_TOPOLOGY" "$CLUSTER_TOPOLOGY_FILE"
 fi
@@ -351,6 +354,44 @@ class Switch(Harness):
         self.assertIn("Same as: ./pulsar stop cdcdcdcdcdcd ./pulsar start abababababab", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
         self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {OTHER}"])
+
+    def blockers(self, *codes, nth=1):
+        (self.fixtures / f"start.{nth}.blockers").write_text("".join(
+            json.dumps({"blocker": code, "stage": "check", "message": f"{code} found",
+                        "detail": "spark-2 has 9 GiB free; 12 GiB recommended" if code == "memory_warning" else None})
+            + "\n" for code in codes))
+
+    def test_a_start_refused_only_for_a_memory_warning_offers_starting_anyway_by_name(self):
+        self.fixture("start", rc=1, nth=1)
+        self.blockers("memory_warning")
+        result = self.run_menu(["0", "Go ahead", "Start org/model with less free memory than recommended",
+                                "Continue"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = " ".join(result.stdout.split())
+        self.assertIn("Start refused only because free memory is below the recommended headroom: spark-2 has "
+                      "9 GiB free; 12 GiB recommended.", text)
+        self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again",
+                                           "Start org/model with less free memory than recommended", "Back"])
+        # The acknowledgement runs only after that choice, never as part of the approved plan.
+        self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {SPEC} --accept-memory-warn"])
+        self.assertIn("Same as: ./pulsar start abababababab --accept-memory-warn", text)
+        self.assert_plain_choices()
+
+    def test_starting_anyway_is_offered_for_no_other_blocker(self):
+        for codes, rc in ((("memory_warning", "port_in_use"), 1), (("memory_insufficient",), 1),
+                          (("memory_warning",), 130), (("memory_warning",), 3)):
+            with self.subTest(codes=codes, rc=rc):
+                for path in {*self.fixtures.glob("*.count"), *self.fixtures.glob("start.*")}:
+                    path.unlink()
+                for path in (self.log, self.choose_log, self.answers.with_suffix(".n")):
+                    path.unlink(missing_ok=True)
+                self.inventory(OTHER_RUNNING)
+                self.fixture("start", rc=rc, nth=1)
+                self.blockers(*codes)
+                result = self.run_menu(["0", "Go ahead", "Back"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("less free memory", " ".join(" ".join(menu) for menu in self.menus()))
+                self.assertFalse(any("--accept-memory-warn" in line for line in self.commands()))
 
     def test_a_service_that_appears_before_its_stop_stops_the_run(self):
         # This recipe's exited containers and org/other are in the way; after the

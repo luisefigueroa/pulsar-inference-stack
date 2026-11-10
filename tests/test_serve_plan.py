@@ -3,6 +3,7 @@ records and previews only; nothing here runs a command or probes a node."""
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -544,11 +545,47 @@ class Outcome(unittest.TestCase):
         self.assertEqual(choices, [("status", "Check the service now (read-only)"), ("back", "Back")])
 
 
+    def test_starting_anyway_is_offered_only_for_a_start_refused_for_nothing_but_its_memory_warning(self):
+        warning = {"blocker": "memory_warning", "stage": "check", "detail": "spark-2 has 9 GiB free"}
+        self.assertEqual(serve.memory_warning([warning]), "spark-2 has 9 GiB free")
+        self.assertEqual(serve.memory_warning([{**warning, "detail": None}]), "")
+        for records in ([], [warning, {"blocker": "port_in_use", "stage": "check"}],
+                        [{"blocker": "memory_insufficient", "stage": "check"}], [{**warning, "stage": "launch"}]):
+            self.assertIsNone(serve.memory_warning(records), records)
+        text, choices = serve.outcome(self.plan(), done=2, failed=2, rc=1, stopped_ran=True,
+                                      memory="spark-2 has 9 GiB free", width=80)
+        self.assertIn("Start refused only because free memory is below the recommended headroom: spark-2 has 9 GiB "
+                      "free.", " ".join(text.split()))
+        self.assertEqual(choices, [("restart:0", "Start org/other again"),
+                                   ("memory", "Start org/model with less free memory than recommended"),
+                                   ("back", "Back")])
+        # Not for an interrupted Start, an outcome Start could not establish, or another step.
+        for failed, rc in ((2, 130), (2, 3), (0, 1)):
+            _, choices = serve.outcome(self.plan(), done=failed, failed=failed, rc=rc, stopped_ran=failed == 2,
+                                       memory="", width=80)
+            self.assertNotIn("memory", [action for action, _ in choices])
+
+    def test_the_acknowledgement_is_added_only_to_the_plans_start(self):
+        plan = self.plan()
+        plan["steps"][2].update(command=["./pulsar", "start", SPEC], shown="./pulsar start abababababab")
+        for step in plan["steps"][:2]:
+            step["command"] = ["./pulsar", step["kind"], SPEC]
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            path.write_text(json.dumps(plan))
+            printed = io.StringIO()
+            with mock.patch("sys.stdout", printed):
+                serve.main(["command", "--plan", str(path), "--accept-memory-warning"])
+                serve.main(["command", "--plan", str(path), "--accept-memory-warning", "--shown"])
+        self.assertEqual(printed.getvalue().splitlines(), ["./pulsar", "start", SPEC, "--accept-memory-warn",
+                                                           "./pulsar start abababababab --accept-memory-warn"])
+
+
 class Authority(unittest.TestCase):
     def test_no_code_path_passes_replace_or_pull_image_and_a_pull_is_its_own_step(self):
         for path in ("scripts/serve_plan.py", "scripts/serve-menu.sh"):
             text = (ROOT / path).read_text()
-            for flag in ("--replace", "--pull-image", "--accept-memory-warn"):
+            for flag in ("--replace", "--pull-image"):
                 self.assertNotIn(f'"{flag}"', text, path)
                 self.assertNotIn(f"'{flag}'", text, path)
             code = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
@@ -558,6 +595,13 @@ class Authority(unittest.TestCase):
         source = (ROOT / "scripts/serve_plan.py").read_text()
         self.assertEqual(source.count('"--pull"'), 1)
         self.assertIn('pull = ["--pull"] if mode == "pull" else []', source)
+        # Start's memory-warning acknowledgement: only the command the outcome's
+        # own choice runs adds it (Outcome.test_starting_anyway…); the menu adds none.
+        self.assertEqual(source.count('"--accept-memory-warn"'), 1)
+        self.assertIn('command = [*start["command"], "--accept-memory-warn"]', source)
+        menu = (ROOT / "scripts/serve-menu.sh").read_text().splitlines()
+        self.assertEqual([line for line in menu if re.search(r"--accept-memory-warn\b(?!ing)", line)
+                          and not line.lstrip().startswith("#")], [])
 
 
 class Cli(unittest.TestCase):

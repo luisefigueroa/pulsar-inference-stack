@@ -10,10 +10,11 @@
     python3 -m scripts.serve_plan compose --spec-id S --out FILE [same options, --inventory FILE,
             --preview NAME=FILE..., --hf FILE] < CATALOG_JSON
     python3 -m scripts.serve_plan render|steps|choices|facts --plan FILE
-    python3 -m scripts.serve_plan command --plan FILE (--step I [--preview] | --restart I)
+    python3 -m scripts.serve_plan command --plan FILE (--step I [--preview] | --restart I [--shown]
+            | --accept-memory-warning [--shown])
     python3 -m scripts.serve_plan check-step --plan FILE --step I --preview-file FILE [--preview-rc N]
-    python3 -m scripts.serve_plan outcome --plan FILE --done N [--failed I --rc N] [--stopped]
-            [--ran-step I]... [--choices]
+    python3 -m scripts.serve_plan outcome --plan FILE --done N [--failed I --rc N] [--halted WHY]
+            [--blockers FILE] [--ran-step I]... [--choices]
 
 The plan is an ordered list of steps. Each has a sentence for the operator,
 the `./pulsar` command it runs, what it changes, and whether it needs
@@ -717,12 +718,13 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         if any(isinstance(check, dict) and check.get("outcome") == "not_run" for check in checks):
             step["projected"] = True
         # A dry run accepts a memory warning; Start itself refuses on one, and
-        # this plan never passes --accept-memory-warn.
+        # this plan never passes --accept-memory-warn. Only the outcome of a
+        # Start refused for nothing else offers it, as a choice of its own.
         if any(isinstance(check, dict) and check.get("id") == "memory" and check.get("outcome") == "info"
                for check in checks):
             plan["warnings"].append("Start's dry run found free memory below the recommended headroom. If it is "
-                                    "still low when Start runs, Start refuses and this plan stops there; the "
-                                    "recipe's own Start under Advanced: single operations… can accept it.")
+                                    "still low when Start runs, Start refuses and this plan stops there; its "
+                                    "outcome then offers to start it with less free memory than recommended.")
         steps.append(step)
     for step in steps:
         step["shown"] = shown(step["command"], entries)
@@ -905,13 +907,27 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
     return "same", ""
 
 
+def memory_warning(records: list[dict]) -> str | None:
+    """What a Start refused for nothing but a memory warning said, or None.
+
+    The same test the catalog menu uses before it offers the retry
+    (`memory_warning_only`); "" when the record names no detail."""
+    from model_library.catalog_menu import memory_warning_only
+    if not memory_warning_only(records):
+        return None
+    details = [clean(record.get("detail") or "") for record in records]
+    return "; ".join(dict.fromkeys(detail for detail in details if detail))
+
+
 def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ran: list[str] = (),
-            stopped_ran: bool = False, halted: str | None = None,
+            stopped_ran: bool = False, halted: str | None = None, memory: str | None = None,
             width: int | None = None) -> tuple[str, list[tuple[str, str]]]:
     """What happened: the steps done, a failed step and what it leaves, then the
     commands that ran under Same as. HALTED is why step FAILED did not run:
     its own preview found it blocked, or doing what the plan did not say.
-    Returns (text, choices)."""
+    MEMORY is what a Start refused for nothing but a memory warning said
+    (memory_warning); only then is starting it anyway offered, as its own
+    choice. Returns (text, choices)."""
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
     steps = plan["steps"]
@@ -965,6 +981,13 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
         elif stopped and not stopped_ran:
             out.emit(f"Still serving: {_list([item['name'] for item in stopped])}; the plan stopped before "
                      "stopping it.")
+        if step["kind"] == "start" and rc == 1 and memory is not None:
+            # Start refused for nothing but its memory warning: starting anyway
+            # is the operator's own choice here, never part of the plan.
+            out.emit("Start refused only because free memory is below the recommended headroom"
+                     + (f": {memory}." if memory else ".")
+                     + " Starting anyway can fail or slow other work on those nodes.")
+            choices_.append(("memory", f"Start {plan['model_id']} with less free memory than recommended"))
         if interrupted and step["kind"] in FILE_STEPS + ("prepare",):
             choices_.append(("inspect", "Check its files now (read-only)"))
         elif interrupted and step["kind"] in ("start", "stop"):
@@ -1175,6 +1198,8 @@ def main(argv: list[str] | None = None) -> int:
     which = command_.add_mutually_exclusive_group(required=True)
     which.add_argument("--step", type=int)
     which.add_argument("--restart", type=int, help="start the INDEXth stopped service again")
+    which.add_argument("--accept-memory-warning", action="store_true",
+                       help="the plan's Start with Start's own memory-warning acknowledgement")
     command_.add_argument("--preview", action="store_true")
     command_.add_argument("--shown", action="store_true", help="with --restart: as the outcome names it")
     check = sub.add_parser("check-step")
@@ -1189,6 +1214,7 @@ def main(argv: list[str] | None = None) -> int:
     result.add_argument("--rc", type=int, default=0)
     result.add_argument("--ran-step", type=int, action="append", default=[], help="a step whose command ran")
     result.add_argument("--halted", help="why the failed step did not run")
+    result.add_argument("--blockers", help="the blockers the failed Start recorded (PULSAR_START_BLOCKERS_FILE)")
     result.add_argument("--choices", action="store_true")
     for command in sub.choices.values():
         command.add_argument("--repo-root", type=Path, default=ROOT)
@@ -1305,6 +1331,16 @@ def main(argv: list[str] | None = None) -> int:
                     # How the outcome names it, on one line.
                     print(plan["stopped"][args.restart]["restart_shown"])
                     return 0
+            elif args.accept_memory_warning:
+                # Start's existing acknowledgement flag, added only here: the
+                # operator chose it on the outcome of a Start refused for it.
+                start = next((step for step in plan["steps"] if step["kind"] == "start"), None)
+                if start is None:
+                    raise ValueError("this plan has no Start")
+                command = [*start["command"], "--accept-memory-warn"]
+                if args.shown:
+                    print(f"{start['shown']} --accept-memory-warn")
+                    return 0
             else:
                 step = plan["steps"][args.step]
                 command = step["preview"] if args.preview else step["command"]
@@ -1330,8 +1366,15 @@ def main(argv: list[str] | None = None) -> int:
             stopped = any(plan["steps"][index]["kind"] == "stop" and index != args.failed
                           and (plan["steps"][index].get("facts") or {}).get("conf") in others
                           for index in args.ran_step)
+            memory = None
+            if args.blockers and args.failed is not None and plan["steps"][args.failed]["kind"] == "start":
+                from scripts.start_blockers import read
+                try:
+                    memory = memory_warning(read(args.blockers))
+                except (OSError, ValueError):
+                    memory = None
             text, found = outcome(plan, done=args.done, failed=args.failed, rc=args.rc, ran=ran,
-                                  stopped_ran=stopped, halted=args.halted, width=width)
+                                  stopped_ran=stopped, halted=args.halted, memory=memory, width=width)
             if args.choices:
                 for action, label in found:
                     print(f"{action}\t{label}")
