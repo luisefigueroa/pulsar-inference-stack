@@ -126,7 +126,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
 | changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time, and the last Check the cluster now keeps its findings beside it; it changes nothing by itself. Cluster… → Review what changed… shows it and saves a change after one question. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
-| fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
+| fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 
 ## Catalog labels
 
@@ -176,7 +176,7 @@ below are for reading.
 | Cluster: not checked since membership was saved | The saved check describes the membership before its last save, so it is not shown as current. **Check the cluster now** checks the membership as it is. |
 | Cluster: the last discovery did not finish | Discovery stopped before it could compare the machines with saved membership, for the reason given. Nothing was saved from it; **Check the cluster now** tries again. |
 | Cluster: saved check unreadable | The saved changes record could not be read. The next **Check the cluster now** replaces it. |
-| Checked: links verified, links failed | Whether the last check found working RoCE links between every pair of nodes. Failed links name their fix in the check's report. |
+| Checked: links verified, links failed | Whether the last check found working RoCE links between every pair of cabled nodes. Failed links name their fix in the check's report. |
 | Checked: SSH identities verified, SSH identities did not match | Whether each node presented the SSH identity Pulsar recorded for it at the last check. A mismatch means a reinstalled machine or a changed host key; the report says how to verify and record it again. |
 | Checked: SSH identities recorded, SSH identities not recorded | Pulsar has recorded the nodes' SSH identities (*SSH trust*), but no check has verified them yet; or it has not recorded them, and **Set up this cluster…** does. |
 | Changes: none noticed | The last discovery found the machines exactly as saved, with its age. |
