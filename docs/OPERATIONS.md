@@ -127,6 +127,10 @@ JSON fields, and container labels retain their existing names. The menu's
 | changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time, and the last Check the cluster now keeps its findings beside it; it changes nothing by itself. Cluster… → Review what changed… shows it and saves a change after one question. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
+| full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. One-node recipes serve on any of its nodes; this Stack does not start a recipe on two or more of them. |
+| cable | One physical connection between two neighbours. On a ring each cable carries two links. |
+| neighbour | A node at the other end of one of this node's cables. |
 
 ## Catalog labels
 
@@ -315,7 +319,7 @@ every prerequisite before it can fail later; it installs nothing:
    with a host key SSH on this machine does not trust is listed with the check
    to run (`ssh -o StrictHostKeyChecking=ask HOST`); it is not added.
 3. **Check each machine**: each machine discovery found, whose Docker, GPU and
-   links to every other machine discovery verified, is asked for the same
+   links to the machines it is cabled to discovery verified, is asked for the same
    prerequisites over SSH with discovery's strict host-key policy.
 4. **Save**: configuration's fresh checks and its question.
 5. **Identities**: the SSH identity check, and recording them
@@ -367,10 +371,21 @@ interactive terminal with Gum.
 ### Inspect or change membership
 
 `show` reads saved membership without probing. `check` checks every saved node's
-identity, confirmed control endpoint, platform readiness and pairwise fabric
-connectivity. Its JSON distinguishes missing, invalid and blocked state from
+identity, confirmed control endpoint, platform readiness and the connectivity of
+every saved link, each ping bound to the link's own interface. Its JSON distinguishes missing, invalid and blocked state from
 ready; a saved row alone does not establish current readiness. These observations
 do not prepare files, choose model geometry or promise a model can start.
+
+Discovery saves one of two shapes. A *full mesh* has every node cabled to
+every other. A *ring* is four or more nodes in a closed loop, each cabled to
+its two *neighbours*; its ranks follow the cables from this node, and a later
+discovery keeps their direction while the cables still match. Anything else,
+such as an open chain or a ring with a dead *cable*, is saved as the largest
+group in which every node is cabled to every other, and the report names each
+machine that answered but was left out, with the reason. On a ring a recipe
+on two or more nodes does not start: start, the Serve list and **Why will
+a model not start?** say that the cluster is a ring. Stop never depends on the
+shape.
 
 `detect` probes local, advertised, explicitly supplied and previously confirmed
 nodes without saving membership or enrolling new SSH trust. Repeat `--candidate`
