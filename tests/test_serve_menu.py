@@ -106,6 +106,20 @@ case "$*" in
   "inventory --json") key=inventory ;;
   "topology detect --json") key=detect; [ -z "${CHANGES_AFTER:-}" ] || cp "$CHANGES_AFTER" "$PULSAR_CLUSTER_CHANGES_FILE" ;;
   "model files --json") key=files ;;
+  "model budget --json") key=budget ;;
+  "model purge "*"--plan --json") key=purge-plan ;;
+  "model remove "*"--plan --json") key=remove-plan ;;
+  "model move "*"--plan --json") key=move-plan ;;
+  "model pin "*"--plan --json") key=pin-plan ;;
+  "model unpin "*"--plan --json") key=unpin-plan ;;
+  "model archive create "*"--plan --json") key=archive-plan ;;
+  "model purge "*) key=purge ;;
+  "model remove "*) key=remove ;;
+  "model move "*) key=move ;;
+  "model pin "*) key=pin ;;
+  "model unpin "*) key=unpin ;;
+  "model archive create "*) key=archive ;;
+  "model archive verify "*) key=verify ;;
   "model restore "*"--plan --json") key=restore-plan ;;
   "model acquire "*"--plan --json") key=acquire-plan ;;
   "model prepare "*"--plan --json") key=prepare-plan ;;
@@ -576,6 +590,29 @@ class NeedsEverything(Harness):
         self.assertEqual(self.ran(), [f"spec compare --before {self.root}/releases/{SPEC}.json --after "
                                       f"{self.root}/releases/{OTHER}.json"])
         self.assert_plain_choices()
+
+    def test_get_a_model_ready_ahead_of_time_plans_without_start_from_the_start(self):
+        result = self.run_menu(["0", "Go ahead", "Back"], "--ready")
+        # It exits 4 when its plan ran, so Models and disk space… looks at the files again.
+        self.assertEqual(result.returncode, 4, result.stderr)
+        self.assertEqual(self.menus()[0][0], "Get a model ready")
+        self.assertEqual(self.menus()[1], ["Get a model ready", "Cancel", "Go ahead", "Change…", "Details"])
+        self.assertIn("Get a model ready\t0", self.default_log.read_text().splitlines())
+        # Start's dry run never runs, and nothing is stopped or started.
+        self.assertFalse(any(line.startswith("start ") for line in self.commands()))
+        self.assertEqual(self.ran(), [f"model acquire {SPEC} --node spark-1 --yes",
+                                      f"model prepare {SPEC} --yes", f"image stage {SPEC} --pull --yes"])
+        text = " ".join(result.stdout.split())
+        self.assertIn("Get org/model ready on spark-1, spark-2 and spark-3", text)
+        self.assertNotIn("Stop org/other", text)
+        self.assertIn("✓ Ready: org/model has its files and image on", text)
+        self.assert_plain_choices()
+        self.assert_no_unapproved_authority()
+
+    def test_get_a_model_ready_that_is_cancelled_exits_0(self):
+        result = self.run_menu(["0", "Cancel", "Back"], "--ready")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [])
 
     def test_get_it_ready_drops_the_stop_and_the_start(self):
         result = self.run_menu(["0", "Get it ready, but do not start", "Back"])

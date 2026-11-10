@@ -28,6 +28,10 @@
 #   --restart SPEC [--node NODE_ID]
 #                       Restart…: no change check and no list; a plan of Stop
 #                       then Start of that recipe on the nodes it runs on.
+# Models and disk space… opens it as Get a model ready ahead of time…:
+#   --ready             the same change check, list and plan, composed
+#                       without its Stop and Start (serve_plan.py compose
+#                       --ready-only); it exits 4 when the plan ran.
 # Stopping another service and pulling an image are listed steps, approved
 # with the plan (D1). Nothing here passes --replace or --pull-image. Only the
 # outcome of a Start refused for nothing but its memory warning offers Start
@@ -57,6 +61,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --switch-from) [ -n "${2:-}" ] || usage "--switch-from needs a spec ID"; MODE=switch SWITCH_FROM=$2; shift ;;
     --restart) [ -n "${2:-}" ] || usage "--restart needs a spec ID"; MODE=restart RESTART_SPEC=$2; shift ;;
+    --ready) MODE=ready ;;
     --node) [ -n "${2:-}" ] || usage "--node needs a node ID"; RESTART_NODE=$2; shift ;;
     --inventory) [ -n "${2:-}" ] || usage "--inventory needs a file"; SHARED=$2; shift ;;
     --inventory-at) [[ "${2:-}" =~ ^[0-9]+$ ]] || usage "--inventory-at needs a time"; SHARED_AT=$2; shift ;;
@@ -68,6 +73,7 @@ done
 case "$MODE" in
   switch) TITLE="Switch to another model" ;;
   restart) TITLE="Restart a service" ;;
+  ready) TITLE="Get a model ready" ;;
   *) TITLE="Serve a model" ;;
 esac
 
@@ -297,6 +303,8 @@ build_plan() {
   [ -z "$IMAGE_SOURCE" ] || args+=(--image-source "$IMAGE_SOURCE")
   [ -z "$SWITCH_FROM" ] || args+=(--stop "$SWITCH_FROM")
   [ "$MODE" != restart ] || args+=(--restart)
+  # Get a model ready ahead of time…: the same plan without its Stop and Start.
+  [ "$MODE" != ready ] || args+=(--ready-only)
   for name in "${NOT_FOUND[@]}"; do args+=(--not-found "$name"); done
   [ ! -e "$WORK/files.json" ] || args+=(--files "$WORK/files.json")
   capture_inventory || return $?
@@ -630,6 +638,6 @@ while true; do
   rc=0
   serve_recipe "${CARD_IDS[$index]}" || rc=$?
   [ "$rc" -ne 130 ] || exit 130
-  # After a run, home redraws with what changed.
-  [ "$rc" -ne "$RAN" ] || exit 0
+  # After a run, home redraws with what changed; Models and disk space… looks again.
+  if [ "$rc" -eq "$RAN" ]; then [ "$MODE" = ready ] && exit "$RAN"; exit 0; fi
 done
