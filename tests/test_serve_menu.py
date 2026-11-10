@@ -90,7 +90,8 @@ choose_index() {
       echo "UNEXPECTED MENU ANSWER: $answer" >> "$CHOOSE_LOG"; return 1 ;;
   esac
 }
-page_output() { [ -z "${PAGE_LOG:-}" ] || echo paged >> "$PAGE_LOG"; shift; "$@"; }
+# Like the real one, it runs an executable (through env), never a shell function.
+page_output() { [ -z "${PAGE_LOG:-}" ] || echo paged >> "$PAGE_LOG"; shift; env "$@"; }
 wait_continue() {
   local rc=0
   choose_index "${1:-Review the output above}" "Continue" >/dev/null || rc=$?
@@ -224,6 +225,11 @@ exit "$rc"
             self.assertNotIn("--pull-image", line)
             if "--pull" in line:
                 self.assertTrue(line.startswith("image stage "), line)
+            # --json keeps the exact-ID contract, and image takes no shortened ID.
+            if "--json" in line or line.startswith("image "):
+                for word in line.split():
+                    if len(word) >= 12 and all(char in "0123456789abcdef" for char in word):
+                        self.assertEqual(len(word), 64, line)
 
 
 class Entry(Harness):
@@ -317,10 +323,10 @@ class Switch(Harness):
         self.assertEqual(plan, ["Serve a model", "Cancel", "Go ahead", "Details"])
         self.assertIn("Serve a model\t0", self.default_log.read_text().splitlines())
         # One inventory serves the list, the plan and Stop's own check.
-        self.assertEqual(self.commands(), ["inventory --json", "model prepare abababababab --plan --json",
-                                           "image stage abababababab --plan --json",
-                                           "start abababababab --dry-run --json",
-                                           "stop cdcdcdcdcdcd", "start abababababab"])
+        self.assertEqual(self.commands(), ["inventory --json", f"model prepare {SPEC} --plan --json",
+                                           f"image stage {SPEC} --plan --json",
+                                           f"start {SPEC} --dry-run --json",
+                                           f"stop {OTHER}", f"start {SPEC}"])
         text = " ".join(result.stdout.split())
         self.assertIn("1. Stop org/other on spark-1, spark-2 and spark-3.", text)
         self.assertIn("org/other keeps serving until step 1. If step 2 fails, nothing is serving", text)
@@ -344,7 +350,7 @@ class Switch(Harness):
         # The failed Start ran too, so it is named with the Stop.
         self.assertIn("Same as: ./pulsar stop cdcdcdcdcdcd ./pulsar start abababababab", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
-        self.assertEqual(self.ran(), ["stop cdcdcdcdcdcd", "start abababababab", "start cdcdcdcdcdcd"])
+        self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {OTHER}"])
 
     def test_a_service_that_appears_before_its_stop_stops_the_run(self):
         # This recipe's exited containers and org/other are in the way; after the
@@ -357,7 +363,7 @@ class Switch(Harness):
         self.fixture("start-plan", start_blocked("service_exists", "port_in_use"), rc=1)
         result = self.run_menu(["0", "Go ahead", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.ran(), ["stop abababababab"])
+        self.assertEqual(self.ran(), [f"stop {SPEC}"])
         self.assertEqual(self.commands().count("inventory --json"), 2)
         text = " ".join(result.stdout.split())
         self.assertIn("✗ Step 2 did not run: served name not recorded now runs on a serving node too, and the plan "
@@ -390,43 +396,73 @@ class NeedsEverything(Harness):
                                            "Change…", "Details"])
         # hf is checked on the download node before the plan is shown; no download preview runs up front.
         self.assertEqual(self.commands()[:5], ["inventory --json", "model files --json", "prerequisites n0",
-                                               "image stage abababababab --plan --json",
-                                               "start abababababab --dry-run --json"])
+                                               f"image stage {SPEC} --plan --json",
+                                               f"start {SPEC} --dry-run --json"])
         self.assertEqual(self.commands()[5:], [
-            "model acquire abababababab --node spark-1 --plan --json",
-            "model acquire abababababab --node spark-1 --yes",
-            "model prepare abababababab --plan --json", "model prepare abababababab --yes",
-            "image stage abababababab --pull --plan --json", "image stage abababababab --pull --yes",
-            "stop cdcdcdcdcdcd", "start abababababab"])
+            f"model acquire {SPEC} --node spark-1 --plan --json",
+            f"model acquire {SPEC} --node spark-1 --yes",
+            f"model prepare {SPEC} --plan --json", f"model prepare {SPEC} --yes",
+            f"image stage {SPEC} --pull --plan --json", f"image stage {SPEC} --pull --yes",
+            f"stop {OTHER}", f"start {SPEC}"])
         text = " ".join(result.stdout.split())
         self.assertIn("3. Pull the serving image on spark-1 and spark-3 (exact digest, from its registry).", text)
         self.assertIn("Steps 1, 2 and 5 are estimates until they run", text)
         self.assert_plain_choices()
         self.assert_no_unapproved_authority()
 
+    def test_a_plan_that_does_not_fit_the_rows_opens_in_the_pager(self):
+        pages = self.root / "pages.log"
+        for rows, paged in (("60", False), ("24", True)):
+            with self.subTest(rows=rows):
+                pages.unlink(missing_ok=True)
+                self.log.unlink(missing_ok=True)
+                for count in self.fixtures.glob("*.count"):
+                    count.unlink()
+                self.answers.with_suffix(".n").unlink(missing_ok=True)
+                self.choose_log.unlink(missing_ok=True)
+                result = self.run_menu(["0", "Cancel", "Back"], ROWS=rows, PAGE_LOG=str(pages))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(pages.exists(), paged)
+                # Either way the plan is shown once, before its choices.
+                self.assertEqual(result.stdout.count("Pulsar will:"), 1)
+
+    def test_every_choice_in_change_details_and_the_outcomes_uses_plain_words(self):
+        result = self.run_menu(["0", "Change…", "Back", "Details", "Recipe details", "Published results", "Back",
+                                "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[2], ["Change the plan", "Keep the files on another node…", "Back"])
+        self.assertEqual(self.menus()[4], ["Details", "Recipe details", "Published results", "Back"])
+        self.assert_plain_choices()
+        self.fixture("acquire", rc=130)
+        self.answers.with_suffix(".n").unlink()
+        self.choose_log.unlink()
+        self.run_menu(["0", "Go ahead", "Back"])
+        self.assert_plain_choices()
+
     def test_get_it_ready_drops_the_stop_and_the_start(self):
         result = self.run_menu(["0", "Get it ready, but do not start", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.ran(), ["model acquire abababababab --node spark-1 --yes",
-                                      "model prepare abababababab --yes", "image stage abababababab --pull --yes"])
+        self.assertEqual(self.ran(), [f"model acquire {SPEC} --node spark-1 --yes",
+                                      f"model prepare {SPEC} --yes", f"image stage {SPEC} --pull --yes"])
         self.assertIn("✓ Ready: org/model has its files and image on", " ".join(result.stdout.split()))
 
     def test_a_step_whose_own_preview_differs_stops_the_run_before_it_changes_anything(self):
         self.fixture("prepare-plan", envelope(prepare_plan(("n0", "copy"), ("n1", "copy"), ("n2", "copy"))))
         result = self.run_menu(["0", "Go ahead", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.ran(), ["model acquire abababababab --node spark-1 --yes"])
+        self.assertEqual(self.ran(), [f"model acquire {SPEC} --node spark-1 --yes"])
         text = " ".join(result.stdout.split())
         self.assertIn("✗ Step 2 did not run: it would also copy the files to spark-1. Pulsar stopped before it, "
                       "so it can ask again.", text)
         self.assertIn("Still serving: org/other.", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Plan again from the state as it is now", "Back"])
+        self.assert_plain_choices()
 
     def test_an_interrupted_step_is_inspected_before_any_retry(self):
         self.fixture("acquire", rc=130)
         result = self.run_menu(["0", "Go ahead", "Check its files now (read-only)", "Continue"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.ran(), ["model acquire abababababab --node spark-1 --yes", "models check abababababab"])
+        self.assertEqual(self.ran(), [f"model acquire {SPEC} --node spark-1 --yes", "models check abababababab"])
         self.assertIn("Its outcome is not confirmed; inspect before retrying.", " ".join(result.stdout.split()))
 
     def test_without_a_usable_hf_cli_the_download_node_blocks_and_change_offers_another(self):
@@ -454,7 +490,7 @@ class Sources(Harness):
                                                "destination_space": {"available": 10 ** 13}}))
         result = self.run_menu(["0", "Cancel", "Back"], PULSAR_COLD_ROOT=str(archive))
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("model restore abababababab --node spark-1 --plan --json", self.commands())
+        self.assertIn(f"model restore {SPEC} --node spark-1 --plan --json", self.commands())
         self.assertFalse(any(line.startswith(("prerequisites", "model acquire")) for line in self.commands()))
         self.assertIn("1. Restore the model files from the archive to spark-1", " ".join(result.stdout.split()))
 
@@ -470,8 +506,8 @@ class Sources(Harness):
         self.assertEqual(self.menus()[1], ["Which machine should serve org/model?", "spark-1",
                                            "spark-2 — its model files are here", "spark-3", "Back"])
         self.assertIn("Which machine should serve org/model?\t1", self.default_log.read_text().splitlines())
-        self.assertIn("start abababababab --node spark-2 --dry-run --json", self.commands())
-        self.assertEqual(self.ran(), ["start abababababab --node spark-2"])
+        self.assertIn(f"start {SPEC} --node spark-2 --dry-run --json", self.commands())
+        self.assertEqual(self.ran(), [f"start {SPEC} --node spark-2"])
         self.assert_plain_choices()
 
 

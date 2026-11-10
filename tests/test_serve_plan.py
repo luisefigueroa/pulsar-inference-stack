@@ -203,7 +203,7 @@ class Compose(unittest.TestCase):
         self.assertEqual([step["authority"] for step in plan["steps"]], [False, False, True, True, False])
         self.assert_no_unapproved_authority(plan)
         download, prepare, image, stop, start = plan["steps"]
-        self.assertEqual(download["command"], ["./pulsar", "model", "acquire", SPEC[:12], "--node", "spark-1", "--yes"])
+        self.assertEqual(download["command"], ["./pulsar", "model", "acquire", SPEC, "--node", "spark-1", "--yes"])
         self.assertIn("Download the model files from Hugging Face to spark-1 (212 GiB). They become its home",
                       download["sentence"].replace(serve.KEEP, " "))
         self.assertEqual(prepare["sentence"].replace(serve.KEEP, " "), "Copy them to spark-2 and spark-3 (212 GiB each); "
@@ -211,8 +211,8 @@ class Compose(unittest.TestCase):
         self.assertEqual(image["sentence"].replace(serve.KEEP, " "), "Pull the serving image on spark-1 and spark-3 (exact digest, from its "
                                             "registry).")
         self.assertIn("--pull", image["command"])
-        self.assertEqual(stop["command"], ["./pulsar", "stop", OTHER[:12]])
-        self.assertEqual(start["command"], ["./pulsar", "start", SPEC[:12]])
+        self.assertEqual(stop["command"], ["./pulsar", "stop", OTHER])
+        self.assertEqual(start["command"], ["./pulsar", "start", SPEC])
         self.assertIn("The API will accept requests without a key.", start["sentence"].replace(serve.KEEP, " "))
         # Prepare has no preview before a home exists; Download and Start are projected too.
         self.assertEqual(plan["projected"], [0, 1, 4])
@@ -233,7 +233,8 @@ class Compose(unittest.TestCase):
         self.assertEqual(plan["stopped"], [{"conf": OTHER, "name": "org/other", "hosts": ["spark-1", "spark-2",
                                                                                             "spark-3"],
                                             "in_catalog": True, "node": None,
-                                            "restart": ["./pulsar", "start", OTHER[:12]]}])
+                                            "restart": ["./pulsar", "start", OTHER],
+                                            "restart_shown": f"./pulsar start {OTHER[:12]}"}])
         # A modified recipe, or one outside the catalog, is not offered to start again.
         live = other_running()
         live["services"][0]["matches_selected_spec"] = False
@@ -259,12 +260,12 @@ class Compose(unittest.TestCase):
         self.assertEqual([step["kind"] for step in plan["steps"]], ["prepare", "start"])
         self.assertEqual(plan["steps"][0]["sentence"].replace(serve.KEEP, " "), "Check the files on spark-2 and record them for this recipe; "
                                                        "nothing is copied.")
-        self.assertEqual(plan["steps"][1]["command"], ["./pulsar", "start", SPEC[:12], "--node", "spark-2"])
+        self.assertEqual(plan["steps"][1]["command"], ["./pulsar", "start", SPEC, "--node", "spark-2"])
         # A one-node recipe off this machine pulls: whether this machine holds the image is not observed.
         plan = self.plan(state, node="n1", previews={"image": envelope(image_plan((1, "missing")))})
         image = next(step for step in plan["steps"] if step["kind"] == "image")
         self.assertTrue(image["authority"])
-        self.assertEqual(image["command"], ["./pulsar", "image", "stage", SPEC[:12], "--node", "spark-2", "--pull",
+        self.assertEqual(image["command"], ["./pulsar", "image", "stage", SPEC, "--node", "spark-2", "--pull",
                                             "--yes"])
 
     def test_a_copy_of_the_image_from_this_machine_needs_no_authority(self):
@@ -328,6 +329,35 @@ class Compose(unittest.TestCase):
         self.assertEqual(plan["projected"], [0])
         plan = self.plan(state, live=other_running(), previews={"start": start_blocked("port_in_use")})
         self.assertEqual(plan["blocked"], [])
+
+    def test_a_memory_warning_the_dry_run_accepted_is_said_before_approval(self):
+        state = checked(home=HOME, local_state="ready")
+        checks = [{"id": "memory", "outcome": "info", "node": None,
+                   "message": "below the recommended headroom; accepted for the dry run"}]
+        plan = self.plan(state, live=other_running(), previews={"start": start_blocked("port_in_use", checks=checks)})
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn("Start's dry run found free memory below the recommended headroom.", plan["warnings"][0])
+        self.assertIn("Warning: Start's dry run found free memory", " ".join(serve.render(plan, width=80).split()))
+        for step in plan["steps"]:
+            self.assertNotIn("--accept-memory-warn", step["command"])
+
+    def test_a_partly_running_service_of_this_recipe_is_removed_as_its_own_step(self):
+        state = checked(home=HOME, local_state="ready")
+        plan = self.plan(state, live=inventory((SPEC, "partial", ["head", "w1"])))
+        self.assertEqual(plan["steps"][0]["sentence"].replace(serve.KEEP, " "),
+                         "Remove the containers of org/model, which is partly running, on spark-1 and spark-2; "
+                         "Start does not replace a service. Model files are kept.")
+
+    def test_the_outcome_names_commands_by_prefix_where_their_human_mode_takes_one(self):
+        state = row()
+        sources = serve.file_sources(state, serving=["n0", "n1", "n2"], order=NAMES.order,
+                                     archive_location="disabled")
+        plan = self.plan(state, live=other_running(), sources=sources, hf=HF_OK,
+                         previews={"image": envelope(image_plan((0, "missing"), (1, "ok"), (2, "missing")))})
+        self.assertEqual([step["shown"] for step in plan["steps"]], [
+            f"./pulsar model acquire {SPEC[:12]} --node spark-1 --yes", f"./pulsar model prepare {SPEC[:12]} --yes",
+            f"./pulsar image stage {SPEC} --pull --yes", f"./pulsar stop {OTHER[:12]}",
+            f"./pulsar start {SPEC[:12]}"])
 
     def test_unknown_is_not_absent(self):
         state = checked(home=HOME, local_state="ready")
@@ -491,6 +521,21 @@ class Outcome(unittest.TestCase):
         self.assertIn("Still serving: org/other; the plan stopped before stopping it.", flat)
         self.assertIn("Choose Serve a model… again to plan from the state as it is now", flat)
 
+    def test_an_interrupted_start_after_the_stop_does_not_claim_nothing_serves(self):
+        text, choices = serve.outcome(self.plan(), done=2, failed=2, rc=130, stopped_ran=True, width=80)
+        flat = " ".join(text.split())
+        self.assertIn("org/other was stopped before Start. Whether this model's service started is not confirmed.",
+                      flat)
+        self.assertNotIn("Nothing is serving now", flat)
+        self.assertNotIn(("restart:0", "Start org/other again"), choices)
+
+    def test_a_failed_stop_after_another_does_not_say_what_still_runs(self):
+        plan = self.plan()
+        plan["steps"].insert(2, {"kind": "stop", "sentence": "Stop org/third on spark-2. Its model files are kept.",
+                                 "authority": True})
+        text, _ = serve.outcome(plan, done=2, failed=2, rc=1, stopped_ran=True, width=80)
+        self.assertIn("whether the one this step stops still runs is not confirmed", " ".join(text.split()))
+
     def test_an_interrupted_step_is_inspected_before_any_retry(self):
         text, choices = serve.outcome(self.plan(), done=0, failed=0, rc=130, width=80)
         self.assertIn("Its outcome is not confirmed; inspect before retrying.", " ".join(text.split()))
@@ -545,7 +590,7 @@ class Cli(unittest.TestCase):
                              [["0", "stop", "1", "0", "-"], ["1", "start", "0", "0", "-"]])
             self.assertEqual(lines[0].split("\t")[5], "Stop org/other on spark-1, spark-2 and spark-3. Its model "
                                                       "files are kept.")
-            self.assertEqual(lines[2:], ["./pulsar", "stop", OTHER[:12],
+            self.assertEqual(lines[2:], ["./pulsar", "stop", OTHER,
                                          "cancel\tCancel", "go\tGo ahead", "details\tDetails"])
 
 

@@ -300,15 +300,16 @@ build_plan() {
 }
 COMPOSE_ARGS=()
 
-# show PLAN_TEXT_COMMAND... LABELS...: the screen above its choices when both
-# fit the terminal's rows, else in the pager, as Review does.
-show_screen() {
+# show_plan CHOICES: the plan screen above its CHOICES when both fit the
+# terminal's rows (a blank line, the screen, then Gum's choices and its five
+# rows), else in the pager, as Review does. The pager runs an executable, not
+# a shell function, and renders at its own width.
+show_plan() {
   local count="$1" screen lines rows rc=0
-  shift
-  screen=$("$@") || return 1
+  screen=$(serve_plan render --plan "$PLAN") || return 1
   lines=$(printf '%s\n' "$screen" | wc -l)
   if rows=$(_ui_terminal_rows) && [ $((lines + 1 + count + 5)) -gt "$rows" ]; then
-    page_output "" "$@" || rc=$?
+    page_output "" python3 -m scripts.serve_plan render --plan "$PLAN" --repo-root "$REPO_DIR" || rc=$?
     return "$rc"
   fi
   printf '\n%s\n' "$screen"
@@ -385,7 +386,7 @@ serve_recipe() {
     actions=() labels=()
     while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
       < <(serve_plan choices --plan "$PLAN")
-    show_screen "${#labels[@]}" serve_plan render --plan "$PLAN" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
+    show_plan "${#labels[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     # The cursor starts on Cancel (D1): approving a plan takes a deliberate move.
     choice=$(PULSAR_CHOOSE_DEFAULT=0 choose_index "Serve a model" "${labels[@]}") \
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
@@ -489,7 +490,7 @@ run_plan() {
       printf '\n→ Starting %s again.\n' "${labels[$choice]#Start }" | text
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: %s\n' "${COMMAND[*]/#$REPO_DIR\//./}" | text
+      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)" | text
       wait_continue "Start again" || return $? ;;
     inspect)
       "$REPO_DIR/pulsar" models check "${SPEC:0:12}" || rc=$?

@@ -1379,8 +1379,13 @@ needs, which the operator approves once.
    service running. Stopping a service and pulling an image from its registry
    are always their own steps; nothing passes `--replace` or `--pull-image`.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
-   after a blocking check) are named as estimates. The screen says what a
-   failure leaves and whether the API will require a key. Choices: **Cancel**
+   after a blocking check) are named as estimates. A memory warning that
+   Start's dry run accepted is shown before approval: Start itself refuses on
+   it, and this menu never passes `--accept-memory-warn` (the recipe's own
+   Start under Advanced asks about it). The screen says what a failure leaves
+   and whether the API will require a key. Commands name the spec by its
+   complete ID; the outcome shows a catalog spec's 12-character prefix where
+   the command accepts one. Choices: **Cancel**
    (where the cursor starts), **Go ahead**, **Get it ready, but do not start**
    (the same plan without Stop and Start), **Change…** (the serving machine,
    the archive or a download, the node that keeps the files) and **Details**

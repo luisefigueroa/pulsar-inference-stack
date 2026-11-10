@@ -406,8 +406,24 @@ def hf_finding(document: Any, host: str) -> tuple[str | None, str | None]:
 # ---------------------------------------------------------------------------
 
 def spec_ref(spec_id: str, entries: list[dict]) -> str:
-    """How a command names a spec: a catalog spec by its 12-character prefix, any other by its full ID."""
-    return spec_id[:12] if any(entry["spec_id"] == spec_id for entry in entries) else spec_id
+    """How a command the menu runs names a spec: by its complete ID. `--json`
+    requires it (the exact-ID contract), and `image` takes no shortened ID."""
+    return spec_id
+
+
+# Commands whose human mode accepts a catalog spec's 12-character prefix
+# (scripts/spec_selector.py); the outcome shows them that way.
+SHORTENED = ("start", "stop", "status", "model", "models", "logs")
+
+
+def shown(command: list[str], entries: list[dict]) -> str:
+    """COMMAND as the outcome names it under Same as: a catalog spec by its
+    12-character prefix where the command's human mode accepts one."""
+    catalog = {entry["spec_id"] for entry in entries}
+    words = list(command)
+    if len(words) > 1 and words[1] in SHORTENED and "--json" not in words:
+        words = [word[:12] if word in catalog else word for word in words]
+    return " ".join(words)
 
 
 def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | None = None,
@@ -645,8 +661,11 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                 held.append(f"{_kept(gib_text(stop['mib']))} of memory"
                             + (" on each" if len(stop["hosts"]) > 1 else ""))
             if stop.get("own"):
-                sentence = (f"Remove the {stop['words']} of {stop['name']} on {where}, which Start would refuse "
-                            "to replace. Model files are kept.")
+                # Exited or stopped containers, or a service of this recipe only partly up.
+                left = (f"the {stop['words']} of {stop['name']}" if stop["words"].endswith("containers")
+                        else f"the containers of {stop['name']}, which is {stop['words']},")
+                sentence = (f"Remove {left} on {where}; Start does not replace a service. Model files are "
+                            "kept.")
             else:
                 sentence = (f"Stop {stop['name']} on {where}." + (f" It holds {_list(held)}." if held else "")
                             + " Its model files are kept.")
@@ -663,10 +682,11 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                 again = service_node(inventory, stop["conf"]) if single else None
                 modified = any(item.get("conf") == stop["conf"] and item.get("matches_selected_spec") is False
                                for item in inventory.get("services") or [] if isinstance(item, dict))
-                restart = (["./pulsar", "start", stop["conf"][:12], *(["--node", names(again)] if again else [])]
+                restart = (["./pulsar", "start", stop["conf"], *(["--node", names(again)] if again else [])]
                            if own is not None and not modified and (again or not single) else None)
                 plan["stopped"].append({"conf": stop["conf"], "name": stop["name"], "hosts": stop["hosts"],
-                                        "in_catalog": restart is not None, "node": again, "restart": restart})
+                                        "in_catalog": restart is not None, "node": again, "restart": restart,
+                                        "restart_shown": shown(restart, entries) if restart else None})
 
     # 5. Start, and what its dry run said.
     if not ready_only:
@@ -696,7 +716,16 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         # Checks the dry run left unrun make Start an estimate, which the footer says.
         if any(isinstance(check, dict) and check.get("outcome") == "not_run" for check in checks):
             step["projected"] = True
+        # A dry run accepts a memory warning; Start itself refuses on one, and
+        # this plan never passes --accept-memory-warn.
+        if any(isinstance(check, dict) and check.get("id") == "memory" and check.get("outcome") == "info"
+               for check in checks):
+            plan["warnings"].append("Start's dry run found free memory below the recommended headroom. If it is "
+                                    "still low when Start runs, Start refuses and this plan stops there; the "
+                                    "recipe's own Start under Advanced: single operations… can accept it.")
         steps.append(step)
+    for step in steps:
+        step["shown"] = shown(step["command"], entries)
 
     # Only step sentences keep their no-break spaces, for the screen's wrapping.
     for key in ("blocked", "warnings", "notes"):
@@ -919,13 +948,20 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
                      prefix_role="fail")
         out.emit(f"Done: {_count(done, 'step')} before it." if done else "No step before it ran.")
         stopped = plan.get("stopped") or []
-        if stopped_ran and step["kind"] == "start":
-            names = _list([item["name"] for item in stopped])
-            out.emit(f"Nothing is serving now: {names} {'was' if len(stopped) == 1 else 'were'} stopped "
-                     f"before Start.")
+        names = _list([item["name"] for item in stopped])
+        were = "was" if len(stopped) == 1 else "were"
+        if stopped_ran and step["kind"] == "start" and interrupted:
+            # An interrupted Start may have launched its service: what serves is not known.
+            out.emit(f"{names} {were} stopped before Start. Whether this model's service started is not "
+                     "confirmed.")
+        elif stopped_ran and step["kind"] == "start":
+            out.emit(f"Nothing is serving now: {names} {were} stopped before Start.")
             for index, item in enumerate(stopped):
-                if item.get("in_catalog") and not interrupted:
+                if item.get("in_catalog"):
                     choices_.append((f"restart:{index}", f"Start {item['name']} again"))
+        elif stopped_ran and step["kind"] == "stop":
+            out.emit("A service was stopped before this step; whether the one this step stops still runs is "
+                     "not confirmed.")
         elif stopped and not stopped_ran:
             out.emit(f"Still serving: {_list([item['name'] for item in stopped])}; the plan stopped before "
                      "stopping it.")
@@ -1140,6 +1176,7 @@ def main(argv: list[str] | None = None) -> int:
     which.add_argument("--step", type=int)
     which.add_argument("--restart", type=int, help="start the INDEXth stopped service again")
     command_.add_argument("--preview", action="store_true")
+    command_.add_argument("--shown", action="store_true", help="with --restart: as the outcome names it")
     check = sub.add_parser("check-step")
     check.add_argument("--plan", required=True)
     check.add_argument("--step", type=int, required=True)
@@ -1264,6 +1301,10 @@ def main(argv: list[str] | None = None) -> int:
                 command = plan["stopped"][args.restart].get("restart")
                 if not command:
                     raise ValueError("that service cannot be started again from this menu")
+                if args.shown:
+                    # How the outcome names it, on one line.
+                    print(plan["stopped"][args.restart]["restart_shown"])
+                    return 0
             else:
                 step = plan["steps"][args.step]
                 command = step["preview"] if args.preview else step["command"]
@@ -1282,7 +1323,8 @@ def main(argv: list[str] | None = None) -> int:
                                          names=names, entries=entries)
             print(f"{verdict}\t{clean(reason)}")
         elif args.command == "outcome":
-            ran = [" ".join(plan["steps"][index]["command"]) for index in args.ran_step]
+            ran = [plan["steps"][index].get("shown") or " ".join(plan["steps"][index]["command"])
+                   for index in args.ran_step]
             # Removing this recipe's own leftover containers stops nothing that served.
             others = {item["conf"] for item in plan.get("stopped") or []}
             stopped = any(plan["steps"][index]["kind"] == "stop" and index != args.failed
