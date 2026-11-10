@@ -1387,8 +1387,13 @@ needs, which the operator approves once.
    the command accepts one. Choices: **Cancel**
    (where the cursor starts), **Go ahead**, **Get it ready, but do not start**
    (the same plan without Stop and Start), **Change…** (the serving machine,
-   the archive or a download, the node that keeps the files) and **Details**
-   (recipe details, published results, and **Compare with another recipe**, which lists the other recipes as the list does and shows `./pulsar spec compare` of the two in the pager).
+   the archive or a download, the node that keeps the files, and the serving
+   image's source where both are possible: **Pull the serving image from its
+   registry instead** when this machine was seen holding it, and **Copy the
+   serving image from this machine instead** to go back) and **Details**
+   (recipe details, published results, and **Compare with another recipe**,
+   which lists the other recipes as the list does and shows `./pulsar spec
+   compare` of the two in the pager).
 5. **The run.** Each step runs its own preview when its turn comes, then its
    command. A step that is blocked, or would do what the plan did not say,
    stops the run before it changes anything and offers **Plan again from the

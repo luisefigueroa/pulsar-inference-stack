@@ -277,6 +277,24 @@ class Compose(unittest.TestCase):
         self.assertNotIn("--pull", image["command"])
         self.assertEqual(image["sentence"].replace(serve.KEEP, " "), "Copy the serving image from this machine to spark-2 and spark-3 "
                                             "(exact digest).")
+        self.assertTrue(image["facts"]["copy_possible"])
+        self.assertIn(("change", "Change…"), serve.choices(plan))
+
+    def test_change_can_pull_the_image_instead_where_a_copy_is_possible_too(self):
+        state = checked(home=HOME, local_state="ready")
+        preview = {"image": envelope(image_plan((0, "ok"), (1, "missing"), (2, "ok")))}
+        image = next(step for step in self.plan(state, previews=preview, image_source="pull")["steps"]
+                     if step["kind"] == "image")
+        self.assertTrue(image["authority"])
+        self.assertEqual(image["facts"], {"mode": "pull", "nodes": ["1"], "copy_possible": True})
+        self.assertIn("--pull", image["command"])
+        self.assertIn("--pull", image["preview"])
+        # Where this machine's image was not observed, a pull is the only source and nothing is offered.
+        preview = {"image": envelope(image_plan((0, "missing"), (1, "ok"), (2, "ok")))}
+        plan = self.plan(state, previews=preview)
+        image = next(step for step in plan["steps"] if step["kind"] == "image")
+        self.assertEqual((image["facts"]["mode"], image["facts"]["copy_possible"]), ("pull", False))
+        self.assertNotIn(("change", "Change…"), serve.choices(plan))
 
     def test_prepare_says_how_many_copies_it_takes_over_and_counts_them_as_not_copied(self):
         state = checked(home=HOME, local_state="missing")

@@ -355,6 +355,35 @@ class Switch(Harness):
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
         self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {OTHER}"])
 
+    def test_change_offers_a_pull_where_a_copy_from_this_machine_is_possible_too(self):
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "missing"), (2, "ok"))))
+        # The plan is made three times (Change…, then Back); the image step's own preview at its turn
+        # asks with --pull, as the changed plan says.
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "missing"), (2, "ok"),
+                                                       mode="pull-exact-digest")), nth=4)
+        result = self.run_menu(["0", "Change…", "Pull the serving image from its registry instead", "Change…",
+                                "Back", "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[1], ["Serve a model", "Cancel", "Go ahead", "Get it ready, but do not start",
+                                           "Change…", "Details"])
+        self.assertEqual(self.menus()[2], ["Change the plan", "Pull the serving image from its registry instead",
+                                           "Back"])
+        # Once changed, the way back is offered.
+        self.assertEqual(self.menus()[4], ["Change the plan", "Copy the serving image from this machine instead",
+                                           "Back"])
+        text = " ".join(result.stdout.split())
+        self.assertIn("1. Copy the serving image from this machine to spark-2 (exact digest).", text)
+        self.assertIn("1. Pull the serving image on spark-2 (exact digest, from its registry).", text)
+        self.assertEqual(self.ran(), [f"image stage {SPEC} --pull --yes", f"stop {OTHER}", f"start {SPEC}"])
+        self.assert_plain_choices()
+        self.assert_no_unapproved_authority()
+
+    def test_no_copy_is_offered_where_this_machines_image_was_not_observed(self):
+        self.fixture("image-plan", envelope(image_plan((0, "missing"), (1, "ok"), (2, "ok"))))
+        result = self.run_menu(["0", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Change…", self.menus()[1])
+
     def blockers(self, *codes, nth=1):
         (self.fixtures / f"start.{nth}.blockers").write_text("".join(
             json.dumps({"blocker": code, "stage": "check", "message": f"{code} found",

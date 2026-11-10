@@ -6,7 +6,7 @@
     python3 -m scripts.serve_plan list [--inventory FILE] [--leave-out SPEC]... < CATALOG_JSON
     python3 -m scripts.serve_plan nodes --spec-id S < CATALOG_JSON
     python3 -m scripts.serve_plan previews --spec-id S [--node ID] [--files FILE] [--source WHERE]
-            [--files-node ID] [--not-found NAME] [--ready-only] < CATALOG_JSON
+            [--files-node ID] [--not-found NAME] [--ready-only] [--image-source pull] < CATALOG_JSON
     python3 -m scripts.serve_plan compose --spec-id S --out FILE [same options, --inventory FILE,
             --preview NAME=FILE..., --hf FILE] < CATALOG_JSON
     python3 -m scripts.serve_plan render|steps|choices|facts --plan FILE
@@ -435,14 +435,16 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             inventory: dict | None = None, inventory_error: str | None = None,
             sources: list[dict] | None = None, previews: dict | None = None,
             hf: Any = None, unanswered: list[str] = (), ready_only: bool = False,
-            api_key: str | None = None) -> dict:
+            api_key: str | None = None, image_source: str | None = None) -> dict:
     """The plan for serving ROW, from saved records and the previews given.
 
     PREVIEWS maps "restore:NAME", "prepare", "image" and "start" to their
     parsed documents (an envelope or a bare plan); a missing key is a preview
     that did not run. SOURCES comes from file_sources. HF is the download
     destination's prerequisites answer. UNANSWERED lists node_ids that did not
-    answer the last discovery: a plan that serves on one does not run."""
+    answer the last discovery: a plan that serves on one does not run.
+    IMAGE_SOURCE "pull" is the operator's Change… to pull the serving image
+    from its registry where a copy from this machine is possible too."""
     previews = previews or {}
     sizes = sizes or {}
     spec = row["spec_id"]
@@ -638,9 +640,13 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         targets = [by_index.get(index, index) for index in lacking]
         where = _list([names(item) for item in targets])
         mode = image_mode(image_doc)
+        # Both sources are possible only where this machine's image was observed.
+        copy_possible = mode == "copy"
+        if image_source == "pull":
+            mode = "pull"
         pull = ["--pull"] if mode == "pull" else []
         steps.append({"kind": "image", "authority": mode == "pull", "projected": False, "node": None,
-                      "facts": {"mode": mode, "nodes": lacking},
+                      "facts": {"mode": mode, "nodes": lacking, "copy_possible": copy_possible},
                       "sentence": (f"Pull the serving image on {where} (exact digest, from its registry)."
                                    if mode == "pull" else
                                    f"Copy the serving image from this machine to {where} (exact digest)."),
@@ -821,9 +827,12 @@ def choices(plan: dict) -> list[tuple[str, str]]:
     if runnable and any(step["kind"] not in ("stop", "start") for step in plan["steps"]):
         found.append(("ready", "Get it ready, but do not start" if not plan.get("ready_only") else "Go ahead"))
     # Change… only where something can change: a one-node recipe's machine,
-    # or where restored or downloaded files come from and go.
-    if len(plan.get("serving") or []) == 1 or any(step["kind"] in ("restore", "download")
-                                                  for step in plan["steps"]):
+    # where restored or downloaded files come from and go, or the serving
+    # image's source where both a copy and a pull are possible.
+    if len(plan.get("serving") or []) == 1 or any(
+            step["kind"] in ("restore", "download")
+            or (step["kind"] == "image" and (step.get("facts") or {}).get("copy_possible"))
+            for step in plan["steps"]):
         found.append(("change", "Change…"))
     found.append(("details", "Details"))
     return found
@@ -1187,6 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--files-node")
         command.add_argument("--not-found", action="append", default=[])
         command.add_argument("--ready-only", action="store_true")
+        command.add_argument("--image-source", choices=("pull",), help="pull the serving image instead of a copy")
     compose_.add_argument("--inventory")
     compose_.add_argument("--inventory-error")
     compose_.add_argument("--preview", action="append", default=[], help="NAME=FILE: restore:SNAPSHOT, prepare, "
@@ -1293,7 +1303,8 @@ def main(argv: list[str] | None = None) -> int:
                            inventory_error=args.inventory_error, sources=found, previews=loaded,
                            hf=load_json(args.hf) if args.hf else None,
                            unanswered=_unanswered(args.repo_root, _topology_id(args.repo_root)),
-                           ready_only=args.ready_only, api_key=_api_key(args.repo_root))
+                           ready_only=args.ready_only, api_key=_api_key(args.repo_root),
+                           image_source=args.image_source)
             Path(args.out).write_text(json.dumps(plan, sort_keys=True), encoding="utf-8")
             return 0
         plan = load_json(args.plan)
@@ -1316,6 +1327,11 @@ def main(argv: list[str] | None = None) -> int:
             print(f"archive\t{int(any(step.get('kind') in FILE_STEPS and step.get('archive') for step in plan['steps']))}")
             print(f"source\t{'restore' if 'restore' in kinds else 'download' if 'download' in kinds else '-'}")
             print(f"stopped\t{len(plan.get('stopped') or [])}")
+            # The serving image's source, and whether a copy from this machine is possible too.
+            image = next((step for step in plan["steps"] if step["kind"] == "image"), None)
+            if image is not None:
+                facts = image.get("facts") or {}
+                print(f"image\t{facts.get('mode')}\t{int(bool(facts.get('copy_possible')))}")
             # Where restored or downloaded files can go: a serving node of a
             # multi-node recipe, any node of a one-node recipe.
             if kinds & {"restore", "download"}:

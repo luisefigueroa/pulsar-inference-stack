@@ -34,7 +34,8 @@ require_gum "Serve a model…" \
   "./pulsar model acquire SPEC --node NODE --plan" "download preview; then --yes" \
   "./pulsar model restore SPEC --node NODE --plan" "restore preview; then --yes" \
   "./pulsar model prepare SPEC --plan" "copy preview; then --yes" \
-  "./pulsar image stage SPEC --plan" "serving image preview; then --yes" \
+  "./pulsar image stage SPEC --plan" "serving image preview, a copy from this machine; then --yes" \
+  "./pulsar image stage SPEC --pull --plan" "or a pull from its registry; then --yes" \
   "./pulsar stop SPEC" "stop the service in the way" \
   "./pulsar start SPEC --dry-run" "Start's checks; then start it" \
   "./pulsar spec compare --before releases/SPEC.json --after releases/OTHER.json" "compare two recipes"
@@ -239,7 +240,7 @@ choose_node() {
 
 # What the operator chose for this recipe: its machine, where missing files
 # come from, where they go, and found files Download's plan did not take.
-NODE="" SOURCE="" FILES_NODE=""
+NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE=""
 NOT_FOUND=()
 PLAN="$WORK/plan.json"
 
@@ -262,6 +263,7 @@ build_plan() {
   [ -z "$NODE" ] || args+=(--node "$NODE")
   [ -z "$SOURCE" ] || args+=(--source "$SOURCE")
   [ -z "$FILES_NODE" ] || args+=(--files-node "$FILES_NODE")
+  [ -z "$IMAGE_SOURCE" ] || args+=(--image-source "$IMAGE_SOURCE")
   for name in "${NOT_FOUND[@]}"; do args+=(--not-found "$name"); done
   [ ! -e "$WORK/files.json" ] || args+=(--files "$WORK/files.json")
   capture_inventory || return $?
@@ -321,9 +323,10 @@ show_plan() {
 change_menu() {
   local key a b choice rc
   local -a labels=() actions=() destinations=() names=()
-  local nodes=0 files=0 archive=0 source=-
+  local nodes=0 files=0 archive=0 source=- image=- copy=0
   while IFS=$'\t' read -r key a b; do
     case "$key" in
+      image) image=$a copy=$b ;;
       nodes) nodes=$a ;;
       files) files=$a ;;
       archive) archive=$a ;;
@@ -340,6 +343,12 @@ change_menu() {
   if [ "$files" = 1 ] && [ "${#destinations[@]}" -gt 1 ]; then
     labels+=("Keep the files on another node…"); actions+=(destination)
   fi
+  # A pull from the registry needs authority of its own, so it is offered by name.
+  if [ "$copy" = 1 ] && [ "$image" = copy ]; then
+    labels+=("Pull the serving image from its registry instead"); actions+=(pull)
+  elif [ "$copy" = 1 ] && [ "$image" = pull ]; then
+    labels+=("Copy the serving image from this machine instead"); actions+=(copy)
+  fi
   if [ "${#labels[@]}" -eq 0 ]; then
     printf '\nNothing in this plan can be changed: it serves on the saved node order.\n' | text
     return 0
@@ -353,6 +362,8 @@ change_menu() {
       [ -z "$picked" ] || NODE=$picked ;;
     download) SOURCE=download ;;
     archive) SOURCE=archive ;;
+    pull) IMAGE_SOURCE=pull ;;
+    copy) IMAGE_SOURCE="" ;;
     destination)
       choice=$(choose_index "Which node should keep the files?" "${names[@]}" "Back") \
         || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
@@ -398,7 +409,7 @@ details_menu() {
 # run. Returns 0, or 4 after a run (home redraws), or 130.
 RAN=4
 serve_recipe() {
-  SPEC="$1" NODE="" SOURCE="" FILES_NODE="" NOT_FOUND=()
+  SPEC="$1" NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE="" NOT_FOUND=()
   local rc=0 action label choice
   local -a actions=() labels=()
   NODE=$(choose_node "$SPEC") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
