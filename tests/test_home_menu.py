@@ -688,6 +688,18 @@ class StatusBlock(MenuHarness):
         self.assertNotIn("key\t", result.stdout)
 
 
+class Scripts(unittest.TestCase):
+    def test_every_page_home_opens_directly_is_executable(self):
+        """The doubles above stand in for these pages, so only this checks the real files can run."""
+        import re
+        text = (ROOT / "scripts" / "home.sh").read_text()
+        names = sorted(set(re.findall(r'"\$REPO_DIR/scripts/([a-z-]+\.sh)"', text)))
+        self.assertIn("models-menu.sh", names)
+        for name in names:
+            with self.subTest(name=name):
+                self.assertTrue(os.access(ROOT / "scripts" / name, os.X_OK), name)
+
+
 class Vocabulary(MenuHarness):
     """Every choice label outside Advanced names what the operator wants (design rule 1)."""
 
