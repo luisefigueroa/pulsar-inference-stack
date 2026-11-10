@@ -151,6 +151,12 @@ class Help(unittest.TestCase):
         for command in ("pulsar help terms", "pulsar help labels", "pulsar help workflow", "pulsar stop --all --yes"):
             self.assertRegex(text, rf"(?m)^  {re.escape(command)}$")
 
+    def test_the_docs_call_a_prepared_copy_by_its_glossary_name(self):
+        # "prepared copy" is the glossary noun; the older "working copy" is not used in the docs.
+        for path in sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md"]:
+            with self.subTest(path=path.name):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"(?i)working[ -]cop")
+
     def test_terms_page_shows_every_row_of_the_docs_table(self):
         lines = (ROOT / "docs/OPERATIONS.md").read_text().split("## Terms\n", 1)[1].split("\n## ", 1)[0]
         # The header and separator rows come first.
