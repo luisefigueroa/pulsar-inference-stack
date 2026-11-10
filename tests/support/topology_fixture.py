@@ -1,7 +1,9 @@
 """Temporary rank fixtures and parameterized node/transport doubles."""
 import base64
+import ipaddress
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -150,6 +152,34 @@ class Fixture:
         return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
 
 
+def ping_double(root, index, words):
+    """A ping from the node of probe INDEX: answers only when bound to the
+    interface whose own subnet holds the target, and another probe owns that
+    address there. TOPOLOGY_PING_RC fails every ping; TOPOLOGY_PING_FAIL lists
+    target addresses whose link is down."""
+    override = int(os.environ.get('TOPOLOGY_PING_RC', '0'))
+    if override:
+        return override
+    if '-I' not in words:
+        return 2
+    interface, target = words[words.index('-I')+1], ipaddress.ip_address(words[-1])
+    if str(target) in os.environ.get('TOPOLOGY_PING_FAIL', '').split(','):
+        return 1
+    probes = {int(path.stem.removeprefix('probe-')): json.loads(path.read_text()) for path in root.glob('probe-*.json')
+              if path.stem.removeprefix('probe-').isdigit()}
+    networks = [ipaddress.ip_interface(cidr).network for link in probes[index].get('rdma') or []
+                if link['netdev'] == interface for cidr in link.get('cidrs') or []]
+    for other, probe in probes.items():
+        if other == index:
+            continue
+        for link in probe.get('rdma') or []:
+            for cidr in link.get('cidrs') or []:
+                address = ipaddress.ip_interface(cidr)
+                if address.ip == target and address.network in networks:
+                    return 0
+    return 1
+
+
 def double_main():
     root = Path(os.environ['TOPOLOGY_FIXTURE'])
     # This fixture is never allowed to operate outside its temporary directory.
@@ -248,7 +278,8 @@ def double_main():
             return 0
         print((root/f'probe-{rank}.json').read_text())
     elif action == 'ping':
-        return int(os.environ.get('TOPOLOGY_PING_RC', '0'))
+        words = args if tool == 'ping' else [word for word in shlex.split(args[-1])[1:] if not word.startswith(('>', '2>'))]
+        return ping_double(root, rank, words)
     elif action == 'docker':
         counter = root / 'docker-count'
         count = int(counter.read_text()) + 1 if counter.exists() else 1

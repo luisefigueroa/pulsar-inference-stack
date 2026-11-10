@@ -1049,6 +1049,11 @@ def profile_fabric(topology: dict[str, Any], node_count: int, node_ids: list[str
 
 
 def ping_plan(topology: dict[str, Any]) -> None:
+    """One row per saved link and direction, for a mesh and a ring alike.
+
+    Columns: source rank, source SSH host, target rank, target address,
+    network, and the source's own interface on that link, which each ping
+    is bound to so that it cannot pass over another path."""
     validate_manifest(topology)
     nodes = topology["nodes"]
     for link in topology["links"]:
@@ -1062,6 +1067,7 @@ def ping_plan(topology: dict[str, Any]) -> None:
                         str(b),
                         rail["b"]["ip"],
                         rail["network"],
+                        rail["a"]["netdev"],
                     ]
                 )
             )
@@ -1073,6 +1079,7 @@ def ping_plan(topology: dict[str, Any]) -> None:
                         str(a),
                         rail["a"]["ip"],
                         rail["network"],
+                        rail["b"]["netdev"],
                     ]
                 )
             )

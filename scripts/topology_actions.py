@@ -161,6 +161,56 @@ def changes_noticed(old, document, untrusted=(), issue=None):
             "missing": missing_rows, "changed": changed, "untrusted": untrusted_rows}
 
 
+def fabric_failures(topology, path):
+    """The saved links that did not answer the fabric check, each with the nodes at its ends.
+
+    PATH holds one tab-separated row per failed ping (see topology_check_fabric
+    in scripts/topology-probes.sh); it is missing when the check could not say
+    which link failed."""
+    nodes = topology["nodes"]
+    failures = []
+    try:
+        rows = Path(path).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return failures
+    for row in rows:
+        fields = row.split("\t")
+        if len(fields) != 5 or not all(field.isdigit() for field in fields[:2]):
+            continue
+        source, target = int(fields[0]), int(fields[1])
+        if source >= len(nodes) or target >= len(nodes):
+            continue
+        failures.append({"from": nodes[source]["hostname"], "to": nodes[target]["hostname"],
+                         "ranks": [source, target], "address": fields[2], "network": fields[3],
+                         "interface": fields[4]})
+    return failures
+
+
+def ring_cables_changed(topology, live):
+    """Why a saved ring's cables differ from what its nodes report, or None.
+
+    LIVE maps each rank that answered as itself to its probe. Only a saved
+    ring is compared, and only when every node answered."""
+    nodes = topology["nodes"]
+    if (topology.get("validation") or {}).get("class") != manifest.RING_CLASS or len(live) != len(nodes):
+        return None
+    probes = [live[rank] for rank in range(len(nodes))]
+    neighbours = manifest.cabled_neighbours(probes)
+    now = {(a, b) for a in range(len(nodes)) for b in neighbours[a] if a < b}
+    saved = {tuple(link["ranks"]) for link in topology["links"]}
+    if now == saved:
+        return None
+    names = [node["hostname"] for node in nodes]
+    if len(nodes) >= manifest.RING_MIN_NODES and all(len(items) == 2 for items in neighbours) \
+            and len(manifest.cabled_group(neighbours)) == len(nodes):
+        order = manifest.ring_walk(probes, neighbours, 1 if 1 in neighbours[0] else min(neighbours[0]))
+        return ("The ring's cable order changed: now " + " → ".join(names[index] for index in [*order, 0])
+                + "; saved " + " → ".join([*names, names[0]]) + ". Save the cluster again to use the new order.")
+    parts = [f"{names[a]} and {names[b]} share no link now" for a, b in sorted(saved - now)]
+    parts += [f"{names[a]} and {names[b]} are cabled now" for a, b in sorted(now - saved)]
+    return "The ring's cables differ from saved membership: " + "; ".join(parts) + "."
+
+
 def observation(path, directory=None):
     result = {"schema_version": 1, "kind": "pulsar-topology-observation",
               "status": "missing", "topology": None, "nodes": [], "issues": []}
@@ -182,11 +232,14 @@ def observation(path, directory=None):
         result["issues"].append("Saved SSH configuration cannot be used. Run pulsar ssh-trust check.")
     if not manifest.topology_has_ssh_trust(topology):
         result["issues"].append("SSH identity is not enrolled. Complete first-use setup with pulsar topology setup or pulsar ssh-trust enroll.")
+    live = {}
     for node in topology["nodes"]:
         row = {key: node[key] for key in ("rank", "node_id", "hostname")}
         row.update(status="ready", issues=[])
         try:
             probe = manifest.normalize_probe(manifest.load_json(directory / f"rank-{node['rank']}.json"), "live probe")
+            if probe["node_id"] == node["node_id"]:
+                live[node["rank"]] = probe
             if probe["node_id"] != node["node_id"]:
                 row["issues"].append("Node identity changed at the confirmed endpoint.")
             if not probe["qualified"]:
@@ -202,8 +255,12 @@ def observation(path, directory=None):
         if row["issues"]:
             row["status"] = "blocked"
         result["nodes"].append(row)
+    cables = ring_cables_changed(topology, live)
+    if cables:
+        result["issues"].append(cables)
     if (directory / "fabric-failed").exists():
         result["issues"].append("Pairwise RoCE connectivity failed; inspect the saved fabric links.")
+        result["fabric_failures"] = fabric_failures(topology, directory / "fabric-failures")
     if not (directory / "fabric-checked").exists():
         result["issues"].append("Fabric connectivity could not be checked.")
     result["status"] = "blocked" if result["issues"] or any(row["issues"] for row in result["nodes"]) else "ready"
@@ -234,6 +291,10 @@ def render_observation(document):
             writer.emit(issue, initial_indent="    ", subsequent_indent="    ")
     for issue in document["issues"]:
         writer.emit(issue, initial_indent="  ", subsequent_indent="  ")
+    for failure in document.get("fabric_failures") or []:
+        writer.emit(f"{failure['from']} → {failure['to']}: no answer on link {failure['network']} "
+                    f"({failure['interface']} to {failure['address']})",
+                    initial_indent="    ", subsequent_indent="      ")
     writer.emit("Model geometry remains the selected recipe's exact configuration.")
 
 

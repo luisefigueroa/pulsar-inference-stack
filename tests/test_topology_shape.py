@@ -3,8 +3,10 @@
 Synthetic probes only; nothing here contacts a node.
 """
 from datetime import datetime, timezone
+import ipaddress
 import json
 import re
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -14,6 +16,7 @@ import unittest.mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
 from support.topology_fixture import Fixture, node_probe, ring_probes, shuffled
+import topology_actions
 import topology_manifest as tm
 
 GOLDEN = ROOT/'tests/fixtures/topology'
@@ -458,6 +461,188 @@ class RingRanks(unittest.TestCase):
                  'nodes': [{'node_id': probes[index]['node_id'], 'rank': rank}
                            for rank, index in enumerate((0, 3, 2, 1))]}
         self.assertEqual(order_of(discover(shuffled(probes), saved), probes), [0, 1, 2, 3])
+
+
+def plan_rows(topology):
+    """`ping-plan` rows: source rank, SSH host, target rank, address, network, interface."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory)/'topology.json'
+        path.write_text(json.dumps(topology))
+        result = subprocess.run([sys.executable, str(ROOT/'scripts/topology_manifest.py'), 'ping-plan', str(path)],
+                                capture_output=True, text=True, check=True)
+    return [line.split('\t') for line in result.stdout.splitlines()]
+
+
+def bound_to_its_link(topology, row):
+    """Whether ROW's interface is the source's own interface on the target's subnet."""
+    source, _host, target, address, network, interface = row
+    nodes = topology['nodes']
+    own = [link for link in nodes[int(source)]['rdma'] if link['netdev'] == interface]
+    far = [cidr for link in nodes[int(target)]['rdma'] for cidr in link['cidrs']
+           if cidr.split('/')[0] == address]
+    return (any(str(ipaddress.ip_interface(cidr).network) == network for link in own for cidr in link['cidrs'])
+            and any(str(ipaddress.ip_interface(cidr).network) == network for cidr in far))
+
+
+def pings(fixture):
+    """Each ping the fixture's doubles saw, as (probe index, arguments)."""
+    mapping = json.loads((fixture.root/'map.json').read_text())
+    seen = []
+    for tool, args in fixture.calls():
+        if tool == 'ping':
+            seen.append((0, args))
+        elif tool == 'ssh' and args[-1].startswith('ping '):
+            seen.append((mapping[args[args.index('--')+1]], args[-1].split()[1:6]))
+    return seen
+
+
+class FabricChecks(unittest.TestCase):
+    """Pings follow the saved links, each bound to its own interface; failures name the cable."""
+
+    def test_the_ping_plan_follows_links_and_binds_each_ping_for_a_mesh(self):
+        with tempfile.TemporaryDirectory() as directory, frozen_time():
+            topology = tm.mark_verified(tm.assemble(write_probes(directory, [node_probe(0), node_probe(1)]), None))['topology']
+        self.assertEqual(plan_rows(topology), [
+            ['0', 'local', '1', '198.51.100.11', '198.51.100.0/24', 'fabric0'],
+            ['1', 'alias-1', '0', '198.51.100.10', '198.51.100.0/24', 'fabric0'],
+        ])
+
+    def test_the_ping_plan_covers_each_cable_link_both_ways_for_a_ring(self):
+        for count, options, expected in ((4, {}, 16), (6, {}, 24), (4, {'single_link_cables': {2}}, 14)):
+            with self.subTest(count=count, options=options):
+                topology = saved_ring(count, **options)
+                rows = plan_rows(topology)
+                self.assertEqual(len(rows), expected)
+                self.assertEqual(len(rows), 2 * sum(len(link['rails']) for link in topology['links']))
+                pairs = {tuple(sorted((int(row[0]), int(row[2])))) for row in rows}
+                self.assertEqual(pairs, ring_pairs(count))
+                self.assertTrue(all(bound_to_its_link(topology, row) for row in rows))
+                self.assertEqual(rows[0][5], topology['links'][0]['rails'][0]['a']['netdev'])
+
+    def test_the_check_pings_every_ring_link_bound_to_its_interface(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probes = ring_probes(4)
+            fixture = Fixture(Path(directory), probes=shuffled(probes))
+            result = fixture.run('topology', 'check', '--json')
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(json.loads(result.stdout)['status'], 'ready')
+            seen = pings(fixture)
+            self.assertEqual(len(seen), 16)
+            for index, words in seen:
+                self.assertEqual(words[0], '-I')
+                interface, target = words[1], words[-1]
+                own = [cidr for link in fixture.probes[index]['rdma'] if link['netdev'] == interface
+                       for cidr in link['cidrs']]
+                self.assertTrue(any(ipaddress.ip_address(target) in ipaddress.ip_interface(cidr).network
+                                    for cidr in own), (index, words))
+
+    def test_a_ring_link_that_does_not_answer_fails_the_check_and_names_the_cable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probes = ring_probes(4)
+            fixture = Fixture(Path(directory), probes=shuffled(probes))
+            nodes = fixture.topology['nodes']
+            rail = next(link for link in fixture.topology['links'] if link['ranks'] == [1, 2])['rails'][1]
+            fixture.env['TOPOLOGY_PING_FAIL'] = rail['b']['ip']
+            result = fixture.run('topology', 'check', '--json')
+            self.assertNotEqual(result.returncode, 0)
+            document = json.loads(result.stdout)
+            self.assertEqual(document['status'], 'blocked')
+            self.assertIn('Pairwise RoCE connectivity failed; inspect the saved fabric links.', document['issues'])
+            self.assertEqual(document['fabric_failures'], [dict(
+                {'from': nodes[1]['hostname'], 'to': nodes[2]['hostname']}, ranks=[1, 2], address=rail['b']['ip'],
+                network=rail['network'], interface=rail['a']['netdev'])])
+            human = fixture.run('topology', 'check')
+            self.assertIn(f"{nodes[1]['hostname']} → {nodes[2]['hostname']}: no answer on link "
+                          f"{rail['network']} ({rail['a']['netdev']} to {rail['b']['ip']})",
+                          ' '.join(human.stdout.split()))
+
+    def test_an_unbound_ping_never_answers_in_the_double(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory))
+            result = subprocess.run([str(fixture.root/'bin/ping'), '-c1', '-W2', '198.51.100.11'],
+                                    env=fixture.env, capture_output=True)
+            self.assertEqual(result.returncode, 2)
+            result = subprocess.run([str(fixture.root/'bin/ping'), '-I', 'mgmt0', '-c1', '-W2', '198.51.100.11'],
+                                    env=fixture.env, capture_output=True)
+            self.assertEqual(result.returncode, 1)
+            result = subprocess.run([str(fixture.root/'bin/ping'), '-I', 'fabric0', '-c1', '-W2', '198.51.100.11'],
+                                    env=fixture.env, capture_output=True)
+            self.assertEqual(result.returncode, 0)
+
+
+class CableOrderCheck(unittest.TestCase):
+    """The check that a saved cluster still matches says when a ring's cables changed."""
+
+    def observe(self, saved, live_probes, saved_class=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root/'topology.json').write_text(json.dumps(saved))
+            observations = root/'observations'
+            observations.mkdir()
+            by_id = {probe['node_id']: probe for probe in live_probes}
+            for node in saved['nodes']:
+                (observations/f"rank-{node['rank']}.json").write_text(json.dumps(by_id[node['node_id']]))
+            (observations/'fabric-checked').touch()
+            return topology_actions.observation(str(root/'topology.json'), str(observations))
+
+    def test_matching_cables_raise_no_issue(self):
+        self.assertEqual(self.observe(saved_ring(4), ring_probes(4))['status'], 'ready')
+
+    def test_a_changed_cable_order_is_reported(self):
+        saved = saved_ring(4)
+        recabled = ring_probes(4)
+        for key in ('node_id', 'hostname', 'ssh_host', 'control', 'ssh_host_keys'):
+            recabled[2][key], recabled[3][key] = recabled[3][key], recabled[2][key]
+        document = self.observe(saved, recabled)
+        self.assertEqual(document['status'], 'blocked')
+        self.assertIn('The ring\'s cable order changed: now fixture-ring-dorado → fixture-ring-bravo → '
+                      'fixture-ring-alpha → fixture-ring-echo → fixture-ring-dorado; saved fixture-ring-dorado → '
+                      'fixture-ring-bravo → fixture-ring-echo → fixture-ring-alpha → fixture-ring-dorado. '
+                      'Save the cluster again to use the new order.', document['issues'])
+
+    def test_a_dead_cable_is_named(self):
+        document = self.observe(saved_ring(4), ring_probes(4, dead_cables={1}))
+        self.assertIn("The ring's cables differ from saved membership: fixture-ring-bravo and fixture-ring-echo "
+                      "share no link now.", document['issues'])
+
+    def test_a_mesh_is_not_compared_by_cables(self):
+        with tempfile.TemporaryDirectory() as directory:
+            probes = [node_probe(0), node_probe(1)]
+            saved = tm.enroll_ssh_trust(tm.mark_verified(tm.assemble(write_probes(directory, probes), None))['topology'],
+                                        probes)
+        self.assertEqual(self.observe(saved, probes)['status'], 'ready')
+
+
+class SavedRingLoaders(unittest.TestCase):
+    """A saved ring loads in the shell; the launch gate refuses multi-node recipes on it cleanly."""
+
+    def test_the_launch_gate_refuses_a_multi_node_recipe_and_lets_one_node_through(self):
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Fixture(Path(directory), probes=shuffled(ring_probes(4)))
+            script = '''
+                set -u
+                . "$1/cluster/topology.sh"
+                load_cluster_topology || exit 9
+                printf 'count=%s mesh=%s rails=%s schema=%s trusted=%s\\n' "$CLUSTER_TOPOLOGY_COUNT" \\
+                  "$CLUSTER_TOPOLOGY_FULL_MESH" "$CLUSTER_TOPOLOGY_MIN_RAILS" "$CLUSTER_TOPOLOGY_SCHEMA" \\
+                  "$CLUSTER_TOPOLOGY_SSH_TRUSTED"
+                printf 'pairs=%s\\n' "$(printf '%s\\n' "${!CLUSTER_PAIR_RAILS[@]}" | sort | tr '\\n' ' ')"
+                require_profile_topology 1; echo "one=$?"
+                select_cluster_profile_fabric 1; echo "fabric=$? ${CLUSTER_PROFILE_HCAS[0]}"
+                require_profile_topology 2; echo "two=$?"
+                require_profile_topology 4; echo "four=$?"
+            '''
+            result = subprocess.run(['bash', '-c', script, 'gate', str(ROOT)], env=fixture.env,
+                                    capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('count=4 mesh=0 rails=2 schema=2 trusted=1\n', result.stdout)
+        self.assertIn('pairs=0:1 0:3 1:2 2:3 \n', result.stdout)
+        self.assertIn('one=0\n', result.stdout)
+        self.assertIn('fabric=0 rocep0a,rocep0b,rocep1a,rocep1b\n', result.stdout)
+        self.assertIn('two=1\n', result.stdout)
+        self.assertIn('four=1\n', result.stdout)
+        self.assertEqual(result.stderr.count('topology: confirmed topology is not a full mesh\n'), 2)
+        self.assertNotIn('Traceback', result.stderr)
 
 
 if __name__ == '__main__':

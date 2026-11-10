@@ -66,15 +66,16 @@ for ((rank = 0; rank < EXPECTED_NODES; rank++)); do
   fi
 done
 
-# Verify every selected pair and rail in both directions on every preflight.
+# Verify every selected pair and rail in both directions on every preflight,
+# each ping bound to the source's own interface on that link.
 # require_profile_topology already guarantees a confirmed manifest here.
-while IFS=$'\t' read -r source_rank _source_host target_rank target_ip network; do
+while IFS=$'\t' read -r source_rank _source_host target_rank target_ip network interface; do
   [ -n "$source_rank" ] || continue
   if [ "$source_rank" -ge "$EXPECTED_NODES" ] \
       || [ "$target_rank" -ge "$EXPECTED_NODES" ]; then
     continue
   fi
-  command="ping -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1"
+  command="ping -I $(printf '%q' "$interface") -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1"
   if node_exec "$source_rank" "$command"; then
     ok "rank $source_rank → rank $target_rank · $target_ip · $network"
   else

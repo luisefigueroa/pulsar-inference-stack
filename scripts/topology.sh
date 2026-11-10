@@ -401,7 +401,7 @@ if load_cluster_topology; then
         >"$temporary/rank-$rank.json" 2>/dev/null || rm -f "$temporary/rank-$rank.json"
     fi
   done
-  topology_check_fabric "$CLUSTER_TOPOLOGY_FILE" || touch "$temporary/fabric-failed"
+  topology_check_fabric "$CLUSTER_TOPOLOGY_FILE" "$temporary/fabric-failures" || touch "$temporary/fabric-failed"
   touch "$temporary/fabric-checked"
 else
   touch "$temporary/configuration-error"

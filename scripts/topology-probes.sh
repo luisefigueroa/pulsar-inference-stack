@@ -6,14 +6,20 @@ topology_control_ssh() {
   ssh_control_endpoint "$host" "$control" "$@"
 }
 
+# topology_check_fabric DOCUMENT [FAILURES]: ping every saved link in both
+# directions, each bound to the source's own interface on that link, so a
+# ping cannot pass over another path. Each link that does not answer is
+# appended to FAILURES as source rank, target rank, target address, network
+# and interface, tab-separated.
 topology_check_fabric() {
-  local document="$1" plan source_rank source_host _target_rank target_ip _network control
-  local failed=0
+  local document="$1" failures="${2:-}" plan source_rank source_host target_rank target_ip network interface control
+  local failed=0 answered
   plan=$(python3 "$REPO_DIR/scripts/topology_manifest.py" ping-plan "$document") || return 1
-  while IFS=$'\t' read -r source_rank source_host _target_rank target_ip _network; do
+  while IFS=$'\t' read -r source_rank source_host target_rank target_ip network interface; do
     [ -n "$source_rank" ] || continue
+    answered=1
     if [ "$source_rank" = 0 ]; then
-      ping -c1 -W2 "$target_ip" >/dev/null 2>&1 || failed=1
+      ping -I "$interface" -c1 -W2 "$target_ip" >/dev/null 2>&1 || answered=0
     else
       control=$(python3 - "$document" "$source_rank" <<'PY'
 import json, sys
@@ -23,7 +29,13 @@ print(topology['nodes'][int(sys.argv[2])]['control']['ip'])
 PY
 ) || return 1
       topology_control_ssh "$source_host" "$control" \
-        "ping -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1" </dev/null >/dev/null 2>&1 || failed=1
+        "ping -I $(printf '%q' "$interface") -c1 -W2 $(printf '%q' "$target_ip") >/dev/null 2>&1" \
+        </dev/null >/dev/null 2>&1 || answered=0
+    fi
+    if [ "$answered" = 0 ]; then
+      failed=1
+      [ -z "$failures" ] \
+        || printf '%s\t%s\t%s\t%s\t%s\n' "$source_rank" "$target_rank" "$target_ip" "$network" "$interface" >>"$failures"
     fi
   done <<<"$plan"
   return "$failed"
