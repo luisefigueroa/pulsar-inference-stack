@@ -128,7 +128,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 | full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
-| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, or on any two neighbours named with `--placement-nodes`, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order. |
 | cable | One physical connection between two neighbours. On a ring each cable carries two links. |
 | neighbour | A node at the other end of one of this node's cables. |
 
@@ -885,6 +885,43 @@ missing image by implication. After inspecting the current service, pass
 when staging the selected digest-pinned image is also approved. Start asks no
 confirmation: `start --yes` is deprecated, grants neither permission and is
 removed in CLI contract 2.
+
+#### Start on named nodes
+
+A multi-node recipe starts in the default node order: rank N on the node saved
+at position N, this node first. On a saved ring, a two-node recipe can also
+start on any two neighbours you name, in either order; the first node named runs
+the API:
+
+```sh
+./pulsar start <spec-id> --placement-nodes <node>,<node>
+```
+
+The pair may leave out this node. Every check, the preflight and the launch
+then run on those two nodes only; a node outside the pair that does not answer
+does not block it. Any other placement off the default order (a pair on a full
+mesh, three or more nodes, two nodes that are not neighbours) is refused before
+any node is contacted, with the reason. Each node's prepared copy serves one
+rank, so the same pair in the other order needs **Prepare** again in that order
+(`./pulsar model prepare <spec-id> --placement-nodes <node>,<node> --yes`), after
+stopping a service that still runs on the copies.
+
+A spec runs as one service. Start reads the saved service records first: when
+the spec is recorded on other nodes, in another order or under an earlier saved
+cluster, it refuses (`service_recorded_elsewhere`) and names those nodes and
+`./pulsar stop <spec-id>`, which stops that service or clears a record whose
+containers are gone. A record of the same service, as a failed start leaves,
+does not block a retry on the same nodes. `--replace` replaces a service on the
+default node order only: with a placement off it, stop the service, then start
+it.
+
+The service's API is on its first node. Start checks health, sends its test
+completion and reports `url` at that node's own control address, and uses the
+loopback address only when the first node is this machine, so another service
+listening here on the same port can never answer for it. The API key, when set,
+goes only to the first node, in the command that starts its container. Status
+and stop find the service from its record: suggested `status` and `stop`
+commands take no `--placement-nodes`, and a suggested start keeps it.
 
 ### Recipe identity and deployment settings
 
@@ -1644,7 +1681,7 @@ and offered nothing. The choices:
 | **Check it now** | Asks the service: its output, then the card with its API, key and health. | `./pulsar status SPEC` |
 | **How to connect (a first request to copy)** | The Connect card from the last check, checking first when there is none. | `./pulsar status SPEC` |
 | **Logs** | Its containers' output in the pager. | `./pulsar logs SPEC` |
-| **Restart…** | Stop then Start of the same recipe on the same nodes, as a two-step plan that starts on **Cancel** and runs as **Serve a model…**'s plans do. Not offered for a modified recipe, or when Start would use other nodes; the card says why. | `./pulsar stop SPEC`, then `./pulsar start SPEC` |
+| **Restart…** | Stop then Start of the same recipe on the same nodes, as a two-step plan that starts on **Cancel** and runs as **Serve a model…**'s plans do. A pair Start ran on named nodes starts again on them, in the same order. Not offered for a modified recipe, or when Start would not run it on the nodes it runs on; the card says why. | `./pulsar stop SPEC`, then `./pulsar start SPEC` (with `--placement-nodes` for a pair on named nodes) |
 | **Switch to another model…** | The Serve list; the plan it builds stops this service directly before Start, even when the new recipe uses other nodes. | the plan's commands |
 | **Stop…** | Today's question, then Stop; model files, pins and archives are kept. | `./pulsar stop SPEC` |
 | **Stop every service…** | Today's question naming each service it removes, then Stop. | `./pulsar stop --all --yes` |

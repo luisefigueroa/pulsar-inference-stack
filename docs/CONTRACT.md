@@ -54,8 +54,12 @@ recorded launch plan, not recipe identity or evidence of physical fit.
 
 An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
 not recipe data. It selects ordered confirmed members for preparation, file and
-image checks, guarded dry-run/run, and pre-launch resource sampling. Omission
-retains first-N placement; `--node` retains its one-node/home meaning. Selection
+image checks, guarded dry-run/run, and pre-launch resource sampling. An
+ordinary `start` accepts it for a two-node recipe on two neighbouring nodes of
+a saved ring, in either order; the first named node runs the API. Any other
+placement off the first-N order is refused before any node is contacted, as
+before. Omission retains first-N placement; `--node` retains its one-node/home
+meaning. Selection
 does not change membership or `spec_id`. Existing launch-plan rank/node fields
 bind it and produce a distinct `service_id` for a different ordered placement.
 The verified snapshot home may be another confirmed member; complete source
@@ -686,6 +690,13 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 
 Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
 Earlier records lack it, which reads as null.
+
+Change note, 2026-11-10: new code `service_recorded_elsewhere`, a check-stage
+blocker: an active service record of the same multi-node spec names other
+nodes, another order or an earlier saved cluster. Its `fix` is `./pulsar stop
+SPEC`, which also clears a record whose containers are gone. A `fix` or `note`
+that names stop or status carries `--node` for a one-node service and no
+placement for a multi-node one; a suggested start keeps `--placement-nodes`.
 
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,
