@@ -382,6 +382,14 @@ load_docker_argv_from_plan() {
   fi
   _service_load_docker_argv "$@"
 }
+# SERVICE_PLAN_WITHOUT_ID: the plan up.sh writes has no plan_id.
+eval "_service_write_launch_plan_file() $(declare -f write_launch_plan_file | tail -n +2)"
+write_launch_plan_file() {
+  _service_write_launch_plan_file "$@" || return
+  if [ -n "${SERVICE_PLAN_WITHOUT_ID:-}" ] && [ "${0##*/}" = up.sh ]; then
+    python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); p.pop("plan_id"); json.dump(p, open(sys.argv[1], "w"))' "$1"
+  fi
+}
 # SERVICE_FAILS_LOADING: once a container started, the next step that builds
 # the API's request arguments (the health wait's) fails, as an unexpected error would.
 eval "_service_api_auth_curl_args() $(declare -f api_auth_curl_args | tail -n +2)"

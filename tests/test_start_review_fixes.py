@@ -72,5 +72,33 @@ class EveryCommandBeforeTheFirstContainer(Cluster):
                 self.assertEqual(c.remaining(), [])
 
 
+class ThePlanCheckFailsClosed(Cluster):
+    """Start hands the launcher the ID of the plan it checked; without it, nothing launches."""
+
+    def test_a_plan_without_its_id_launches_nothing(self):
+        c = self.cluster
+        spec, _ = c.spec(3)
+        for args in ((), ('--placement-nodes', ','.join(c.hostname(p) for p in (2, 0, 3)))):
+            with self.subTest(args=args):
+                c.forget_calls()
+                result = c.start(spec['spec_id'], '--skip-preflight', *args, SERVICE_PLAN_WITHOUT_ID='1')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('error: the launch plan start checked cannot be read, so the launcher could not '
+                              'confirm it builds the same one; nothing was launched', result.stderr)
+                # The launcher never ran: it prints its spec line first.
+                self.assertNotIn('exact spec:', result.stdout)
+                self.assertFalse([line for line in self.trace() if 'docker run' in line])
+                self.assertEqual(c.calls()['runs'], [])
+
+    def test_a_plan_the_launcher_builds_differently_still_starts_nothing(self):
+        # With the ID handed over, the launcher's own check refuses a different plan.
+        c = self.cluster
+        spec, _ = c.spec(3)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_PREPARED_DRIFT='1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('error: the launch plan differs from the one start checked', result.stderr)
+        self.assertEqual(c.calls()['runs'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -69,7 +69,8 @@ container_ownership_inspect_local() { return "${FIXTURE_EXISTING:-3}"; }
 container_ownership_inspect_remote() { return "${FIXTURE_EXISTING:-3}"; }
 port_free() { [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
 resolve_library_hot_for_profile() { :; }
-write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"%s}\n' "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
+# Every plan has an ID; a multi-node Start hands it to the launcher.
+write_launch_plan_file() { printf '{"schema_version": 5, "plan_id": "%s", "service_id": "%s"%s}\n' "${FIXTURE_PLAN_ID:-7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a}" "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
 '''
