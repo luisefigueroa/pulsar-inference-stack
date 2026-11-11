@@ -25,7 +25,7 @@ from release_spec.normalize import canonical_json_digest  # noqa: E402
 from release_spec.serving import example, freeze  # noqa: E402
 from scripts.container_runtime import build_plan, rank_spec  # noqa: E402
 from scripts.service_state import save  # noqa: E402
-from support.topology_fixture import Fixture, ring_probes, shuffled  # noqa: E402
+from support.topology_fixture import Fixture, node_probe, ring_probes, shuffled  # noqa: E402
 
 LABEL = 'io.pulsar.gb10.'
 KEYS = ['head', 'worker', 'rank-2', 'rank-3']
@@ -49,6 +49,11 @@ node = os.environ.get("SERVICE_NODE") or probes[0]["node_id"]
 args = sys.argv[1:]
 with open(os.path.join(root, "docker-calls.jsonl"), "a") as stream:
     stream.write(json.dumps([node, args]) + "\n")
+def trace(what):
+    # One ordered log of what every double did, as "node-N what".
+    with open(os.path.join(root, "trace.log"), "a") as stream:
+        via = " over ssh" if os.environ.get("SERVICE_VIA_SSH") else ""
+        stream.write(f"{node.rsplit('-', 2)[-2]}-{node.rsplit('-', 1)[-1]} {what}{via}\n")
 if node in os.environ.get("SERVICE_DOCKER_DOWN", "").split(","):
     print("Cannot connect to the Docker daemon", file=sys.stderr)
     sys.exit(1)
@@ -91,11 +96,47 @@ if args[:4] == ["container", "ls", "-aq", "--no-trunc"]:
         shutil.copyfile(swap + ".ssh-config", os.path.join(root, "ssh-config"))
     sys.exit(0)
 if args[:2] == ["inspect", "--format"]:
+    trace("docker inspect " + ("by id" if len(args[3]) == 64 else "by name"))
     c = find(args[3])
     if args[2] == "{{.State.Status}}":
         print(c["state"])
     else:
         print(json.dumps({"id": c["id"], "name": "/" + c["name"], "labels": c["labels"]}))
+    sys.exit(0)
+if args[:4] == ["inspect", "--type", "container", "--format"]:
+    trace("docker state")
+    c = find(args[5])
+    print("true" if c["state"] == "running" else "false")
+    sys.exit(0)
+if args[:1] == ["run"]:
+    # A launch: the container exists from here, labelled as its argv says.
+    # SERVICE_RUN_FAILS lists node IDs whose docker run fails.
+    if node in os.environ.get("SERVICE_RUN_FAILS", "").split(","):
+        trace("docker run fails")
+        print("docker: Error response from daemon: fixture failure", file=sys.stderr)
+        sys.exit(125)
+    import hashlib
+    labels, name, i = {}, None, 1
+    while i < len(args):
+        if args[i] == "--name":
+            name = args[i + 1]; i += 2; continue
+        if args[i] == "--label":
+            key, _, value = args[i + 1].partition("="); labels[key] = value; i += 2; continue
+        i += 1
+    cid = hashlib.sha256(f"{node}:{name}:{len(everything)}:{args}".encode()).hexdigest()
+    everything.append({"node": node, "id": cid, "name": name, "labels": labels, "state": "running",
+                       "image": "example/image@sha256:" + "d" * 64, "cmd": args[args.index("--model"):]
+                       if "--model" in args else []})
+    json.dump(everything, open(state, "w"))
+    with open(os.path.join(root, "runs.jsonl"), "a") as stream:
+        stream.write(json.dumps([node, args]) + "\n")
+    trace(f"docker run rank {labels.get('io.pulsar.gb10.rank')}")
+    print(cid)
+    sys.exit(0)
+if args[:2] == ["logs", "--tail"]:
+    trace("docker logs")
+    find(args[3])
+    print("fixture engine log line")
     sys.exit(0)
 if args[:1] == ["inspect"] and len(args) == 2:
     c = find(args[1])
@@ -108,6 +149,7 @@ if args[:1] == ["top"]:
     print("PID")
     sys.exit(0)
 if args[:2] == ["rm", "-f"]:
+    trace("docker rm " + ("by id" if len(args[2]) == 64 else "by name"))
     c = find(args[2])
     with open(os.path.join(root, "mutations.jsonl"), "a") as stream:
         stream.write(json.dumps([node, c["id"]]) + "\n")
@@ -140,10 +182,79 @@ command = args[-1]
 if "/proc/meminfo" in command:
     print("100.00")
     sys.exit(0)
-sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, SERVICE_NODE=node)))
+sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, SERVICE_NODE=node, SERVICE_VIA_SSH="1")))
 '''
 
 NVIDIA_SMI = '#!/bin/sh\nexit 0\n'
+
+# The curl double: every request is logged as [url, argv]. /health answers on
+# the hosts in SERVICE_HEALTHY (comma-separated; default 127.0.0.1), and the
+# test completion answers on SERVICE_ANSWERS (default: the same hosts).
+CURL = r'''#!/usr/bin/env python3
+import json, os, sys
+from urllib.parse import urlsplit
+root = os.environ["SERVICE_FIXTURE"]
+args = sys.argv[1:]
+url = args[-1]
+with open(os.path.join(root, "curl-calls.jsonl"), "a") as stream:
+    stream.write(json.dumps([url, args]) + "\n")
+with open(os.path.join(root, "trace.log"), "a") as stream:
+    stream.write(f"curl {url}\n")
+host = urlsplit(url).hostname
+healthy = os.environ.get("SERVICE_HEALTHY", "127.0.0.1").split(",")
+if url.endswith("/health"):
+    sys.exit(0 if host in healthy else 7)
+if url.endswith("/v1/completions"):
+    if host not in os.environ.get("SERVICE_ANSWERS", ",".join(healthy)).split(","):
+        print("curl: (7) Failed to connect", file=sys.stderr)
+        sys.exit(7)
+    out = args[args.index("-o") + 1]
+    open(out, "w").write('{"choices":[{"text":" 4"}]}')
+    sys.stdout.write("200")
+    sys.exit(0)
+sys.exit(2)
+'''
+
+# Check scripts a Start runs, as doubles in the installation copy: each logs
+# its arguments and passes. Image, memory and model files are tested
+# elsewhere; these tests are about where Start acts.
+CHECK = r'''#!/usr/bin/env bash
+printf '%s\n' "${0##*/} $*" >>"$SERVICE_FIXTURE/checks.log"
+case " $* " in *" --json "*) echo '{"state":"ok","ranks":[],"reason":""}' ;; *) echo "PASS  ${0##*/}" ;; esac
+exit 0
+'''
+OBSERVE = r'''#!/usr/bin/env bash
+printf '%s\n' "observe-serving.sh $*" >>"$SERVICE_FIXTURE/checks.log"
+exit "${SERVICE_VERIFY_RC:-0}"
+'''
+
+# Functions a Start reaches that would read this machine: prepared files come
+# from the fixture's plan inputs, and ports are logged and free.
+START_ENV = r'''
+. "$SERVICE_STACK/scripts/lib.sh"
+library_hot_info_for_profile() {
+  local -a ids=()
+  if [ -n "${SERVING_NODE_IDS[*]:-}" ]; then ids=("${SERVING_NODE_IDS[@]}"); else ids=("${CLUSTER_NODE_IDS[@]:0:$NODES}"); fi
+  printf '%s\n' "prepared ${ids[*]}" >>"$SERVICE_FIXTURE/checks.log"
+  python3 "$SERVICE_FIXTURE/prepared.py" "$CONF_PATH" "$CLUSTER_TOPOLOGY_ID" "${ids[@]}"
+}
+port_free() {
+  printf '%s\n' "port $1 ${2:-local}" >>"$SERVICE_FIXTURE/checks.log"
+  printf '%s\n' "port $1 on ${2:-local}" >>"$SERVICE_FIXTURE/trace.log"
+  [ "$1:${2:-local}" != "${SERVICE_BUSY_PORT:-}" ]
+}
+'''
+
+PREPARED = r'''import json, sys
+spec = json.load(open(sys.argv[1]))
+topology, ids = sys.argv[2], sys.argv[3:]
+manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
+commit = spec["recipe"]["model"]["model_commit"]
+print(json.dumps(dict(schema_version=1, kind="pulsar-prepared-set", spec_id=spec["spec_id"], topology_id=topology,
+                      snapshot_manifest_id=manifest, revision=commit, home_node_id=ids[0],
+                      ranks=[dict(rank=r, node_id=node, hub_path=f"/var/tmp/fixture-hub-{r}",
+                                  path=f"/var/tmp/fixture-hub-{r}/snapshots/{commit}") for r, node in enumerate(ids)])))
+'''
 
 
 def recipe(nodes, variant=0, *, guarded=False):
@@ -170,9 +281,18 @@ def recipe(nodes, variant=0, *, guarded=False):
 class ServiceCluster:
     """A saved ring of four nodes, its saved records and the containers on it."""
 
-    def __init__(self, root):
+    def __init__(self, root, mesh=None):
+        """MESH, when given, is a full mesh of that many nodes instead of the ring."""
         self.root = Path(root)
-        self.fixture = Fixture(self.root, probes=shuffled(ring_probes(4)))
+        if mesh:
+            # Every node has two adapters, each on a subnet all nodes share: two
+            # links between every pair, as a multi-node recipe needs.
+            probes = [dict(node_probe(rank), rdma=[
+                dict(hca='roce0', netdev='fabric0', cidrs=[f'198.51.100.{10 + rank}/24']),
+                dict(hca='roce1', netdev='fabric1', cidrs=[f'203.0.113.{10 + rank}/24'])]) for rank in range(mesh)]
+            self.fixture = Fixture(self.root, probes=probes)
+        else:
+            self.fixture = Fixture(self.root, probes=shuffled(ring_probes(4)))
         self.topology = self.fixture.topology
         self.topology_id = self.topology['topology_id']
         self.nodes = sorted(self.topology['nodes'], key=lambda node: node['rank'])
@@ -276,10 +396,81 @@ class ServiceCluster:
                                                                               topology_path=str(self.root / 'topology.json')))
         return path
 
+    # -- Start ----------------------------------------------------------------
+
+    def install(self):
+        """A copy of the Stack in the fixture whose image, memory, model-file
+        and post-health checks are doubles (CHECK, OBSERVE), with START_ENV
+        for prepared files and ports. Start runs the real up.sh, launcher and
+        preflight from it. Returns the copy's root."""
+        import shutil
+        stack = self.root / 'stack'
+        if stack.exists():
+            return stack
+        stack.mkdir()
+        for name in ('scripts', 'cluster', 'model_library', 'release_spec', 'platforms', 'serving_guard'):
+            shutil.copytree(ROOT / name, stack / name, ignore=shutil.ignore_patterns('__pycache__'))
+        for name in ('pulsar', 'serve.sh'):
+            shutil.copy2(ROOT / name, stack / name)
+        for name in ('check-image.sh', 'check-weights.sh', 'check-memory.sh', 'sync-image.sh'):
+            (stack / 'scripts' / name).write_text(CHECK)
+        (stack / 'scripts' / 'observe-serving.sh').write_text(OBSERVE)
+        # The SSH configuration names the helper that reads known hosts; from
+        # here on every command runs from the copy.
+        from scripts import topology_manifest as tm
+        self.fixture.config.write_text(tm.render_ssh_config_text(
+            self.topology, topology_path=str(self.fixture.path),
+            tool_path=str(stack / 'scripts' / 'topology_manifest.py')))
+        (self.root / 'prepared.py').write_text(PREPARED)
+        (self.root / 'start-env.sh').write_text(START_ENV)
+        (self.root / 'bin' / 'curl').write_text(CURL)
+        (self.root / 'bin' / 'curl').chmod(0o755)
+        return stack
+
+    def start(self, spec_id, *args, **env):
+        """`./pulsar start SPEC_ID ARGS` from the installation copy."""
+        stack = self.install()
+        environment = {**self.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(self.root / 'start-env.sh'),
+                       'WAIT_ATTEMPTS': '2', 'WAIT_SECONDS': '0', 'VLLM_IMAGE_MAINLINE': 'example/image',
+                       'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '', 'PULSAR_START_BLOCKERS_FILE':
+                       str(self.root / 'blockers.jsonl'), **env}
+        return subprocess.run([str(stack / 'pulsar'), 'start', spec_id, *args], env=environment, text=True,
+                              capture_output=True, timeout=180, cwd=self.root)
+
+    def calls(self):
+        """Every docker call [node, args], SSH command [node, command] and curl
+        URL, in the order each tool logged it."""
+        def lines(name):
+            path = self.root / name
+            return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        return {'docker': lines('docker-calls.jsonl'), 'ssh': lines('ssh-calls.jsonl'),
+                'runs': lines('runs.jsonl'), 'curl': [url for url, _ in lines('curl-calls.jsonl')],
+                'curl_args': [args for _, args in lines('curl-calls.jsonl')],
+                'checks': (self.root / 'checks.log').read_text().splitlines()
+                if (self.root / 'checks.log').exists() else []}
+
+    def trace(self):
+        """The ordered trace.log lines: docker work as "node-N what [over ssh]",
+        "curl URL" and "port P on HOST"."""
+        path = self.root / 'trace.log'
+        return path.read_text().splitlines() if path.exists() else []
+
+    def forget_calls(self):
+        for name in ('docker-calls.jsonl', 'ssh-calls.jsonl', 'runs.jsonl', 'curl-calls.jsonl', 'checks.log',
+                     'trace.log',
+                     'mutations.jsonl', 'blockers.jsonl'):
+            (self.root / name).unlink(missing_ok=True)
+
+    def position_of(self, node_id):
+        return next(index for index, node in enumerate(self.nodes) if node['node_id'] == node_id)
+
     # -- the commands ---------------------------------------------------------
 
     def pulsar(self, *args, **env):
-        return subprocess.run([str(ROOT / 'pulsar'), *args], env={**self.env, **env}, text=True,
+        """`./pulsar ARGS`, from the installation copy once Start installed it."""
+        stack = self.root / 'stack'
+        command = stack / 'pulsar' if stack.exists() else ROOT / 'pulsar'
+        return subprocess.run([str(command), *args], env={**self.env, **env}, text=True,
                               capture_output=True, timeout=120)
 
     def script(self, path, *args, **env):
