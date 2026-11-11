@@ -366,5 +366,43 @@ class StartOnNamedNodes(Cluster):
                 self.assertEqual(self.trace(), [])
 
 
+class RecordsWithoutContainers(Cluster):
+    """After a Start that failed once its plan was saved (the plan and record
+    are saved just before the first docker run, and a failed launch keeps
+    them, as the default-order pins show)."""
+
+    def test_a_retry_on_the_same_nodes_works(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = f'{c.hostname(2)},{c.hostname(3)}'
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names,
+                         SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual((len(c.store.records('services')), c.remaining()), (1, []))
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_other_nodes_are_refused_until_stop_clears_the_record(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 1)
+        for positions in ((0, 1), (3, 2)):
+            with self.subTest(positions=positions):
+                names = ','.join(c.hostname(p) for p in positions)
+                result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes '
+                              f"(on fixture-ring-echo, fixture-ring-alpha). Next: ./pulsar stop {spec['spec_id'][:12]}",
+                              ' '.join(result.stdout.split()))
+        # The one command that clears it: a record with no container left is retired.
+        stopped = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertIn('had no container left', stopped.stdout)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
