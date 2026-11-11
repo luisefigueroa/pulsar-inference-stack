@@ -623,10 +623,12 @@ require_spec_platform_admission() {
 # staging an image or replacing a service. Read-only commands do not call it.
 # A serving guard in the effective recipe, including one an override adds, is
 # refused as guard_unsupported by ordinary start; dry-run planning stays read-only.
-# Historical schema-1 specs are refused as historical_spec.
+# Historical schema-1 specs are refused as historical_spec. SPEC_GUARDED is 1
+# afterwards when the effective recipe has a serving guard (a dry run only).
 require_spec_launch_admission() {
   local name="${1:-${CONF_NAME:-}}" guard
   local -a detail=()
+  SPEC_GUARDED=0
   if [ "${CONF_SOURCE:-conf}" = spec ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("schema_version")==1 else 1)' "$CONF_PATH" 2>/dev/null; then
     START_BLOCKER_SPEC="$name" start_blocker historical_spec
     die "spec ${name:0:12} is a historical schema-1 spec; historical services remain inspectable and stoppable"
@@ -647,6 +649,7 @@ print(source)
 PY
   ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched"
   [ -n "$guard" ] || return 0
+  SPEC_GUARDED=1
   # The public guarded runner reuses read-only prerequisite planning. Ordinary
   # start still cannot execute a guard, even with image/replacement authority.
   [ "${2:-start}" != dry-run ] || return 0

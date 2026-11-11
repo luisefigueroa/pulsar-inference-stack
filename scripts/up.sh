@@ -302,7 +302,9 @@ echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COU
 # --- one service per spec: the saved records, read here, never by probing ---
 # A multi-node spec recorded on other nodes (or in another order, or under an
 # earlier saved cluster) is another service of it; Start never runs a second.
-if [ "$NODES" -gt 1 ]; then
+# A guarded spec reaches here only as a guarded run's prerequisite dry run;
+# guarded trials keep their own lifecycle and records, so none is read here.
+if [ "$NODES" -gt 1 ] && [ "${SPEC_GUARDED:-0}" = 0 ]; then
   elsewhere_args=()
   for node in "${SERVING_NODE_IDS[@]}"; do elsewhere_args+=(--node-id "$node"); done
   if ! elsewhere=$(python3 "$REPO_DIR/scripts/service_state.py" elsewhere --state-root "$PULSAR_MODEL_LIBRARY_DIR" \

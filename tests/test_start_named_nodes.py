@@ -132,6 +132,41 @@ class OneServicePerSpec(Cluster):
                               f"{spec['spec_id'][:12]}", ' '.join(result.stdout.split()))
                 self.assertFalse([line for line in self.trace() if 'docker' in line])
 
+    def test_an_ordinary_dry_run_still_reports_a_record_on_other_nodes(self):
+        c = self.cluster
+        spec, _ = self.recorded_on([2, 3])
+        result = c.start(spec['spec_id'], '--dry-run')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes',
+                      ' '.join(result.stdout.split()))
+
+    def test_a_guarded_dry_run_does_not_read_the_records_of_its_spec(self):
+        # A guarded run checks its prerequisites with up.sh --dry-run; an
+        # earlier trial's record of the same spec, on other nodes or under an
+        # earlier saved cluster, changes nothing in that dry run.
+        c = self.cluster
+        spec, manifest = c.spec(2, catalog=False, guarded=True)
+        path = c.root / 'guarded-spec.json'
+        path.write_text(json.dumps(spec))
+
+        def dry_run():
+            c.forget_calls()
+            # As scripts/guarded-serving.sh runs it.
+            result = c.start(spec['spec_id'], '--spec-file', str(path), '--dry-run',
+                             PULSAR_LAUNCH_PLAN_OUT=str(c.root / 'trial-plan.json'))
+            # Each dry run draws its own guarded run ID, and the plan ID covers it.
+            plan = json.loads((c.root / 'trial-plan.json').read_text())
+            plan.update(guard_run_id='<run>', plan_id='<plan>')
+            return result.returncode, result.stdout, result.stderr, self.trace(), plan
+
+        before = dry_run()
+        self.assertEqual(before[0], 0, before[1] + before[2])
+        for positions, topology_id in (([2, 3], None), ([0, 1], 'e' * 64), ([1, 0], None)):
+            with self.subTest(positions=positions, topology_id=topology_id):
+                plan = c.plan(spec, manifest, positions, topology_id=topology_id)
+                self.assertEqual(dry_run(), before)
+                c.store.remove('services', plan['service_id'])
+
     def test_a_record_of_an_earlier_saved_cluster_is_another_service(self):
         c = self.cluster
         spec, plan = self.recorded_on([0, 1], topology_id='e' * 64)
