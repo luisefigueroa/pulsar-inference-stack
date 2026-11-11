@@ -466,6 +466,16 @@ plan not eligible; a move, restore or archive plan then also carries
 carry before, and `--yes` exits 1 before it copies anything. `transfer_route`
 keeps its values. Nothing was removed or renamed.
 
+Change note, 2026-11-10: each entry of `models list --json` and `models show
+--json` gained `container_env`, the recipe's frozen container environment as
+its spec holds it, beside the existing `engine_args`. A multi-node recipe whose
+`container_env` holds exactly one `NCCL_ALGO` entry whose whole value is `Ring`
+passes data around a closed loop of its nodes; Start then needs each of its
+nodes cabled to the next and the last to the first instead of every pair, and
+records a broken loop as the existing `fabric_incomplete` blocker. No spec,
+spec_id, launch plan, label or record changed, and nothing was removed or
+renamed.
+
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a
 save for another `topology_id` drops both. `kept` (`kept_at`, `signature`,

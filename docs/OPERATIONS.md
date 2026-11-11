@@ -209,7 +209,7 @@ below are for reading.
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
 | Serve: needs every one of its nodes cabled to the others; the cluster is a ring | The saved cluster is a *ring*: each machine is cabled only to its two *neighbours*. This recipe needs every one of its nodes cabled to the others, so Start refuses it here. |
-| Serve: needs … cabled in a closed loop; the ring has … | The recipe passes data around a closed loop of its nodes, each cabled to the next and the last to the first: its spec sets `NCCL_ALGO=Ring`. On a *ring* only all of its machines, in cable order, form such a loop, so a recipe on fewer of them does not start here. |
+| Serve: needs … cabled in a closed loop; the ring has … | The recipe passes data around a closed loop of its nodes, each cabled to the next and the last to the first: its spec sets `NCCL_ALGO=Ring`. On a *ring* three or more machines form such a loop only when they are all of its machines, so a recipe on more than two and fewer than all of them does not start here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
 | Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. An API address marked `· seen` comes from it too. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
 | Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
@@ -394,9 +394,11 @@ last back to the first, declares it in its own spec: exactly one `NCCL_ALGO`
 entry in `container_env` whose whole value is `Ring`, in any case. Any other
 value, such as `Ring,Tree`, keeps the rule above. Start then needs only each of
 the recipe's nodes cabled to the next and the last to the first, in role order.
-On a ring that is the whole ring in the default order, which follows the
-cables; on fewer of its machines, or in another order, Start refuses and names
-the first two machines in role order that share no cable. Each rank uses the
+On a ring that is every machine of the ring in an order that follows the
+cables, such as the default order, or two neighbours, which are a loop of their
+own. Three or more machines that are not the whole ring, or an order that skips
+a cable, are refused, and Start names the first two machines in role order that
+share no cable. Each rank uses the
 adapters on both of its cables, and preflight checks only the pairs of the
 loop. On a full mesh such a recipe starts like any other.
 
