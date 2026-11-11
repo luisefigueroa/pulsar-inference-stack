@@ -63,7 +63,8 @@ class StopAllBesideRecordsOfAnEarlierCluster(Cluster):
     cluster. Its sweep is pinned from 8c0c673, the commit before named nodes,
     run on these doubles: a service of this cluster on the default order is
     removed and a container labelled for the earlier cluster is refused, with
-    the lines below. Only the record's own pass is new."""
+    the lines below, which now name the other nodes by hostname. Only the
+    record's own pass is new."""
 
     def setUp(self):
         super().setUp()
@@ -71,8 +72,9 @@ class StopAllBesideRecordsOfAnEarlierCluster(Cluster):
         spec, manifest = c.spec(2)
         self.running = c.run(c.plan(spec, manifest, [0, 1]))
         self.sweep = ['removing stack-managed containers across 4 confirmed ranks',
-                      'no stack-managed containers on ring-alpha', 'no stack-managed containers on ring-echo',
-                      f"removing stack-managed on ring-bravo id={self.running[1]['id'][:12]} spec "
+                      'no stack-managed containers on fixture-ring-alpha',
+                      'no stack-managed containers on fixture-ring-echo',
+                      f"removing stack-managed on fixture-ring-bravo id={self.running[1]['id'][:12]} spec "
                       f"{spec['spec_id'][:12]} rank=1",
                       f"removing stack-managed id={self.running[0]['id'][:12]} spec {spec['spec_id'][:12]} rank=0 "
                       'on fixture-ring-dorado']
@@ -119,7 +121,7 @@ class StopAllBesideRecordsOfAnEarlierCluster(Cluster):
                 if not c.remaining():
                     self.running = c.run(c.plan(*c.spec(2), [0, 1]))
                     self.sweep[3:] = [
-                        f"removing stack-managed on ring-bravo id={self.running[1]['id'][:12]} spec "
+                        f"removing stack-managed on fixture-ring-bravo id={self.running[1]['id'][:12]} spec "
                         f"{self.running[1]['labels']['io.pulsar.gb10.conf'][:12]} rank=1",
                         f"removing stack-managed id={self.running[0]['id'][:12]} spec "
                         f"{self.running[0]['labels']['io.pulsar.gb10.conf'][:12]} rank=0 on fixture-ring-dorado"]
@@ -128,7 +130,7 @@ class StopAllBesideRecordsOfAnEarlierCluster(Cluster):
                 result = c.pulsar('stop', '--all', '--yes')
                 self.assertEqual(result.returncode, 1)
                 self.assert_swept(result, refused=f"warning: refusing managed candidate id={left['id'][:12]} on "
-                                                  f'ring-bravo: {refusal}')
+                                                  f'fixture-ring-bravo: {refusal}')
                 self.assertIn(f"container {left['id'][:12]} on {c.hostname(1)} is still there. Pulsar does not "
                               'remove containers of an earlier saved cluster, so nothing was removed and the record '
                               f"is kept. Next: remove that container with Docker on its node (docker rm -f "

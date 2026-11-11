@@ -3205,7 +3205,7 @@ remove_all_stack_managed_local() {
     return 1
   }
   if [ -z "${ids//[$' \t\r\n']/}" ]; then
-    log "no stack-managed containers on local docker"
+    log "no stack-managed containers on $(human_node_name 0)"
     return 0
   fi
   for id in $ids; do
@@ -3262,13 +3262,15 @@ remove_all_stack_managed_local() {
 
 remove_all_stack_managed_remote() {
   local host="${1:?}" placement="${2:-worker}"
-  local ids id meta conf rank reason rc=0 short remote_rm probe
+  local ids id meta conf rank reason rc=0 short remote_rm probe node
+  # People read the node's hostname; SSH takes its address.
+  node=$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")
   ids=$(list_managed_container_ids_remote "$host") || {
-    warn "remote host unreachable or Docker error listing managed containers on $host"
+    warn "remote host unreachable or Docker error listing managed containers on $node"
     return 1
   }
   if [ -z "${ids//[$' \t\r\n']/}" ]; then
-    log "no stack-managed containers on $host"
+    log "no stack-managed containers on $node"
     return 0
   fi
   for id in $ids; do
@@ -3279,15 +3281,15 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "Docker or SSH error inspecting managed id=${id:0:12} on $host"
+      warn "Docker or SSH error inspecting managed id=${id:0:12} on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     IFS=$'\t' read -r _ _ _ conf rank < <(container_ownership_fields "$meta")
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing managed candidate id=${id:0:12} on $host: $reason"
-      report_refused_leftover "$meta" "$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")"
+      warn "refusing managed candidate id=${id:0:12} on $node: $reason"
+      report_refused_leftover "$meta" "$node"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -3298,26 +3300,26 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "Docker or SSH error revalidating id=$short on $host"
+      warn "Docker or SSH error revalidating id=$short on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing id=$short on $host after revalidation: $reason"
-      report_refused_leftover "$meta" "$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")"
+      warn "refusing id=$short on $node after revalidation: $reason"
+      report_refused_leftover "$meta" "$node"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
-    log "removing stack-managed on $host id=$short $(conf_label_display "$conf") rank=$rank"
+    log "removing stack-managed on $node id=$short $(conf_label_display "$conf") rank=$rank"
     remote_rm="docker rm -f $(printf '%q' "$id") >/dev/null"
     if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_rm"; then
-      warn "docker rm -f failed for id=$short on $host"
+      warn "docker rm -f failed for id=$short on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     if ! container_id_absent_remote "$host" "$id"; then
-      warn "container id=$short still present or unverifiable on $host after docker rm -f"
+      warn "container id=$short still present or unverifiable on $node after docker rm -f"
       rc=$(lifecycle_merge_rc "$rc" 1)
     fi
   done

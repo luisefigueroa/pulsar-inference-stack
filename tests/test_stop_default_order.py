@@ -162,10 +162,10 @@ class StopAll(Scenario):
         result = c.pulsar('stop', '--all', '--yes')
         self.assertEqual(self.shown(result), 'rc=0\n--- stdout\n'
                          'removing stack-managed containers across 4 confirmed ranks\n'
-                         'removing stack-managed on ring-alpha id=<one:0:short> spec <one:prefix> rank=single\n'
-                         'removing stack-managed on ring-echo id=<candidate:2:short> spec <candidate:prefix> rank=2\n'
-                         'removing stack-managed on ring-bravo id=<pair:1:short> spec <pair:prefix> rank=1\n'
-                         'removing stack-managed on ring-bravo id=<candidate:1:short> spec <candidate:prefix> rank=1\n'
+                         'removing stack-managed on fixture-ring-alpha id=<one:0:short> spec <one:prefix> rank=single\n'
+                         'removing stack-managed on fixture-ring-echo id=<candidate:2:short> spec <candidate:prefix> rank=2\n'
+                         'removing stack-managed on fixture-ring-bravo id=<pair:1:short> spec <pair:prefix> rank=1\n'
+                         'removing stack-managed on fixture-ring-bravo id=<candidate:1:short> spec <candidate:prefix> rank=1\n'
                          'removing stack-managed id=<pair:0:short> spec <pair:prefix> rank=0 on fixture-ring-dorado\n'
                          'removing stack-managed id=<candidate:0:short> spec <candidate:prefix> rank=0 '
                          'on fixture-ring-dorado\n'
@@ -181,12 +181,12 @@ class StopAll(Scenario):
         result = c.pulsar('stop', '--all', '--yes')
         self.assertEqual(self.shown(result), 'rc=1\n--- stdout\n'
                          'removing stack-managed containers across 4 confirmed ranks\n'
-                         'removing stack-managed on ring-bravo id=<pair:1:short> spec <pair:prefix> rank=1\n'
+                         'removing stack-managed on fixture-ring-bravo id=<pair:1:short> spec <pair:prefix> rank=1\n'
                          'removing stack-managed id=<pair:0:short> spec <pair:prefix> rank=0 on fixture-ring-dorado\n'
                          '--- stderr\n'
-                         'warning: refusing managed candidate id=<stray:1:short> on ring-alpha: placement mismatch '
+                         'warning: refusing managed candidate id=<stray:1:short> on fixture-ring-alpha: placement mismatch '
                          'on 3: spec <stray:prefix> nodes=2 rank=1\n'
-                         'warning: refusing managed candidate id=<stray:0:short> on ring-echo: placement mismatch '
+                         'warning: refusing managed candidate id=<stray:0:short> on fixture-ring-echo: placement mismatch '
                          'on 2: spec <stray:prefix> nodes=2 rank=0\n'
                          'warning: some candidates were refused (unknown spec or rank placement)\n')
         self.assertEqual(sorted(item['id'] for item in c.remaining()), sorted(item['id'] for item in stray))

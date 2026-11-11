@@ -693,7 +693,7 @@ class RecordOfAnEarlierCluster(Cluster):
         result = c.pulsar('stop', '--all', '--yes')
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"then rerun ./pulsar stop --all --yes", result.stderr)
-        self.assertIn(f"warning: refusing managed candidate id={first['id'][:12]} on ring-bravo: does not match its "
+        self.assertIn(f"warning: refusing managed candidate id={first['id'][:12]} on fixture-ring-bravo: does not match its "
                       'saved service record: the record was saved under another saved cluster', result.stderr)
         self.assertEqual(c.removed(), [])
         self.assertTrue(c.recorded(self.plan))
