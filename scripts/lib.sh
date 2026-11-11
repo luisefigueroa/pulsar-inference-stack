@@ -2828,9 +2828,10 @@ retired_words() {
 # current cluster is asked for a container named NAME with that launch plan
 # (and that guard-run): none anywhere retires the record; one found refuses,
 # says how to clear it and returns 3; a node that cannot be observed changes
-# nothing and returns 1. A one-node record whose node is not in the saved
-# cluster was not observed, so it is kept with a warning that names the
-# machine (EARLIER_UNCHECKED=1). RERUN is the command the operator reruns after
+# nothing and returns 1. A record that names a machine no longer in the saved
+# cluster, one-node or multi-node, is retired the same way when no node of
+# this cluster has its container, with a warning that names that machine
+# (EARLIER_UNCHECKED=1). RERUN is the command the operator reruns after
 # removing a container found (default: ./pulsar stop SPEC).
 stop_earlier_cluster_record() {
   local spec="$1" plan_id="$2" name="$3" run="${4:--}" rerun="${5:-}" index ids id prefix ref filters subject
@@ -2863,24 +2864,15 @@ stop_earlier_cluster_record() {
   fi
   # Machines the record names that are no longer in the saved cluster (left
   # out, or reinstalled with a new identity) were not looked at.
-  local outside ranks
+  local outside
   outside=$(python3 -c '
 import sys
 from model_library.state import Store
 plan = Store(sys.argv[1]).get("service-plans", sys.argv[2]) or {}
 members = set(sys.argv[3:])
 names = [rank.get("hostname") or rank["node_id"] for rank in plan.get("ranks") or [] if rank["node_id"] not in members]
-print(len(plan.get("ranks") or []), ", ".join(dict.fromkeys(names)), sep="\t")
-' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" "${CLUSTER_NODE_IDS[@]}") || outside=$'0\tthe machines it names'
-  IFS=$'\t' read -r ranks outside <<<"$outside"
-  if [ "$ranks" = 1 ] && [ -n "$outside" ]; then
-    # A one-node record's only node was not observed: that is not absence, so
-    # the record is kept. Read by stop --all's closing line, which then speaks
-    # for the saved cluster only.
-    EARLIER_UNCHECKED=1
-    warn "$subject was recorded under an earlier saved cluster on $outside, which is not in the saved cluster, so Pulsar could not check that machine and kept the record. Pulsar does not remove containers of an earlier saved cluster; remove any container of this service left there with Docker on that machine"
-    return 0
-  fi
+print(", ".join(dict.fromkeys(names)))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" "${CLUSTER_NODE_IDS[@]}") || outside="the machines it names"
   local retired
   retired=$(retire_recorded_plan "$plan_id") || {
     if [ "$run" != - ]; then

@@ -1285,9 +1285,11 @@ node answers and none has it, Stop retires that record only and says so; a
 guarded trial's run directory keeps its own result. When one is found, Stop
 removes nothing, keeps the record, and names the container, its node, the
 `docker rm -f` command that removes it, and the stop to rerun. When a node does
-not answer, nothing changes. A one-node record whose machine is no longer in
-the saved cluster was not checked, so Stop keeps it and names that machine. A
-running guarded controller is still refused first.
+not answer, nothing changes. A record, one-node or multi-node, that names a
+machine no longer in the saved cluster is retired the same way when no node of
+the saved cluster has its container; Stop warns that it did not check that
+machine and to remove any container left there with Docker. A running guarded
+controller is still refused first.
 
 Stopping one spec asks no confirmation. To stop every Stack-managed service on
 all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
