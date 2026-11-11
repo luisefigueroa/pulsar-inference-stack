@@ -544,7 +544,7 @@ class ServiceCluster:
         entries = catalog_entries(self.root, self.store)
         names = NodeNames({node['node_id']: node['hostname'] for node in self.nodes},
                           [node['node_id'] for node in self.nodes], tm.RING_CLASS)
-        page = services_page.Page(inventory, entries, names=names)
+        page = services_page.Page(inventory, entries, names=names, topology=self.topology)
         environ = {'CLUSTER_TOPOLOGY_FILE': str(self.fixture.path),
                    'PULSAR_CLUSTER_CHANGES_FILE': str(self.root / 'state/cluster-changes.json'),
                    'PULSAR_SERVICE_INVENTORY_FILE': str(self.root / 'state/service-inventory.json'),

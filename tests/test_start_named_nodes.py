@@ -405,6 +405,43 @@ class Suggestions(Cluster):
         self.assertNotIn('--placement-nodes', (record['fix'] or '') + (record['note'] or ''))
 
 
+class Readers(Cluster):
+    """The Connect card and Restart for a pair Start ran on saved ranks 2 and 3."""
+
+    def setUp(self):
+        super().setUp()
+        c = self.cluster
+        self.spec, _ = c.spec(2)
+        self.card = c.root / 'connect.json'
+        result = c.start(self.spec['spec_id'], '--skip-preflight', '--placement-nodes',
+                         f'{c.hostname(2)},{c.hostname(3)}', SERVICE_HEALTHY='192.0.2.32',
+                         PULSAR_SERVICE_RESULT_FILE=str(self.card))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_connect_card_names_the_first_nodes_address(self):
+        self.assertEqual(json.loads(self.card.read_text())['api_url'], 'http://192.0.2.32:8000')
+
+    def test_restart_runs_start_on_the_same_nodes_in_the_same_order(self):
+        from model_library.catalog import entries as catalog_entries
+        from model_library.node_names import NodeNames
+        from scripts import serve_plan
+        from scripts import topology_manifest as tm
+        c = self.cluster
+        pages = c.pages(self.spec['spec_id'])
+        self.assertIn('restart', [action for action, _ in pages['choices']])
+        _, _, _, node = pages['page'].command(self.spec['spec_id'], 'restart')
+        names = NodeNames({n['node_id']: n['hostname'] for n in c.nodes}, [n['node_id'] for n in c.nodes],
+                          tm.RING_CLASS)
+        entries = catalog_entries(c.root, c.store)
+        row = next(entry for entry in entries if entry['spec_id'] == self.spec['spec_id'])
+        inventory = json.loads(c.pulsar('inventory', '--json').stdout)
+        plan = serve_plan.compose(row, entries, names=names, node=node, inventory=inventory, restart=True)
+        self.assertEqual(plan['blocked'], [])
+        self.assertEqual([step['command'] for step in plan['steps']], [
+            ['./pulsar', 'stop', self.spec['spec_id']],
+            ['./pulsar', 'start', self.spec['spec_id'], '--placement-nodes', 'fixture-ring-echo,fixture-ring-alpha']])
+
+
 class RecordsWithoutContainers(Cluster):
     """After a Start that failed once its plan was saved (the plan and record
     are saved just before the first docker run, and a failed launch keeps

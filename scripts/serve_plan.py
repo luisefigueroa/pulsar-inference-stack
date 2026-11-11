@@ -134,10 +134,16 @@ def snapshot_sizes(repo: Path, spec_id: str) -> dict:
 
 def serving_nodes(row: dict, order: list[str], node: str | None) -> list[str]:
     """The serving node_ids: a one-node recipe's chosen node, or the first saved
-    nodes in their saved order, as Start uses them. Empty when unknown."""
+    nodes in their saved order, as Start uses them. Empty when unknown.
+
+    For a multi-node recipe NODE may name its nodes in role order, comma-
+    separated: Restart of a service Start ran on named nodes."""
     count = row["geometry"]["nodes"]
     if count == 1:
         return [node] if node else []
+    if node and "," in node:
+        chosen = node.split(",")
+        return chosen if len(chosen) == count else []
     return list(order[:count]) if len(order) >= count else []
 
 
@@ -481,6 +487,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     hosts = [names(item) for item in serving]
     ref = spec_ref(spec, entries)
     placement = ["--node", hosts[0]] if nodes == 1 and hosts else []
+    if nodes > 1 and node and "," in node and hosts:
+        # Named nodes: Start runs it on them again, in the same order.
+        placement = ["--placement-nodes", ",".join(hosts)]
     told = [part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
     plan: dict = {"kind": PLAN_KIND, "spec_id": spec, "model_id": model, "ready_only": ready_only,
                   "restart": restart,

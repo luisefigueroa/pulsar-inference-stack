@@ -487,17 +487,21 @@ class Pages(Cluster):
         spec, _, _ = self.pair()
         pages = self.cluster.pages(spec['spec_id'])
         prefix = spec['spec_id'][:12]
-        # Stop, and Switch, which stops it before Start, are offered.
+        # Stop, and Switch, which stops it before Start, are offered; so is
+        # Restart, now that Start runs a pair on neighbouring nodes of a ring.
         self.assertEqual([action for action, _ in pages['choices']],
-                         ['check', 'connect', 'logs', 'switch', 'stop', 'stop-all', 'back'])
+                         ['check', 'connect', 'logs', 'restart', 'switch', 'stop', 'stop-all', 'back'])
+        self.assertEqual(pages['page'].command(spec['spec_id'], 'restart'),
+                         ['--restart', spec['spec_id'], '--node',
+                          f'{self.cluster.node_id(2)},{self.cluster.node_id(3)}'])
         self.assertEqual(pages['question'],
                          f'Stop and remove the service containers of example/service-synthetic [{prefix}] on '
                          'fixture-ring-echo, fixture-ring-alpha? Model files, pins and archives are kept.')
         self.assertEqual(pages['home'], [
             'example/service-synthetic running on fixture-ring-echo, fixture-ring-alpha ·\xa0port\xa08000 '
             '·\xa0seen less than a minute ago; **Running services…** has the details'])
-        # Its API is on its first node; Restart stays as it is until Start can
-        # serve on named nodes; Stop is offered, so the card has no Stop row.
+        # Its API is on its first node; Restart and Stop are offered, so the
+        # card has neither row.
         self.assertEqual(pages['screen'],
                          'example/service-synthetic running on fixture-ring-echo, fixture-ring-alpha\n'
                          '  · port 8000\n'
@@ -505,9 +509,15 @@ class Pages(Cluster):
                          'Model     example/service-synthetic, the model name requests use\n'
                          'API       http://192.0.2.32:8000/v1 · seen\n'
                          'Key       not recorded: add the key header if the service was started with one\n'
-                         'Health    not checked here; choose Check it now\n'
-                         'Restart   not offered: it runs on fixture-ring-echo and fixture-ring-alpha, but\n'
-                         '          Start serves it on fixture-ring-dorado and fixture-ring-bravo\n')
+                         'Health    not checked here; choose Check it now\n')
+
+    def test_restart_stays_not_offered_where_start_still_refuses(self):
+        # Saved ranks 1 and 3 are not neighbours: Start does not run a pair there.
+        spec, _, _ = self.pair((1, 3))
+        pages = self.cluster.pages(spec['spec_id'])
+        self.assertNotIn('restart', [action for action, _ in pages['choices']])
+        self.assertIn('Restart   not offered: it runs on fixture-ring-bravo and fixture-ring-alpha, but\n'
+                      '          Start serves it on fixture-ring-dorado and fixture-ring-bravo', pages['screen'])
 
 
 WIDTHS = (80, 60)
