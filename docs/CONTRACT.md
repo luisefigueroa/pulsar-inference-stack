@@ -289,7 +289,7 @@ spec, when Pulsar started it for a spec), the `mount` that covers the files and 
 `unrecorded-destination` record has the `path` of a folder that is already
 where Prepare would place a rank's prepared copy and that no record names. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
-`dependent-copies` and `incomplete-preparations`. Older plans may contain
+`copy-route`, `dependent-copies` and `incomplete-preparations`. Older plans may contain
 `archive-required`, `discard-required` and `catalog-snapshot`; current home
 removal no longer requires an archive or distinguishes catalog and lab homes.
 The CLI still accepts `--discard-unpromoted` for compatibility, with `--yes`
@@ -453,6 +453,18 @@ rather than the cluster's shape: every pair of them must share at least the
 links the recipe needs. On a ring a `fabric_incomplete` record for two chosen
 nodes that share no link has a null `fix` and a `note`. No code, field or
 value was added, removed or renamed.
+
+Change note, 2026-11-10: a copy between two nodes that share no cable passes
+through the nodes between them. A preparation plan's `copy` action, and a
+home-move, restore or archive plan, then carries `passes_through`: one record
+per leg with a node in between, with `copies` (`to` or `from` the node, as
+seen from this machine), the far end's `node_id` and the `through` node_ids in
+order. A copy with no node in between has no such field. A route that cannot
+be made or proven adds a `copy-route` blocker that names the hop and makes the
+plan not eligible; a move, restore or archive plan then also carries
+`eligible` false, `blockers` and `blocker_details`, which it had no reason to
+carry before, and `--yes` exits 1 before it copies anything. `transfer_route`
+keeps its values. Nothing was removed or renamed.
 
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a

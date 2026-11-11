@@ -128,7 +128,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 | full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
-| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files; Prepare copies files only between neighbours. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring. |
 | cable | One physical connection between two neighbours. On a ring each cable carries two links. |
 | neighbour | A node at the other end of one of this node's cables. |
 
@@ -387,6 +387,20 @@ ring a two-node recipe starts on this node and its neighbour at rank 1; a
 recipe on three or more nodes does not start, because some of its nodes share
 no link. Start names those two machines, and the Serve list and **Why will a
 model not start?** say the same. Stop never depends on the shape.
+
+Copies of model files follow the cables. Prepare, Move, Archive and Restore
+copy to or from a node that is not this node's neighbour through the
+neighbours between them: still one copy over SSH, with one SSH connection per
+cable, each on that cable's own addresses and checked against the cluster's
+recorded host keys. Nothing is staged on a neighbour, no key or agent is passed
+to it, and a copy never falls back to the control network. Their plans and the
+copy's log say so: "copies to echo pass through bravo". Before the plan offers
+the copy, and again before the copy starts, Pulsar checks each cable's route on
+both of its ends and connects once through each hop. If one fails, the plan is
+blocked and names the hop; a neighbour whose SSH server does not allow
+forwarding (`AllowTcpForwarding`) is named as such. A copy between two other
+nodes streams through this node, so each of its two legs may pass through a
+neighbour.
 
 `detect` probes local, advertised, explicitly supplied and previously confirmed
 nodes without saving membership or enrolling new SSH trust. Repeat `--candidate`
