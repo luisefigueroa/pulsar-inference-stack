@@ -207,8 +207,9 @@ class PairQuestion(RingHarness):
 
 def card_inventory(*services):
     """A ring inventory as Running services… reads it; each service is (spec_id, saved positions)."""
-    from tests.test_services_menu import service
-    document = ring_inventory()
+    from datetime import datetime, timezone
+    from tests.test_services_menu import service, utc
+    document = dict(ring_inventory(), generated_at=utc(datetime.now(timezone.utc)))
     for index, node in document["nodes"].items():
         node.update(control_ip=f"192.0.2.{30 + int(index[1:])}", local=index == "k0")
     document["services"] = [service(spec, keys=[f"k{position}" for position in positions])

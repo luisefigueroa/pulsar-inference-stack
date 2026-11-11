@@ -412,7 +412,8 @@ MENUS = {
     # Cluster… → Settings… → Archive location…: its labels are literals, checked below.
     ("configure-archive.sh", '"Archive storage"'): ["tests.test_cluster_menu.EveryMenu"],
     ("serve-menu.sh", '"$TITLE"'): ["tests.test_serve_menu", "tests.test_serve_plan"],
-    ("serve-menu.sh", '"$title"'): ["tests.test_serve_menu"],
+    # The machine question of a one-node recipe, and the pair question of a two-node recipe on a ring.
+    ("serve-menu.sh", '"$title"'): ["tests.test_serve_menu", "tests.test_serve_pair_question"],
     ("serve-menu.sh", '"Stop, save, then continue"'): ["tests.test_serve_menu"],
     ("serve-menu.sh", '"Change the plan"'): ["tests.test_serve_menu"],
     ("serve-menu.sh", '"Which node should keep the files?"'): ["tests.test_serve_menu"],
