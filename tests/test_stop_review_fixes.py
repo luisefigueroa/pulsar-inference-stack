@@ -182,5 +182,40 @@ class StopWithNodeBesideARecordOfAnEarlierCluster(Cluster):
         self.assertEqual(c.removed(), [])
 
 
+class MachinesNotChecked(Cluster):
+    """A record of an earlier saved cluster that names a machine no longer in
+    the saved cluster: Stop retires it when no node of this cluster has its
+    container, and names the machine it could not check."""
+
+    def outside_record(self, *, guarded):
+        from scripts.container_runtime import service_identifier
+        from scripts.service_state import save
+        from support.service_cluster import replanned
+        c = self.cluster
+        spec, manifest = c.spec(2, catalog=not guarded, guarded=guarded)
+        plan = c.plan(spec, manifest, [2, 3], topology_id='e' * 64, record=False)
+        ranks = [dict(plan['ranks'][0]), dict(plan['ranks'][1], node_id='fixture-ring-node-9',
+                                                 hostname='fixture-ring-gone', ssh_host='ring-gone')]
+        plan = replanned(plan, ranks=ranks, service_id=service_identifier(
+            spec['spec_id'], 'e' * 64, [rank['node_id'] for rank in ranks]))
+        save(c.store, plan)
+        return spec, plan
+
+    def test_an_ordinary_and_a_guarded_record(self):
+        c = self.cluster
+        for guarded in (False, True):
+            with self.subTest(guarded=guarded):
+                spec, plan = self.outside_record(guarded=guarded)
+                result = c.pulsar('stop', spec['spec_id'])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('retired its stale service record', result.stdout)
+                self.assertIn('warning: the record also names fixture-ring-gone, which is not in the saved cluster, '
+                              'so Pulsar did not check it; a container of this service left there is not removed by '
+                              'Pulsar. Next: remove it with Docker on that machine', ' '.join(result.stderr.split()))
+                self.assertNotIn('Stopped spec', result.stdout)
+                self.assertNotIn('Stopped guarded', result.stdout)
+                self.assertFalse(c.recorded(plan))
+
+
 if __name__ == '__main__':
     unittest.main()

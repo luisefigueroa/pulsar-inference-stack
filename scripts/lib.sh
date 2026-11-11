@@ -2838,6 +2838,20 @@ retire_plan(store, store.get("service-plans", sys.argv[2]))
   else
     log "Spec ${spec:0:12}'s service was recorded under an earlier saved cluster and has no container on any node of this one; retired its stale service record."
   fi
+  # Machines the record names that are no longer in the saved cluster (left
+  # out, or reinstalled with a new identity) were not looked at.
+  local outside
+  outside=$(python3 -c '
+import sys
+from model_library.state import Store
+plan = Store(sys.argv[1]).get("service-plans", sys.argv[2]) or {}
+members = set(sys.argv[3:])
+names = [rank.get("hostname") or rank["node_id"] for rank in plan.get("ranks") or [] if rank["node_id"] not in members]
+print(", ".join(dict.fromkeys(names)))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" "${CLUSTER_NODE_IDS[@]}") || outside="the machines it names"
+  if [ -n "$outside" ]; then
+    warn "the record also names $outside, which $( [[ "$outside" == *,* ]] && echo are || echo is ) not in the saved cluster, so Pulsar did not check $( [[ "$outside" == *,* ]] && echo them || echo it ); a container of this service left there is not removed by Pulsar. Next: remove it with Docker on that machine"
+  fi
 }
 
 # stop_recorded_service SPEC PLAN_ID — stop a service on the rank-to-node
