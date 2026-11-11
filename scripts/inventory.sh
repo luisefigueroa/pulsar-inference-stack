@@ -584,7 +584,7 @@ SELECTED_SPEC_KEY = "io.pulsar.gb10.selected-spec-id"
 PLAN_KEY = "io.pulsar.gb10.launch-plan"
 
 sys.path.insert(0, os.environ["REPO_DIR"])
-from scripts.service_state import recorded_ownership
+from scripts.service_state import off_default_order, recorded_ownership
 
 with open(os.environ["SNAP_PATH"], encoding="utf-8") as _sf:
     snap = json.load(_sf)
@@ -622,6 +622,26 @@ for _name, _info in nodes_info.items():
     if isinstance(_info, dict) and _info.get("node_id") and node_position(_name) is not None:
         saved_order[node_position(_name)] = str(_info["node_id"])
 membership_ids = [saved_order.get(index) for index in range(max(saved_order) + 1)] if saved_order else []
+
+
+def recorded_placement(labels):
+    """The node IDs, in role order, of the ordinary service recorded off the
+    default node order whose launch plan LABELS name; None for any other
+    container, which keeps its place by saved position."""
+    plan_id = (labels or {}).get(PLAN_KEY)
+    for item in service_records:
+        if (plan_id and item.get("plan_id") == plan_id and not item.get("guarded")
+                and off_default_order(item.get("node_ids") or [], membership_ids)):
+            return item["node_ids"]
+    return None
+
+
+def recorded_node_for_rank(rank, labels):
+    """The inventory node name the record names for RANK, or None."""
+    placement = recorded_placement(labels)
+    if placement is None or not str(rank).isdigit() or int(rank) >= len(placement):
+        return None
+    return node_name_by_id.get(placement[int(rank)])
 worker_status = snap.get("worker_status") or "unset"
 worker_reason = snap.get("worker_reason")
 worker_ip = snap.get("worker_ip")
@@ -716,6 +736,9 @@ def expected_node_for_rank(rank, profile, labels=None):
         rank_i = int(rank)
     except (TypeError, ValueError):
         return None
+    recorded = recorded_node_for_rank(rank, labels)
+    if recorded is not None:
+        return recorded
     if rank_i == 0:
         return "head"
     if rank_i == 1 and nodes > 1:
@@ -737,8 +760,15 @@ def remote_probe_states(profile, ranks=None):
                 targets.append(node)
         rank_nodes = [("single", node) for node in targets]
     else:
+        # A service recorded off the default node order needs the nodes its
+        # record names; any other, those of the saved positions.
+        placements = [recorded_placement(item.get("labels")) for item in ranks or []]
+        labels = next((item.get("labels") for item, placement in zip(ranks or [], placements)
+                       if placement is not None), None)
+        if any(placement != placements[0] for placement in placements):
+            labels = None
         rank_nodes = [
-            (rank, expected_node_for_rank(rank, profile))
+            (rank, expected_node_for_rank(rank, profile, labels))
             for rank in (profile or {}).get("expected_ranks") or []
         ]
 

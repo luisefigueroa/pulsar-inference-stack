@@ -398,6 +398,86 @@ class StopAll(Cluster):
         self.assertEqual(c.removed(), [])
 
 
+def summary(service):
+    return {'state': service['state'], 'ownership': service['ownership'], 'safe_to_stop': service['safe_to_stop'],
+            'complete': service['complete'], 'observability': service['observability'],
+            'required_remote_probes': [(item['rank'], item['node'], item['status'])
+                                       for item in service['required_remote_probes']],
+            'reasons': service['reasons'],
+            'ranks': [(rank['rank'], rank['node'], rank['expected_node'], rank['ownership'], rank['safe_to_stop'])
+                      for rank in service['ranks']]}
+
+
+class Inventory(Cluster):
+    """Inventory reads a pair recorded on saved ranks 2 and 3 as running there."""
+
+    def inventory(self, **env):
+        result = self.cluster.pulsar('inventory', '--json', **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_it_runs_on_its_recorded_nodes_and_is_safe_to_stop(self):
+        self.pair()
+        (service,) = self.inventory()['services']
+        self.assertEqual(summary(service), {
+            'state': 'running', 'ownership': 'managed', 'safe_to_stop': True, 'complete': True,
+            'observability': 'complete', 'required_remote_probes': [('0', 'rank-2', 'ok'), ('1', 'rank-3', 'ok')],
+            'reasons': [], 'ranks': [('0', 'rank-2', 'rank-2', 'managed', True), ('1', 'rank-3', 'rank-3', 'managed', True)]})
+
+    def test_it_probes_no_more_nodes_than_without_its_record(self):
+        c = self.cluster
+        _, plan, _ = self.pair()
+
+        def probed():
+            calls = []
+            for name in ('docker-calls.jsonl', 'ssh-calls.jsonl'):
+                path = c.root / name
+                calls += [json.loads(line)[0] for line in path.read_text().splitlines()] if path.exists() else []
+                path.unlink(missing_ok=True)
+            return sorted(set(calls)), len(calls)
+
+        self.inventory()
+        recorded = probed()
+        c.store.remove('services', plan['service_id'])
+        self.inventory()
+        self.assertEqual(recorded, probed())
+
+    def test_a_recorded_node_that_does_not_answer(self):
+        c = self.cluster
+        self.pair()
+        (service,) = self.inventory(SERVICE_UNREACHABLE=c.node_id(3))['services']
+        self.assertEqual((service['state'], service['safe_to_stop'], service['observability']),
+                         ('degraded', False, 'worker_unreachable'))
+        self.assertEqual([(item['rank'], item['node'], item['status']) for item in service['required_remote_probes']],
+                         [('0', 'rank-2', 'ok'), ('1', 'rank-3', 'unreachable')])
+
+    def test_a_node_outside_the_service_that_does_not_answer(self):
+        # Stop needs every confirmed node to answer, so Stop is not offered,
+        # but the service itself is complete on the nodes it needs.
+        c = self.cluster
+        self.pair()
+        (service,) = self.inventory(SERVICE_UNREACHABLE=c.node_id(1))['services']
+        self.assertEqual((service['state'], service['safe_to_stop'], service['complete']), ('running', False, True))
+
+    def test_a_record_that_does_not_match_is_a_mismatch_naming_the_recorded_node(self):
+        self.pair(labels={PREFIX + 'topology': 'e' * 64})
+        (service,) = self.inventory()['services']
+        self.assertEqual((service['state'], service['ownership'], service['safe_to_stop']),
+                         ('degraded', 'mismatch', False))
+        self.assertEqual([rank['expected_node'] for rank in service['ranks']], ['rank-2', 'rank-3'])
+        self.assertIn('rank-2/rank=0: does not match its saved service record: its topology label names another '
+                      'saved cluster', service['reasons'])
+
+    def test_a_snapshot_without_records_reads_as_before(self):
+        c = self.cluster
+        self.pair()
+        raw = c.snapshot()
+        self.assertNotIn('service_records', raw)
+        (service,) = c.inventory(raw)['services']
+        self.assertEqual((service['state'], service['ownership'], service['safe_to_stop']),
+                         ('degraded', 'mismatch', False))
+
+
 class DefaultOrderRetire(Cluster):
     """No stop path that finds containers by saved position retires the record
     of a service recorded off the default order: it never looked there."""
