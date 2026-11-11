@@ -333,9 +333,10 @@ class PreflightRdmaState(unittest.TestCase):
 
     def test_preflight_checks_the_adapters_selected_for_each_rank(self):
         text = (ROOT / 'cluster/preflight.sh').read_text()
-        self.assertIn('selected="${CLUSTER_PROFILE_HCAS[$rank]:-}"', text)
-        self.assertIn('node_exec "$rank" "rdma link show 2>/dev/null" 2>/dev/null | topology_adapters_active "$selected"',
-                      text)
+        # Selected adapters are kept by saved rank; each role rank checks its node's.
+        self.assertIn('selected="${CLUSTER_PROFILE_HCAS[$position]:-}"', text)
+        self.assertIn('node_exec "$position" "rdma link show 2>/dev/null" 2>/dev/null | topology_adapters_active '
+                      '"$selected"', text)
         self.assertIn('selected RDMA adapters ACTIVE; not ACTIVE: ', text)
         # The selection is made by the launch check, which runs first.
         self.assertLess(text.find('require_profile_topology'), text.find('check_node "$rank"'))

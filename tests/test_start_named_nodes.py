@@ -87,6 +87,30 @@ class FirstNodeAddress(Cluster):
         self.assertEqual(self.cluster.calls()['curl'], ['http://127.0.0.1:8000/health'])
 
 
+class Preflight(Cluster):
+    """Preflight checks the chosen nodes only, and its rows name role ranks."""
+
+    def test_a_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        stack = c.install()
+        environment = {**c.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(c.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': ''}
+        result = subprocess.run(['bash', str(stack / 'cluster/preflight.sh'), spec['spec_id'], '--placement-nodes',
+                                 f'{c.hostname(3)},{c.hostname(2)}'], env=environment, text=True,
+                                capture_output=True, timeout=120)
+        nodes = {line.split()[0] for line in self.trace() if line.startswith('node-')}
+        self.assertEqual(nodes, {'node-2', 'node-3'}, self.trace())
+        self.assertIn('ok   rank 0 SSH ring-alpha · fixture-ring-alpha', result.stdout)
+        self.assertIn('ok   rank 1 SSH ring-echo · fixture-ring-echo', result.stdout)
+        self.assertIn('ok   rank 0: no stale vllm-cluster containers', result.stdout)
+        self.assertIn('ranks 0/1:', result.stdout)
+        self.assertIn(f"check-weights.sh {spec['spec_id']} --placement-nodes "
+                      f'{c.hostname(3)},{c.hostname(2)}', c.calls()['checks'])
+        for word in ('rank 2', 'rank 3', 'dorado', 'bravo'):
+            self.assertNotIn(word, result.stdout)
+
+
 KEY = 'fixture-secret-key-5f1e'
 
 

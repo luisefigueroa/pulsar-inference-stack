@@ -577,7 +577,7 @@ if [ "$NODES" -gt 1 ]; then
     else
       echo "│  running cluster preflight…"
       if [ "$VERBOSE" = 1 ]; then
-        if "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME" "${PLACEMENT_ARGS[@]}"; then
           start_check pass preflight "cluster OK"
         else
           start_check fail preflight "see the preflight output above"
@@ -588,7 +588,7 @@ if [ "$NODES" -gt 1 ]; then
         _pf_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-preflight.XXXXXX")
         # shellcheck disable=SC2064
         trap 'rm -f "${_pf_log:-}"' RETURN
-        if "$REPO_DIR/cluster/preflight.sh" "$NAME" \
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
             >"$_pf_log" 2>&1; then
           echo "PASS  preflight cluster OK"
           start_check pass preflight "cluster OK"

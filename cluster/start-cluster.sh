@@ -162,7 +162,7 @@ log "exact spec: ${MODEL_NAME:0:12} · $NODES nodes · topology ${CLUSTER_TOPOLO
 log "model files: prepared copies · home=${WEIGHT_OWNER_ID:0:12} · identity=$LIBRARY_VIEW_IDENTITY_STATUS · revision=${LIBRARY_VIEW_REVISION:0:12}"
 log "recipe is fixed by the selected spec"
 if [ "$SKIP_PREFLIGHT" = 0 ]; then
-  cluster/preflight.sh "$MODEL_NAME" || {
+  cluster/preflight.sh "$MODEL_NAME" ${PLACEMENT_NODES:+--placement-nodes "$PLACEMENT_NODES"} || {
     error_line "preflight failed — not starting (--skip-preflight overrides at your own risk)"
     exit 1
   }

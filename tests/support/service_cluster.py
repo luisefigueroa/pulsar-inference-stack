@@ -71,6 +71,14 @@ def labelled(c, wanted):
     return c["labels"].get(key) == value
 if args == ["info"]:
     sys.exit(0)
+if args[:3] == ["ps", "-a", "--format"]:
+    trace("docker ps names")
+    for c in here:
+        print(c["name"])
+    sys.exit(0)
+if args[:2] == ["image", "inspect"]:
+    trace("docker image inspect")
+    sys.exit(0)
 if args[:2] == ["ps", "-aq"]:
     wanted = [args[i + 1].partition("=")[2] for i, a in enumerate(args) if a == "--filter"]
     for c in here:
@@ -181,6 +189,17 @@ if node in os.environ.get("SERVICE_UNREACHABLE", "").split(","):
 command = args[-1]
 if "/proc/meminfo" in command:
     print("100.00")
+    sys.exit(0)
+# Preflight's node checks answer from the fixture, never from this machine.
+if command.startswith(("rdma link show", "test -e ", "ip -4 -o addr", "ping ", "true")):
+    with open(os.path.join(root, "trace.log"), "a") as stream:
+        stream.write(f"node-{node.rsplit('-', 1)[-1]} {command.split()[0]} over ssh\n")
+    sys.exit(0)
+if command.startswith("python3 ") and "probe" in command:
+    with open(os.path.join(root, "trace.log"), "a") as stream:
+        stream.write(f"node-{node.rsplit('-', 1)[-1]} probe over ssh\n")
+    sys.stdin.read()
+    print(open(os.path.join(root, f"probe-{mapping[alias]}.json")).read())
     sys.exit(0)
 sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, SERVICE_NODE=node, SERVICE_VIA_SSH="1")))
 '''
