@@ -335,5 +335,33 @@ class RecordedStop(Cluster):
         self.assert_untouched()
 
 
+class DefaultOrderRetire(Cluster):
+    """No stop path that finds containers by saved position retires the record
+    of a service recorded off the default order: it never looked there."""
+
+    def test_the_spec_wide_retire_keeps_an_off_default_record(self):
+        from scripts.service_state import retire
+        c = self.cluster
+        spec, pair, _ = self.pair(run=False)
+        _, default, _ = self.pair((0, 1), variant=1, run=False)
+        _, reversed_pair, _ = self.pair((1, 0), variant=2, run=False)
+        everyone = [c.node_id(index) for index in range(4)]
+        self.assertEqual(retire(c.store, topology_id=c.topology_id, node_ids=everyone,
+                                selected_spec_id=spec['spec_id']), [])
+        self.assertEqual(retire(c.store, topology_id=c.topology_id, node_ids=everyone), [default['service_id']])
+        self.assertEqual([c.recorded(plan) for plan in (pair, default, reversed_pair)], [True, False, True])
+
+    def test_a_direct_cluster_stop_leaves_the_record_and_its_containers(self):
+        c = self.cluster
+        spec, plan, containers = self.pair()
+        result = c.script('cluster/stop-cluster.sh', spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"clean — {plan['container_name']} absent from all 2 active ranks", result.stdout)
+        self.assertEqual(c.removed(), [])
+        self.assertEqual(len(c.remaining()), 2)
+        # Before, this retired the record while its containers kept running.
+        self.assertTrue(c.recorded(plan))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -50,7 +50,12 @@ def locate(store, *, service_id=None, selected_spec_id=None):
 
 
 def retire(store, *, topology_id, node_ids, selected_spec_id=None):
-    """Retire active locators after proven stop; caller holds the lifecycle lock."""
+    """Retire active locators after proven stop; caller holds the lifecycle lock.
+
+    NODE_IDS are the nodes the stop proved, in saved rank order. The stop
+    paths that call this find containers by saved position, so a multi-node
+    service recorded off the default node order is never retired here: only
+    a stop on its recorded nodes (retire_plan) proves its containers gone."""
     # Callers may share the lifecycle lock; serialize index compare/write/remove
     # separately, without upgrading the lifecycle lock held by a foreground run.
     with store.lock(name='services.lock'):
@@ -65,7 +70,9 @@ def retire(store, *, topology_id, node_ids, selected_spec_id=None):
             validate_plan(plan)
             if plan['service_id']!=row['service_id']:
                 raise ValueError('service index differs from saved plan')
-            if plan['topology_id']==topology_id and {rank['node_id'] for rank in plan['ranks']}<=set(node_ids):
+            recorded=[rank['node_id'] for rank in plan['ranks']]
+            if (plan['topology_id']==topology_id and set(recorded)<=set(node_ids)
+                    and not off_default_order(recorded,node_ids)):
                 store.remove('services',row['service_id'])
                 retired.append(row['service_id'])
         return retired
