@@ -72,6 +72,34 @@ class EveryCommandBeforeTheFirstContainer(Cluster):
                 self.assertEqual(c.remaining(), [])
 
 
+class AnExitIsNotAnInterruption(Cluster):
+    """The launcher's clean-up on exit tells an interruption by its handler,
+    not by the exit status."""
+
+    def test_a_step_exiting_255_while_launching_removes_what_started(self):
+        c = self.cluster
+        spec, _ = c.spec(3)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_AFTER_RANK='1', SERVICE_AFTER_RANK_DOES='exit-255')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('the launch stopped unexpectedly (exit 255)', result.stderr)
+        trace = self.trace()
+        self.assertEqual([line for line in trace if 'docker run' in line], ['node-1 docker run rank 1 over ssh'])
+        self.assertIn('node-1 docker rm by id over ssh', trace)
+        self.assertEqual(c.remaining(), [])
+
+    def test_a_real_interruption_still_reports_and_removes_nothing(self):
+        import json
+        c = self.cluster
+        spec, _ = c.spec(3)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_AFTER_RANK='1', SERVICE_AFTER_RANK_DOES='interrupt')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn('the launch stopped unexpectedly', result.stderr)
+        self.assertFalse([line for line in self.trace() if 'docker rm' in line])
+        self.assertEqual([item['node'] for item in c.remaining()], [c.node_id(1)])
+        records = [json.loads(line) for line in (c.root / 'blockers.jsonl').read_text().splitlines()]
+        self.assertIn('start_interrupted', [record['blocker'] for record in records])
+
+
 class ThePlanCheckFailsClosed(Cluster):
     """Start hands the launcher the ID of the plan it checked; without it, nothing launches."""
 

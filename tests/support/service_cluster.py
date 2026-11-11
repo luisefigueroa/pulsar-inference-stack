@@ -382,6 +382,20 @@ load_docker_argv_from_plan() {
   fi
   _service_load_docker_argv "$@"
 }
+# SERVICE_AFTER_RANK=R and SERVICE_AFTER_RANK_DOES=exit-255|interrupt: once the
+# launcher logged rank R's container ID, it exits 255 as a failing step would,
+# or interrupts itself as Ctrl-C does.
+eval "_service_log() $(declare -f log | tail -n +2)"
+log() {
+  _service_log "$@"
+  if [ -n "${SERVICE_AFTER_RANK:-}" ] && [[ "$*" == "rank $SERVICE_AFTER_RANK id="* ]]; then
+    printf 'after rank %s: %s\n' "$SERVICE_AFTER_RANK" "$SERVICE_AFTER_RANK_DOES" >>"$SERVICE_FIXTURE/trace.log"
+    case "$SERVICE_AFTER_RANK_DOES" in
+      exit-255) exit 255 ;;
+      interrupt) kill -INT $$ ;;
+    esac
+  fi
+}
 # SERVICE_PLAN_WITHOUT_ID: the plan up.sh writes has no plan_id.
 eval "_service_write_launch_plan_file() $(declare -f write_launch_plan_file | tail -n +2)"
 write_launch_plan_file() {

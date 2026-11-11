@@ -59,10 +59,12 @@ done
 # Ctrl-C or a stop signal says what this launch left and removes nothing;
 # stop removes a service after probing every rank. scripts/up.sh leaves the
 # report to this script while it runs.
-CLUSTER_PHASE=preparing LAUNCHING_RANK=0
+CLUSTER_PHASE=preparing LAUNCHING_RANK=0 CLUSTER_INTERRUPTED=0
 cluster_interrupted() {
   local detail=""
   local -a where=() noted=()
+  # Read by the EXIT trap: an interruption reports and removes nothing.
+  CLUSTER_INTERRUPTED=1
   trap - INT TERM HUP
   load_progress_end
   case "$CLUSTER_PHASE" in
@@ -181,7 +183,8 @@ CONTAINER="$(container_name_for "$MODEL_NAME" "$NODES")"
 MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[$(role_index 0)]}"
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # From the first docker run to the end of the health wait, any exit that is
-# not an interruption (which reports and removes nothing) and that did not
+# not an interruption (cluster_interrupted ran: it reports and removes
+# nothing), whatever its status, and that did not
 # already remove what this launch started removes it now: no rank is left
 # running with nothing said.
 CLUSTER_ABORTED=0
@@ -189,7 +192,7 @@ CLUSTER_ABORTED=0
 launch_exit() {
   local rc=$?
   rm -f "${PLAN_FILE:-}"
-  if [ "$rc" -ne 0 ] && [ "$rc" -lt 128 ] && [ "$CLUSTER_ABORTED" = 0 ]; then
+  if [ "$rc" -ne 0 ] && [ "$CLUSTER_INTERRUPTED" = 0 ] && [ "$CLUSTER_ABORTED" = 0 ]; then
     case "$CLUSTER_PHASE" in
       launching|loading) cluster_abort "the launch stopped unexpectedly (exit $rc)" ;;
     esac
