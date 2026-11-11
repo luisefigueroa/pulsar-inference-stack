@@ -67,8 +67,7 @@ for row in store.records('services'):
     nondefault=len(plan['ranks'])>1 and [rank['node_id'] for rank in plan['ranks']]!=confirmed[:len(plan['ranks'])]
     # A record of an earlier saved cluster, ordinary or a guarded trial's, is
     # cleared on its own path, never by the label sweep.
-    nondefault=nondefault or ((len(plan['ranks'])>1 or bool(plan.get('guard_run_id')))
-                              and plan['topology_id']!=topology)
+    nondefault=nondefault or (len(plan['ranks'])>1 and plan['topology_id']!=topology)
     if nondefault or plan.get('guard_run_id'):
         hosts=', '.join(rank.get('hostname') or rank['node_id'] for rank in plan['ranks'])
         # '-' marks a plan without a guarded run; tab-separated read would drop an empty field.

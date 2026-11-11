@@ -788,13 +788,22 @@ class GuardedRecordOfAnEarlierCluster(Cluster):
         self.assertTrue(c.recorded(self.plan))
 
     def test_stop_all_keeps_refusing_and_names_stop(self):
+        # On other nodes, and on the nodes of the default order too: a record of
+        # an earlier saved cluster is off the default order of this one.
         c = self.cluster
-        result = c.pulsar('stop', '--all', '--yes')
-        self.assertEqual(result.returncode, 1)
-        self.assertIn(f"stop --all does not stop guarded trial {self.run} (spec {self.spec['spec_id'][:12]}) on "
-                      f"{c.hostname(2)}, {c.hostname(3)}; nothing was stopped. Next: ./pulsar stop "
-                      f"{self.spec['spec_id']} after its controller exits, then rerun stop --all", result.stderr)
-        self.assertTrue(c.recorded(self.plan))
+        for positions in ([2, 3], [0, 1]):
+            with self.subTest(positions=positions):
+                c.store.remove('services', self.plan['service_id'])
+                self.plan = c.plan(self.spec, self.manifest, positions, topology_id='e' * 64)
+                result = c.pulsar('stop', '--all', '--yes')
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"stop --all does not stop guarded trial {self.plan['guard_run_id'][:12]} (spec "
+                              f"{self.spec['spec_id'][:12]}) on {c.hostname(positions[0])}, "
+                              f"{c.hostname(positions[1])}; nothing was stopped. Next: ./pulsar stop "
+                              f"{self.spec['spec_id']} after its controller exits, then rerun stop --all",
+                              result.stderr)
+                self.assertTrue(c.recorded(self.plan))
+                self.assertEqual(c.removed(), [])
 
 
 class DefaultOrderRetire(Cluster):
