@@ -47,9 +47,9 @@ def ring_inventory(*services):
 
 def recipe(nodes=2, **fields):
     """A ready recipe on NODES nodes whose files have their home on this machine."""
-    return checked(geometry={"nodes": nodes, "tp": nodes, "pp": 1},
-                   home={"node_id": IDS[0], "path": "/fixture/home", "verified_at": "2026-09-05T00:00:00Z"},
-                   local_state="ready", **fields)
+    return checked(**{"geometry": {"nodes": nodes, "tp": nodes, "pp": 1},
+                      "home": {"node_id": IDS[0], "path": "/fixture/home", "verified_at": "2026-09-05T00:00:00Z"},
+                      "local_state": "ready", **fields})
 
 
 class RingHarness(Harness):
@@ -117,6 +117,92 @@ class NoPairQuestion(RingHarness):
                                            f"image stage {SPEC} --plan --json", f"start {SPEC} --dry-run --json",
                                            f"start {SPEC}"])
         self.assertIn("Serve org/model on fixture-ring-dorado and fixture-ring-bravo", result.stdout)
+
+
+QUESTION = "Which two neighbouring machines should serve org/model?"
+
+
+class PairQuestion(RingHarness):
+    """A two-node recipe on the ring asks which pair, then plans on it."""
+
+    def setUp(self):
+        super().setUp()
+        self.entries(recipe(2, local_state="missing"),
+                     recipe(1, spec_id=OTHER, model_id="org/other"))
+
+    def test_the_pairs_in_order_with_the_default_first(self):
+        result = self.run_menu(["0", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # At 80 columns a choice too wide goes on under its first line.
+        self.assertEqual(self.menus()[1], [
+            QUESTION,
+            f"{HOSTS[0]} and {HOSTS[1]}, API on {HOSTS[0]}; what",
+            "  Start uses when no machines are named; its model files are on",
+            f"  {HOSTS[0]}",
+            f"{HOSTS[0]} and {HOSTS[3]}, API on {HOSTS[0]}; its",
+            f"  model files are on {HOSTS[0]}",
+            f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}",
+            f"{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}",
+            "Back"])
+        self.assertIn(f"{QUESTION}\t0", self.default_log.read_text().splitlines())
+        self.assert_plain_choices()
+
+    def test_backing_out_changes_nothing(self):
+        for answer in ("Back", "esc"):
+            with self.subTest(answer=answer):
+                for path in (self.log, self.choose_log, self.answers.with_suffix(".n")):
+                    path.unlink(missing_ok=True)
+                result = self.run_menu(["0", answer, "Back"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                # Back to the list, and nothing planned, prepared or started.
+                self.assertEqual(self.menus()[2][0], "Serve a model")
+                self.assertEqual(self.commands(), ["inventory --json"])
+
+    def test_the_default_pair_plans_as_the_menu_did_without_a_question(self):
+        self.fixture("prepare-plan", envelope(prepare_plan((IDS[0], "home-view"), (IDS[1], "copy"))))
+        self.fixture("prepare-plan", envelope(prepare_plan((IDS[0], "home-view"), (IDS[1], "copy"))), nth=2)
+        result = self.run_menu(["0", "0", "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["inventory --json", f"model prepare {SPEC} --plan --json",
+                                           f"image stage {SPEC} --plan --json", f"start {SPEC} --dry-run --json",
+                                           f"model prepare {SPEC} --plan --json", f"model prepare {SPEC} --yes",
+                                           f"start {SPEC}"])
+        self.assertIn(f"Serve org/model on {HOSTS[0]} and {HOSTS[1]}", result.stdout)
+
+    def test_the_pair_on_saved_ranks_2_and_3_reaches_prepare_and_start_in_that_order(self):
+        copy = prepare_plan((IDS[2], "copy"), (IDS[3], "copy"))
+        copy["actions"][0]["passes_through"] = [{"copies": "to", "node_id": IDS[2], "through": [IDS[1]]}]
+        self.fixture("prepare-plan", envelope(copy))
+        self.fixture("image-plan", envelope(image_plan((2, "ok"), (3, "missing"))))
+        # This machine does not serve, so its image is not observed: the image is pulled.
+        self.fixture("image-plan", envelope(image_plan((2, "ok"), (3, "missing"), mode="pull-exact-digest")), nth=2)
+        result = self.run_menu(["0", "3", "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        placement = f"--placement-nodes {HOSTS[2]},{HOSTS[3]}"
+        self.assertEqual(self.commands(), [
+            "inventory --json", f"model prepare {SPEC} {placement} --plan --json",
+            f"image stage {SPEC} {placement} --plan --json", f"start {SPEC} {placement} --dry-run --json",
+            f"model prepare {SPEC} {placement} --plan --json", f"model prepare {SPEC} {placement} --yes",
+            f"image stage {SPEC} {placement} --pull --plan --json", f"image stage {SPEC} {placement} --pull --yes",
+            f"start {SPEC} {placement}"])
+        text = " ".join(result.stdout.split())
+        # The choice again, in the plan's first line; the copy's route; the image on the pair's node.
+        self.assertIn(f"Serve org/model on {HOSTS[2]} and {HOSTS[3]} Pulsar will:", text)
+        self.assertIn(f"1. Copy the model files from {HOSTS[0]} to {HOSTS[2]} and {HOSTS[3]}. "
+                      f"Copies to {HOSTS[2]} pass through {HOSTS[1]}.", text)
+        self.assertIn(f"2. Pull the serving image on {HOSTS[3]} (exact digest, from its registry).", text)
+        self.assertIn(f"✓ Serving: org/model started on {HOSTS[2]} and {HOSTS[3]}.", text)
+        self.assertIn(f"Same as: ./pulsar model prepare abababababab {placement} --yes ./pulsar image stage "
+                      f"{SPEC} {placement} --pull --yes ./pulsar start abababababab {placement}", text)
+        self.assert_no_unapproved_authority()
+
+    def test_change_never_offers_another_machine_for_a_pair(self):
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (3, "missing"))))
+        result = self.run_menu(["0", "1", "Change…", "Back", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[3], ["Change the plan", "Pull the serving image from its registry instead",
+                                           "Back"])
+        self.assertEqual(self.ran(), [])
 
 
 def names_of(topology):

@@ -11,7 +11,11 @@
 #    list), from saved records and one service inventory, reused while it is
 #    under a minute old.
 # 3. A one-node recipe asks which machine serves it, starting where its files
-#    are; a multi-node recipe serves on the saved node order, as Start does.
+#    are. A two-node recipe on a saved ring asks which two neighbours serve
+#    it, starting on this machine and its rank-1 neighbour, the order Start
+#    uses when no machines are named; the plan then names the pair to
+#    Prepare, the image and Start (--placement-nodes) unless it is that order.
+#    Any other multi-node recipe serves on the saved node order, as Start does.
 # 4. The plan: the previews that can run now, composed into ordered steps
 #    (scripts/serve_plan.py compose). Cancel first, then Go ahead, Get it
 #    ready but do not start, Change… and Details.
@@ -255,18 +259,23 @@ read_cards() {
   done
 }
 
-# choose_node SPEC: a one-node recipe's machine, as its node_id; nothing for a
-# multi-node recipe. Returns 1 on Back, 130 on Ctrl-C.
+# choose_node SPEC: a one-node recipe's machine, as its node_id; a two-node
+# recipe's pair of neighbours on a ring, as their node_ids in role order
+# (ID,ID); nothing for any other recipe, which serves on the saved node order.
+# A choice too wide continues on "line" rows. Returns 1 on Back, 130 on Ctrl-C.
 choose_node() {
   local spec="$1" kind first second title="" default="" start="" index
-  local -a ids=() labels=()
+  local -a ids=() labels=() inventory=()
+  # What runs on each pair, from the capture the list used; nothing when it failed.
+  [ -n "$INVENTORY_ERROR" ] || [ ! -s "$INVENTORY" ] || inventory=(--inventory "$INVENTORY")
   while IFS=$'\t' read -r kind first second; do
     case "$kind" in
       title) title=$first ;;
       default) default=$first ;;
       node) ids+=("$first"); labels+=("$second") ;;
+      line) [ "${#labels[@]}" -eq 0 ] || labels[-1]+=$'\n'"$first" ;;
     esac
-  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec")
+  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec" "${inventory[@]}")
   [ "${#ids[@]}" -gt 0 ] || return 0
   for index in "${!ids[@]}"; do [ "${ids[$index]}" != "$default" ] || start=$index; done
   index=$(PULSAR_CHOOSE_DEFAULT="$start" choose_index "$title" "${labels[@]}" "Back") || return $?
@@ -378,7 +387,8 @@ change_menu() {
       destination) destinations+=("$a"); names+=("$b") ;;
     esac
   done < <(serve_plan facts --plan "$PLAN")
-  if [ -n "$NODE" ]; then labels+=("Serve it on another machine…"); actions+=(node); fi
+  # A one-node recipe's machine; a pair of a two-node recipe is chosen again from the list.
+  if [ -n "$NODE" ] && [[ "$NODE" != *,* ]]; then labels+=("Serve it on another machine…"); actions+=(node); fi
   if [ "$files" = 1 ] && [ "$source" = restore ]; then
     labels+=("Download the files instead of restoring them"); actions+=(download)
   elif [ "$files" = 1 ] && [ "$archive" = 1 ]; then
@@ -393,7 +403,10 @@ change_menu() {
   elif [ "$copy" = 1 ] && [ "$image" = pull ]; then
     labels+=("Copy the serving image from this machine instead"); actions+=(copy)
   fi
-  if [ "${#labels[@]}" -eq 0 ]; then
+  if [ "${#labels[@]}" -eq 0 ] && [[ "$NODE" == *,* ]]; then
+    printf '\nNothing else in this plan can be changed. To serve it on another pair, choose Cancel and the recipe again.\n' | text
+    return 0
+  elif [ "${#labels[@]}" -eq 0 ]; then
     printf '\nNothing in this plan can be changed: it serves on the saved node order.\n' | text
     return 0
   fi
