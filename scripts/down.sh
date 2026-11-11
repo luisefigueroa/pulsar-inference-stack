@@ -53,9 +53,9 @@ load_cluster_topology || die "confirmed topology is required for safe stop"
 # and 'nondefault' or 'default' placement. Ordinary stop's default-placement
 # ownership cannot address a nondefault placement: such a service, and a
 # guarded trial whose controller has exited, is stopped on the bindings its
-# record names (stop_recorded_service). So is an ordinary multi-node record
-# saved under an earlier saved cluster, whatever its node order: the label stop
-# cannot clear it.
+# record names (stop_recorded_service). So is any record saved under an earlier
+# saved cluster, one-node or multi-node, whatever its node order: the label
+# stop cannot clear it.
 recorded_rows() {
   python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$TARGET" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_STOP'
 import sys
@@ -66,9 +66,9 @@ for row in store.records('services'):
     if target!='--all' and row['selected_spec_id']!=target:continue
     plan=validate_plan(store.get('service-plans',row['plan_id']))
     nondefault=len(plan['ranks'])>1 and [rank['node_id'] for rank in plan['ranks']]!=confirmed[:len(plan['ranks'])]
-    # A record of an earlier saved cluster, ordinary or a guarded trial's, is
-    # cleared on its own path, never by the label sweep.
-    nondefault=nondefault or (len(plan['ranks'])>1 and plan['topology_id']!=topology)
+    # A record of an earlier saved cluster, one-node or multi-node, ordinary
+    # or a guarded trial's, is cleared on its own path, never by the label sweep.
+    nondefault=nondefault or plan['topology_id']!=topology
     if nondefault or plan.get('guard_run_id'):
         hosts=', '.join(rank.get('hostname') or rank['node_id'] for rank in plan['ranks'])
         # '-' marks a plan without a guarded run; tab-separated read would drop an empty field.

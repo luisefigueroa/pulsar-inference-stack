@@ -241,6 +241,86 @@ class StopAllSpeaksForWhatItChecked(Cluster):
         self.assertEqual(result.stdout.splitlines()[-1], 'clean — no stack-managed containers remain')
 
 
+class OneNodeRecordsOfAnEarlierCluster(Cluster):
+    """A one-node record of an earlier saved cluster is cleared under the same
+    rule as a multi-node one: Stop retires it once every node of this cluster
+    was observed and none holds its container. Its spec need not be in the
+    catalog. A node that was not observed is not absence: the record stays."""
+
+    def record(self, position=2, *, catalog=False):
+        c = self.cluster
+        spec, manifest = c.spec(1, 3, catalog=catalog)
+        return spec, c.plan(spec, manifest, [position], topology_id='e' * 64)
+
+    def test_no_container_left_retires_it_with_stop_spec_and_with_stop_all(self):
+        c = self.cluster
+        for command in (lambda spec: ('stop', spec['spec_id']), lambda spec: ('stop', '--all', '--yes')):
+            spec, plan = self.record()
+            c.write()
+            with self.subTest(command=command(spec)[1]):
+                result = c.pulsar(*command(spec))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Spec {spec['spec_id'][:12]}'s service was recorded under an earlier saved cluster and "
+                              'has no container on any node of this one; retired its stale service record.',
+                              ' '.join(result.stdout.split()))
+                self.assertFalse(c.recorded(plan))
+                self.assertEqual(c.removed(), [])
+
+    def test_a_container_still_there_is_kept_with_the_record(self):
+        c = self.cluster
+        spec, plan = self.record()
+        (left,) = c.run(plan, state='exited')
+        for args in (('stop', spec['spec_id']), ('stop', '--all', '--yes')):
+            with self.subTest(args=args):
+                result = c.pulsar(*args)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"its container {left['id'][:12]} on {c.hostname(2)} is still there. Pulsar does not "
+                              'remove containers of an earlier saved cluster, so nothing was removed and the record '
+                              f"is kept. Next: remove that container with Docker on its node (docker rm -f "
+                              f"{left['id'][:12]})", ' '.join(result.stderr.split()))
+                self.assertTrue(c.recorded(plan))
+                self.assertEqual(c.removed(), [])
+        # Once it is removed with Docker, Stop retires the record.
+        c.containers = []
+        c.write()
+        result = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(c.recorded(plan))
+
+    def test_a_node_that_could_not_be_checked_keeps_the_record(self):
+        c = self.cluster
+        spec, plan = self.record()
+        c.write()
+        # Its node is in the saved cluster but does not answer.
+        for args in (('stop', spec['spec_id']), ('stop', '--all', '--yes')):
+            with self.subTest(args=args):
+                result = c.pulsar(*args, SERVICE_UNREACHABLE=c.node_id(2))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(c.hostname(2), result.stderr)
+                self.assertTrue(c.recorded(plan))
+        # Its node is not in the saved cluster any more.
+        from scripts.container_runtime import service_identifier
+        from scripts.service_state import save
+        from support.service_cluster import replanned
+        c.store.remove('services', plan['service_id'])
+        ranks = [dict(plan['ranks'][0], node_id='fixture-ring-node-9', hostname='fixture-ring-gone',
+                      ssh_host='ring-gone')]
+        gone = replanned(plan, ranks=ranks, service_id=service_identifier(spec['spec_id'], 'e' * 64,
+                                                                            ['fixture-ring-node-9']))
+        save(c.store, gone)
+        for args in (('stop', spec['spec_id']), ('stop', '--all', '--yes')):
+            with self.subTest(args=args, outside=True):
+                result = c.pulsar(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"warning: spec {spec['spec_id'][:12]}'s service was recorded under an earlier saved "
+                              'cluster on fixture-ring-gone, which is not in the saved cluster, so Pulsar could not '
+                              'check that machine and kept the record.', ' '.join(result.stderr.split()))
+                self.assertNotIn('retired', result.stdout)
+                self.assertTrue(c.recorded(gone))
+        self.assertEqual(result.stdout.splitlines()[-1], 'clean — no stack-managed containers remain on the nodes of '
+                                                         'the saved cluster; the machines named above were not checked')
+
+
 class WhatRetiringDid(Cluster):
     """Stop says what retiring a record did: retired it, found it already
     retired, or found the service's record naming another plan and kept it."""

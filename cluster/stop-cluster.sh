@@ -38,17 +38,17 @@ if [ "$ARG" = --all ]; then
   # First each ordinary service recorded off the default node order, on the
   # nodes its record names and with the same proofs as stop SPEC. Guarded
   # trials of this saved cluster keep their own path: scripts/down.sh refuses
-  # --all while one is recorded off the default order. Each multi-node record
-  # of an earlier saved cluster, ordinary or a guarded trial's, is cleared when
-  # none of its containers is on any node of this cluster; a container still
-  # there is reported, the record is kept, and the sweep below judges that
-  # container by its labels.
+  # --all while one is recorded off the default order. Each record of an
+  # earlier saved cluster, one-node or multi-node, ordinary or a guarded
+  # trial's, is cleared when none of its containers is on any node of this
+  # cluster; a container still there is reported, the record is kept, and the
+  # sweep below judges that container by its labels.
   if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
 import sys
 from model_library.state import Store
 from scripts.service_state import off_default_order, recorded_bindings
 for item in recorded_bindings(Store(sys.argv[1])):
-    earlier = len(item['node_ids']) > 1 and item['topology_id'] != sys.argv[2]
+    earlier = item['topology_id'] != sys.argv[2]
     if earlier or (not item['guarded'] and off_default_order(item['node_ids'], sys.argv[3:])):
         print(item['selected_spec_id'], item['plan_id'], 'earlier' if earlier else 'current', sep='\t')
 PY_RECORDED

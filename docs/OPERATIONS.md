@@ -1251,16 +1251,18 @@ retired, and the output says so. A container with the service's name but
 another launch plan is left and named, and `--node` is refused for such a
 service.
 
-A record saved under an earlier saved cluster, an ordinary service's or a
-guarded trial's whose controller has exited, names containers whose labels
-name that cluster, so Pulsar never removes them. Stop looks on every node of
-the current cluster for the recorded container: its recorded name and launch
-plan, and for a guarded trial its guard-run as well. When every node answers
-and none has it, Stop retires that record only and says so; a guarded trial's
-run directory keeps its own result. When one is found, Stop removes nothing,
-keeps the record, and names the container, its node, the `docker rm -f`
-command that removes it, and the stop to rerun. When a node does not answer,
-nothing changes. A running guarded controller is still refused first.
+A record saved under an earlier saved cluster, a one-node or multi-node
+service's or a guarded trial's whose controller has exited, names containers
+whose labels name that cluster, so Pulsar never removes them. Stop looks on
+every node of the current cluster for the recorded container: its recorded
+name and launch plan, and for a guarded trial its guard-run as well. When every
+node answers and none has it, Stop retires that record only and says so; a
+guarded trial's run directory keeps its own result. When one is found, Stop
+removes nothing, keeps the record, and names the container, its node, the
+`docker rm -f` command that removes it, and the stop to rerun. When a node does
+not answer, nothing changes. A one-node record whose machine is no longer in
+the saved cluster was not checked, so Stop keeps it and names that machine. A
+running guarded controller is still refused first.
 
 Stopping one spec asks no confirmation. To stop every Stack-managed service on
 all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
