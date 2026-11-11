@@ -1000,6 +1000,14 @@ question adds `This service was started outside this catalog.` It is offered
 only when the inventory established safe ownership and every confirmed node
 answered.
 
+Inventory and Stop ask the same ownership question of every container. For a
+service whose saved launch record places it off the default node order (see
+[Stop and reclaim storage](#stop-and-reclaim-storage)), each container is
+judged against that record: its name, launch plan and spec, and the node and
+saved cluster its labels name. A service that matches reads as running on the
+nodes its record names, and Stop is offered; one that does not is a mismatch,
+with the reason in `inventory --json`.
+
 The frame names, one line each, the containers this menu cannot act on, by
 what they serve, their state and their owner, such as `vllm-port80 · running ·
 not started by Pulsar · read-only`, and the unmanaged GPU processes with
@@ -1179,12 +1187,32 @@ Stop a service independently of storage cleanup:
 ./pulsar stop <spec-id> --node <node>
 ```
 
-Omit `--node` for a multi-node service. For a guarded trial, follow its
+Omit `--node` for a multi-node service: it stops on all its nodes together.
+For a guarded trial, follow its
 [owned stop procedure](GUARDED_SERVING.md#observe-and-stop).
+
+Start places a multi-node service in the default node order: rank N on the
+node saved at position N of membership, this node first. Stop finds such a
+service's containers there by their labels. A service whose saved launch
+record places it on other nodes is stopped on exactly the nodes that record
+names. Stop first checks that every confirmed node answers. On each recorded
+node it removes only the container with the recorded name and launch plan
+whose labels name that node and the saved cluster. It removes nothing when a
+node does not answer, membership changed, or such a container does not match
+its record, and says why. It retires the service's record only after each
+recorded node shows its container gone; a record with no container left is
+retired, and the output says so. A container with the service's name but
+another launch plan is left and named, and `--node` is refused for such a
+service.
 
 Stopping one spec asks no confirmation. To stop every Stack-managed service on
 all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
-and still runs until CLI contract 2 requires it.
+and still runs until CLI contract 2 requires it. It stops each service recorded
+off the default node order first, as above, then every other Stack-managed
+container. A container off the default order that no record names is left:
+the output names it, its node and the reason, and stop exits with status 1.
+While a guarded trial is recorded off the default order, `stop --all` refuses
+and names it.
 
 In the menu, **Running services… → Stop…** and **Stop every service…** run
 these commands after the same questions as before: Stop's names the nodes the
