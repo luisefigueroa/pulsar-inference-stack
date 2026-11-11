@@ -184,10 +184,13 @@ if args[:1] == ["run"]:
 if args[:2] == ["logs", "--tail"]:
     trace("docker logs")
     find(args[3])
-    # SERVICE_LOG_TEXT: the engine's log on the nodes in SERVICE_LOG_NODES (default: every node).
+    # SERVICE_LOG_TEXT: the engine's log on the nodes in SERVICE_LOG_NODES (default:
+    # every node), followed by SERVICE_LOG_AFTER more lines; the last --tail N are shown.
     shown = os.environ.get("SERVICE_LOG_NODES")
     if os.environ.get("SERVICE_LOG_TEXT") and (not shown or node in shown.split(",")):
-        print(os.environ["SERVICE_LOG_TEXT"])
+        lines = [os.environ["SERVICE_LOG_TEXT"]] + [f"fixture API server traceback line {index}"
+                                                    for index in range(int(os.environ.get("SERVICE_LOG_AFTER", "0")))]
+        print("\n".join(lines[-int(args[2]):]))
     else:
         print("fixture engine log line")
     sys.exit(0)

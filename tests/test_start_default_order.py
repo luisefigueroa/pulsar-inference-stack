@@ -160,9 +160,11 @@ class DefaultOrder(Scenario):
         spec, _ = c.spec(2)
         refusal = ("ValueError: Free memory on device cuda:0 (86.66/121.69 GiB) on startup is less than desired "
                    "GPU memory utilization (0.75, 91.27 GiB)")
-        # Rank 0's engine refuses at its startup and its container exits.
+        # Rank 0's engine refuses at its startup and its container exits; the
+        # API server's own traceback follows, past the 80 lines shown.
         result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_HEALTHY='none', SERVICE_RUN_EXITS=c.node_id(0),
-                         SERVICE_LOG_TEXT=f'(EngineCore_DP0 pid=7) {refusal}', SERVICE_LOG_NODES=c.node_id(0))
+                         SERVICE_LOG_TEXT=f'(EngineCore_DP0 pid=7) {refusal}', SERVICE_LOG_NODES=c.node_id(0),
+                         SERVICE_LOG_AFTER='150')
         self.assertEqual(result.returncode, 1)
         lines = self.lines(result, spec)
         self.assertIn('FAILED container_exited: fixture-ring-dorado (rank 0): the service container exited before '
@@ -171,6 +173,10 @@ class DefaultOrder(Scenario):
         self.assertIn(f'engine on fixture-ring-dorado (rank 0): {refusal}', lines)
         self.assertIn('The engine measures free GPU memory when it starts, and that reading varies from one start '
                       'to the next, so a retry can pass.', lines)
+        # The last 80 lines are shown, as before; the quote comes from the deeper read.
+        self.assertIn('fixture API server traceback line 149', lines)
+        self.assertNotIn('fixture API server traceback line 69', lines)
+        self.assertEqual(sum(refusal in line for line in lines), 1)
         # The log was read before the clean-up removed the container, once.
         trace = self.trace()
         self.assertLess(trace.index('node-0 docker logs'), trace.index('node-0 docker rm by id'))

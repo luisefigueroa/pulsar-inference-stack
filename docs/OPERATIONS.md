@@ -1558,8 +1558,9 @@ container remains, or the record was there before this start, the record is
 kept, and one line says so, why, and names `./pulsar stop <spec-id>`, which
 clears it. An interrupted start removes nothing and keeps its record.
 
-When a failed rank's container log, read before the clean-up removes the
-container, holds the engine's own refusal for free GPU memory at its startup
+When a failed rank's container log (its last 400 lines, read once before the
+clean-up removes the container; the last 80 or 120 are shown, as before) holds
+the engine's own refusal for free GPU memory at its startup
 (vLLM's `Free memory on device … on startup is less than desired GPU memory
 utilization`), Start quotes that line once with the node and rank and says
 that the engine measures free GPU memory when it starts, that the reading

@@ -550,10 +550,12 @@ for _attempt in $(seq 1 "$WAIT_LIMIT"); do
     case "${RANK_STATES[rank]}" in
       exited)
         error_line "the rank $rank container on $(role_name "$rank") exited before the service became healthy; last logs:"
-        # Read once, before the clean-up removes the container, and shown as before.
+        # Read once, before the clean-up removes the container, deep enough to
+        # reach the engine's error above the API server's own traceback; the
+        # last 80 lines are shown, as before.
         rank_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-rank-log.XXXXXX")
-        docker_for_role "$rank" logs --tail 80 "$CONTAINER" >"$rank_log" 2>&1 || true
-        cat "$rank_log" >&2
+        docker_for_role "$rank" logs --tail "${ENGINE_LOG_LINES:-400}" "$CONTAINER" >"$rank_log" 2>&1 || true
+        tail -n 80 "$rank_log" >&2
         cluster_abort "rank $rank exited during health wait"
         cluster_failure container_exited "$rank" --no-command --note "The cluster's containers were removed; the logs are shown above."
         engine_memory_refusal "$(role_name "$rank") (rank $rank)" "$rank_log" || true
@@ -582,8 +584,8 @@ for ((rank = 0; rank < NODES; rank++)); do
     log "rank $rank logs (${host:-$(role_name "$rank")}):" >&2
   fi
   rank_logs[rank]=$(mktemp "${TMPDIR:-/tmp}/pulsar-rank-log.XXXXXX")
-  docker_for_role "$rank" logs --tail 120 "$CONTAINER" >"${rank_logs[rank]}" 2>&1 || true
-  cat "${rank_logs[rank]}" >&2
+  docker_for_role "$rank" logs --tail "${ENGINE_LOG_LINES:-400}" "$CONTAINER" >"${rank_logs[rank]}" 2>&1 || true
+  tail -n 120 "${rank_logs[rank]}" >&2
 done
 cluster_abort "health wait timed out"
 cluster_failure health_timeout 0 --no-command --note "The cluster's containers were removed; the logs are shown above."

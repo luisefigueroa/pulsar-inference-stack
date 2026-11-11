@@ -3763,6 +3763,9 @@ check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 # once with WHERE (the node and rank) and say what it means, on stderr. Start's
 # own memory check is separate and unchanged. Returns 1 when the log has no
 # such line.
+# How many of a failed rank's last log lines Start reads for it: more than it
+# shows, since the engine's error sits above the API server's own traceback.
+ENGINE_LOG_LINES="${ENGINE_LOG_LINES:-400}"
 engine_memory_refusal() {
   local where="$1" line
   line=$(grep -m1 -E 'Free memory on device .* on startup is less than desired GPU memory utilization' "$2" 2>/dev/null \
