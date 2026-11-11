@@ -15,14 +15,17 @@ SCRIPT_NAME=cluster
 . "$REPO_DIR/scripts/lib.sh"
 
 case "${1:-}" in -h|--help)
-  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
+  echo 'usage: start-cluster.sh SPEC_ID [--spec-file FILE] [--override-file FILE] [--memory-estimate-file FILE] [--memory-estimate-id ID] [--placement-nodes LIST] [--launch-plan-id ID] [--replace] [--dry-run] [--skip-preflight] [--skip-warmup]'
   echo 'The spec fixes geometry and recipe; every selected node must be verified.'
+  echo 'LIST names the nodes in role order, as scripts/up.sh resolved them; ID is the'
+  echo 'launch plan up.sh checked: a launch whose own plan differs starts nothing.'
   exit 0 ;;
 esac
 MODEL_NAME="${1:?usage: cluster/start-cluster.sh SPEC_ID [options]}"
 shift
 unset PULSAR_MEMORY_ESTIMATE_JSON
 MEMORY_ESTIMATE_FILE="" MEMORY_ESTIMATE_FROZEN="" MEMORY_ESTIMATE_ID=""
+PLACEMENT_NODES="" EXPECTED_PLAN_ID=""
 SPEC_MODE=auto
 SKIP_PREFLIGHT=0
 SKIP_WARMUP=0
@@ -34,6 +37,8 @@ while [ $# -gt 0 ]; do
     --memory-estimate-id) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--memory-estimate-id requires a digest" 2; MEMORY_ESTIMATE_ID="$2"; shift ;;
     --memory-estimate-frozen) [ "$#" -ge 2 ] && [ -n "$2" ] || die "internal memory estimate is missing" 2; MEMORY_ESTIMATE_FROZEN="$2"; shift ;;
     --accept-memory-warn) export PULSAR_ACCEPT_MEMORY_WARN=1 ;;
+    --placement-nodes) [ "$#" -ge 2 ] && [ -n "$2" ] || die "--placement-nodes requires an ordered node list" 2; PLACEMENT_NODES="$2"; shift ;;
+    --launch-plan-id) [ "$#" -ge 2 ] && [[ "$2" =~ ^[0-9a-f]{64}$ ]] || die "--launch-plan-id requires a launch plan ID" 2; EXPECTED_PLAN_ID="$2"; shift ;;
     --override-file) [ "$#" -ge 2 ] || die "--override-file requires a JSON file" 2; export PULSAR_OVERRIDE_FILE="$2"; shift ;;
     --spec-file) [ "$#" -ge 2 ] || die "--spec-file requires a file" 2; export PULSAR_SPEC_FILE="$2"; shift ;;
     --spec-decode) set_spec_decode_mode SPEC_MODE on ;;
@@ -109,8 +114,23 @@ if [ "$NODES" -le 1 ]; then
   echo "spec ${MODEL_NAME:0:12} is a single-node spec; use ./pulsar start" >&2
   exit 1
 fi
+# One role-to-node map for the whole launch: role rank r runs on the node at
+# saved position SERVING_NODE_INDEXES[r], the same resolution scripts/up.sh
+# made from the same --placement-nodes (the default order without it).
+resolve_serving_placement "" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
 require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
   || exit 1
+
+# require_expected_plan — the plan this launch built must be the one start
+# checked; otherwise nothing is started.
+require_expected_plan() {
+  local actual
+  [ -n "$EXPECTED_PLAN_ID" ] || return 0
+  actual=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_id"])' "$PLAN_FILE") \
+    || die "the launch plan cannot be read; nothing was started"
+  [ "$actual" = "$EXPECTED_PLAN_ID" ] \
+    || die "the launch plan differs from the one start checked (${actual:0:12}, not ${EXPECTED_PLAN_ID:0:12}): its nodes or files changed since. Nothing was started. Next: rerun ./pulsar start"
+}
 
 LIBRARY_VIEW_HUB_PATH=""
 LIBRARY_VIEW_CONTENT_DIGEST=""
@@ -138,6 +158,7 @@ trap 'rm -f "${PLAN_FILE:-}"' EXIT
 LAUNCH_ACTION=start
 [ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
+[ "$DRY_RUN" = 1 ] || require_expected_plan
 
 # Load docker argv for one rank from the shared launch plan. _DOCKER_CMD is
 # the output array. Bare docker is serialized to remote ranks; local rank 0
@@ -265,6 +286,7 @@ fi
 require_launch_memory_check
 # Rebuild from immediately rechecked files.
 write_launch_plan_file "$PLAN_FILE" "$LAUNCH_ACTION"
+require_expected_plan
 SERVICE_ID=$(launch_plan_service_id "$PLAN_FILE")
 for ((rank = 1; rank < NODES; rank++)); do
   build_docker_cmd "$rank"

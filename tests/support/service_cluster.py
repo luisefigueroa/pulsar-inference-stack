@@ -245,15 +245,21 @@ port_free() {
 }
 '''
 
-PREPARED = r'''import json, sys
+PREPARED = r'''import json, os, sys
 spec = json.load(open(sys.argv[1]))
 topology, ids = sys.argv[2], sys.argv[3:]
+# SERVICE_PREPARED_DRIFT: from the second reading on, the copies are elsewhere,
+# as when files change between Start's checks and its launcher.
+counter = os.path.join(os.environ["SERVICE_FIXTURE"], "prepared-readings")
+count = int(open(counter).read()) + 1 if os.path.exists(counter) else 1
+open(counter, "w").write(str(count))
+hub = "/var/tmp/fixture-moved" if os.environ.get("SERVICE_PREPARED_DRIFT") and count > 1 else "/var/tmp/fixture-hub"
 manifest = spec["recipe"]["model"]["snapshot_manifest"]["manifest_id"]
 commit = spec["recipe"]["model"]["model_commit"]
 print(json.dumps(dict(schema_version=1, kind="pulsar-prepared-set", spec_id=spec["spec_id"], topology_id=topology,
                       snapshot_manifest_id=manifest, revision=commit, home_node_id=ids[0],
-                      ranks=[dict(rank=r, node_id=node, hub_path=f"/var/tmp/fixture-hub-{r}",
-                                  path=f"/var/tmp/fixture-hub-{r}/snapshots/{commit}") for r, node in enumerate(ids)])))
+                      ranks=[dict(rank=r, node_id=node, hub_path=f"{hub}-{r}",
+                                  path=f"{hub}-{r}/snapshots/{commit}") for r, node in enumerate(ids)])))
 '''
 
 
@@ -457,7 +463,7 @@ class ServiceCluster:
 
     def forget_calls(self):
         for name in ('docker-calls.jsonl', 'ssh-calls.jsonl', 'runs.jsonl', 'curl-calls.jsonl', 'checks.log',
-                     'trace.log',
+                     'trace.log', 'prepared-readings',
                      'mutations.jsonl', 'blockers.jsonl'):
             (self.root / name).unlink(missing_ok=True)
 

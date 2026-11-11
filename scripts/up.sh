@@ -689,8 +689,12 @@ if [ "$NODES" -gt 1 ]; then
   log "starting exact $NODES-node cluster…"
   SERVICE_NODE="$(human_node_name 0)" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[0]:-}"
   START_PHASE=cluster
+  # The launcher resolves the same placement and must build this same plan.
+  checked_plan_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_id"])' "$PLAN_FILE" \
+    2>/dev/null) || checked_plan_id=""
+  [ -z "$checked_plan_id" ] || launch_flags+=(--launch-plan-id "$checked_plan_id")
   "$REPO_DIR/cluster/start-cluster.sh" "$NAME" \
-    ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}"
+    ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}" "${PLACEMENT_ARGS[@]}"
 else
   log "starting single-node…"
   SERVICE_NODE="${SINGLE_NODE_HOSTNAME:-}" SERVICE_NODE_ID="${SINGLE_NODE_ID:-}"
