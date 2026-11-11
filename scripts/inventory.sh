@@ -1470,6 +1470,7 @@ else
   INV_JSON_PATH="$inv_json_path" INV_VERBOSE="$VERBOSE" python3 - <<'PY'
 import json
 import os
+from scripts.service_state import earlier_cluster_note, left_from_earlier_cluster
 from scripts.terminal_format import TerminalWriter
 
 with open(os.environ["INV_JSON_PATH"], encoding="utf-8") as f:
@@ -1624,6 +1625,10 @@ def print_service(s):
             field("source", f"{g.get('status') or '?'} · {source}", indent=4)
         for reason in r.get("reasons") or []:
             field("reason", reason, indent=4)
+        # Said only here: the JSON keeps its reasons as they are.
+        if left_from_earlier_cluster(r.get("labels"), inv.get("topology_id")):
+            field("reason", earlier_cluster_note(r.get("container_id") or r.get("container_id_short") or ""),
+                  indent=4)
     for reason in s.get("reasons") or []:
         field("reason", reason)
 

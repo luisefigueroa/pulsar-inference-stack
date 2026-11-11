@@ -94,7 +94,12 @@ PY_RECORDED
       exit 0
       ;;
     2)
-      warn "some candidates were refused (unknown spec or rank placement)"
+      if [ "${SWEEP_OTHER_REFUSED:-0}" = 0 ] && [ "${SWEEP_EARLIER_REFUSED:-0}" -gt 0 ]; then
+        # Every refusal was a container of an earlier saved cluster, named above.
+        warn "the containers left from an earlier saved cluster named above were not removed"
+      else
+        warn "some candidates were refused (unknown spec or rank placement)"
+      fi
       ;;
     *)
       warn "managed cleanup reported an operational error"

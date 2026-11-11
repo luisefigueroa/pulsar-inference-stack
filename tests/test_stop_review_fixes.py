@@ -1,6 +1,7 @@
 """Stop under its lock, stop --all beside records of an earlier saved cluster,
 and what Stop says it did, on a saved four-node ring with the doubles of
 tests/support/service_cluster.py. Nothing here contacts a node."""
+import json
 from pathlib import Path
 import sys
 import tempfile
@@ -80,9 +81,12 @@ class StopAllBesideRecordsOfAnEarlierCluster(Cluster):
         for line in self.sweep:
             self.assertIn(line, lines(result))
         if refused:
-            # As 8c0c673 refused it, then said some candidates were refused.
+            # As 8c0c673 refused it. The record's pass named it already, so
+            # the sweep says it once more only in its closing line.
             self.assertIn(refused, lines(result))
-            self.assertIn('warning: some candidates were refused (unknown spec or rank placement)', lines(result))
+            self.assertIn('warning: the containers left from an earlier saved cluster named above were not removed',
+                          lines(result))
+            self.assertNotIn('left from an earlier saved cluster. Pulsar', result.stderr)
         else:
             self.assertIn('clean — no stack-managed containers remain', lines(result))
 
@@ -319,6 +323,55 @@ class OneNodeRecordsOfAnEarlierCluster(Cluster):
                 self.assertTrue(c.recorded(gone))
         self.assertEqual(result.stdout.splitlines()[-1], 'clean — no stack-managed containers remain on the nodes of '
                                                          'the saved cluster; the machines named above were not checked')
+
+
+class LeftoversOfAnEarlierCluster(Cluster):
+    """A container of an earlier saved cluster that no record names: stop
+    --all and inventory say it is left from an earlier saved cluster, that
+    Pulsar does not remove it, and the docker rm -f that does."""
+
+    def leftover(self):
+        c = self.cluster
+        spec, manifest = c.spec(1, 4, catalog=False)
+        plan = c.plan(spec, manifest, [2], topology_id='e' * 64, record=False)
+        (left,) = c.run(plan, state='exited')
+        return left
+
+    def test_stop_all(self):
+        c = self.cluster
+        left = self.leftover()
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"warning: container {left['id'][:12]} on {c.hostname(2)} is left from an earlier saved "
+                      'cluster. Pulsar does not remove containers of an earlier saved cluster, so it is not removed. '
+                      f"Next: remove that container with Docker on its node (docker rm -f {left['id'][:12]})",
+                      ' '.join(result.stderr.split()))
+        self.assertIn('warning: the containers left from an earlier saved cluster named above were not removed',
+                      lines(result))
+        self.assertNotIn('unknown spec or rank placement', result.stderr)
+        self.assertEqual(c.removed(), [])
+
+    def test_inventory(self):
+        c = self.cluster
+        left = self.leftover()
+        result = c.pulsar('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('reason left from an earlier saved cluster. Pulsar does not remove containers of an earlier '
+                      'saved cluster, so it is not removed. Next: remove that container with Docker on its node '
+                      f"(docker rm -f {left['id'][:12]})", text)
+        # The JSON keeps its reasons as they were.
+        (service,) = json.loads(c.pulsar('inventory', '--json').stdout)['services']
+        self.assertNotIn('earlier saved cluster', json.dumps(service))
+
+    def test_a_container_of_this_cluster_is_not_called_a_leftover(self):
+        c = self.cluster
+        spec, manifest = c.spec(1, 5, catalog=False)
+        c.run(c.plan(spec, manifest, [2], record=False), state='exited', labels={'io.pulsar.gb10.node-id': 'other'})
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertIn('unknown spec or rank placement', result.stderr)
+        self.assertNotIn('earlier saved cluster', result.stdout + result.stderr)
+        self.assertNotIn('earlier saved cluster', c.pulsar('inventory').stdout)
 
 
 class WhatRetiringDid(Cluster):

@@ -14,6 +14,40 @@ from scripts.container_runtime import validate_plan, PLAN_LABEL, PREFIX, SELECTE
 from release_spec.serving import load_json
 
 
+# The words Stop, inventory and Prepare use for a container left from an
+# earlier saved cluster, which Pulsar never removes: its labels name that
+# cluster, so Pulsar cannot prove it is its own. Stop's record pass
+# (stop_earlier_cluster_record in scripts/lib.sh) says the same.
+EARLIER_CLUSTER_KEPT = 'Pulsar does not remove containers of an earlier saved cluster'
+
+
+def earlier_cluster_removal(container_id):
+    """What removes a container of an earlier saved cluster: Docker on its node."""
+    return f'remove that container with Docker on its node (docker rm -f {str(container_id)[:12]})'
+
+
+def earlier_cluster_note(container_id):
+    """The explanation for one such container, as a clause after its name."""
+    return (f'left from an earlier saved cluster. {EARLIER_CLUSTER_KEPT}, so it is not removed. '
+            f'Next: {earlier_cluster_removal(container_id)}')
+
+
+def earlier_cluster_fix(container_id):
+    """The same as a fix: the removal first, then why Pulsar leaves it."""
+    return (f'{earlier_cluster_removal(container_id)}: it is left from an earlier saved cluster, and '
+            f'{EARLIER_CLUSTER_KEPT}')
+
+
+def left_from_earlier_cluster(labels, topology_id):
+    """Whether LABELS are a Stack-managed container's whose saved cluster is
+    another than TOPOLOGY_ID. A container without a topology label is not
+    known to be of an earlier saved cluster."""
+    labels = labels if isinstance(labels, dict) else {}
+    cluster = labels.get(PREFIX + 'topology')
+    return (labels.get(PREFIX + 'managed') == 'true' and bool(cluster) and bool(topology_id)
+            and cluster != topology_id)
+
+
 class RecordedElsewhere(ValueError):
     """Saving an ordinary multi-node record while another service of the same
     spec is recorded: a spec runs as one service. HOSTS lists each other

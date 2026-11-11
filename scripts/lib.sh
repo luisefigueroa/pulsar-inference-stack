@@ -2847,6 +2847,8 @@ stop_earlier_cluster_record() {
     done <<<"$ids"
   done
   if [ "${#found[@]}" -gt 0 ]; then
+    # The sweep of stop --all then names no second time the container named here.
+    EARLIER_REPORTED_IDS="${EARLIER_REPORTED_IDS:-} ${found[0]%% on *}"
     error_line "$subject was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun $rerun"
     return 3
   fi
@@ -3113,6 +3115,7 @@ stop_named_service_by_labels() {
       if ! container_all_candidate_is_safe "$meta" "$placement"; then
         reason=$(container_all_refuse_reason "$meta" "$placement")
         warn "refusing $(conf_label_display "$conf") id=${id:0:12} on $(human_node_name "$index"): $reason"
+        report_refused_leftover "$meta" "$(human_node_name "$index")"
         return 2
       fi
       found_indices+=("$index")
@@ -3161,6 +3164,37 @@ stop_named_service_by_labels() {
   return 0
 }
 
+# earlier_cluster_leftover METADATA NODE — when ownership inspect METADATA is
+# a Stack-managed container whose labels name an earlier saved cluster, say
+# so, in the words of scripts/service_state.py, and return 0; otherwise print
+# nothing and return 1.
+earlier_cluster_leftover() {
+  python3 -c '
+import json, sys
+from scripts.service_state import earlier_cluster_note, left_from_earlier_cluster
+meta = json.loads(sys.argv[1])
+if not left_from_earlier_cluster(meta.get("labels"), sys.argv[3]):
+    raise SystemExit(1)
+cid = str(meta.get("id") or "")
+print("container", cid[:12], "on", sys.argv[2], "is", earlier_cluster_note(cid))
+' "$1" "$2" "${CLUSTER_TOPOLOGY_ID:-}" 2>/dev/null
+}
+
+# report_refused_leftover METADATA NODE — after the sweep refused a container:
+# one more warning when it is left from an earlier saved cluster, unless the
+# record pass already named it (EARLIER_REPORTED_IDS). Counts such refusals in
+# SWEEP_EARLIER_REFUSED and the others in SWEEP_OTHER_REFUSED.
+report_refused_leftover() {
+  local words id
+  if words=$(earlier_cluster_leftover "$1" "$2"); then
+    SWEEP_EARLIER_REFUSED=$((${SWEEP_EARLIER_REFUSED:-0} + 1))
+    id=$(printf '%s' "$1" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("id") or "")[:12])')
+    case " ${EARLIER_REPORTED_IDS:-} " in *" $id "*) ;; *) warn "$words" ;; esac
+  else
+    SWEEP_OTHER_REFUSED=$((${SWEEP_OTHER_REFUSED:-0} + 1))
+  fi
+}
+
 # Remove local --all candidates that are safe for head placement.
 # Exit 0 all ok; 1 operational error; 2 any refused candidate left intact.
 # Operational error (1) is sticky: later refusals must not overwrite it.
@@ -3190,6 +3224,7 @@ remove_all_stack_managed_local() {
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
       warn "refusing managed candidate id=${id:0:12} on $(human_node_name 0): $reason"
+      report_refused_leftover "$meta" "$(human_node_name 0)"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -3207,6 +3242,7 @@ remove_all_stack_managed_local() {
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
       warn "refusing id=$short on $(human_node_name 0) after revalidation: $reason"
+      report_refused_leftover "$meta" "$(human_node_name 0)"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -3251,6 +3287,7 @@ remove_all_stack_managed_remote() {
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
       warn "refusing managed candidate id=${id:0:12} on $host: $reason"
+      report_refused_leftover "$meta" "$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -3268,6 +3305,7 @@ remove_all_stack_managed_remote() {
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
       warn "refusing id=$short on $host after revalidation: $reason"
+      report_refused_leftover "$meta" "$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi

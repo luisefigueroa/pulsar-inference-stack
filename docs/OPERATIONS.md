@@ -1269,7 +1269,11 @@ all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
 and still runs until CLI contract 2 requires it. It stops each service recorded
 off the default node order first, as above, then every other Stack-managed
 container. A container off the default order that no record names is left:
-the output names it, its node and the reason, and stop exits with status 1.
+the output names it, its node and the reason, and stop exits with status 1. So
+is a container whose labels name an earlier saved cluster: the output says it
+is left from an earlier saved cluster, that Pulsar does not remove it, and the
+`docker rm -f` that removes it on its node. Inventory's page says the same
+under that container.
 While a guarded trial is recorded off the default order or under an earlier
 saved cluster, `stop --all` refuses and names it with the `./pulsar stop` that
 clears it.
