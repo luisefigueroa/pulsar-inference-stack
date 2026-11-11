@@ -217,5 +217,40 @@ class MachinesNotChecked(Cluster):
                 self.assertFalse(c.recorded(plan))
 
 
+class WhatRetiringDid(Cluster):
+    """Stop says what retiring a record did: retired it, found it already
+    retired, or found the service's record naming another plan and kept it."""
+
+    def stop_earlier(self, plan):
+        c = self.cluster
+        return c.bash(f"load_cluster_topology\nstop_earlier_cluster_record {plan['selected_spec_id']} "
+                      f"{plan['plan_id']} {plan['container_name']}")
+
+    def test_the_three_outcomes(self):
+        from support.service_cluster import replanned
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        plan = c.plan(spec, manifest, [2, 3], topology_id='e' * 64)
+        prefix = f"Spec {spec['spec_id'][:12]}'s service was recorded under an earlier saved cluster and has no " \
+                 'container on any node of this one; '
+        # Another plan of the same service is recorded now.
+        newer = replanned(plan, port=8001)
+        c.store.put('service-plans', newer['plan_id'], newer)
+        c.store.put('services', plan['service_id'], dict(c.store.get('services', plan['service_id']),
+                                                         plan_id=newer['plan_id']))
+        result = self.stop_earlier(plan)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(prefix + 'its service record now names another launch plan, so it was kept.', result.stdout)
+        self.assertTrue(c.recorded(newer))
+        # The service's record names this plan again: it is retired.
+        c.store.put('services', plan['service_id'], dict(c.store.get('services', plan['service_id']),
+                                                         plan_id=plan['plan_id']))
+        result = self.stop_earlier(plan)
+        self.assertIn(prefix + 'retired its stale service record.', result.stdout)
+        # Nothing left to retire.
+        result = self.stop_earlier(plan)
+        self.assertIn(prefix + 'its stale service record was already retired.', result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

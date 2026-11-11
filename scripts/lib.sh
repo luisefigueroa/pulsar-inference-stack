@@ -2782,6 +2782,35 @@ print(str((json.load(sys.stdin).get("labels") or {}).get("io.pulsar.gb10.launch-
 '
 }
 
+# retire_recorded_plan PLAN_ID — retire the active record of that launch plan
+# (service_state.retire_plan) and print what happened: "retired"; "gone" when
+# no record of its service was left to retire; "other" when the record of its
+# service now names another launch plan, which is kept.
+retire_recorded_plan() {
+  python3 -c '
+import sys
+from model_library.state import Store
+from scripts.service_state import retire_plan
+store = Store(sys.argv[1])
+plan = store.get("service-plans", sys.argv[2])
+if retire_plan(store, plan):
+    print("retired")
+else:
+    print("gone" if store.get("services", plan["service_id"]) is None else "other")
+' "$PULSAR_MODEL_LIBRARY_DIR" "$1"
+}
+
+# retired_words OUTCOME [ADJECTIVE] — what retire_recorded_plan did, as the end
+# of a sentence: "retired its [stale ]service record".
+retired_words() {
+  local record="${2:+$2 }service record"
+  case "$1" in
+    retired) printf 'retired its %s' "$record" ;;
+    gone) printf 'its %s was already retired' "$record" ;;
+    *) printf 'its service record now names another launch plan, so it was kept' ;;
+  esac
+}
+
 # stop_earlier_cluster_record SPEC PLAN_ID NAME [RUN] — a service record saved
 # under an earlier saved cluster: an ordinary service's, or with RUN a guarded
 # trial's (the caller holds the exclusive lifecycle lock, so no guarded
@@ -2819,13 +2848,8 @@ stop_earlier_cluster_record() {
     error_line "$subject was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun $rerun"
     return 3
   fi
-  python3 -c '
-import sys
-from model_library.state import Store
-from scripts.service_state import retire_plan
-store = Store(sys.argv[1])
-retire_plan(store, store.get("service-plans", sys.argv[2]))
-' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" || {
+  local retired
+  retired=$(retire_recorded_plan "$plan_id") || {
     if [ "$run" != - ]; then
       error_line "the guarded trial's service record could not be retired. Next: ./pulsar inventory"
     else
@@ -2833,11 +2857,9 @@ retire_plan(store, store.get("service-plans", sys.argv[2]))
     fi
     return 1
   }
-  if [ "$run" != - ]; then
-    log "Guarded trial ${run:0:12} of spec ${spec:0:12} was recorded under an earlier saved cluster and has no container on any node of this one; retired its stale service record. The trial's run directory keeps its own result."
-  else
-    log "Spec ${spec:0:12}'s service was recorded under an earlier saved cluster and has no container on any node of this one; retired its stale service record."
-  fi
+  local subject_lead="Spec ${spec:0:12}'s service" tail=""
+  [ "$run" = - ] || subject_lead="Guarded trial ${run:0:12} of spec ${spec:0:12}" tail=" The trial's run directory keeps its own result."
+  log "$subject_lead was recorded under an earlier saved cluster and has no container on any node of this one; $(retired_words "$retired" stale).$tail"
   # Machines the record names that are no longer in the saved cluster (left
   # out, or reinstalled with a new identity) were not looked at.
   local outside
@@ -2984,13 +3006,8 @@ for row in plan["ranks"]:
       return 1
     fi
   done
-  python3 -c '
-import sys
-from model_library.state import Store
-from scripts.service_state import retire_plan
-store = Store(sys.argv[1])
-retire_plan(store, store.get("service-plans", sys.argv[2]))
-' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" || {
+  local retired
+  retired=$(retire_recorded_plan "$plan_id") || {
     if [ "$trial_run" != - ]; then
       error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"
     else
@@ -3002,15 +3019,15 @@ retire_plan(store, store.get("service-plans", sys.argv[2]))
   if [ "$removed" -gt 0 ]; then
     RECORDED_SERVICE_STOPPED=1
     if [ "$trial_run" != - ]; then
-      log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
+      log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and $(retired_words "$retired"). The trial's run directory keeps its own result."
     else
       ORDINARY_RECORDED_STOPPED=1
-      log "Stopped spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record."
+      log "Stopped spec ${spec:0:12} on $where: removed $removed container(s) and $(retired_words "$retired")."
     fi
   elif [ "$trial_run" != - ]; then
-    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; retired its stale service record. The trial's run directory keeps its own result."
+    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; $(retired_words "$retired" stale). The trial's run directory keeps its own result."
   else
-    log "Spec ${spec:0:12} had no container left on $where; retired its stale service record."
+    log "Spec ${spec:0:12} had no container left on $where; $(retired_words "$retired" stale)."
   fi
   for i in "${!left[@]}"; do
     warn "left container ${left[$i]}: it has the name of spec ${spec:0:12}'s service but another launch plan, so it is not that service's. Next: ./pulsar inventory"
