@@ -217,6 +217,30 @@ class MachinesNotChecked(Cluster):
                 self.assertFalse(c.recorded(plan))
 
 
+class StopAllSpeaksForWhatItChecked(Cluster):
+    """stop --all's closing line says clean only for what it looked at."""
+    outside_record = MachinesNotChecked.outside_record
+
+    def test_after_a_machine_was_not_checked(self):
+        c = self.cluster
+        self.outside_record(guarded=False)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('so Pulsar did not check it', ' '.join(result.stderr.split()))
+        self.assertEqual(result.stdout.splitlines()[-1], 'clean — no stack-managed containers remain on the nodes of '
+                                                         'the saved cluster; the machines named above were not checked')
+
+    def test_otherwise_unchanged(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        c.plan(spec, manifest, [2, 3], topology_id='e' * 64)
+        c.write()
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('did not check', result.stderr)
+        self.assertEqual(result.stdout.splitlines()[-1], 'clean — no stack-managed containers remain')
+
+
 class WhatRetiringDid(Cluster):
     """Stop says what retiring a record did: retired it, found it already
     retired, or found the service's record naming another plan and kept it."""

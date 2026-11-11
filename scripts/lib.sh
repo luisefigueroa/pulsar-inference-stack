@@ -2872,6 +2872,8 @@ names = [rank.get("hostname") or rank["node_id"] for rank in plan.get("ranks") o
 print(", ".join(dict.fromkeys(names)))
 ' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" "${CLUSTER_NODE_IDS[@]}") || outside="the machines it names"
   if [ -n "$outside" ]; then
+    # Read by stop --all's closing line, which then speaks for the saved cluster only.
+    EARLIER_UNCHECKED=1
     warn "the record also names $outside, which $( [[ "$outside" == *,* ]] && echo are || echo is ) not in the saved cluster, so Pulsar did not check $( [[ "$outside" == *,* ]] && echo them || echo it ); a container of this service left there is not removed by Pulsar. Next: remove it with Docker on that machine"
   fi
 }

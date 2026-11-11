@@ -86,7 +86,11 @@ PY_RECORDED
       retire_stopped_service_indexes --all
       # A container of an earlier saved cluster was left, as said above.
       [ "$earlier_left" = 0 ] || exit 1
-      log "clean — no stack-managed containers remain"
+      if [ "${EARLIER_UNCHECKED:-0}" = 1 ]; then
+        log "clean — no stack-managed containers remain on the nodes of the saved cluster; the machines named above were not checked"
+      else
+        log "clean — no stack-managed containers remain"
+      fi
       exit 0
       ;;
     2)
