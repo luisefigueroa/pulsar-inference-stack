@@ -87,6 +87,46 @@ class FirstNodeAddress(Cluster):
         self.assertEqual(self.cluster.calls()['curl'], ['http://127.0.0.1:8000/health'])
 
 
+KEY = 'fixture-secret-key-5f1e'
+
+
+class ApiKey(Cluster):
+    """The key goes where it goes for a one-node start on a remote node: the
+    docker run sent over SSH to the first node, and that container's
+    arguments; nowhere else."""
+
+    def test_the_key_reaches_only_the_first_node(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                               VLLM_API_KEY=KEY, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(KEY, result.stdout + result.stderr)
+        calls = c.calls()
+        to_nodes = [(node, command) for node, command in calls['ssh'] if KEY in command]
+        self.assertEqual([node for node, _ in to_nodes], [c.node_id(2)])
+        self.assertTrue(to_nodes[0][1].startswith('docker run '))
+        runs = {node: args for node, args in calls['runs']}
+        self.assertIn(KEY, runs[c.node_id(2)])
+        self.assertNotIn(KEY, ' '.join(runs[c.node_id(3)]))
+        self.assertFalse([args for node, args in calls['docker'] if node != c.node_id(2) and KEY in ' '.join(args)])
+        for path in (c.root / 'model-library').rglob('*'):
+            if path.is_file():
+                self.assertNotIn(KEY, path.read_text(errors='replace'), path)
+        for name in ('trace.log', 'checks.log'):
+            self.assertNotIn(KEY, (c.root / name).read_text())
+
+    def test_a_dry_run_prints_it_redacted(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--dry-run', '--placement-nodes',
+                               f'{c.hostname(2)},{c.hostname(3)}', VLLM_API_KEY=KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(KEY, result.stdout + result.stderr)
+        self.assertIn('--api-key \\<redacted\\>', result.stdout)
+        self.assertIn('rank 0 · ssh ring-echo · fixture-ring-echo', result.stdout)
+
+
 class LauncherOnTheMap(Cluster):
     """The launcher runs each role rank on its node: local Docker for this
     machine, SSH otherwise, the first node included; the other ranks first."""
