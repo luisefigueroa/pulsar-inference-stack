@@ -3750,6 +3750,27 @@ check_exit_convention() {
 }
 check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 
+# controller_holds_pinned_image — whether this machine's Docker holds the
+# spec's pinned image (IMAGE) as the image check verifies it: its identity,
+# the pinned repository@digest reference and arm64. Only then can image stage
+# copy it from here without --pull. Read-only; any failure answers no.
+controller_holds_pinned_image() {
+  local raw
+  raw=$("$PULSAR_DOCKER" image inspect --format '{{json .}}' "$IMAGE" 2>/dev/null) || return 1
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if isinstance(data, list) and len(data) == 1:
+    data = data[0]
+held = (isinstance(data, dict) and bool(data.get("Id")) and sys.argv[1] in (data.get("RepoDigests") or [])
+        and data.get("Architecture") == "arm64")
+raise SystemExit(0 if held else 1)
+' "$IMAGE"
+}
+
 # Launch scripts recheck under their own locks just before launch. The image
 # recheck runs first; with --replace the old service is removed before the
 # memory recheck, which cannot count memory that service still holds.

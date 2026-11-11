@@ -246,6 +246,14 @@ start_flags=()
 [ "$SKIP_PF" != 1 ] || start_flags+=(--skip-preflight)
 export START_BLOCKER_START_FLAGS="${start_flags[*]:-}"
 
+# Suggested follow-up commands name the node by hostname and a catalog spec by
+# its 12-character prefix when that prefix is unique; a candidate keeps its full ID.
+SUGGEST_SPEC="$NAME"
+if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; then
+  shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
+  [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
+fi
+
 # check_error FILE — the last "error:" line a check script printed, for a detail.
 check_error() {
   sed -nE 's/^(\[[^]]+\] )?error: //p' "$1" 2>/dev/null | tail -n1
@@ -402,7 +410,19 @@ else
       missing-on-worker|missing-on-rank|missing-on-head|missing-on-target|missing-both)
         if [ "$PULL_IMG" != 1 ]; then
           start_check fail image "${img_message:-the pinned image is missing${missing_on:+ on $missing_on}}"
-          blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}"
+          stage_note=()
+          if [ -n "$(image_ranks missing)" ] && controller_holds_pinned_image; then
+            # A copy from this machine, previewed first, on the same nodes.
+            stage_args=("$SUGGEST_SPEC")
+            [ -z "${PULSAR_SPEC_FILE:-}" ] || stage_args+=(--spec-file "$PULSAR_SPEC_FILE")
+            if [ "$NODES" -eq 1 ]; then
+              stage_args+=(--node "${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}")
+            else
+              stage_args+=(${PLACEMENT_ARGS[@]+"${PLACEMENT_ARGS[@]}"})
+            fi
+            stage_note=(--note "This machine holds the pinned image, so it can also be copied from here: ./pulsar image stage $(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "${stage_args[@]}") --plan, then the same command with --yes instead of --plan.")
+          fi
+          blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}" ${stage_note[@]+"${stage_note[@]}"}
         elif [ "$DRY" = 1 ]; then
           echo "INFO  image     missing${missing_on:+ on $missing_on}; --pull-image would stage it"
           start_check info image "missing${missing_on:+ on $missing_on}; --pull-image would stage it"
@@ -693,13 +713,6 @@ plan_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["s
 echo "PASS  plan      schema=$plan_schema ranks=$NODES; prerequisites checked separately"
 start_check pass plan "schema $plan_schema, $NODES rank(s)"
 
-# Suggested follow-up commands name the node by hostname and a catalog spec by
-# its 12-character prefix when that prefix is unique; a candidate keeps its full ID.
-SUGGEST_SPEC="$NAME"
-if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; then
-  shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
-  [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
-fi
 # Status and stop take --node for a one-node service and no placement for a
 # multi-node one, which they find from its record.
 SUGGEST_ARGS=()

@@ -1516,7 +1516,11 @@ checks early, because later checks need every node or would be distorted by
 the running service. A check that could not run is reported as such
 (`*_check_failed`), never as the condition it checks. With `--pull-image`, the
 image is staged only after every other check passes, so a start that is
-blocked anyway changes nothing.
+blocked anyway changes nothing. When the pinned image is missing on a serving
+node and this machine holds it, the `image_missing` line also offers a copy
+from this machine on the same nodes: `./pulsar image stage <spec-id>
+[--node <node> | --placement-nodes <list>] --plan`, then the same command with
+`--yes`.
 
 With `--replace`, start rechecks the image, removes the previous service
 (ownership still proven), then rechecks memory and the port before launching.

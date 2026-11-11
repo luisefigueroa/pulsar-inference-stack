@@ -73,6 +73,8 @@ resolve_library_hot_for_profile() { :; }
 write_launch_plan_file() { printf '{"schema_version": 5, "plan_id": "%s", "service_id": "%s"%s}\n' "${FIXTURE_PLAN_ID:-7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a}" "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
+# FIXTURE_CONTROLLER_IMAGE=1: this machine's Docker holds the pinned image.
+controller_holds_pinned_image() { [ "${FIXTURE_CONTROLLER_IMAGE:-0}" = 1 ]; }
 '''
 # Run the owning selector while keeping topology/transport boundaries synthetic.
 _source_lib = (ROOT/'scripts/lib.sh').read_text()
@@ -347,7 +349,8 @@ class StartScenarios(unittest.TestCase):
                                                    + lib_function("launch_plan_service_id"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
                            ("scripts/check-memory.sh", MEMORY),
-                           ("scripts/sync-image.sh", '#!/usr/bin/env bash\ntouch "$FIXTURE_DIR/synced"\n'),
+                           # Staging records the arguments it was given.
+                           ("scripts/sync-image.sh", '#!/usr/bin/env bash\necho "$*" >"$FIXTURE_DIR/synced"\n'),
                            ("serve.sh", LAUNCHER), ("cluster/start-cluster.sh", LAUNCHER),
                            ("cluster/preflight.sh", "#!/usr/bin/env bash\nexit 0\n"),
                            ("bin/curl", CURL), ("bin/docker", DOCKER)):
@@ -457,6 +460,22 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--pull-image")
         self.assertEqual(codes, ["model_files_not_ready"])  # from the first run only
         self.assertTrue(self.ran("synced"), result.stderr + result.stdout)
+
+    def test_a_missing_image_offers_a_copy_from_this_machine_when_it_holds_the_image(self):
+        for nodes, flags, selection in ((1, (), "--node spark-1 "), (2, (), "")):
+            with self.subTest(nodes=nodes):
+                self.reset()
+                result, codes = self.start(*flags, image="missing-on-rank", nodes=nodes, controller_image=1)
+                self.assertEqual(codes[0], "image_missing")
+                self.assertEqual(self.records[0]["note"],
+                                 "This machine holds the pinned image, so it can also be copied from here: "
+                                 f"./pulsar image stage {SPEC} {selection}--plan, then the same command with --yes "
+                                 "instead of --plan.")
+                self.assertIn(f"./pulsar image stage {SPEC} {selection}--plan", result.stdout)
+                # Without the image here, Start offers only --pull-image, as before.
+                self.reset()
+                self.start(*flags, image="missing-on-rank", nodes=nodes)
+                self.assertIsNone(self.records[0]["note"])
 
     def test_known_missing_image_is_reported_with_an_unreachable_node(self):
         result, codes = self.start(image="mixed")
