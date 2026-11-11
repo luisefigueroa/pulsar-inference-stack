@@ -118,6 +118,9 @@ fi
 # saved position SERVING_NODE_INDEXES[r], the same resolution scripts/up.sh
 # made from the same --placement-nodes (the default order without it).
 resolve_serving_placement "" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
+# Suggested start commands in records repeat the placement (start_blocker).
+PLACEMENT_ARGS=()
+[ -z "$PLACEMENT_NODES" ] || PLACEMENT_ARGS=(--placement-nodes "$PLACEMENT_NODES")
 # role_index R, role_host R, role_name R, role_id R — the saved position of
 # role rank R's node, its SSH host (empty when it is this machine, saved
 # position 0, which local Docker serves), its hostname and its node ID.

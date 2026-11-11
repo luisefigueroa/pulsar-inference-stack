@@ -366,6 +366,45 @@ class StartOnNamedNodes(Cluster):
                 self.assertEqual(self.trace(), [])
 
 
+class Suggestions(Cluster):
+    """No suggestion gives --placement-nodes to stop or status; a suggested
+    Start carries it."""
+
+    def test_the_catalog_of_blockers(self):
+        from scripts.start_blockers import blocker
+        spec = 'ab' * 32
+        placement = '--placement-nodes fixture-ring-echo,fixture-ring-alpha'
+        record = blocker('service_exists', spec=spec, placement=placement)
+        self.assertEqual(record['fix'], './pulsar status abababababab')
+        record = blocker('start_interrupted', spec=spec, placement=placement)
+        self.assertIn('To remove it: ./pulsar stop abababababab', record['note'])
+        self.assertNotIn('--placement-nodes', record['fix'] + record['note'])
+        record = blocker('container_exited', spec=spec, placement=placement, unconfirmed='fixture-ring-echo (rank 0)')
+        self.assertEqual(record['fix'], './pulsar stop abababababab')
+        self.assertEqual(blocker('image_missing', spec=spec, placement=placement)['fix'],
+                         f'./pulsar start abababababab {placement} --pull-image')
+        # One-node services keep their --node.
+        self.assertEqual(blocker('service_exists', spec=spec, placement='--node spark-2')['fix'],
+                         './pulsar status abababababab --node spark-2')
+
+    def test_ready_and_the_launchers_records(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = f'{c.hostname(2)},{c.hostname(3)}'
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [' '.join(line.split()) for line in result.stdout.splitlines()]
+        self.assertIn(f"status: ./pulsar status {spec['spec_id']}", lines)
+        self.assertIn(f"stop: ./pulsar stop {spec['spec_id']}", lines)
+        c.pulsar('stop', spec['spec_id'])
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='none',
+                         PULSAR_START_BLOCKERS_FILE=str(c.root / 'records.jsonl'))
+        from scripts import start_blockers
+        (record,) = start_blockers.read(c.root / 'records.jsonl')
+        self.assertEqual((record['blocker'], record['node']), ('health_timeout', 'fixture-ring-echo'))
+        self.assertNotIn('--placement-nodes', (record['fix'] or '') + (record['note'] or ''))
+
+
 class RecordsWithoutContainers(Cluster):
     """After a Start that failed once its plan was saved (the plan and record
     are saved just before the first docker run, and a failed launch keeps

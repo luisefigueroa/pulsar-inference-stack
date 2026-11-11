@@ -675,9 +675,13 @@ if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; the
   shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
   [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
 fi
-SUGGEST_ARGS=("${PLACEMENT_ARGS[@]}")
+# Status and stop take --node for a one-node service and no placement for a
+# multi-node one, which they find from its record.
+SUGGEST_ARGS=()
 if [ "${PLACEMENT_ARGS[0]:-}" = --node ] && [ -n "${SINGLE_NODE_HOSTNAME:-}" ]; then
   SUGGEST_ARGS=(--node "$SINGLE_NODE_HOSTNAME")
+elif [ "${PLACEMENT_ARGS[0]:-}" = --node ]; then
+  SUGGEST_ARGS=("${PLACEMENT_ARGS[@]}")
 fi
 
 if [ "$DRY" = 1 ]; then
