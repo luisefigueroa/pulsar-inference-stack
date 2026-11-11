@@ -1747,12 +1747,8 @@ if result_path:
 PYCODE
 }
 
-# persist_launch_plan_file PLAN_FILE [CREATED_FILE] — save the launch plan and
-# its service record; CREATED_FILE then holds "created" when this save made
-# the record, or "existed" when a record of the same service was there.
 persist_launch_plan_file() {
-  python3 "$REPO_DIR/scripts/service_state.py" save --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$1" \
-    ${2:+--created-file "$2"}
+  python3 "$REPO_DIR/scripts/service_state.py" save --state-root "$PULSAR_MODEL_LIBRARY_DIR" --plan "$1"
 }
 
 # launch_plan_service_id PLAN_FILE — the service ID a launch plan names, or

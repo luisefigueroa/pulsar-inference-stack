@@ -989,9 +989,9 @@ class ClusterCleanup(unittest.TestCase):
     """A multi-node launch failure says its containers were removed only when it
     confirmed that on every node."""
 
-    def failure(self, states, *args, replaced=False, saved=None, output=None):
-        """SAVED: what saving the launch record found ("created" or "existed");
-        OUTPUT, a list, receives the human lines."""
+    def failure(self, states, *args, replaced=False, saved=False, outcome="retired", output=None):
+        """SAVED: the launch record was saved; OUTCOME: what retiring it answers
+        (retire_recorded_plan); OUTPUT, a list, receives the human lines."""
         with tempfile.TemporaryDirectory() as temp:
             blockers = Path(temp) / "blockers.jsonl"
             script = "\n".join([
@@ -1002,7 +1002,7 @@ class ClusterCleanup(unittest.TestCase):
                 'log() { echo "$*"; }',
                 'spec_reference() { echo "${1:0:12}"; }',
                 # Retiring a record: logged, and answered as retire_recorded_plan answers.
-                f'retire_recorded_plan() {{ echo "$1" >>{shlex.quote(temp)}/retired; echo retired; }}',
+                f'retire_recorded_plan() {{ echo "$1" >>{shlex.quote(temp)}/retired; echo {outcome}; }}',
                 lib_function("retired_words"),
                 # States by rank; rank 0 is observed without an SSH host.
                 'container_state_exact() { local states=($FIXTURE_STATES); echo "${states[${2#alias-}]:-${states[0]}}"; }',
@@ -1013,7 +1013,7 @@ class ClusterCleanup(unittest.TestCase):
                 lib_function("cluster_failure", "cluster/start-cluster.sh"),
                 lib_function("launch_containers_left", "cluster/start-cluster.sh"),
                 lib_function("failed_launch_record", "cluster/start-cluster.sh"),
-                *([f"SAVED_RECORD={saved} SAVED_PLAN_ID={'7a' * 32}"] if saved else []),
+                *([f"SAVED_PLAN_ID={'7a' * 32}"] if saved else []),
                 "cluster_failure " + " ".join(shlex.quote(arg) for arg in args),
             ])
             env = {**os.environ, "FIXTURE_STATES": states, "PULSAR_START_BLOCKERS_FILE": str(blockers),
@@ -1029,27 +1029,26 @@ class ClusterCleanup(unittest.TestCase):
             (record,) = start_blockers.read(blockers)
             return record
 
-    def test_a_failed_launch_retires_its_own_record_only_when_removal_is_confirmed(self):
+    def test_a_failed_launch_retires_its_record_only_when_removal_is_confirmed(self):
         note = "The cluster's containers were removed; the logs are shown above."
         lines = []
         self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note,
-                     saved="created", output=lines)
+                     saved=True, output=lines)
         self.assertEqual(lines, ["No container this start launched is left on its nodes; retired its service "
                                  "record.", f"retired {'7a' * 32}"])
         # A node that could not be checked is not absence: the record stays.
         lines = []
         self.failure("absent unknown absent", "health_timeout", "0", "--no-command", "--note", note,
-                     saved="created", output=lines)
+                     saved=True, output=lines)
         self.assertEqual(lines, ["The service record this start saved is kept, because removing its containers "
                                  "could not be confirmed on spark-2 (rank 1). Next: ./pulsar stop abababababab, "
                                  "which removes what remains and retires the record.", "kept"])
-        # A record of the same service that was there before this start is never retired by it.
+        # The record names another launch plan by now: it is kept, and the line says so.
         lines = []
         self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note,
-                     saved="existed", output=lines)
-        self.assertEqual(lines, ["The service record is kept, because it was saved before this start. Next: "
-                                 "./pulsar stop abababababab, which retires a record whose containers are gone.",
-                                 "kept"])
+                     saved=True, outcome="other", output=lines)
+        self.assertEqual(lines, ["No container this start launched is left on its nodes; its service record now "
+                                 "names another launch plan, so it was kept.", f"retired {'7a' * 32}"])
         # Before the record was saved there is nothing to say.
         lines = []
         self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note, output=lines)

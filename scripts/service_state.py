@@ -86,9 +86,6 @@ def check_save(store, plan):
 
 
 def save(store, plan):
-    """Save PLAN and its service record. Returns True when this save created
-    the record, False when a record of the same service was already there
-    (a retry, or --replace), which it now points at PLAN."""
     # Callers may share the lifecycle lock; serialize index compare/write/remove
     # separately, without upgrading the lifecycle lock held by a foreground run.
     with store.lock(name='services.lock'):
@@ -104,11 +101,9 @@ def save(store, plan):
             raise ValueError('stored launch plan differs from its content digest')
         if existing is None:
             store.put('service-plans', plan['plan_id'], plan, replace=False)
-        created = store.get('services', plan['service_id']) is None
         # An index locates a service; its actual container labels identify the plan.
         store.put('services', plan['service_id'], {'schema_version': 1,
             'service_id': plan['service_id'], 'selected_spec_id': plan['selected_spec_id'], 'plan_id': plan['plan_id']})
-        return created
 
 
 def locate(store, *, service_id=None, selected_spec_id=None):
@@ -319,17 +314,12 @@ def main():
     parser.add_argument('--topology-id')
     parser.add_argument('--node-id',action='append',default=[])
     parser.add_argument('--position',type=int)
-    # save: where to write "created" when this save created the service
-    # record, or "existed" when one of the same service was already there.
-    parser.add_argument('--created-file')
     args=parser.parse_args()
     try:
         store=Store(args.state_root)
         if args.command in ('save','check-save'):
             try:
-                created=(save if args.command=='save' else check_save)(store,load_json(args.plan))
-                if args.command=='save' and args.created_file:
-                    Path(args.created_file).write_text('created\n' if created else 'existed\n')
+                (save if args.command=='save' else check_save)(store,load_json(args.plan))
             except RecordedElsewhere as exc:
                 # Exit 3, one line per other service of the spec: its nodes, comma-separated.
                 for hosts in exc.hosts:

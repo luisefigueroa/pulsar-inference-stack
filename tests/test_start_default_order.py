@@ -141,19 +141,31 @@ class DefaultOrder(Scenario):
                       'removes what remains and retires the record.', self.lines(result, spec))
         self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 1))
 
-    def test_a_record_saved_before_this_start_is_kept(self):
+    def test_a_retry_after_a_kept_record_retires_it_when_its_containers_are_gone(self):
         c = self.cluster
         spec, manifest = c.spec(2)
         # The same service's record, left with no container (as a failed start
-        # left one before failed launches retired their own).
+        # left one before failed launches retired their record).
         c.plan(spec, manifest, [0, 1])
         c.write()
         result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(0))
         self.assertEqual(result.returncode, 1)
-        self.assertIn('The service record is kept, because it was saved before this start. Next: ./pulsar stop '
-                      f"{spec['spec_id'][:12]}, which retires a record whose containers are gone.",
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
                       self.lines(result, spec))
-        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 0))
+        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (0, 0))
+
+    def test_a_failed_replace_retires_the_record_when_every_container_is_gone(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # A running service of the spec on the default order; --replace removes
+        # it, then the new launch fails on the first node.
+        c.run(c.plan(spec, manifest, [0, 1]))
+        result = c.start(spec['spec_id'], '--skip-preflight', '--replace', SERVICE_RUN_FAILS=c.node_id(0))
+        self.assertEqual(result.returncode, 1)
+        lines = self.lines(result, spec)
+        self.assertTrue(any(line.startswith('FAILED container_start_failed') for line in lines), lines)
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.', lines)
+        self.assertEqual((c.store.records('services'), c.remaining()), ([], []))
 
     def test_the_engines_memory_refusal_is_quoted_from_the_failed_ranks_log(self):
         c = self.cluster
