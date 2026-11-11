@@ -675,6 +675,9 @@ _finalize_loaded_profile() {
   if [ "$NODES" = 1 ]; then
     TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-single}"
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-0}"
+  elif recipe_ring_pattern; then
+    TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-roce-ring}"
+    MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
   else
     TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-roce-full-mesh}"
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
@@ -793,8 +796,13 @@ validate_profile_contract() {
     die "$CONF_NAME: exact spec mismatch: TP=$tp × PP=$pp = $world, but NODES=$NODES"
   fi
   if [ "$NODES" -gt 1 ]; then
-    [ "$TOPOLOGY_CLASS" = roce-full-mesh ] \
-      || die "$CONF_NAME: multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh"
+    if recipe_ring_pattern; then
+      [ "$TOPOLOGY_CLASS" = roce-ring ] \
+        || die "$CONF_NAME: a multi-node spec whose container_env sets NCCL_ALGO=Ring requires TOPOLOGY_CLASS=roce-ring"
+    else
+      [ "$TOPOLOGY_CLASS" = roce-full-mesh ] \
+        || die "$CONF_NAME: multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh"
+    fi
     [[ "$MIN_RAILS_PER_PAIR" =~ ^[1-9][0-9]*$ ]] \
       || die "$CONF_NAME: MIN_RAILS_PER_PAIR must be positive"
     [ "$(engine_arg_value --distributed-executor-backend "")" = mp ] \
@@ -802,6 +810,20 @@ validate_profile_contract() {
   elif [ "$TOPOLOGY_CLASS" != single ]; then
     die "$CONF_NAME: single-node spec requires TOPOLOGY_CLASS=single"
   fi
+}
+
+# recipe_ring_pattern: whether the loaded CONTAINER_ENV declares that the
+# recipe's ranks pass data around a loop: exactly one NCCL_ALGO entry whose
+# whole value is Ring, in any case. The same rule as ring_pattern in
+# scripts/release_consumer.py, which sets TOPOLOGY_CLASS from it.
+recipe_ring_pattern() {
+  local item count=0 value=""
+  for item in ${CONTAINER_ENV[@]+"${CONTAINER_ENV[@]}"}; do
+    case "$item" in
+      NCCL_ALGO=*) count=$((count + 1)); value="${item#NCCL_ALGO=}" ;;
+    esac
+  done
+  [ "$count" = 1 ] && [ "${value,,}" = ring ]
 }
 
 append_loaded_profile_contract_args() {

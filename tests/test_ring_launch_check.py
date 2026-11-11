@@ -54,6 +54,19 @@ class TheRequirementSteersOnlyTheGate(unittest.TestCase):
                 self.assertNotRegex(text, r'topology_class|min_rails_per_pair|roce-full-mesh'
                                     if path.suffix == '.py' else r'io\.pulsar\.[a-z0-9.]*(class|rails)')
 
+    def test_the_ring_pattern_requirement_reaches_nothing_else_either(self):
+        # roce-ring also names a saved membership's shape; these files read that shape.
+        shape_readers = {'topology_manifest.py', 'cluster_status.py', 'cluster_overview.py', 'node_names.py',
+                         'release_consumer.py', 'model_identity.py'}
+        for path, text in sources():
+            if path.suffix == '.py' and path.name not in shape_readers:
+                with self.subTest(path=path.name):
+                    self.assertNotIn('roce-ring', text)
+        # Only the loader reads the declaration; it reaches the rest as the requirement alone.
+        readers = {str(path.relative_to(ROOT)) for path, text in sources()
+                   if re.search(r'\bring_pattern\b|RING_PATTERN_KEY|recipe_ring_pattern', text)}
+        self.assertEqual(readers, {'scripts/release_consumer.py', 'scripts/lib.sh'})
+
     def test_the_profile_contract_builder_that_names_it_has_no_caller(self):
         callers = [path.name for path, text in sources()
                    if re.search(r'append_loaded_profile_contract_args|build_profile_contract', text)]
