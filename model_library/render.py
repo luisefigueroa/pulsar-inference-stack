@@ -391,12 +391,15 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
     routes = {'direct-ssh-roce': 'Direct copy over the confirmed RoCE rail',
               'controller-stream-relay': 'Stream through controller pipes over confirmed RoCE rails; no controller model copy',
               'already-home': 'Home is already on the selected node'}
-    if route == 'direct-ssh-roce' and document.get('passes_through'):
-        routes['direct-ssh-roce'] = 'Copy over confirmed RoCE cables, through the nodes between'
+    # A copy that passes through other nodes says so on its route's own line.
+    through = copy_route_lines({'passes_through': document.get('passes_through')}, names)
+    if route == 'direct-ssh-roce' and through:
+        routes['direct-ssh-roce'] = 'Copy over confirmed RoCE cables'
     if route:
-        out.field('Copy route', routes.get(route, route))
-    for line in copy_route_lines({'passes_through': document.get('passes_through')}, names):
-        out.field('Route', line)
+        out.field('Copy route', '; '.join([routes.get(route, route), *through]))
+    else:
+        for line in through:
+            out.field('Route', line)
     if 'home' in document:
         _home(out, document['home'], names)
     existing = document.get('existing_homes')

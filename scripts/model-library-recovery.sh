@@ -6,20 +6,22 @@ archive_create() {
   require_archive_root
   require_home
   local rank result stage
-  rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   ROUTE_PASSES='[]' ROUTE_REFUSAL=""
-  if [ "$rank" -ne 0 ]; then
-    # A home on another node is copied to this machine, through the nodes between when they share no cable.
+  # A home on another node is copied to this machine, through the nodes
+  # between when they share no cable. A home outside the membership previews
+  # as before; the run below refuses it.
+  if rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)" 2>/dev/null) && [ "$rank" -ne 0 ]; then
     . "$REPO_DIR/scripts/model-transfer.sh"
     model_transfer_plan_route "$rank" 0 || true
   fi
   if [ "$PLAN" -eq 1 ]; then
     result=$(model_json kind pulsar-archive-plan snapshot_manifest_id "$MANIFEST_ID" home: "$HOME_JSON" archive_root "$PULSAR_COLD_ROOT")
-    [ "$rank" -eq 0 ] || result=$(model_transfer_route_plan "$result" "$(json_fields "$HOME_JSON" node_id)") || die "could not check the copy route"
+    if [ "$ROUTE_PASSES" != '[]' ] || [ -n "$ROUTE_REFUSAL" ]; then
+      result=$(model_transfer_route_plan "$result" "$(json_fields "$HOME_JSON" node_id)") || die "could not check the copy route"
+    fi
     emit_result "$result"; return
   fi
   [ "$YES" -eq 1 ] || die "archive creation requires --yes"
-  [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was archived"
   phase 1 3 "verifying the home on $(human_node_name "$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")")"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
@@ -33,6 +35,8 @@ archive_create() {
     phase 2 3 "copying the home into the archive"
     result=$(local_node "$(model_node_request archive path "$(json_fields "$HOME_JSON" path)" archive_root "$PULSAR_COLD_ROOT")") || die "archive copy failed"
   else
+    # Only a copy needs its route; verifying an existing archive does not.
+    [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was archived"
     phase 2 3 "copying the home from $(human_node_name "$rank") into the archive"
     . "$REPO_DIR/scripts/model-transfer.sh"
     stage=$(local_node "$(model_node_request begin-archive archive_root "$PULSAR_COLD_ROOT")") || die "archive staging failed"

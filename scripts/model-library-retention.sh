@@ -154,7 +154,6 @@ move_home() {
   fi
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "move requires --yes after reviewing destination and transfer route"
-  [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was moved"
   phase 1 3 "verifying the home on $(human_node_name "$source_rank")"
   source_state=$(model_node "$source_rank" "$(model_node_request path-state path "$(json_fields "$HOME_JSON" path)")") || die "source home is unobservable"
   if [ "$(json_fields "$source_state" state)" = missing ]; then
@@ -171,6 +170,8 @@ move_home() {
   if [ "$(json_fields "$existing" exists)" = true ]; then
     result=$(printf '%s' "$existing" | python3 -c 'import json,sys; from pathlib import Path; from model_library.local import home_record; d=json.load(sys.stdin); print(json.dumps({"home":home_record(json.loads(sys.argv[1]),sys.argv[2],Path(d["hub_path"]),d["verification"])}))' "$MANIFEST_JSON" "$target_node")
   else
+    # Only a copy needs its route; recovering a home already moved does not.
+    [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was moved"
     phase 2 3 "copying the home to $(human_node_name "$target_rank")"
     stage=$(model_node "$target_rank" "$(model_node_request begin-home)") || die "destination already has files; inspect before reuse or movement"
     . "$REPO_DIR/scripts/model-transfer.sh"

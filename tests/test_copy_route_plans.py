@@ -128,17 +128,50 @@ class PlanAndCopyAgree(unittest.TestCase):
         # The plan proved the route without copying: no stage, no transfer.
         self.assertEqual(self.f.events('transfer'), [])
         self.assertNotIn('begin-view', [row['operation'] for row in self.f.events('node-operation')])
+        planned = len(self.f.events('relay'))
         result = self.prepare('--yes')
         self.assertEqual(result.returncode, 0, result.stderr)
         # The copy's log names the machines the plan named, in the same words.
         for line in through(action['passes_through'], self.hostnames):
-            self.assertIn(line, result.stderr)
+            self.assertEqual(result.stderr.count(line), 1, result.stderr)
         transfers = self.f.events('transfer')
         self.assertTrue(transfers)
         for transfer in transfers:
             self.assertTrue(transfer['destination'].startswith(str(self.root / 'rank-2')), transfer)
-        # The proof's one short command through the jump reached the opposite node.
-        self.assertIn(2, [row['target_rank'] for row in self.f.events('relay')])
+        # The copy proved its route again, through the jump to the opposite node.
+        self.assertIn(2, [row['target_rank'] for row in self.f.events('relay')[planned:]])
+
+    def test_a_two_node_recipe_copies_from_a_far_home_through_the_neighbour_once(self):
+        # The home moves to the opposite node; the recipe serves on this node and its neighbour.
+        self.assertEqual(self.f.run('move', '--node', self.opposite, '--yes', spec=True).returncode, 0)
+        self.f.candidate(2)
+        placement = ','.join(self.ids[:2])
+        result = self.f.run('prepare', '--placement-nodes', placement, '--plan', spec=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertTrue(plan['eligible'], plan['blockers'])
+        # Rank 0, this machine, copies from the home through the neighbour; rank 1
+        # then copies from this machine, its neighbour, with no node between.
+        self.assertEqual([(a['node_id'], a['action'], a.get('passes_through')) for a in plan['actions']], [
+            (self.ids[0], 'copy', [{'copies': 'from', 'node_id': self.opposite, 'through': [self.ids[1]]}]),
+            (self.ids[1], 'copy', None)])
+        result = self.f.run('prepare', '--placement-nodes', placement, '--yes', spec=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (line,) = through(plan['actions'][0]['passes_through'], self.hostnames)
+        self.assertEqual(result.stderr.count(line), 1, result.stderr)
+        self.assertEqual(result.stderr.count('pass through'), 1, result.stderr)
+
+    def test_a_home_move_whose_route_cannot_be_proven_is_blocked_and_copies_nothing(self):
+        self.f.cfg['wrong_route'] = True
+        self.f.save()
+        move = json.loads(self.f.run('move', '--node', self.opposite, '--plan', spec=True).stdout)
+        self.assertFalse(move['eligible'])
+        self.assertEqual([(d['code'], d['node_id']) for d in move['blocker_details']], [('copy-route', self.opposite)])
+        result = self.f.run('move', '--node', self.opposite, '--yes', spec=True)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('nothing was moved', result.stderr)
+        self.assertEqual(self.f.events('transfer'), [])
+        self.assertNotIn('begin-home', [row['operation'] for row in self.f.events('node-operation')])
 
     def test_a_route_that_cannot_be_proven_blocks_the_plan_and_nothing_starts(self):
         self.f.cfg['wrong_route'] = True
@@ -182,7 +215,7 @@ class PlanAndCopyAgree(unittest.TestCase):
 
 
 class Renders(unittest.TestCase):
-    """The Prepare plan and a move plan with a route, at 80 and 60 columns."""
+    """Every changed preview and plan page with a route, at 80, 60 and 44 columns."""
 
     PREPARE = {'kind': 'pulsar-preparation-plan', 'spec_id': 'ab' * 32, 'snapshot_manifest_id': 'cd' * 32,
                'topology_id': 'ef' * 32, 'eligible': True, 'blockers': [], 'blocker_details': [],
@@ -202,7 +235,7 @@ class Renders(unittest.TestCase):
         self.assertIn('Rank 0    fixture-ring-echo: copy and verify local files\n'
                       '  Route   copies to fixture-ring-echo pass through fixture-ring-bravo\n',
                       self.page(self.PREPARE, 'prepare', 80))
-        for width in (80, 60):
+        for width in (80, 60, 44):
             text = self.page(self.PREPARE, 'prepare', width)
             # A narrow terminal wraps the route under its own value column.
             self.assertIn('Route copies to fixture-ring-echo pass through fixture-ring-bravo Storage',
@@ -216,25 +249,73 @@ class Renders(unittest.TestCase):
                   "SSH server must allow it to forward the connection to 198.51.100.6 (AllowTcpForwarding)")
         plan = with_copy_routes(self.PREPARE, [{'slot': 0, 'refusal': reason,
                                                 'passes_through': self.PREPARE['actions'][0]['passes_through']}])
-        for width in (80, 60):
+        for width in (80, 60, 44):
             text = self.page(plan, 'prepare', width)
             self.assertIn('Result    blocked', text)
             self.assertIn('AllowTcpForwarding', ' '.join(text.split()))
             self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
             self.dump(f'prepare-blocked-{width}', text)
 
+    LEG = {'copies': 'to', 'node_id': 'node-2', 'through': ['node-1']}
+
     def test_a_move_through_a_neighbour_is_not_called_direct(self):
         move = {'kind': 'pulsar-home-move-plan', 'snapshot_manifest_id': 'cd' * 32, 'source_node': 'node-0',
-                'destination_node': 'node-2', 'transfer_route': 'direct-ssh-roce',
-                'passes_through': [{'copies': 'to', 'node_id': 'node-2', 'through': ['node-1']}]}
-        for width in (80, 60):
+                'destination_node': 'node-2', 'transfer_route': 'direct-ssh-roce', 'passes_through': [self.LEG]}
+        self.assertIn('Copy route Copy over confirmed RoCE cables; copies to fixture-ring-echo pass\n'
+                      '           through fixture-ring-bravo\n', self.page(move, 'move', 80))
+        for width in (80, 60, 44):
             text = self.page(move, 'move', width)
             self.assertNotIn('Direct copy', text)
+            self.assertNotIn('Route ', text)
             self.assertIn('copies to fixture-ring-echo pass through fixture-ring-bravo', ' '.join(text.split()))
             self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
             self.dump(f'move-{width}', text)
         direct = {key: value for key, value in move.items() if key != 'passes_through'}
-        self.assertIn('Direct copy over the confirmed RoCE rail', self.page(direct, 'move', 80))
+        self.assertIn('Copy route Direct copy over the confirmed RoCE rail\n', self.page(direct, 'move', 80))
+
+    def test_restore_and_archive_name_the_route_on_its_own_line(self):
+        restore = {'kind': 'pulsar-restore-plan', 'snapshot_manifest_id': 'cd' * 32, 'total_bytes': 17,
+                   'file_count': 2, 'selected_node': 'node-2', 'archive_root': '/fixture/archive',
+                   'destination_root': None, 'destination_space': None, 'passes_through': [self.LEG]}
+        archive = {'kind': 'pulsar-archive-plan', 'snapshot_manifest_id': 'cd' * 32, 'archive_root': '/fixture/archive',
+                   'passes_through': [{**self.LEG, 'copies': 'from'}]}
+        for name, document, line in (
+                ('restore', restore, 'Route     copies to fixture-ring-echo pass through fixture-ring-bravo\n'),
+                ('archive', archive, 'Route     copies from fixture-ring-echo pass through fixture-ring-bravo\n')):
+            self.assertIn(line, self.page(document, name, 80))
+            for width in (80, 60, 44):
+                text = self.page(document, name, width)
+                self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                self.dump(f'{name}-{width}', text)
+            without = {key: value for key, value in document.items() if key != 'passes_through'}
+            self.assertNotIn('Route', self.page(without, name, 80))
+
+    def test_the_menu_preview_and_the_serve_plan_say_it_in_the_copys_words(self):
+        from model_library import catalog_menu as menu
+        from scripts import serve_plan as serve
+        from tests.test_serve_plan import NAMES, SIZES, envelope, everything, prepare_plan
+        from tests.test_catalog_menu import HOME, checked, inventory
+        prepare = prepare_plan(('n0', 'home-view'), ('n2', 'copy'))
+        prepare['actions'][1]['passes_through'] = [{'copies': 'to', 'node_id': 'n2', 'through': ['n1']}]
+        prepare['budgets'] = {'n2': {'available': 400 * 1024**3, 'reserve': 10 * 1024**3, 'used': 0,
+                                     'limit': 300 * 1024**3}}
+        state = checked(home=HOME, local_state='missing')
+        for width in (80, 60, 44):
+            stream = io.StringIO()
+            out = TerminalWriter(width=width, stream=stream)
+            for line in menu.plan_summary('prepare', state, prepare, names=NAMES):
+                out.emit(menu.clean(line))
+            text = stream.getvalue()
+            self.assertIn('Copies to spark-3 pass through spark-2.', ' '.join(text.split()))
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+            self.dump(f'menu-prepare-{width}', text)
+            plan = serve.compose(state, everything(state), names=NAMES, node=None, sizes=SIZES, inventory=inventory(),
+                                 previews={'prepare': envelope(prepare)})
+            text = serve.render(plan, width=width)
+            self.assertIn('Copy the model files from spark-1 to spark-3 (212 GiB). Copies to spark-3 pass through '
+                          'spark-2.', ' '.join(text.split()))
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+            self.dump(f'serve-plan-{width}', text)
 
     def dump(self, name, text):
         target = os.environ.get('COPY_ROUTE_RENDERS')
