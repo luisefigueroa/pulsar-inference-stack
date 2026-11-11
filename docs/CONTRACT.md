@@ -55,10 +55,11 @@ recorded launch plan, not recipe identity or evidence of physical fit.
 An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
 not recipe data. It selects ordered confirmed members for preparation, file and
 image checks, guarded dry-run/run, and pre-launch resource sampling. An
-ordinary `start` accepts it for a two-node recipe on two neighbouring nodes of
-a saved ring, in either order; the first named node runs the API. Any other
-placement off the first-N order is refused before any node is contacted, as
-before. Omission retains first-N placement; `--node` retains its one-node/home
+ordinary `start` accepts it for a multi-node recipe whose named nodes are saved
+members cabled as the recipe needs, which the launch check decides from saved
+membership; the first named node runs the API. A placement the launch check
+refuses, a node that is not a saved member, and a spec with a serving guard are
+refused before any node is contacted. Omission retains first-N placement; `--node` retains its one-node/home
 meaning. Selection
 does not change membership or `spec_id`. Existing launch-plan rank/node fields
 bind it and produce a distinct `service_id` for a different ordered placement.
@@ -687,6 +688,12 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `image_check_failed`, `model_files_check_failed`, `port_in_use`,
 `container_start_failed`, `smoke_test_failed`, `health_timeout`,
 `container_exited` and `service_stopped`.
+
+Change note, 2026-11-10: an ordinary `start --placement-nodes` accepts any
+saved members cabled as the recipe needs, on a full mesh as on a ring, and
+for any number of nodes; it no longer refuses a placement only because it is
+off the first-N order. This widens what start accepts; no field, code or
+output shape changed.
 
 Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
 Earlier records lack it, which reads as null.

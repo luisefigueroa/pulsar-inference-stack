@@ -104,6 +104,10 @@ class WholeRingRotated(Cluster):
         spec, _ = self.cluster.spec(4, ring=True)
         self.assert_started_on(self.start(spec, [1, 2, 3, 0]), spec, [1, 2, 3, 0])
 
+    def test_and_against_the_cable_order(self):
+        spec, _ = self.cluster.spec(4, ring=True)
+        self.assert_started_on(self.start(spec, [2, 1, 0, 3]), spec, [2, 1, 0, 3])
+
 
 KEY = 'fixture-secret-key-7c2a'
 

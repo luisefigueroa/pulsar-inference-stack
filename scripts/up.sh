@@ -19,7 +19,7 @@ usage: pulsar start SPEC_ID [options]
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE           Select a confirmed node, by hostname or node ID, for a one-node spec
-  --placement-nodes LIST  Two neighbouring nodes of a saved ring, in role order, for a two-node spec
+  --placement-nodes LIST  Saved nodes for a multi-node spec, in role order; the first runs the API. They must be cabled as the spec needs
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service
