@@ -860,7 +860,13 @@ Without `--plan` or `--yes`, staging checks the nodes and changes nothing: an
 image already present on every node is reported as such, and a missing one is
 refused with the nodes that lack it and the `--plan` command to run next.
 Staging finishes by checking the exact image reference on every selected node.
-It does not start or replace a service. For a verified image held on the
+It does not start or replace a service. Without `--pull` it copies the image
+from this machine. On a node whose Docker uses the containerd image store, a
+copy can arrive without the pinned name; the `--plan` preview warns of this on
+stderr. Staging then exits 1 and says the content arrived on those nodes and
+only the pinned name is missing, with the next command: the same selection with
+`--pull --yes`, which contacts the registry, adds the name and reuses the
+content already there. For a verified image held on the
 controller, `--export-tag TAG` instead of `--pull` selects a named export to
 the other serving nodes. The tag must be in the pinned image's repository and
 resolve to that exact digest and image ID. A destination tag conflict fails;

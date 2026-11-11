@@ -35,6 +35,10 @@ if args[:2]==['image','inspect']:
  if mode in ('other-name','other-name-controller') and rank==(1 if mode=='other-name' else 0) and not (root/'pulled').exists():
   if not args[-1].startswith('sha256:'):sys.exit(1)
   image.update(Id=args[-1],RepoTags=['pulsar-local/model:latest'],RepoDigests=[])
+ # untagged-after-load: rank 1 lacks the image; a copy loads its content without any name (the containerd store).
+ if mode=='untagged-after-load' and rank==1 and not (root/'pulled').exists():
+  if not (root/'loaded-1').exists() or not args[-1].startswith('sha256:'):sys.exit(1)
+  image.update(Id=args[-1],RepoTags=[],RepoDigests=[])
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
  if mode=='legacy-image-id-only':image['RepoDigests']=[]
  if mode=='wrong-repository':image['RepoDigests']=['other/repository@'+image['RepoDigests'][0].split('@')[1]]
@@ -296,6 +300,35 @@ ssh_node() {{
         self.assertNotEqual(result.returncode,0)
         self.assertNotIn('pull',(self.root/'mutations').read_text())
         self.assertIn('rerun with --pull to pull the exact digest',result.stderr)
+
+    def test_a_copy_that_lost_the_pinned_name_says_what_arrived_and_what_adds_the_name(self):
+        spec_id=self.spec['spec_id']
+        selection=['--placement-nodes','rank-0,rank-1,rank-2']
+        # The preview warns, on stderr, that a copy can leave the name unrecorded.
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--plan'],'untagged-after-load')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['mode'],'stream-from-controller')
+        self.assertIn('warning: a copy from this machine can arrive without the pinned name, on a node whose Docker '
+                      'uses the containerd image store; staging then ends with the content there and the name '
+                      f'missing, and ./pulsar image stage {spec_id} --placement-nodes rank-0,rank-1,rank-2 --pull '
+                      '--yes adds the name: it contacts the registry and reuses the content already there',
+                      ' '.join(result.stderr.split()))
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--pull','--plan'],'untagged-after-load')
+        self.assertNotIn('warning',result.stderr)
+        # The copy brings the content; Docker keeps no name; staging says so and exits 1.
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--yes'],'untagged-after-load')
+        self.assertEqual(result.returncode,1)
+        self.assertEqual(' '.join(result.stderr.split()),
+                         'error: the image content arrived on rank-1 (rank 1), but Docker there did not record the '
+                         'pinned name, so the pinned image is not established yet. Next: ./pulsar image stage '
+                         f'{spec_id} --placement-nodes rank-0,rank-1,rank-2 --pull --yes, which contacts the registry '
+                         'to add the pinned name and reuses the content already there')
+        self.assertNotIn('pull',(self.root/'mutations').read_text())
+        # Following it pulls on that node only, and the check passes.
+        (self.root/'mutations').unlink()
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--pull','--yes'],'untagged-after-load')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
 
     def test_start_pull_permission_pulls_the_digest_a_stream_lost(self):
         result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes','--pull-if-stream-incomplete'],'missing-ref-after-load')
