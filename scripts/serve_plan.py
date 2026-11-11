@@ -77,6 +77,7 @@ READINESS = {
     "download": "needs downloading · {size}",
     "too-big": "needs {needed}; the cluster has {have}",
     "ring": "needs every one of its nodes cabled to the others; the cluster is a ring",
+    "loop": "needs {needed} cabled in a closed loop; the ring has {have}",
     "unsupported": "start unsupported",
     "unknown": "size unknown",
 }
@@ -171,12 +172,21 @@ def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict 
 # The model list
 # ---------------------------------------------------------------------------
 
+def ring_pattern(row: dict) -> bool:
+    """Whether the recipe passes data around a loop of its nodes (NCCL_ALGO=Ring
+    in its container_env), so it needs only each node cabled to the next."""
+    from scripts.release_consumer import ring_pattern as declares
+    return row["geometry"]["nodes"] > 1 and declares(row.get("container_env"))
+
+
 def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict,
               service: dict | None, ring: bool = False) -> str:
     """One phrase for where the recipe stands, from saved records and the inventory.
 
     RING: the saved cluster is a ring. Its ranks 0 and 1 are neighbours, so a
-    two-node recipe fits; three or more nodes always include two that are not."""
+    two-node recipe fits; three or more nodes always include two that are not.
+    A recipe that passes data around a loop of its nodes fits on the whole ring,
+    whose saved order follows the cables, and on no fewer nodes than that."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -187,8 +197,10 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         return READINESS["unsupported"]
     if order and nodes > len(order):
         return READINESS["too-big"].format(needed=node_count(nodes), have=node_count(len(order)))
-    if ring and nodes > 2:
+    if ring and nodes > 2 and not ring_pattern(row):
         return READINESS["ring"]
+    if ring and nodes > 2 and nodes != len(order):
+        return READINESS["loop"].format(needed=node_count(nodes), have=node_count(len(order)))
     missing = without_home(row)
     if missing:
         if all(archive_available(row, name, archive_location) for name in missing):
@@ -485,9 +497,13 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         blocked.append(f"It needs {node_count(nodes)}; the cluster has {node_count(len(order))}."
                        if nodes > 1 else "No machine was chosen to serve it.")
         return plan
-    if names.ring and nodes > 2:
+    if names.ring and nodes > 2 and not ring_pattern(row):
         from scripts.topology_manifest import RING_CABLING
         blocked.append(f"Start refuses it: {RING_CABLING}.")
+        return plan
+    if names.ring and nodes > 2 and nodes != len(order):
+        from scripts.topology_manifest import RING_LOOP
+        blocked.append(f"Start refuses it: {RING_LOOP}; on this ring only all {node_count(len(order))} form one.")
         return plan
     silent = [names(item) for item in serving if item in unanswered]
     if silent:

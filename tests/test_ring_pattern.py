@@ -21,6 +21,9 @@ from support import ring_recipe
 from support.topology_fixture import Fixture, ring_probes, shuffled
 import topology_manifest as tm
 from tests import test_ring_launch_check as launch, test_start_blockers
+from tests.test_catalog_menu import inventory, row as catalog_row
+from model_library.node_names import NodeNames
+from scripts import serve_plan as serve, start_reasons
 
 # Recorded from the code before the ring pattern existed: each catalog spec's
 # node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). No
@@ -331,6 +334,83 @@ class StartRefusesARingPatternThatDoesNotFit(unittest.TestCase):
         refusal = tm.ring_refusal('fixture-ring-dorado', 'fixture-ring-echo')
         self.start(nodes=3, topology=4, fabric=refusal, extra_env={'FIXTURE_REFUSAL': 'cabling'})
         self.assertEqual(self.records[0]['note'], 'On this cluster no 3 machines are all cabled to each other.')
+
+
+RING_NAMES = NodeNames({f'n{i}': f'spark-{i + 1}' for i in range(4)}, [f'n{i}' for i in range(4)], 'roce-ring')
+MESH_NAMES = NodeNames({f'n{i}': f'spark-{i + 1}' for i in range(4)}, [f'n{i}' for i in range(4)], 'roce-full-mesh')
+
+
+def loop_row(nodes, env=ring_recipe.RING_ENV):
+    return catalog_row(geometry={'nodes': nodes, 'tp': nodes, 'pp': 1}, container_env=sorted(env))
+
+
+class WhatTheOperatorReads(unittest.TestCase):
+    """The Serve list, its plan and Why will … not start? for a ring-pattern recipe."""
+
+    def phrase(self, state, ring=True):
+        return serve.readiness(state, order=RING_NAMES.order, archive_location='disabled', sizes={}, service=None,
+                               ring=ring)
+
+    def test_the_serve_list_reads_as_usual_when_it_fits_the_ring(self):
+        ordinary = self.phrase(loop_row(4), ring=False)
+        self.assertEqual(self.phrase(loop_row(4)), ordinary)
+        self.assertNotRegex(ordinary, 'ring|loop|cabled')
+        self.assertEqual(self.phrase(loop_row(2)), self.phrase(loop_row(2), ring=False))
+
+    def test_the_serve_list_says_why_it_does_not_fit(self):
+        self.assertEqual(self.phrase(loop_row(3)), 'needs 3 nodes cabled in a closed loop; the ring has 4 nodes')
+        # On a full mesh every pair is cabled.
+        self.assertNotRegex(self.phrase(loop_row(3), ring=False), 'ring|loop|cabled')
+        # Without the declaration: as after the launch check judged the chosen nodes.
+        self.assertEqual(self.phrase(loop_row(4, env=())),
+                         'needs every one of its nodes cabled to the others; the cluster is a ring')
+        self.assertEqual(self.phrase(loop_row(4, env=('NCCL_ALGO=Ring,Tree',))),
+                         'needs every one of its nodes cabled to the others; the cluster is a ring')
+
+    def test_the_serve_plan(self):
+        whole = loop_row(4)
+        plan = serve.compose(whole, [whole], names=RING_NAMES, inventory=inventory(), sizes={})
+        self.assertFalse([line for line in plan['blocked'] if 'cabled' in line], plan['blocked'])
+        three = loop_row(3)
+        plan = serve.compose(three, [three], names=RING_NAMES, inventory=inventory(), sizes={})
+        self.assertEqual(plan['blocked'], [f'Start refuses it: {tm.RING_LOOP}; on this ring only all 4 nodes form '
+                                           'one.'])
+        self.assertEqual(plan['steps'], [])
+        plain = loop_row(3, env=())
+        self.assertEqual(serve.compose(plain, [plain], names=RING_NAMES, inventory=inventory(), sizes={})['blocked'],
+                         [f'Start refuses it: {tm.RING_CABLING}.'])
+        mesh = serve.compose(three, [three], names=MESH_NAMES, inventory=inventory(), sizes={})
+        self.assertFalse([line for line in mesh['blocked'] if 'cabled' in line], mesh['blocked'])
+
+    def test_the_catalog_row_carries_the_recipe_s_container_env(self):
+        from model_library.catalog import project
+        from model_library.state import Store
+        spec = ring_recipe.recipe(4)
+        state = project(spec, Store(Path(self.enterContext(tempfile.TemporaryDirectory()))))
+        self.assertEqual(state['container_env'], spec['recipe']['container_env'])
+        self.assertTrue(serve.ring_pattern(state))
+
+    def test_why_will_it_not_start_gives_the_check_s_reason(self):
+        text = start_reasons.screen(why_document(), 1, 'Why will example/ring-synthetic not start?', width=80)
+        words = ' '.join(text.split())
+        self.assertIn(f'Blocked: {LOOP_REFUSAL}. No menu choice resolves it on this cluster.', words)
+        self.assertNotIn('Check the cluster now', words)
+        self.assertEqual(start_reasons.choices(why_document(), 1), [('again', 'Check again'), ('back', 'Back')])
+
+
+LOOP_REFUSAL = tm.ring_loop_refusal('spark-3', 'spark-1')
+
+
+def why_document():
+    """The dry run's answer for the ring-pattern recipe on three of four nodes."""
+    from scripts import start_blockers
+    record = start_blockers.blocker('fabric_incomplete', spec='ab' * 32, detail=LOOP_REFUSAL, no_command=True,
+                                    note='On this ring no 3 machines form a closed loop of cables; only all 4 do, '
+                                         'in cable order.')
+    return {'ok': False, 'error': {'code': 'prerequisite_failed', 'message': 'start is blocked',
+                                   'checks': [{'id': 'topology', 'outcome': 'pass'},
+                                              {'id': 'fabric', 'outcome': 'fail', 'message': LOOP_REFUSAL}],
+                                   'details': [record]}}
 
 
 if __name__ == '__main__':

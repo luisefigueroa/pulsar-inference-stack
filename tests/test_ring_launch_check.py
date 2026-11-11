@@ -62,10 +62,11 @@ class TheRequirementSteersOnlyTheGate(unittest.TestCase):
             if path.suffix == '.py' and path.name not in shape_readers:
                 with self.subTest(path=path.name):
                     self.assertNotIn('roce-ring', text)
-        # Only the loader reads the declaration; it reaches the rest as the requirement alone.
+        # Only the loader reads the declaration for the launch; it reaches the rest as the
+        # requirement alone. The Serve list reads it too, for its words only.
         readers = {str(path.relative_to(ROOT)) for path, text in sources()
                    if re.search(r'\bring_pattern\b|RING_PATTERN_KEY|recipe_ring_pattern', text)}
-        self.assertEqual(readers, {'scripts/release_consumer.py', 'scripts/lib.sh'})
+        self.assertEqual(readers, {'scripts/release_consumer.py', 'scripts/lib.sh', 'scripts/serve_plan.py'})
 
     def test_the_profile_contract_builder_that_names_it_has_no_caller(self):
         callers = [path.name for path, text in sources()
