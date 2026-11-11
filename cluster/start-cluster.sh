@@ -390,13 +390,21 @@ CLUSTER_PHASE=loading
 release_model_library_locks
 
 WAIT_LIMIT="${WAIT_ATTEMPTS:-120}" WAIT_STARTED=$SECONDS
-log "waiting for http://127.0.0.1:${PORT}/health (cold load can take ~10 min;" \
+# Health comes from the first node's own address: the loopback address only
+# when that node is this machine, so another service listening here on the
+# same port can never answer for it.
+if [ -n "$(role_host 0)" ]; then
+  HEALTH_BASE="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[$(role_index 0)]}"):${PORT}"
+else
+  HEALTH_BASE="http://127.0.0.1:${PORT}"
+fi
+log "waiting for ${HEALTH_BASE}/health (cold load can take ~10 min;" \
   "up to $WAIT_LIMIT health checks, ${WAIT_SECONDS:-10} s apart)"
 API_AUTH_ARGS=()
 api_auth_curl_args API_AUTH_ARGS
 for _attempt in $(seq 1 "$WAIT_LIMIT"); do
   if curl -fsS --max-time 3 "${API_AUTH_ARGS[@]}" \
-      "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1; then
+      "${HEALTH_BASE}/health" >/dev/null 2>&1; then
     load_progress_end
     STARTUP_HEALTHY_NS=$(date +%s%N)
     STARTUP_HEALTHY_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)

@@ -58,6 +58,35 @@ class OneMap(Cluster):
         self.assertEqual(c.store.records('services'), [])
 
 
+class FirstNodeAddress(Cluster):
+    """Health comes from the first node's own address."""
+
+    def launch(self, positions, **env):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = ','.join(c.hostname(position) for position in positions)
+        return self.launcher(spec, '--skip-preflight', '--placement-nodes', names, **env)
+
+    def test_a_service_on_this_machines_loopback_port_does_not_answer_for_it(self):
+        # The curl double answers /health on 127.0.0.1 only: another service here.
+        result = self.launch([2, 3], SERVICE_HEALTHY='127.0.0.1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('waiting for http://192.0.2.32:8000/health', result.stdout)
+        self.assertNotIn('healthy ·', result.stdout)
+        self.assertEqual({url for url in self.cluster.calls()['curl']}, {'http://192.0.2.32:8000/health'})
+        self.assertEqual(self.cluster.remaining(), [])
+
+    def test_the_first_nodes_address_answers(self):
+        result = self.launch([2, 3], SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('healthy · first-health=', result.stdout)
+
+    def test_the_loopback_address_only_when_the_first_node_is_this_machine(self):
+        result = self.launch([0, 1])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.cluster.calls()['curl'], ['http://127.0.0.1:8000/health'])
+
+
 class LauncherOnTheMap(Cluster):
     """The launcher runs each role rank on its node: local Docker for this
     machine, SSH otherwise, the first node included; the other ranks first."""

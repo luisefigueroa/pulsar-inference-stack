@@ -152,6 +152,12 @@ if [ "$NODES" -eq 1 ]; then
 else
   resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
   [ -z "$PLACEMENT_NODES" ] || PLACEMENT_ARGS=(--placement-nodes "$PLACEMENT_NODES")
+  # The API runs on the first node: its own address, the loopback address only
+  # when it is this machine (saved position 0).
+  FIRST_INDEX="${SERVING_NODE_INDEXES[0]}"
+  if [ "$FIRST_INDEX" != 0 ]; then
+    SERVICE_API_BASE="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[$FIRST_INDEX]}"):$PORT"
+  fi
   if [ "$DRY" != 1 ] && [ -n "$PLACEMENT_NODES" ]; then
     for ((slot=0;slot<NODES;slot++)); do
       [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || usage_die "nondefault multi-node placement requires guarded run; ordinary start cannot launch a remote head"
@@ -289,7 +295,7 @@ echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COU
 if [ "$NODES" -eq 1 ]; then
   START_BLOCKER_HOME_NODE="${SINGLE_NODE_HOSTNAME:-}"
 else
-  START_BLOCKER_HOME_NODE="$(human_node_name 0)"
+  START_BLOCKER_HOME_NODE="$(human_node_name "${SERVING_NODE_INDEXES[0]:-0}")"
 fi
 export START_BLOCKER_HOME_NODE
 
@@ -687,7 +693,7 @@ api_auth_args=()
 api_auth_curl_args api_auth_args
 if [ "$NODES" -gt 1 ]; then
   log "starting exact $NODES-node cluster…"
-  SERVICE_NODE="$(human_node_name 0)" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[0]:-}"
+  SERVICE_NODE="$(human_node_name "$FIRST_INDEX")" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[$FIRST_INDEX]:-}"
   START_PHASE=cluster
   # The launcher resolves the same placement and must build this same plan.
   checked_plan_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_id"])' "$PLAN_FILE" \
@@ -771,7 +777,10 @@ if [ "$smoke_status" != 0 ] || [ "${smoke_http:-000}" != 200 ]; then
     smoke_detail="HTTP $smoke_http: $(head -c 200 "$smoke_body" | tr '\n' ' ')"
   fi
   error_line "the test completion failed ($smoke_detail); the service is still running; last logs:"
-  if [ "$NODES" -gt 1 ]; then
+  if [ "$NODES" -gt 1 ] && [ "$FIRST_INDEX" != 0 ]; then
+    "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "${CLUSTER_NODE_SSH_HOSTS[$FIRST_INDEX]}" \
+      "$(shell_join_q docker logs --tail 80 "$CONTAINER")" >&2 || true
+  elif [ "$NODES" -gt 1 ]; then
     "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
   else
     service_logs 80
