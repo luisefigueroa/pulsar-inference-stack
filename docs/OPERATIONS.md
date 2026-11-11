@@ -917,7 +917,9 @@ preflight and the launch then run on those nodes only; a node outside them that
 does not answer does not block it. Start refuses, before any node is contacted
 and with the reason, nodes that are not cabled as the recipe needs, a node that
 is not a saved member, and a spec with a serving guard, which runs only as a
-guarded trial. Each node's prepared copy serves one rank, so the same nodes in
+guarded trial. Nodes that are not cabled as the recipe needs fail the `fabric`
+check, which names them, and are reported like any other blocker
+(`fabric_incomplete`, with no fix and a note), in a dry run too. Each node's prepared copy serves one rank, so the same nodes in
 another order need **Prepare** again in that order (`./pulsar model prepare
 <spec-id> --placement-nodes <node>,<node> --yes`), after stopping a service
 that still runs on the copies.

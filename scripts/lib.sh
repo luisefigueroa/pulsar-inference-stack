@@ -1384,8 +1384,13 @@ single_node_index_for_key() {
   esac
 }
 
+# resolve_serving_placement NODE LIST [defer-fabric] — SERVING_NODE_INDEXES and
+# SERVING_NODE_IDS for a one-node spec on NODE or a multi-node spec on LIST
+# (--placement-nodes; the default order without it). Named nodes must be cabled
+# as the spec needs (require_profile_topology); with defer-fabric that check is
+# left to the caller, which reports it as one of its own checks (Start).
 resolve_serving_placement() {
-  local single="${1:-}" selection="${2:-}" selector index seen="" slot
+  local single="${1:-}" selection="${2:-}" defer="${3:-}" selector index seen="" slot
   local -a selectors=()
   require_cluster_nodes "$NODES" >/dev/null || return 1
   SERVING_NODE_INDEXES=() SERVING_NODE_IDS=()
@@ -1411,7 +1416,7 @@ resolve_serving_placement() {
     fi
   fi
   for index in "${SERVING_NODE_INDEXES[@]}"; do SERVING_NODE_IDS+=("${CLUSTER_NODE_IDS[$index]}"); done
-  if [ -n "$selection" ] && [ "$NODES" -gt 1 ]; then
+  if [ -n "$selection" ] && [ "$NODES" -gt 1 ] && [ "$defer" != defer-fabric ]; then
     require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || return 1
   fi
 }

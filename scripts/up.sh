@@ -150,7 +150,10 @@ if [ "$NODES" -eq 1 ]; then
   export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
 else
-  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
+  # Whether the named nodes are cabled as the spec needs is the fabric check
+  # below, reported with the others.
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" defer-fabric \
+    || die "confirmed serving placement is unavailable"
   [ -z "$PLACEMENT_NODES" ] || PLACEMENT_ARGS=(--placement-nodes "$PLACEMENT_NODES")
   # The API runs on the first node: its own address, the loopback address only
   # when it is this machine (saved position 0).
@@ -267,8 +270,9 @@ if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then
   blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   stop_if_blocked
 fi
-# Recorded before the fabric check, in check order, so a fabric blocker leaves it passed.
+# Recorded and shown before the fabric check, in check order, so a fabric blocker leaves it passed.
 start_check pass topology "spec needs $NODES node(s); confirmed $CLUSTER_TOPOLOGY_COUNT"
+echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 if [ "$NODES" -gt 1 ]; then
   fabric_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-fabric.XXXXXX")
   if ! require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$fabric_err"; then
@@ -296,10 +300,9 @@ if [ "$NODES" -gt 1 ]; then
   fi
   rm -f "$fabric_err"
   start_check pass fabric "the confirmed fabric meets this spec"
+  # Judged from the saved links; preflight pings them before a launch.
+  echo "PASS  fabric    the confirmed fabric meets this spec"
 fi
-echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
-# Judged from the saved links; preflight pings them before a launch.
-[ "$NODES" -le 1 ] || echo "PASS  fabric    the confirmed fabric meets this spec"
 
 # --- one service per spec: the saved records, read here, never by probing ---
 # A multi-node spec recorded on other nodes (or in another order, or under an

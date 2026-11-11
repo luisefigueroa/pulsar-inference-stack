@@ -501,17 +501,46 @@ class StartOnNamedNodes(Cluster):
         self.assertFalse([line for line in self.trace() if 'docker run' in line or 'docker rm' in line])
 
     def test_refused_placements_contact_nothing(self):
+        # Named nodes that are not cabled as the spec needs fail the fabric
+        # check, reported as every other blocker is, before any node is contacted.
         c = self.cluster
         three, _ = c.spec(3)
-        for spec, names, words in (
-                (self.spec, f'{c.hostname(0)},{c.hostname(2)}', 'confirmed serving placement is unavailable'),
-                (three, f'{c.hostname(1)},{c.hostname(2)},{c.hostname(3)}', 'confirmed serving placement is unavailable')):
-            with self.subTest(names=names):
-                c.forget_calls()
-                result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(words, result.stderr)
-                self.assertEqual(self.trace(), [])
+        for spec, names, nodes, pair, note in (
+                (self.spec, f'{c.hostname(0)},{c.hostname(2)}', 2, (0, 2),
+                 'Choose two machines that are neighbours on the ring, which share a cable.'),
+                (three, f'{c.hostname(1)},{c.hostname(2)},{c.hostname(3)}', 3, (1, 3),
+                 'On this cluster no 3 machines are all cabled to each other.')):
+            for dry in ((), ('--dry-run',)):
+                with self.subTest(names=names, dry=dry):
+                    c.forget_calls()
+                    result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, *dry)
+                    self.assertEqual(result.returncode, 1)
+                    reason = (f'{c.hostname(pair[0])} and {c.hostname(pair[1])} are not cabled to each other: the '
+                              'cluster is a ring, and this recipe needs every one of its nodes cabled to the others')
+                    self.assertIn('├─ checks\nINFO  spec-review not specified (display-only)\n'
+                                  'PASS  recipe    exact spec contract parsed\n'
+                                  f'PASS  topology  spec needs {nodes} node(s)  confirmed=4', result.stdout)
+                    self.assertIn(f'FAIL  fabric    {reason}\n'
+                                  "BLOCKED fabric_incomplete: the confirmed fabric does not meet this spec's "
+                                  f'requirements ({reason}). Note: {note}\n', result.stdout)
+                    self.assertNotIn('Next:', result.stdout)
+                    self.assertEqual(result.stderr.strip().splitlines()[-1],
+                                     'error: start is blocked by 1 blocker(s) above; nothing was launched')
+                    self.assertEqual(self.trace(), [])
+
+    def test_refused_placement_in_json(self):
+        c = self.cluster
+        result = c.start(self.spec['spec_id'], '--dry-run', '--json', '--placement-nodes',
+                         f'{c.hostname(0)},{c.hostname(2)}')
+        self.assertEqual(result.returncode, 1)
+        error = json.loads(result.stdout)['error']
+        self.assertEqual(error['code'], 'prerequisite_failed')
+        self.assertEqual([(check['id'], check['outcome']) for check in error['checks']][:4],
+                         [('spec-review', 'info'), ('recipe', 'pass'), ('topology', 'pass'), ('fabric', 'fail')])
+        (detail,) = error['details']
+        self.assertEqual((detail['blocker'], detail['fix']), ('fabric_incomplete', None))
+        self.assertIn(f'{c.hostname(0)} and {c.hostname(2)} are not cabled to each other', detail['message'])
+        self.assertNotIn('error:', detail['message'])
 
 
 class Suggestions(Cluster):

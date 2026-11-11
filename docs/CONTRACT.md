@@ -692,6 +692,14 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `container_start_failed`, `smoke_test_failed`, `health_timeout`,
 `container_exited` and `service_stopped`.
 
+Change note, 2026-11-11: `start --placement-nodes` naming nodes that are not
+cabled as the recipe needs is reported as a start check: `error.checks` lists
+the checks run so far with `fabric` failed, and `error.details` holds the
+existing `fabric_incomplete` blocker with a null `fix` and a `note`, as on the
+default order. `error.code` stays `prerequisite_failed`; before, `checks` was
+empty and `message` carried the launch check's own line. Nothing was removed or
+renamed.
+
 Change note, 2026-11-11: a `container-reference` blocker detail's `container`
 gained `earlier_cluster`, true when the container's labels name an earlier saved
 cluster; it is absent otherwise. Its `fix` then names the Docker removal. Nothing
