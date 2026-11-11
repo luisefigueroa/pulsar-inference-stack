@@ -128,7 +128,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 | full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
-| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order. |
 | cable | One physical connection between two neighbours. On a ring each cable carries two links. |
 | neighbour | A node at the other end of one of this node's cables. |
 
@@ -388,6 +388,17 @@ ring a two-node recipe starts on this node and its neighbour at rank 1; a
 recipe on three or more nodes does not start, because some of its nodes share
 no link. Start names those two machines, and the Serve list and **Why will a
 model not start?** say the same. Stop never depends on the shape.
+
+A recipe whose ranks pass data around a closed loop, each to the next and the
+last back to the first, declares it in its own spec: exactly one `NCCL_ALGO`
+entry in `container_env` whose whole value is `Ring`, in any case. Any other
+value, such as `Ring,Tree`, keeps the rule above. Start then needs only each of
+the recipe's nodes cabled to the next and the last to the first, in role order.
+On a ring that is the whole ring in the default order, which follows the
+cables; on fewer of its machines, or in another order, Start refuses and names
+the first two machines in role order that share no cable. Each rank uses the
+adapters on both of its cables, and preflight checks only the pairs of the
+loop. On a full mesh such a recipe starts like any other.
 
 Copies of model files follow the cables. Prepare, Move, Archive and Restore
 copy to or from a node that is not this node's neighbour through the
