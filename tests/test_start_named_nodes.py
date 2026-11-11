@@ -111,6 +111,83 @@ class Preflight(Cluster):
             self.assertNotIn(word, result.stdout)
 
 
+class StartWithPreflight(Cluster):
+    """Start runs the real preflight on the doubles, then the launcher: each
+    preflight command reaches only the nodes the service runs on."""
+
+    # Preflight's commands on a node it reaches over SSH, in order: SSH, the
+    # pings of its two links, the node probe, RDMA adapters, the RDMA device,
+    # the control address, memory, stale containers and the image.
+    OVER_SSH = ['true over ssh', 'ping over ssh', 'ping over ssh', 'probe over ssh', 'rdma over ssh',
+                'test over ssh', 'ip over ssh', 'meminfo over ssh', 'docker ps names over ssh',
+                'docker image inspect over ssh']
+
+    def preflight(self):
+        """What each node did between Start's own checks and the launcher's
+        first container, without Start's container lookups."""
+        lines = self.trace()
+        first_run = next(index for index, line in enumerate(lines) if 'docker run' in line)
+        reached = {}
+        for line in lines[:first_run]:
+            if line.startswith('node-') and 'docker inspect' not in line:
+                node, what = line.split(' ', 1)
+                reached.setdefault(node, []).append(what)
+        return reached
+
+    def test_the_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS  preflight cluster OK', result.stdout)
+        self.assertNotIn('--skip-preflight', ' '.join(json.dumps(call) for call in c.calls()['checks']))
+        self.assertEqual(self.preflight(), {'node-2': self.OVER_SSH, 'node-3': self.OVER_SSH}, self.trace())
+        self.assertEqual([line for line in self.trace() if 'docker run' in line],
+                         ['node-3 docker run rank 1 over ssh', 'node-2 docker run rank 0 over ssh'])
+
+    def test_the_default_order(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS  preflight cluster OK', result.stdout)
+        # This node answers its own checks locally: the probe, rdma and ip
+        # doubles, then the docker double. Its device and memory checks run as
+        # local commands the trace does not show.
+        self.assertEqual(self.preflight(), {
+            'node-0': ['probe', 'rdma', 'ip', 'docker ps names', 'docker image inspect'],
+            'node-1': self.OVER_SSH}, self.trace())
+        self.assertEqual([line for line in self.trace() if 'docker run' in line],
+                         ['node-1 docker run rank 1 over ssh', 'node-0 docker run rank 0'])
+
+
+class StatusOnNamedNodes(Cluster):
+    """`./pulsar status` with the real observe-serving.sh, for a service Start ran
+    on saved ranks 2 and 3: it observes those nodes and the first one's address."""
+
+    def test_the_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        c.forget_calls()
+        result = c.status(spec['spec_id'], SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(' '.join(result.stdout.split()),
+                         f"spec {spec['spec_id'][:12]}: running and healthy on {c.hostname(2)}, {c.hostname(3)}; "
+                         'recipe and files verified API: http://192.0.2.32:8000/v1')
+        self.assertIn('health http://192.0.2.32:8000/health', self.trace())
+        # Each rank's container and image were read on its own node.
+        self.assertEqual([line for line in self.trace() if line.startswith('node-')], [
+            'node-2 docker inspect by name over ssh', 'node-2 docker image inspect over ssh',
+            'node-2 runtime context over ssh',
+            'node-3 docker inspect by name over ssh', 'node-3 docker image inspect over ssh',
+            'node-3 runtime context over ssh',
+            'node-2 docker inspect by name over ssh', 'node-3 docker inspect by name over ssh'])
+
+
 class OneServicePerSpec(Cluster):
     """Start reads the saved records: a spec runs as one service."""
 

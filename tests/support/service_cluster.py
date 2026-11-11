@@ -76,8 +76,13 @@ if args[:3] == ["ps", "-a", "--format"]:
     for c in here:
         print(c["name"])
     sys.exit(0)
+IMAGE_ID = "sha256:" + "e" * 64
 if args[:2] == ["image", "inspect"]:
     trace("docker image inspect")
+    if args[2:4] == ["--format", "{{json .}}"]:
+        # The pinned image, as an observation reads it.
+        print(json.dumps({"Id": IMAGE_ID, "RepoDigests": ["example/image@sha256:" + "d" * 64],
+                          "Config": {"Env": [], "Entrypoint": None}}))
     sys.exit(0)
 if args[:2] == ["ps", "-aq"]:
     wanted = [args[i + 1].partition("=")[2] for i, a in enumerate(args) if a == "--filter"]
@@ -108,6 +113,38 @@ if args[:2] == ["inspect", "--format"]:
     c = find(args[3])
     if args[2] == "{{.State.Status}}":
         print(c["state"])
+    elif args[2] == "{{json .}}" and "argv" in c:
+        # A rank of a multi-node service the launcher started, as docker shows
+        # it: labels, environment, mounts and command read back from its run
+        # command, and the host settings every multi-node example recipe asks for.
+        argv, env, mounts, entrypoint, i = c["argv"], [], [], None, 1
+        image = next(index for index, word in enumerate(argv) if word.startswith("example/image@sha256:"))
+        while i < image:
+            word, value = argv[i], argv[i + 1] if i + 1 < len(argv) else ""
+            if word == "-e":
+                env.append(value)
+            elif word == "-v":
+                source, target, _ = value.split(":")
+                mounts.append({"Type": "bind", "Source": source, "Destination": target, "RW": False})
+            elif word == "--mount":
+                fields = dict(part.partition("=")[::2] for part in value.split(","))
+                mounts.append({"Type": "bind", "Source": fields["src"], "Destination": fields["dst"], "RW": False})
+            elif word == "--entrypoint":
+                entrypoint = [value]
+            i += 2 if word in ("-e", "-v", "--mount", "--entrypoint", "--name", "--label") else 1
+        host = {"NetworkMode": "host", "IpcMode": "host", "ShmSize": 67108864, "Memory": 0, "NanoCpus": 0,
+                "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
+                "Ulimits": [{"Name": "memlock", "Soft": -1, "Hard": -1},
+                            {"Name": "stack", "Soft": 67108864, "Hard": 67108864}],
+                "DeviceRequests": [{"Driver": "", "Count": -1, "DeviceIDs": None, "Capabilities": [["gpu"]]}],
+                "Devices": [{"PathOnHost": "/dev/infiniband/uverbs0", "PathInContainer": "/dev/infiniband/uverbs0",
+                             "CgroupPermissions": "rwm"}], "PortBindings": {}}
+        print(json.dumps({"Id": c["id"], "Name": "/" + c["name"], "Image": IMAGE_ID, "Mounts": mounts,
+                          "HostConfig": host,
+                          "Config": {"Labels": c["labels"], "Env": env, "Entrypoint": entrypoint,
+                                     "Cmd": argv[image + 1:], "Healthcheck": {"Test": ["NONE"]}},
+                          "State": {"Running": c["state"] == "running", "Status": c["state"],
+                                    "StartedAt": "2026-01-01T00:00:00Z"}}))
     else:
         print(json.dumps({"id": c["id"], "name": "/" + c["name"], "labels": c["labels"]}))
     sys.exit(0)
@@ -134,7 +171,7 @@ if args[:1] == ["run"]:
     cid = hashlib.sha256(f"{node}:{name}:{len(everything)}:{args}".encode()).hexdigest()
     everything.append({"node": node, "id": cid, "name": name, "labels": labels, "state": "running",
                        "image": "example/image@sha256:" + "d" * 64, "cmd": args[args.index("--model"):]
-                       if "--model" in args else []})
+                       if "--model" in args else [], "argv": args})
     json.dump(everything, open(state, "w"))
     with open(os.path.join(root, "runs.jsonl"), "a") as stream:
         stream.write(json.dumps([node, args]) + "\n")
@@ -174,6 +211,8 @@ sys.exit(97)
 # answer. Memory reads answer a fixed size, so no host value is shown.
 SSH = r'''#!/usr/bin/env python3
 import json, os, subprocess, sys
+RDMA_LINKS = "\n".join(f"link {hca}/1 state ACTIVE physical_state LINK_UP netdev x"
+                       for hca in ("rocep0a", "rocep0b", "rocep1a", "rocep1b", "roce0", "roce1"))
 root = os.environ["SERVICE_FIXTURE"]
 args = sys.argv[1:]
 alias = args[args.index("--") + 1]
@@ -187,13 +226,30 @@ if node in os.environ.get("SERVICE_UNREACHABLE", "").split(","):
     print(f"ssh: connect to host {alias} port 22: Connection timed out", file=sys.stderr)
     sys.exit(255)
 command = args[-1]
+if args[args.index("--") + 2:] == ["python3", "-"]:
+    # The host versions an observation records, from the fixture.
+    with open(os.path.join(root, "trace.log"), "a") as stream:
+        stream.write(f"node-{node.rsplit('-', 1)[-1]} runtime context over ssh\n")
+    sys.stdin.read()
+    print(json.dumps({"architecture": "aarch64", "kernel_release": "fixture", "gpu_driver": None,
+                      "container_runtime_version": None}))
+    sys.exit(0)
+if command == "awk '/MemAvailable/{print $2}' /proc/meminfo":
+    # Preflight reads kB: 100 GiB.
+    with open(os.path.join(root, "trace.log"), "a") as stream:
+        stream.write(f"node-{node.rsplit('-', 1)[-1]} meminfo over ssh\n")
+    print(100 * 1024 * 1024)
+    sys.exit(0)
 if "/proc/meminfo" in command:
     print("100.00")
     sys.exit(0)
-# Preflight's node checks answer from the fixture, never from this machine.
+# Preflight's node checks answer from the fixture, never from this machine:
+# every RDMA adapter ACTIVE, the device present, the control address bound.
 if command.startswith(("rdma link show", "test -e ", "ip -4 -o addr", "ping ", "true")):
     with open(os.path.join(root, "trace.log"), "a") as stream:
         stream.write(f"node-{node.rsplit('-', 1)[-1]} {command.split()[0]} over ssh\n")
+    if command.startswith("rdma link show"):
+        print(RDMA_LINKS)
     sys.exit(0)
 if command.startswith("python3 ") and "probe" in command:
     with open(os.path.join(root, "trace.log"), "a") as stream:
@@ -205,6 +261,24 @@ sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, SERVICE_N
 '''
 
 NVIDIA_SMI = '#!/bin/sh\nexit 0\n'
+
+# Preflight's commands on this node (saved rank 0) answer from the fixture:
+# rdma lists every adapter ACTIVE, ip shows this node's control address.
+RDMA = r'''#!/usr/bin/env python3
+import os
+with open(os.path.join(os.environ["SERVICE_FIXTURE"], "trace.log"), "a") as stream:
+    stream.write("node-0 rdma\n")
+for hca in ("rocep0a", "rocep0b", "rocep1a", "rocep1b", "roce0", "roce1"):
+    print(f"link {hca}/1 state ACTIVE physical_state LINK_UP netdev x")
+'''
+IP = r'''#!/usr/bin/env python3
+import json, os
+root = os.environ["SERVICE_FIXTURE"]
+with open(os.path.join(root, "trace.log"), "a") as stream:
+    stream.write("node-0 ip\n")
+probe = json.load(open(os.path.join(root, "probe-0.json")))
+print(f"2: {probe['control']['interface']}    inet {probe['control']['ip']}/24 brd x scope global")
+'''
 
 # The curl double: every request is logged as [url, argv]. /health answers on
 # the hosts in SERVICE_HEALTHY (comma-separated; default 127.0.0.1), and the
@@ -234,6 +308,29 @@ if url.endswith("/v1/completions"):
 sys.exit(2)
 '''
 
+# Status asks /health from Python, not curl: this sitecustomize answers it as
+# the curl double does (SERVICE_HEALTHY) and logs "health URL" to the trace.
+HEALTH_DOUBLE = r'''import os
+if os.environ.get("SERVICE_FIXTURE"):
+    import urllib.error, urllib.request
+    from urllib.parse import urlsplit
+
+    class _Answer:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+
+    def _open(self, request, *args, **kwargs):
+        url = getattr(request, "full_url", request)
+        with open(os.path.join(os.environ["SERVICE_FIXTURE"], "trace.log"), "a") as stream:
+            stream.write(f"health {url}\n")
+        if urlsplit(url).hostname in os.environ.get("SERVICE_HEALTHY", "127.0.0.1").split(","):
+            return _Answer()
+        raise urllib.error.URLError("fixture: no answer")
+
+    urllib.request.OpenerDirector.open = _open
+'''
+
 # Check scripts a Start runs, as doubles in the installation copy: each logs
 # its arguments and passes. Image, memory and model files are tested
 # elsewhere; these tests are about where Start acts.
@@ -259,6 +356,18 @@ library_hot_info_for_profile() {
   printf '%s\n' "prepared ${ids[*]}" >>"$SERVICE_FIXTURE/checks.log"
   python3 "$SERVICE_FIXTURE/prepared.py" "$CONF_PATH" "$CLUSTER_TOPOLOGY_ID" "${ids[@]}"
 }
+# Preflight's node probe and RDMA device, from the fixture: the probe of the
+# node at saved rank $1, read over SSH except for this node.
+probe_node_json_for_rank() {
+  local position="$1"
+  [ "$position" = 0 ] || "$PULSAR_SSH" -- "${CLUSTER_NODE_SSH_HOSTS[$position]}" "python3 - --probe" </dev/null
+  [ "$position" != 0 ] || { printf 'node-0 probe\n' >>"$SERVICE_FIXTURE/trace.log"; python3 -c '
+import json, pathlib, sys
+for path in pathlib.Path(sys.argv[1]).glob("probe-*.json"):
+    probe = json.loads(path.read_text())
+    if probe["node_id"] == sys.argv[2]: print(json.dumps(probe))' "$SERVICE_FIXTURE" "${CLUSTER_NODE_IDS[0]}"; }
+}
+PULSAR_RDMA_VERBS_DEVICE="$SERVICE_FIXTURE/infiniband"
 port_free() {
   printf '%s\n' "port $1 ${2:-local}" >>"$SERVICE_FIXTURE/checks.log"
   printf '%s\n' "port $1 on ${2:-local}" >>"$SERVICE_FIXTURE/trace.log"
@@ -428,8 +537,9 @@ class ServiceCluster:
     def install(self):
         """A copy of the Stack in the fixture whose image, memory, model-file
         and post-health checks are doubles (CHECK, OBSERVE), with START_ENV
-        for prepared files and ports. Start runs the real up.sh, launcher and
-        preflight from it. Returns the copy's root."""
+        for prepared files, ports and preflight's node probe, and rdma and ip
+        doubles for preflight on this node. Start runs the real up.sh,
+        launcher and preflight from it. Returns the copy's root."""
         import shutil
         stack = self.root / 'stack'
         if stack.exists():
@@ -450,8 +560,11 @@ class ServiceCluster:
             tool_path=str(stack / 'scripts' / 'topology_manifest.py')))
         (self.root / 'prepared.py').write_text(PREPARED)
         (self.root / 'start-env.sh').write_text(START_ENV)
-        (self.root / 'bin' / 'curl').write_text(CURL)
-        (self.root / 'bin' / 'curl').chmod(0o755)
+        for name, body in (('curl', CURL), ('rdma', RDMA), ('ip', IP)):
+            (self.root / 'bin' / name).write_text(body)
+            (self.root / 'bin' / name).chmod(0o755)
+        # The RDMA device preflight looks for on this node, in the fixture.
+        (self.root / 'infiniband').write_text('')
         return stack
 
     def start(self, spec_id, *args, **env):
@@ -463,6 +576,26 @@ class ServiceCluster:
                        str(self.root / 'blockers.jsonl'), **env}
         return subprocess.run([str(stack / 'pulsar'), 'start', spec_id, *args], env=environment, text=True,
                               capture_output=True, timeout=180, cwd=self.root)
+
+    def status(self, spec_id, *args, **env):
+        """`./pulsar status SPEC_ID ARGS` from the installation copy, with the
+        real observe-serving.sh in place of its stub for this run. Status's
+        own /health request answers from HEALTH_DOUBLE, not the network."""
+        import shutil
+        stack = self.install()
+        doubles = self.root / 'python-doubles'
+        doubles.mkdir(exist_ok=True)
+        (doubles / 'sitecustomize.py').write_text(HEALTH_DOUBLE)
+        observe = stack / 'scripts' / 'observe-serving.sh'
+        shutil.copy2(ROOT / 'scripts' / 'observe-serving.sh', observe)
+        environment = {**self.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(self.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '',
+                       'PYTHONPATH': str(doubles), **env}
+        try:
+            return subprocess.run([str(stack / 'pulsar'), 'status', spec_id, *args], env=environment, text=True,
+                                  capture_output=True, timeout=180, cwd=self.root)
+        finally:
+            observe.write_text(OBSERVE)
 
     def calls(self):
         """Every docker call [node, args], SSH command [node, command] and curl
