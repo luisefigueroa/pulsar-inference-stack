@@ -58,5 +58,50 @@ class OneMap(Cluster):
         self.assertEqual(c.store.records('services'), [])
 
 
+class LauncherOnTheMap(Cluster):
+    """The launcher runs each role rank on its node: local Docker for this
+    machine, SSH otherwise, the first node included; the other ranks first."""
+
+    def launch(self, positions, **env):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = ','.join(c.hostname(position) for position in positions)
+        return self.launcher(spec, '--skip-preflight', '--placement-nodes', names, **env)
+
+    def test_a_failed_health_wait_removes_what_it_started_on_the_pair_only(self):
+        result = self.launch([2, 3], SERVICE_HEALTHY='none')
+        self.assertEqual(result.returncode, 1)
+        trace = [line for line in self.trace() if not line.startswith(('curl', 'port'))]
+        self.assertEqual(trace, [
+            'node-3 docker inspect by name over ssh', 'node-2 docker inspect by name over ssh',
+            'node-3 docker run rank 1 over ssh', 'node-2 docker run rank 0 over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh',
+            'node-2 docker logs over ssh', 'node-3 docker logs over ssh',
+            'node-2 docker rm by id over ssh', 'node-3 docker rm by id over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh'])
+        self.assertIn('port 8000 on ring-echo', self.trace())
+        self.assertIn('starting rank 1 on ring-alpha', result.stdout)
+        self.assertIn('starting rank 0 on ring-echo', result.stdout)
+        self.assertEqual(self.cluster.remaining(), [])
+
+    def test_a_failed_first_node_removes_the_other_rank_on_its_node(self):
+        c = self.cluster
+        result = self.launch([2, 3], SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 1)
+        trace = [line for line in self.trace() if not line.startswith(('curl', 'port'))]
+        self.assertEqual(trace[2:5], ['node-3 docker run rank 1 over ssh', 'node-2 docker run fails over ssh',
+                                      'node-3 docker rm by id over ssh'])
+        self.assertIn('fixture-ring-echo (rank 0): the service container could not be started', result.stdout)
+        self.assertEqual(c.remaining(), [])
+
+    def test_this_machine_as_the_second_node_runs_on_local_docker(self):
+        result = self.launch([3, 0], SERVICE_HEALTHY='none')
+        trace = [line for line in self.trace() if 'docker run' in line]
+        self.assertEqual(trace, ['node-0 docker run rank 1', 'node-3 docker run rank 0 over ssh'])
+        self.assertIn('starting rank 1 locally', result.stdout)
+        self.assertIn('starting rank 0 on ring-alpha', result.stdout)
+
+
 if __name__ == '__main__':
     unittest.main()

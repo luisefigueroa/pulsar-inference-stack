@@ -73,14 +73,14 @@ cluster_interrupted() {
         printf 'Interrupted before launch; nothing was started.\n' >&2 || true
       fi ;;
     launching)
-      where=(--node "$(human_node_name "$LAUNCHING_RANK")" --node-id "${CLUSTER_NODE_IDS[$LAUNCHING_RANK]:-}"
+      where=(--node "$(role_name "$LAUNCHING_RANK")" --node-id "$(role_id "$LAUNCHING_RANK")"
              --rank "$LAUNCHING_RANK")
       detail="while this rank was starting; the cluster is incomplete and cannot serve" ;;
     loading)
-      where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
+      where=(--node "$(role_name 0)" --node-id "$(role_id 0)")
       detail="while the service was loading; it keeps loading on all $NODES ranks" ;;
     verifying)
-      where=(--node "$(human_node_name 0)" --node-id "${CLUSTER_NODE_IDS[0]:-}")
+      where=(--node "$(role_name 0)" --node-id "$(role_id 0)")
       detail="after the service became healthy, while every rank was being verified; it is running on all $NODES ranks" ;;
     replacing)
       detail="while --replace was removing the previous service; some of its containers may remain"
@@ -118,6 +118,24 @@ fi
 # saved position SERVING_NODE_INDEXES[r], the same resolution scripts/up.sh
 # made from the same --placement-nodes (the default order without it).
 resolve_serving_placement "" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
+# role_index R, role_host R, role_name R, role_id R — the saved position of
+# role rank R's node, its SSH host (empty when it is this machine, saved
+# position 0, which local Docker serves), its hostname and its node ID.
+role_index() { printf '%s' "${SERVING_NODE_INDEXES[$1]}"; }
+role_host() { [ "${SERVING_NODE_INDEXES[$1]}" = 0 ] || printf '%s' "${CLUSTER_NODE_SSH_HOSTS[${SERVING_NODE_INDEXES[$1]}]}"; }
+role_name() { human_node_name "${SERVING_NODE_INDEXES[$1]}"; }
+role_id() { printf '%s' "${CLUSTER_NODE_IDS[${SERVING_NODE_INDEXES[$1]}]:-}"; }
+# docker_for_role R ARGS... — one docker command on role rank R's node.
+docker_for_role() {
+  local role="$1" host
+  shift
+  host=$(role_host "$role")
+  if [ -z "$host" ]; then
+    "$PULSAR_DOCKER" "$@"
+  else
+    "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$(shell_join_q docker "$@")"
+  fi
+}
 require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
   || exit 1
 
@@ -151,7 +169,7 @@ if [ "$SKIP_PREFLIGHT" = 0 ]; then
 fi
 
 CONTAINER="$(container_name_for "$MODEL_NAME" "$NODES")"
-MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[0]}"
+MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[$(role_index 0)]}"
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # shellcheck disable=SC2064
 trap 'rm -f "${PLAN_FILE:-}"' EXIT
@@ -192,10 +210,18 @@ _api_key="${VLLM_API_KEY:-${API_KEY:-}}"
 if [ "$DRY_RUN" = 1 ]; then
   echo "RANKS"
   for ((rank = 1; rank < NODES; rank++)); do
-    echo "  rank $rank · ssh ${CLUSTER_NODE_SSH_HOSTS[$rank]} · ${CLUSTER_NODE_HOSTNAMES[$rank]}"
+    if [ -n "$(role_host "$rank")" ]; then
+      echo "  rank $rank · ssh $(role_host "$rank") · ${CLUSTER_NODE_HOSTNAMES[$(role_index "$rank")]}"
+    else
+      echo "  rank $rank · local · ${CLUSTER_NODE_HOSTNAMES[$(role_index "$rank")]}"
+    fi
     echo "    ${REMOTE_REDACTED[$rank]}"
   done
-  echo "  rank 0 · local · ${CLUSTER_NODE_HOSTNAMES[0]}"
+  if [ -n "$(role_host 0)" ]; then
+    echo "  rank 0 · ssh $(role_host 0) · ${CLUSTER_NODE_HOSTNAMES[$(role_index 0)]}"
+  else
+    echo "  rank 0 · local · ${CLUSTER_NODE_HOSTNAMES[$(role_index 0)]}"
+  fi
   echo "    $(shell_join_q_redacted "${HEAD_CMD[@]}")"
   if [ -n "$_api_key" ]; then
     log "API key auth enabled on rank 0 (secret redacted)"
@@ -214,15 +240,17 @@ cluster_abort() {
   local why="${1:-cluster start failed}" rank host
   CLUSTER_PHASE=removing
   error_line "$why — removing launch-tracked IDs only"
-  if [ -n "${TRACKED_CIDS[0]:-}" ]; then
-    log "abort: remove rank 0 id=${TRACKED_CIDS[0]:0:12}" >&2
-    remove_container_id_local "${TRACKED_CIDS[0]}"
-  fi
-  for ((rank = NODES - 1; rank >= 1; rank--)); do
+  # Rank 0 first, then the others; each on its own node, by the ID it returned.
+  for rank in 0 $(seq $((NODES - 1)) -1 1); do
     [ -n "${TRACKED_CIDS[$rank]:-}" ] || continue
-    host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-    log "abort: remove rank $rank id=${TRACKED_CIDS[$rank]:0:12} on $host" >&2
-    remove_container_id_remote "$host" "${TRACKED_CIDS[$rank]}"
+    host=$(role_host "$rank")
+    if [ -z "$host" ]; then
+      log "abort: remove rank $rank id=${TRACKED_CIDS[$rank]:0:12}" >&2
+      remove_container_id_local "${TRACKED_CIDS[$rank]}"
+    else
+      log "abort: remove rank $rank id=${TRACKED_CIDS[$rank]:0:12} on $host" >&2
+      remove_container_id_remote "$host" "${TRACKED_CIDS[$rank]}"
+    fi
   done
 }
 
@@ -236,27 +264,34 @@ cluster_failure() {
   local -a cleanup=(--removed)
   shift 2
   for ((other = 0; other < NODES; other++)); do
-    host=""
-    [ "$other" = 0 ] || host="${CLUSTER_NODE_SSH_HOSTS[$other]}"
+    host=$(role_host "$other")
     [ "$(container_state_exact "$CONTAINER" "$host")" = absent ] \
-      || left+="${left:+, }$(human_node_name "$other") (rank $other)"
+      || left+="${left:+, }$(role_name "$other") (rank $other)"
   done
   [ -z "$left" ] || cleanup=(--unconfirmed "$left")
-  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(human_node_name "$rank")" \
-    --node-id "${CLUSTER_NODE_IDS[$rank]:-}" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(role_name "$rank")" \
+    --node-id "$(role_id "$rank")" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
 }
 
 existing=0
 existing_nodes=()
-for ((rank = 1; rank < NODES; rank++)); do
-  host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
+# The serving nodes only: the other ranks first, then rank 0's node.
+for rank in $(seq 1 $((NODES - 1))) 0; do
+  host=$(role_host "$rank")
   probe_rc=0
-  container_ownership_inspect_remote "$host" "$CONTAINER" >/dev/null || probe_rc=$?
-  case "$probe_rc" in 0) existing=1; existing_nodes+=("$(human_node_name "$rank")") ;; 3) ;; *) die "cannot inspect existing service on $(human_node_name "$rank") (rank $rank); refusing launch" ;; esac
+  if [ -n "$host" ]; then
+    container_ownership_inspect_remote "$host" "$CONTAINER" >/dev/null || probe_rc=$?
+  else
+    container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
+  fi
+  case "$probe_rc" in
+    0) existing=1
+       if [ "$rank" = 0 ]; then existing_nodes=("$(role_name 0)" ${existing_nodes[@]+"${existing_nodes[@]}"})
+       else existing_nodes+=("$(role_name "$rank")"); fi ;;
+    3) ;;
+    *) die "cannot inspect existing service on $(role_name "$rank") (rank $rank); refusing launch" ;;
+  esac
 done
-probe_rc=0
-container_ownership_inspect_local "$CONTAINER" >/dev/null || probe_rc=$?
-case "$probe_rc" in 0) existing=1; existing_nodes=("$(human_node_name 0)" "${existing_nodes[@]}") ;; 3) ;; *) die "cannot inspect existing service on $(human_node_name 0) (rank 0); refusing launch" ;; esac
 if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
   where=$(printf '%s, ' "${existing_nodes[@]}"); where="${where%, }"
   START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --detail "container $CONTAINER on $where"
@@ -295,10 +330,10 @@ done
 build_docker_cmd 0
 HEAD_CMD=("${_DOCKER_CMD[@]}")
 for cluster_port in "$PORT" "${MASTER_PORT:-29500}"; do
-  if ! port_free "$cluster_port"; then
-    START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "$(human_node_name 0)" \
-      --node-id "${CLUSTER_NODE_IDS[0]:-}" --detail "port $cluster_port"
-    refuse_launch "port $cluster_port is unavailable on $(human_node_name 0) (rank 0); refusing launch"
+  if ! port_free "$cluster_port" $(role_host 0); then
+    START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "$(role_name 0)" \
+      --node-id "$(role_id 0)" --detail "port $cluster_port"
+    refuse_launch "port $cluster_port is unavailable on $(role_name 0) (rank 0); refusing launch"
   fi
 done
 
@@ -306,51 +341,50 @@ STARTUP_STARTED_NS=$(date +%s%N)
 persist_launch_plan_file "$PLAN_FILE"
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 CLUSTER_PHASE=launching
-for ((rank = 1; rank < NODES; rank++)); do
-  LAUNCHING_RANK=$rank
-  host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-  log "starting rank $rank on $host"
-  raw_id=""
-  if ! raw_id=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-      "${REMOTE_COMMANDS[$rank]}"); then
-    cluster_abort "rank $rank docker run failed"
-    cluster_failure container_start_failed "$rank" \
+# launch_role R — docker run of role rank R on its node: local Docker when the
+# node is this machine, the node's SSH otherwise. Rank 0's command carries the
+# API key when the service requires one, as a one-node start on a remote node
+# does; no command is printed. A failure removes what this launch started.
+launch_role() {
+  local role="$1" host raw_id=""
+  local -a run=()
+  LAUNCHING_RANK=$role
+  host=$(role_host "$role")
+  if [ "$role" = 0 ]; then run=("${HEAD_CMD[@]}"); else build_docker_cmd "$role"; run=("${_DOCKER_CMD[@]}"); fi
+  if [ -z "$host" ]; then
+    log "starting rank $role locally"
+    run[0]="$PULSAR_DOCKER"
+    raw_id=$("${run[@]}") || raw_id="//failed"
+  else
+    log "starting rank $role on $host"
+    raw_id=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$(shell_join_q "${run[@]}")") || raw_id="//failed"
+  fi
+  if [ "$raw_id" = //failed ]; then
+    cluster_abort "rank $role docker run failed"
+    cluster_failure container_start_failed "$role" \
       --note "Docker's error is shown above. The cluster's containers were removed."
     exit 1
   fi
-  if ! TRACKED_CIDS["$rank"]=$(parse_docker_run_container_id "$raw_id"); then
-    unset "TRACKED_CIDS[$rank]"
-    error_line "rank $rank docker run returned an invalid ID"
-    report_untracked_launch_container remote "$MODEL_NAME" "$rank" "$CONTAINER" "$host"
-    cluster_abort "rank $rank docker run ID invalid"
-    cluster_failure container_start_failed "$rank" --detail "docker run returned an invalid container ID" \
+  if ! TRACKED_CIDS["$role"]=$(parse_docker_run_container_id "$raw_id"); then
+    unset "TRACKED_CIDS[$role]"
+    error_line "rank $role docker run returned an invalid ID"
+    if [ -n "$host" ]; then
+      report_untracked_launch_container remote "$MODEL_NAME" "$role" "$CONTAINER" "$host"
+    else
+      report_untracked_launch_container local "$MODEL_NAME" "$role" "$CONTAINER"
+    fi
+    cluster_abort "rank $role docker run ID invalid"
+    cluster_failure container_start_failed "$role" --detail "docker run returned an invalid container ID" \
       --note "The cluster's containers were removed."
     exit 1
   fi
-  log "rank $rank id=${TRACKED_CIDS[$rank]:0:12}"
+  log "rank $role id=${TRACKED_CIDS[$role]:0:12}"
+}
+# The other ranks first; rank 0, which serves the API, last.
+for ((rank = 1; rank < NODES; rank++)); do
+  launch_role "$rank"
 done
-
-LAUNCHING_RANK=0
-log "starting rank 0 locally"
-HEAD_RUN=("${HEAD_CMD[@]}")
-HEAD_RUN[0]="$PULSAR_DOCKER"
-head_raw=""
-if ! head_raw=$("${HEAD_RUN[@]}"); then
-  cluster_abort "rank 0 docker run failed"
-  cluster_failure container_start_failed 0 \
-    --note "Docker's error is shown above. The cluster's containers were removed."
-  exit 1
-fi
-if ! TRACKED_CIDS[0]=$(parse_docker_run_container_id "$head_raw"); then
-  unset 'TRACKED_CIDS[0]'
-  error_line "rank 0 docker run returned an invalid ID"
-  report_untracked_launch_container head "$MODEL_NAME" 0 "$CONTAINER"
-  cluster_abort "rank 0 docker run ID invalid"
-  cluster_failure container_start_failed 0 --detail "docker run returned an invalid container ID" \
-    --note "The cluster's containers were removed."
-  exit 1
-fi
-log "rank 0 id=${TRACKED_CIDS[0]:0:12}"
+launch_role 0
 CLUSTER_PHASE=loading
 # Every rank's container exists; its references protect its files from here.
 release_model_library_locks
@@ -399,25 +433,19 @@ for _attempt in $(seq 1 "$WAIT_LIMIT"); do
 
   RANK_STATES=()
   for ((rank = 0; rank < NODES; rank++)); do
-    rank_host=""
-    [ "$rank" = 0 ] || rank_host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
+    rank_host=$(role_host "$rank")
     RANK_STATES[rank]=$(container_state_exact "$CONTAINER" "$rank_host")
     case "${RANK_STATES[rank]}" in exited|absent) load_progress_end ;; esac
     case "${RANK_STATES[rank]}" in
       exited)
-        error_line "the rank $rank container on $(human_node_name "$rank") exited before the service became healthy; last logs:"
-        if [ "$rank" = 0 ]; then
-          "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
-        else
-          "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$rank_host" \
-            "docker logs --tail 80 $(printf '%q' "$CONTAINER")" >&2 || true
-        fi
+        error_line "the rank $rank container on $(role_name "$rank") exited before the service became healthy; last logs:"
+        docker_for_role "$rank" logs --tail 80 "$CONTAINER" >&2 || true
         cluster_abort "rank $rank exited during health wait"
         cluster_failure container_exited "$rank" --no-command --note "The cluster's containers were removed; the logs are shown above."
         exit 1
         ;;
       absent)
-        error_line "the rank $rank container on $(human_node_name "$rank") was removed before the service became healthy"
+        error_line "the rank $rank container on $(role_name "$rank") was removed before the service became healthy"
         cluster_abort "rank $rank was removed during health wait"
         cluster_failure service_stopped "$rank"
         exit 1
@@ -430,12 +458,11 @@ done
 
 load_progress_end
 error_line "timed out waiting for health. Rank 0 logs:"
-"$PULSAR_DOCKER" logs --tail 120 "$CONTAINER" >&2 || true
+docker_for_role 0 logs --tail 120 "$CONTAINER" >&2 || true
 for ((rank = 1; rank < NODES; rank++)); do
-  host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-  log "rank $rank logs ($host):" >&2
-  "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-    "docker logs --tail 120 $(printf '%q' "$CONTAINER")" >&2 || true
+  host=$(role_host "$rank")
+  log "rank $rank logs (${host:-$(role_name "$rank")}):" >&2
+  docker_for_role "$rank" logs --tail 120 "$CONTAINER" >&2 || true
 done
 cluster_abort "health wait timed out"
 cluster_failure health_timeout 0 --no-command --note "The cluster's containers were removed; the logs are shown above."

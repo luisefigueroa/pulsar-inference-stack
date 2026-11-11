@@ -779,6 +779,9 @@ class Interrupts(unittest.TestCase):
             f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
             f"CLUSTER_PHASE={phase} LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
             'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            # The launcher's role-to-node map, in the default order.
+            "SERVING_NODE_INDEXES=(0 1)",
+            *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
             lib_function("start_blocker"),
             lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
             "cluster_interrupted 2",
@@ -829,6 +832,9 @@ class Interrupts(unittest.TestCase):
             f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
             "CLUSTER_PHASE=removing LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
             'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            # The launcher's role-to-node map, in the default order.
+            "SERVING_NODE_INDEXES=(0 1)",
+            *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
             lib_function("start_blocker"),
             lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
             "cluster_interrupted 2",
@@ -930,6 +936,9 @@ class ClusterCleanup(unittest.TestCase):
                 'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
                 # States by rank; rank 0 is observed without an SSH host.
                 'container_state_exact() { local states=($FIXTURE_STATES); echo "${states[${2#alias-}]:-${states[0]}}"; }',
+                # The launcher's role-to-node map, in the default order.
+                "SERVING_NODE_INDEXES=(0 1 2)",
+                *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
                 lib_function("start_blocker"),
                 lib_function("cluster_failure", "cluster/start-cluster.sh"),
                 "cluster_failure " + " ".join(shlex.quote(arg) for arg in args),

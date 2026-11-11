@@ -3647,6 +3647,8 @@ check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 require_launch_image_check() {
   local -a placement=()
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  # A multi-node launch on named nodes rechecks those nodes.
+  if [ "$NODES" -gt 1 ] && [ -n "${PLACEMENT_NODES:-}" ]; then placement=(--placement-nodes "$PLACEMENT_NODES"); fi
   "$REPO_DIR/scripts/check-image.sh" "$CONF_NAME" "${placement[@]}" || die "image verification failed before launch"
 }
 
@@ -3663,6 +3665,7 @@ require_launch_memory_check() {
   local rc=0
   local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  if [ "$NODES" -gt 1 ] && [ -n "${PLACEMENT_NODES:-}" ]; then placement=(--placement-nodes "$PLACEMENT_NODES"); fi
   if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
     memory_args+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
   fi
