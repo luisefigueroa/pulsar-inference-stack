@@ -1411,6 +1411,8 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--leave-out", action="append", default=[], help="a recipe not to list")
     nodes = sub.add_parser("nodes")
     nodes.add_argument("--spec-id", required=True)
+    nodes.add_argument("--pairs", action="store_true",
+                       help="a two-node recipe on a ring: its neighbouring pairs (Serve a model…'s question)")
     nodes.add_argument("--inventory", help="the captured service inventory, for what runs on each pair")
     previews = sub.add_parser("previews")
     compose_ = sub.add_parser("compose")
@@ -1498,14 +1500,14 @@ def main(argv: list[str] | None = None) -> int:
                 print(line)
             return 0
         if args.command == "nodes":
-            # A one-node recipe's machine; a two-node recipe's pair of
-            # neighbours on a ring; nothing for any other recipe, which serves
-            # on the saved order.
+            # A one-node recipe's machine; with --pairs, a two-node recipe's
+            # pair of neighbours on a ring; nothing for any other recipe, which
+            # serves on the saved order.
             entries = _entries(sys.stdin)
             row = _row(entries, args.spec_id)
             if row["geometry"]["nodes"] == 1:
                 print("\n".join(node_lines(row, names.order, names, width=width)))
-            elif asks_for_a_pair(row, names):
+            elif args.pairs and asks_for_a_pair(row, names):
                 pairs = ring_pairs(_saved_topology(args.repo_root))
                 inventory = load_json(args.inventory)
                 if pairs:

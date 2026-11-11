@@ -299,6 +299,26 @@ class Pairs(unittest.TestCase):
             with self.subTest(nodes=row["geometry"]["nodes"], env=row.get("container_env"), shape=names.shape):
                 self.assertEqual(serve.asks_for_a_pair(row, names), asked)
 
+    def test_only_serve_a_model_asks_for_the_pairs(self):
+        # Why will a model not start? reads the same command without --pairs and asks nothing for a pair.
+        import contextlib
+        import io
+        import os
+        from unittest import mock
+        path = self.root / "topology.json"
+        path.write_text(json.dumps(self.topology))
+        printed = {}
+        for flags in ((), ("--pairs",)):
+            output = io.StringIO()
+            with mock.patch.dict(os.environ, {"CLUSTER_TOPOLOGY_FILE": str(path)}), \
+                    mock.patch("sys.stdin", io.StringIO(json.dumps({"entries": [recipe(2)]}))), \
+                    contextlib.redirect_stdout(output):
+                self.assertEqual(serve.main(["nodes", "--spec-id", SPEC, *flags, "--width", "200",
+                                             "--repo-root", str(self.root)]), 0)
+            printed[flags] = output.getvalue().splitlines()
+        self.assertEqual(printed[()], [])
+        self.assertEqual(printed[("--pairs",)][0], f"title\t{QUESTION}")
+
     def test_each_choice_names_its_pair_in_that_order_and_the_default_leads(self):
         lines = serve.pair_lines(recipe(2), serve.ring_pairs(self.topology), self.names, width=200)
         self.assertEqual(lines, [
