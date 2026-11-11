@@ -128,7 +128,7 @@ JSON fields, and container labels retain their existing names. The menu's
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
 | fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
 | full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. |
-| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, or on any two neighbours named with `--placement-nodes`, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, or on any two neighbours named with `--placement-nodes`, which Serve a model… asks for, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order. |
 | cable | One physical connection between two neighbours. On a ring each cable carries two links. |
 | neighbour | A node at the other end of one of this node's cables. |
 
@@ -897,7 +897,8 @@ the API:
 ./pulsar start <spec-id> --placement-nodes <node>,<node>
 ```
 
-The pair may leave out this node. Every check, the preflight and the launch
+**Serve a model…** asks for the pair and passes it to Prepare and Start in
+the same order (see [Serve a model…](#serve-a-model)). The pair may leave out this node. Every check, the preflight and the launch
 then run on those two nodes only; a node outside the pair that does not answer
 does not block it. Any other placement off the default order (a pair on a full
 mesh, three or more nodes, two nodes that are not neighbours) is refused before
@@ -1603,9 +1604,23 @@ needs, which the operator approves once.
    from saved records and one service inventory, which the menu reuses while
    it is under a minute old.
 3. **The machine.** A one-node recipe asks which machine serves it, starting
-   on the one its files are on. A multi-node recipe serves on the saved node
-   order, as `./pulsar start` does; serving nodes are never chosen from
-   discovery.
+   on the one its files are on. On a saved ring, a two-node recipe asks which
+   two neighbouring machines serve it: this machine and its neighbour at rank
+   1 first, which is what Start uses when no machines are named and where the
+   cursor starts; then this machine and its other neighbour; then the other
+   pairs in cable order. Each choice names both machines and the one that
+   serves the API (this machine when it is one of them, otherwise the one
+   earlier in the saved order), and says what saved records and the service
+   inventory taken on entry already show there: its files ready in that
+   order, its model files on one of them, a service running. The plan's first
+   line names the pair again, and its Prepare, serving image and Start steps
+   name it with `--placement-nodes`, in that order, unless it is the first
+   pair, whose plan is the one Start uses without naming machines. **Back**
+   or Esc returns to the list with nothing planned. Any other multi-node
+   recipe, a recipe that passes data around a loop of its nodes
+   (`NCCL_ALGO=Ring`), and every recipe on a full mesh serve on the saved
+   node order, as `./pulsar start` does, and ask nothing; serving nodes are
+   never chosen from discovery.
 4. **The plan.** The previews that can run now, in order: a model files scan
    when a required snapshot has no home, the restore plan, the `hf`
    prerequisites of the node a download goes to (one Hub request; a missing or
@@ -1627,7 +1642,8 @@ needs, which the operator approves once.
    complete ID; the outcome shows a catalog spec's 12-character prefix where
    the command accepts one. Choices: **Cancel**
    (where the cursor starts), **Go ahead**, **Get it ready, but do not start**
-   (the same plan without Stop and Start), **Change…** (the serving machine,
+   (the same plan without Stop and Start), **Change…** (a one-node recipe's
+   serving machine; for another pair, **Cancel** and choose the recipe again;
    the archive or a download, the node that keeps the files, and the serving
    image's source where both are possible: **Pull the serving image from its
    registry instead** when this machine was seen holding it, and **Copy the
