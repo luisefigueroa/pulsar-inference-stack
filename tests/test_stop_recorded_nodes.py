@@ -335,6 +335,69 @@ class RecordedStop(Cluster):
         self.assert_untouched()
 
 
+class StopAll(Cluster):
+    """`./pulsar stop --all --yes` with a pair recorded on saved ranks 2 and 3."""
+
+    def test_both_kinds_are_stopped_and_an_unrecorded_container_is_refused_and_named(self):
+        c = self.cluster
+        spec, plan, containers = self.pair()
+        _, default, default_containers = self.pair((0, 1), variant=1)
+        stray_spec, _, stray = self.pair((1, 0), variant=2, record=False)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(f"Stopped spec {spec['spec_id'][:12]} on fixture-ring-echo (rank 0), fixture-ring-alpha (rank 1): "
+                      "removed 2 container(s) and retired its service record.", result.stdout)
+        for item in stray:
+            self.assertIn(f"refusing managed candidate id={item['id'][:12]}", result.stderr)
+        self.assertIn(f"spec {stray_spec['spec_id'][:12]} nodes=2 rank=0", result.stderr)
+        self.assertIn('warning: some candidates were refused (unknown spec or rank placement)', result.stderr)
+        self.assertEqual(sorted(item for _, item in c.removed()),
+                         sorted(item['id'] for item in containers + default_containers))
+        self.assertEqual(sorted(item['id'] for item in c.remaining()), sorted(item['id'] for item in stray))
+        self.assertFalse(c.recorded(plan))
+        # A refused candidate stops the spec-wide retire, as it always has.
+        self.assertTrue(c.recorded(default))
+
+    def test_without_an_unrecorded_container_everything_is_stopped_and_retired(self):
+        c = self.cluster
+        _, plan, _ = self.pair()
+        _, default, _ = self.pair((0, 1), variant=1)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(c.remaining(), [])
+        self.assertEqual([c.recorded(item) for item in (plan, default)], [False, False])
+
+    def test_a_record_with_no_container_left_is_retired(self):
+        c = self.cluster
+        spec, plan, _ = self.pair(run=False)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Spec {spec['spec_id'][:12]} had no container left", result.stdout)
+        self.assertFalse(c.recorded(plan))
+
+    def test_a_failed_recorded_stop_removes_nothing_else(self):
+        c = self.cluster
+        spec, plan, _ = self.pair(labels={PREFIX + 'topology': 'e' * 64})
+        _, default, _ = self.pair((0, 1), variant=1)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: stop --all stopped before removing the other services' containers, because spec "
+                      f"{spec['spec_id'][:12]}'s service could not be stopped on its recorded nodes.", result.stderr)
+        self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(plan) and c.recorded(default))
+
+    def test_a_guarded_trial_off_the_default_order_still_refuses_stop_all(self):
+        c = self.cluster
+        self.pair()
+        spec, manifest = c.spec(2, catalog=False, guarded=True)
+        trial = c.plan(spec, manifest, [3, 2])
+        c.run(trial)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"stop --all does not stop guarded trial {trial['guard_run_id'][:12]}", result.stderr)
+        self.assertEqual(c.removed(), [])
+
+
 class DefaultOrderRetire(Cluster):
     """No stop path that finds containers by saved position retires the record
     of a service recorded off the default order: it never looked there."""

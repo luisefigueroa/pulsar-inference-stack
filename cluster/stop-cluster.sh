@@ -35,6 +35,30 @@ if [ "$ARG" = --all ]; then
     fi
   done
 
+  # First each ordinary service recorded off the default node order, on the
+  # nodes its record names and with the same proofs as stop SPEC. Guarded
+  # trials keep their own path: scripts/down.sh refuses --all while one is
+  # recorded off the default order.
+  if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
+import sys
+from model_library.state import Store
+from scripts.service_state import off_default_order, recorded_bindings
+for item in recorded_bindings(Store(sys.argv[1])):
+    if not item['guarded'] and off_default_order(item['node_ids'], sys.argv[2:]):
+        print(item['selected_spec_id'], item['plan_id'], sep='\t')
+PY_RECORDED
+  ); then
+    echo "error: stop --all did not run: the saved service records cannot be read, so no container was removed. Next: ./pulsar inventory" >&2
+    exit 1
+  fi
+  while IFS=$'\t' read -r recorded_spec recorded_plan; do
+    [ -n "$recorded_plan" ] || continue
+    if ! stop_recorded_service "$recorded_spec" "$recorded_plan"; then
+      echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar inventory, then rerun ./pulsar stop --all --yes" >&2
+      exit 1
+    fi
+  done <<<"$recorded"
+
   rc=0
   for ((rank = CLUSTER_TOPOLOGY_COUNT - 1; rank >= 1; rank--)); do
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
