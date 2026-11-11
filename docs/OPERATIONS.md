@@ -482,7 +482,10 @@ change, on the node and on this controller. Nothing is copied or deleted, the
 copy needs no free space, and a pin stays. A copy whose files no longer verify,
 or that a container still mounts, is reported as before (`changed-copy`,
 `pinned` or `container-reference`), to be purged before it is prepared again.
-A copy on a node that no longer serves the spec is left as it is; purge removes
+When the container that mounts it is left from an earlier saved cluster, which
+Stop refuses, the blocker's Fix gives the `docker rm -f` that removes it on its
+node instead of Stop, and the menu offers no Stop for it; a container of the
+current saved cluster keeps the Stop fix. A copy on a node that no longer serves the spec is left as it is; purge removes
 it with the spec's other copies. A save also writes membership without recorded
 SSH identities, so every node, not only a new one, is enrolled again with
 `./pulsar ssh-trust enroll`.

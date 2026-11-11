@@ -62,7 +62,7 @@ PY
   fi
   all_views=$(merged_views all) || die "shared-copy dependencies are unobservable"
   all_views=$(json_fields "$all_views" views)
-  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || die "purge planning failed"
+  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || die "purge planning failed"
   if [ "$PLAN" -eq 1 ]; then emit_result "$(model_json plan: "$plan" incomplete_preparations: "$transactions")"; return; fi
   [ "$YES" -eq 1 ] || die "purge requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
@@ -75,7 +75,7 @@ PY
   observations=$(all_observations) || die "could not recheck all nodes before purge"
   all_views=$(merged_views all) || die "shared-copy dependencies became unobservable"
   all_views=$(json_fields "$all_views" views)
-  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || return 2
+  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   while IFS= read -r row; do
     select_record_manifest "$row" || die "record references an undeclared snapshot"
@@ -113,13 +113,13 @@ remove_home() {
   require_cluster_nodes 1 >/dev/null || die "home removal requires confirmed topology"
   observations=$(all_observations) || die "cannot inspect every node"
   dependencies=$(snapshot_dependencies) || die "snapshot dependencies are unobservable"
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || die "home removal planning failed"
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || die "home removal planning failed"
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "home removal requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   observations=$(all_observations) || die "cannot recheck nodes before home removal"
   dependencies=$(snapshot_dependencies) || die "cannot recheck snapshot dependencies"
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || return 2
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$HOME_JSON" node_id)" --path "$(json_fields "$HOME_JSON" hub_path)" --json >/dev/null || die "home acquired a container reference"

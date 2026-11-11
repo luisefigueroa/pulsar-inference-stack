@@ -1645,8 +1645,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     """Menu choices for a blocked plan's Pulsar container blockers, as (kind, spec, model, label).
 
     Stop for each catalog spec whose Pulsar container mounts the files, then
-    Live service inventory. A container that Pulsar did not start gets no
-    choice: its fix is to remove it or its mount, which the menu never does.
+    Live service inventory. A container that Pulsar did not start, or one of an
+    earlier saved cluster, which Stop refuses, gets no choice: its fix is to
+    remove it (or its mount) with Docker, which the menu never does.
     Neither does a folder at a prepared copy's path that no record names: the
     fix names Look for model files Pulsar has no record of…, which takes it
     over after checking every file (D7), or the operator removes it outside
@@ -1655,7 +1656,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     specs: list[str] = []
     for item in _plan_document(plan).get("blocker_details") or []:
         container = item.get("container") if isinstance(item, dict) else None
-        if isinstance(container, dict) and container.get("spec_id") and container["spec_id"] not in specs:
+        # Stop refuses a container of an earlier saved cluster; its fix is Docker's.
+        if (isinstance(container, dict) and container.get("spec_id") and not container.get("earlier_cluster")
+                and container["spec_id"] not in specs):
             specs.append(str(container["spec_id"]))
     models = {entry["spec_id"]: entry["model_id"] for entry in entries}
     choices = [("stop", spec, models[spec], f"Stop {models[spec]} ({spec[:12]})") for spec in specs if spec in models]

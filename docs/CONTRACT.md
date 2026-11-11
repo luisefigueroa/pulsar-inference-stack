@@ -290,7 +290,10 @@ Preparation, purge and home-removal plans keep `blockers` as messages and add
 explains, `node_id` when one node is involved, and `fix`, a sentence for
 people. A `container-reference` record also has `container` (`id`, `name`,
 `state` of `running`, `stopped` or `unknown`, and `spec_id`, the selected catalog
-spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. An
+spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`.
+Its `container` carries `earlier_cluster: true` when its labels name an earlier
+saved cluster, which Stop refuses; its `fix` then gives the `docker rm -f` that
+removes it instead of Stop. An
 `unrecorded-destination` record has the `path` of a folder that is already
 where Prepare would place a rank's prepared copy and that no record names. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
@@ -688,6 +691,11 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `image_check_failed`, `model_files_check_failed`, `port_in_use`,
 `container_start_failed`, `smoke_test_failed`, `health_timeout`,
 `container_exited` and `service_stopped`.
+
+Change note, 2026-11-11: a `container-reference` blocker detail's `container`
+gained `earlier_cluster`, true when the container's labels name an earlier saved
+cluster; it is absent otherwise. Its `fix` then names the Docker removal. Nothing
+was removed or renamed.
 
 Change note, 2026-11-10: an ordinary `start --placement-nodes` accepts any
 saved members cabled as the recipe needs, on a full mesh as on a ring, and
