@@ -18,7 +18,9 @@ if [ -n "$PROFILE" ]; then
 else
   load_cluster_topology || exit 1
   EXPECTED_NODES="$CLUSTER_TOPOLOGY_COUNT"
+  # Without a recipe, every saved node: on a ring, every cable around it.
   TOPOLOGY_CLASS=roce-full-mesh
+  [ "$CLUSTER_TOPOLOGY_CLASS" != roce-ring ] || TOPOLOGY_CLASS=roce-ring
   MIN_RAILS_PER_PAIR=1
 fi
 while [ "$#" -gt 0 ]; do
@@ -72,6 +74,8 @@ done
 # preflight, each ping bound to the source's own interface on that link, then
 # each pair's links against what the recipe needs. On a ring only neighbours
 # have links; require_profile_topology already refused any pair without them.
+# A recipe that passes data around a loop (roce-ring) uses only each rank and
+# the next, and the last and the first: only those pairs are pinged and judged.
 while IFS=$'\t' read -r kind first second third fourth _interface; do
   case "$kind" in
     ok) ok "rank $first → rank $second · $third · $fourth" ;;
@@ -84,7 +88,7 @@ while IFS=$'\t' read -r kind first second third fourth _interface; do
       fi
       ;;
   esac
-done < <(topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES")
+done < <(topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES" "$([ "$TOPOLOGY_CLASS" != roce-ring ] || echo loop)")
 
 echo "[preflight] per-node readiness"
 check_node() {

@@ -20,7 +20,7 @@ from scripts import release_consumer
 from support import ring_recipe
 from support.topology_fixture import Fixture, ring_probes, shuffled
 import topology_manifest as tm
-from tests import test_start_blockers
+from tests import test_ring_launch_check as launch, test_start_blockers
 
 # Recorded from the code before the ring pattern existed: each catalog spec's
 # node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). No
@@ -234,6 +234,71 @@ class TheLaunchCheckForARingPattern(unittest.TestCase):
             ('0', '', ''),
             ('1', 'cabling', f'topology: {tm.ring_refusal(names[0], names[2])}'),
             ('1', 'cabling', f'topology: {tm.ring_refusal(names[0], names[2])}')])
+
+
+class AdaptersAndPreflightForTheWholeRing(unittest.TestCase):
+    """Each rank of a ring-pattern recipe on the whole ring gets the adapters on
+    both of its cables; preflight pings and judges only the loop's pairs."""
+
+    def test_each_rank_gets_the_adapters_on_both_of_its_cables(self):
+        for count in (4, 6):
+            fixture, _names = ring_fixture(self, count)
+            with self.subTest(count=count):
+                self.assertEqual(launch.profile(fixture.topology, *range(count)),
+                                 {rank: launch.PORT0 | launch.PORT1 for rank in range(count)})
+
+    def test_the_launch_check_gives_them_to_each_rank(self):
+        fixture, _names = ring_fixture(self, 4)
+        script = r'''
+            . "$1/cluster/topology.sh"
+            require_profile_topology 4 roce-ring 2 || exit 9
+            for rank in 0 1 2 3; do printf '%s\n' "${CLUSTER_PROFILE_HCAS[$rank]}"; done
+        '''
+        result = subprocess.run(['bash', '-c', script, 'fabric', str(ROOT)], env=fixture.env, capture_output=True,
+                                text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([set(line.split(',')) for line in result.stdout.split()], [launch.PORT0 | launch.PORT1] * 4)
+
+    def test_the_rdma_state_check_covers_all_four_adapters(self):
+        selected = ','.join(sorted(launch.PORT0 | launch.PORT1))
+        active = launch.listing(*((hca, 'ACTIVE') for hca in sorted(launch.PORT0 | launch.PORT1)))
+        self.assertEqual(launch.adapters_active(selected, active), ['4', '4', ''])
+        one_down = launch.listing(('rocep0a', 'ACTIVE'), ('rocep0b', 'ACTIVE'), ('rocep1a', 'DOWN'), ('rocep1b', 'ACTIVE'))
+        self.assertEqual(launch.adapters_active(selected, one_down), ['3', '4', 'rocep1a'])
+
+    def ping_pairs(self, fixture, count, loop):
+        script = r'''
+            . "$1/scripts/lib.sh"; . "$1/scripts/topology-probes.sh"
+            load_cluster_topology || exit 9
+            topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$2" "$3"
+        '''
+        result = subprocess.run(['bash', '-c', script, 'ping', str(ROOT), str(count), loop], env=fixture.env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [line.split('\t') for line in result.stdout.splitlines()]
+        return ([tuple(row[1:3]) for row in rows if row[0] == 'pair'],
+                {frozenset(row[1:3]) for row in rows if row[0] != 'pair'})
+
+    def test_preflight_pings_the_loops_pairs_only(self):
+        loop = [('0', '1'), ('0', '3'), ('1', '2'), ('2', '3')]
+        fixture, _names = ring_fixture(self, 4)
+        # On a ring the loop's pairs are its cables, which are all its links.
+        self.assertEqual(self.ping_pairs(fixture, 4, 'loop')[0], loop)
+        self.assertEqual(self.ping_pairs(fixture, 4, '')[0], loop)
+        mesh = Fixture(Path(self.enterContext(tempfile.TemporaryDirectory())), nodes=4)
+        pairs, pinged = self.ping_pairs(mesh, 4, 'loop')
+        self.assertEqual(pairs, loop)
+        self.assertEqual(pinged, {frozenset(pair) for pair in loop})
+        # Without the declaration a mesh still pings and judges every pair.
+        self.assertEqual(len(self.ping_pairs(mesh, 4, '')[0]), 6)
+        # Two nodes are their own loop.
+        self.assertEqual(self.ping_pairs(mesh, 2, 'loop')[0], [('0', '1')])
+
+    def test_preflight_asks_for_the_loop_for_a_ring_pattern_and_for_a_saved_ring_without_a_recipe(self):
+        text = (ROOT / 'cluster/preflight.sh').read_text()
+        self.assertIn('topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES" '
+                      '"$([ "$TOPOLOGY_CLASS" != roce-ring ] || echo loop)"', text)
+        self.assertIn('[ "$CLUSTER_TOPOLOGY_CLASS" != roce-ring ] || TOPOLOGY_CLASS=roce-ring', text)
 
 
 class StartRefusesARingPatternThatDoesNotFit(unittest.TestCase):

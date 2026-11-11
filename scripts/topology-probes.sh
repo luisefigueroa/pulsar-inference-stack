@@ -47,14 +47,17 @@ PY
 # ping, "ok" or "fail" with source rank, target rank, address, network and
 # interface, then one "pair" row per pair of those ranks with saved links: the
 # lower and higher rank, the links that answered both ways, and the links saved.
+# With "loop", only the pairs a recipe that passes data around a loop of those
+# ranks uses: each rank and the next, and the last and the first.
 topology_ping_links() {
-  local document="$1" count="$2" plan source_rank source_host target_rank target_ip network interface control
+  local document="$1" count="$2" loop="${3:-}" plan source_rank source_host target_rank target_ip network interface control
   local answered pair low high
   local -A each_way=() saved=()
   plan=$(python3 "$REPO_DIR/scripts/topology_manifest.py" ping-plan "$document") || return 1
   while IFS=$'\t' read -r source_rank source_host target_rank target_ip network interface; do
     [ -n "$source_rank" ] || continue
     [ "$source_rank" -lt "$count" ] && [ "$target_rank" -lt "$count" ] || continue
+    [ "$loop" != loop ] || topology_loop_pair "$source_rank" "$target_rank" "$count" || continue
     answered=1
     if [ "$source_rank" = 0 ]; then
       ping -I "$interface" -c1 -W2 "$target_ip" >/dev/null 2>&1 || answered=0
@@ -80,6 +83,7 @@ PY
   local key total both
   for ((low = 0; low < count; low++)); do
     for ((high = low + 1; high < count; high++)); do
+      [ "$loop" != loop ] || topology_loop_pair "$low" "$high" "$count" || continue
       total=0 both=0
       for key in "${!saved[@]}"; do
         case "$key" in
@@ -92,6 +96,14 @@ PY
       [ "$total" = 0 ] || printf 'pair\t%s\t%s\t%s\t%s\n' "$low" "$high" "$both" "$total"
     done
   done
+}
+
+# topology_loop_pair A B COUNT: whether ranks A and B are neighbours in the
+# loop of ranks 0 … COUNT-1 in order: consecutive, or the last and the first.
+topology_loop_pair() {
+  local a="$1" b="$2" count="$3" gap
+  gap=$((a > b ? a - b : b - a))
+  [ "$gap" = 1 ] || { [ "$count" -gt 2 ] && [ "$gap" = $((count - 1)) ]; }
 }
 
 # topology_adapters_active HCAS: which of the adapters in HCAS (comma-separated:
