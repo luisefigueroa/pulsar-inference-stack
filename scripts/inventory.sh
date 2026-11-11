@@ -455,6 +455,16 @@ collect_live_snapshot() {
   done
 
   printf '%s' "$profiles_json" >"$profiles_file"
+  # The saved service records, read here and never from a node: they say which
+  # nodes a service recorded off the default node order runs on.
+  local records_file
+  records_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-records.XXXXXX")
+  if ! python3 "$REPO_DIR/scripts/service_state.py" bindings --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
+      >"$records_file"; then
+    warn "the saved service records cannot be read; a service recorded off the default node order shows as a mismatch"
+    printf '[]' >"$records_file"
+  fi
+  RECORDS_FILE="$records_file" \
   PROFILES_FILE="$profiles_file" \
   WORKER_IP_V="$worker_ip" \
   WORKER_STATUS="$worker_status" \
@@ -535,9 +545,10 @@ print(json.dumps({
     "nodes": nodes,
     "containers": load_ndjson(os.environ["CONTAINERS_FILE"]),
     "gpu_processes": load_ndjson(os.environ["GPU_FILE"]),
+    "service_records": json.load(open(os.environ["RECORDS_FILE"], encoding="utf-8")),
 }))
 PY_SNAPSHOT
-  rm -f "$tmp_c" "$tmp_g" "$tmp_n" "$profiles_file"
+  rm -f "$tmp_c" "$tmp_g" "$tmp_n" "$profiles_file" "$records_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -572,6 +583,9 @@ SPEC_KEY = "io.pulsar.gb10.spec-id"
 SELECTED_SPEC_KEY = "io.pulsar.gb10.selected-spec-id"
 PLAN_KEY = "io.pulsar.gb10.launch-plan"
 
+sys.path.insert(0, os.environ["REPO_DIR"])
+from scripts.service_state import recorded_ownership
+
 with open(os.environ["SNAP_PATH"], encoding="utf-8") as _sf:
     snap = json.load(_sf)
 profiles = snap.get("profiles") or {}
@@ -584,6 +598,30 @@ node_name_by_id = {
     for name, info in nodes_info.items()
     if isinstance(info, dict) and info.get("node_id")
 }
+# Active service records (scripts/service_state.py recorded_bindings); a
+# snapshot without them, such as an older fixture, judges by saved position.
+service_records = snap.get("service_records") or []
+
+
+def node_position(name):
+    """The saved rank of an inventory node name (head, worker, rank-N)."""
+    index = (nodes_info.get(name) or {}).get("topology_index")
+    if type(index) is int:
+        return index
+    if name == "head":
+        return 0
+    if name == "worker":
+        return 1
+    if isinstance(name, str) and name.startswith("rank-") and name[5:].isdigit():
+        return int(name[5:])
+    return None
+
+
+saved_order = {}
+for _name, _info in nodes_info.items():
+    if isinstance(_info, dict) and _info.get("node_id") and node_position(_name) is not None:
+        saved_order[node_position(_name)] = str(_info["node_id"])
+membership_ids = [saved_order.get(index) for index in range(max(saved_order) + 1)] if saved_order else []
 worker_status = snap.get("worker_status") or "unset"
 worker_reason = snap.get("worker_reason")
 worker_ip = snap.get("worker_ip")
@@ -766,6 +804,15 @@ def classify_container(c):
                 f"(expected {','.join(profile.get('expected_ranks') or [])})"
             )
             return "mismatch", False, conf, rank, reasons, profile
+        # The same ownership test as Stop: a container of an ordinary service
+        # recorded off the default node order is judged against its record.
+        verdict = recorded_ownership({"name": name, "labels": labels}, position=node_position(node),
+                                     topology_id=topology_id, node_ids=membership_ids, bindings=service_records)
+        if verdict is not None:
+            if not verdict[0]:
+                reasons.append(verdict[1])
+                return "mismatch", False, conf, rank, reasons, profile
+            return "managed", True, conf, rank, reasons, profile
         want_node = expected_node_for_rank(rank, profile, labels)
         profile_nodes = int(profile.get("nodes") or 1)
         node_id = str(labels.get(NODE_ID_KEY) or "")

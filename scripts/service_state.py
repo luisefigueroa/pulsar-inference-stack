@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_library.state import Store, checked_id
-from scripts.container_runtime import validate_plan, PLAN_LABEL
+from scripts.container_runtime import validate_plan, PLAN_LABEL, PREFIX, SELECTED_SPEC_LABEL, SPEC_LABEL
 from release_spec.serving import load_json
 
 
@@ -113,9 +113,80 @@ def actual_plan(store, locator, containers):
     return plan
 
 
+def binding(plan):
+    """What the ownership test reads from a saved launch plan: its identity and
+    the node each role rank runs on."""
+    return {'plan_id': plan['plan_id'], 'service_id': plan['service_id'],
+            'selected_spec_id': plan['selected_spec_id'], 'spec_id': plan['spec_id'],
+            'container_name': plan['container_name'], 'topology_id': plan['topology_id'],
+            'guarded': bool(plan.get('guard_run_id')), 'node_ids': [rank['node_id'] for rank in plan['ranks']]}
+
+
+def recorded_bindings(store):
+    """The binding of every active service record. A retired record's plan is
+    kept as history and proves nothing about a container."""
+    result = []
+    for row in store.records('services'):
+        plan = store.get('service-plans', row['plan_id'])
+        validate_plan(plan)
+        if plan['service_id'] != row['service_id']:
+            raise ValueError('service index differs from saved plan')
+        result.append(binding(plan))
+    return result
+
+
+def off_default_order(node_ids, confirmed):
+    """Whether a multi-node service runs on other nodes than the first
+    len(node_ids) saved ranks in order, where an ordinary start puts it."""
+    return len(node_ids) > 1 and list(node_ids) != list(confirmed[:len(node_ids)])
+
+
+def recorded_ownership(container, *, position, topology_id, node_ids, bindings):
+    """May this container be removed as part of an ordinary service recorded
+    off the default node order?
+
+    CONTAINER has `name` and `labels`; POSITION is the saved rank of the node
+    it was observed on; TOPOLOGY_ID and NODE_IDS (in saved rank order) are the
+    saved cluster; BINDINGS are the active records (recorded_bindings).
+
+    Returns None when no such record names the container's launch plan: the
+    caller then judges it by saved position, as for every other container.
+    Otherwise (True, '') when it is that service's own container, or
+    (False, REASON). Guarded trials keep their own stop path and are None.
+    """
+    labels = container.get('labels') or {}
+    plan_id = labels.get(PLAN_LABEL)
+    record = next((item for item in bindings if plan_id and item['plan_id'] == plan_id), None)
+    if record is None or record['guarded'] or not off_default_order(record['node_ids'], node_ids):
+        return None
+    def refused(detail):
+        return False, f'does not match its saved service record: {detail}'
+    if labels.get(PREFIX + 'managed') != 'true':
+        return refused("its managed label is not exactly 'true'")
+    if record['topology_id'] != topology_id:
+        return refused('the record was saved under another saved cluster')
+    if labels.get(PREFIX + 'topology') != topology_id:
+        return refused('its topology label names another saved cluster')
+    if str(container.get('name') or '').lstrip('/') != record['container_name']:
+        return refused(f"its name is not {record['container_name']}")
+    if (labels.get(PREFIX + 'conf'), labels.get(SELECTED_SPEC_LABEL), labels.get(SPEC_LABEL)) != (
+            record['selected_spec_id'], record['selected_spec_id'], record['spec_id']):
+        return refused('its spec labels name another spec')
+    rank = labels.get(PREFIX + 'rank')
+    roles = [str(role) for role in range(len(record['node_ids']))]
+    if rank not in roles:
+        return refused(f"its rank label '{rank}' is not a rank of the record")
+    node = record['node_ids'][int(rank)]
+    if labels.get(PREFIX + 'node-id') != node:
+        return refused(f'its node-id label is not the node the record names for rank {rank}')
+    if type(position) is not int or not 0 <= position < len(node_ids) or node_ids[position] != node:
+        return refused(f'it runs on another node than the record names for rank {rank}')
+    return True, ''
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['save','locate','actual','retire'])
+    parser.add_argument('command',choices=['save','locate','actual','retire','bindings','ownership'])
     parser.add_argument('--state-root',required=True)
     parser.add_argument('--plan')
     parser.add_argument('--service-id')
@@ -123,15 +194,26 @@ def main():
     parser.add_argument('--observations')
     parser.add_argument('--topology-id')
     parser.add_argument('--node-id',action='append',default=[])
+    parser.add_argument('--position',type=int)
     args=parser.parse_args()
     try:
         store=Store(args.state_root)
         if args.command=='save':
             save(store,load_json(args.plan))
             return 0
+        if args.command=='ownership':
+            # The container's ownership inspect JSON on stdin: one line out,
+            # "none", "owned", or "refused<TAB>REASON".
+            container=json.load(sys.stdin)
+            verdict=recorded_ownership(container,position=args.position,topology_id=args.topology_id,
+                                       node_ids=args.node_id,bindings=recorded_bindings(store))
+            print('none' if verdict is None else 'owned' if verdict[0] else f'refused\t{verdict[1]}')
+            return 0
         if args.command=='retire':
             result={'retired_service_ids':retire(store,topology_id=args.topology_id,
                 node_ids=args.node_id,selected_spec_id=args.selected_spec_id)}
+        elif args.command=='bindings':
+            result=recorded_bindings(store)
         elif args.command=='locate':
             result=locate(store,service_id=args.service_id,selected_spec_id=args.selected_spec_id)
         else:

@@ -2106,9 +2106,38 @@ container_ownership_is_proven() {
   return 0
 }
 
+# recorded_service_ownership METADATA PLACEMENT — the ownership test for a
+# container whose launch plan an ordinary service record names off the default
+# node order (scripts/service_state.py recorded_ownership), on the node at
+# PLACEMENT. Prints "none" when no such record names it, and the caller judges
+# it by saved position; otherwise "owned" or "refused<TAB>REASON". Records that
+# cannot be read refuse.
+recorded_service_ownership() {
+  local metadata="${1:?}" placement="${2:?}" index node verdict
+  local -a members=()
+  case "$metadata" in *'"io.pulsar.gb10.launch-plan"'*) ;; *) printf 'none\n'; return 0 ;; esac
+  # With no service recorded, none can name it.
+  if ! compgen -G "$PULSAR_MODEL_LIBRARY_DIR/services/*.json" >/dev/null; then
+    printf 'none\n'
+    return 0
+  fi
+  index=$(placement_index_for_role "$placement") \
+    || { printf 'refused\tthe node it was observed on has no saved rank\n'; return 0; }
+  load_cluster_topology >/dev/null 2>&1 \
+    || { printf 'refused\tconfirmed topology is unavailable\n'; return 0; }
+  for node in "${CLUSTER_NODE_IDS[@]}"; do members+=(--node-id "$node"); done
+  verdict=$(printf '%s' "$metadata" | python3 "$REPO_DIR/scripts/service_state.py" ownership \
+      --state-root "$PULSAR_MODEL_LIBRARY_DIR" --topology-id "${CLUSTER_TOPOLOGY_ID:-}" --position "$index" \
+      "${members[@]}" 2>/dev/null) \
+    || verdict=$'refused\tthe saved service records cannot be read'
+  printf '%s\n' "$verdict"
+}
+
 # True when a managed container may be stopped. Labels prove ownership.
 # A live conf file is extra geometry when present; a missing conf still
-# stops from labels (world-size / single-node identity).
+# stops from labels (world-size / single-node identity). A container of an
+# ordinary service recorded off the default node order is judged against its
+# record instead of its saved position (recorded_service_ownership).
 container_all_candidate_is_safe() {
   local metadata="${1:?}" placement="${2:?}"
   local id name managed conf rank
@@ -2117,6 +2146,10 @@ container_all_candidate_is_safe() {
   container_managed_label_is_true "$managed" || return 1
   [ -n "$conf" ] || return 1
   [ -n "$rank" ] || return 1
+  case "$(recorded_service_ownership "$metadata" "$placement")" in
+    owned) return 0 ;;
+    refused*) return 1 ;;
+  esac
   local nodes
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
     # Retired profile (no catalog spec under releases/, or a conf name from
@@ -2192,6 +2225,12 @@ container_all_refuse_reason() {
   fi
   if [ -z "$conf" ] || [ -z "$rank" ]; then
     echo "managed label set but the conf/rank labels are incomplete (conf label='${conf}' rank label='${rank}')"
+    return
+  fi
+  local verdict
+  verdict=$(recorded_service_ownership "$metadata" "$placement")
+  if [ "${verdict%%$'\t'*}" = refused ]; then
+    printf '%s\n' "${verdict#*$'\t'}"
     return
   fi
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
