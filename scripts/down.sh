@@ -56,7 +56,8 @@ load_cluster_topology || die "confirmed topology is required for safe stop"
 # record names (stop_recorded_service). So is an ordinary multi-node record
 # saved under an earlier saved cluster, whatever its node order: the label stop
 # cannot clear it.
-recorded_trials=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$TARGET" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_STOP'
+recorded_rows() {
+  python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$TARGET" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_STOP'
 import sys
 from model_library.state import Store
 from scripts.container_runtime import validate_plan
@@ -74,8 +75,20 @@ for row in store.records('services'):
         print('\t'.join([plan['plan_id'], plan.get('guard_run_id') or '-', plan['selected_spec_id'], hosts,
                          'nondefault' if nondefault else 'default']))
 PY_STOP
-) || die "the saved service records cannot be read; nothing was stopped"
-recorded_plans=""
+}
+# no_node_selection SPEC HOSTS RUN: --node cannot select one node of a service
+# that stops on all its nodes together.
+no_node_selection() {
+  local ref
+  ref=$(spec_reference "$1")
+  if [ "$3" = - ]; then
+    usage_die "spec ${1:0:12} runs on $2 as one multi-node service; it stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $ref"
+  fi
+  usage_die "spec ${1:0:12} runs as guarded trial ${3:0:12} on $2; a trial stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $ref"
+}
+# This first read answers what must be refused before waiting on the lock;
+# the services stop drives come from a second read once the lock is held.
+recorded_trials=$(recorded_rows) || die "the saved service records cannot be read; nothing was stopped"
 if [ -n "$recorded_trials" ]; then
   while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement; do
     trial_ref=$(spec_reference "$trial_spec")
@@ -83,10 +96,7 @@ if [ -n "$recorded_trials" ]; then
       # An ordinary multi-node service recorded off the default node order:
       # stop --all stops it in cluster/stop-cluster.sh before its sweep.
       [ "$TARGET" != --all ] || continue
-      if [ -n "$NODE_SELECTOR" ]; then
-        usage_die "spec ${trial_spec:0:12} runs on $trial_hosts as one multi-node service; it stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $trial_ref"
-      fi
-      recorded_plans+="$trial_plan"$'\n'
+      [ -z "$NODE_SELECTOR" ] || no_node_selection "$trial_spec" "$trial_hosts" -
       continue
     fi
     # A running guarded controller holds the lifecycle lock for its whole life, on
@@ -103,10 +113,7 @@ if [ -n "$recorded_trials" ]; then
       error_line "stop --all does not stop guarded trial ${trial_run:0:12} (spec ${trial_spec:0:12}) on $trial_hosts; nothing was stopped. Next: ./pulsar stop $trial_ref after its controller exits, then rerun stop --all"
       exit 1
     fi
-    if [ -n "$NODE_SELECTOR" ]; then
-      usage_die "spec ${trial_spec:0:12} runs as guarded trial ${trial_run:0:12} on $trial_hosts; a trial stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $trial_ref"
-    fi
-    recorded_plans+="$trial_plan"$'\n'
+    [ -z "$NODE_SELECTOR" ] || no_node_selection "$trial_spec" "$trial_hosts" "$trial_run"
   done <<<"$recorded_trials"
 fi
 if [ "$TARGET" = --all ]; then
@@ -119,6 +126,17 @@ fi
 acquire_model_library_lifecycle_lock exclusive
 load_cluster_topology || die "confirmed topology is required for safe stop"
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
+# The records again, under the lock: one saved since the first read is stopped
+# on its recorded nodes too, never left to the label sweep.
+recorded_plans=""
+recorded_trials=$(recorded_rows) || die "the saved service records cannot be read; nothing was stopped"
+while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement; do
+  [ -n "$trial_plan" ] || continue
+  # A guarded trial on the default placement is stopped by its labels.
+  [ "$trial_run" = - ] || [ "$trial_placement" = nondefault ] || continue
+  [ -z "$NODE_SELECTOR" ] || no_node_selection "$trial_spec" "$trial_hosts" "$trial_run"
+  recorded_plans+="$trial_plan"$'\n'
+done <<<"$recorded_trials"
 # The exclusive lock proves no guarded controller is running; stop each such
 # trial, and each ordinary service recorded off the default node order, on its
 # recorded bindings before the default-placement stop. Probe every confirmed
