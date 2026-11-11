@@ -633,6 +633,25 @@ class OtherPathsKeepTheirOutput(Cluster):
         self.assertEqual((service['ownership'], service['safe_to_stop']), ('mismatch', False))
 
 
+class RecordOfAnEarlierCluster(Cluster):
+    """A record off the default order saved under an earlier saved cluster:
+    both stops refuse and keep it, as Stop refused it before. Nothing here
+    clears it; Start on named nodes must account for it."""
+
+    def test_both_stops_refuse_and_keep_it(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        plan = c.plan(spec, manifest, [2, 3], topology_id='e' * 64)
+        result = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: spec {spec['spec_id'][:12]}'s service was recorded under a different confirmed "
+                      'membership; nothing was removed. Next: ./pulsar topology show', result.stderr)
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error: stop --all stopped before removing the other services' containers", result.stderr)
+        self.assertTrue(c.recorded(plan))
+
+
 class DefaultOrderRetire(Cluster):
     """No stop path that finds containers by saved position retires the record
     of a service recorded off the default order: it never looked there."""
