@@ -18,6 +18,9 @@ sys.path[:0] = [str(ROOT), str(ROOT / 'tests'), str(ROOT / 'scripts')]
 from release_spec import verify_spec
 from scripts import release_consumer
 from support import ring_recipe
+from support.topology_fixture import Fixture, ring_probes, shuffled
+import topology_manifest as tm
+from tests import test_start_blockers
 
 # Recorded from the code before the ring pattern existed: each catalog spec's
 # node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). No
@@ -147,6 +150,122 @@ class TheRequirement(unittest.TestCase):
         refused = check('roce-ring', 'NCCL_ALGO=Ring,Tree')
         self.assertNotIn('valid', refused.stdout)
         self.assertIn('multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh', refused.stderr)
+
+
+def gate(fixture, *placements, topology_class='roce-ring', min_rails=2):
+    """The launch check, sourced alone, for each PLACEMENT: saved positions in
+    role order, or a node count for the default order. Returns
+    [(status, refusal kind, stderr)]."""
+    script = r'''
+        . "$1/cluster/topology.sh"; shift; topology_class="$1" min_rails="$2"; shift 2
+        errors=$(mktemp); trap 'rm -f "$errors"' EXIT
+        for placement in "$@"; do
+          SERVING_NODE_INDEXES=()
+          case "$placement" in *,*) IFS=, read -r -a SERVING_NODE_INDEXES <<<"$placement" ;; esac
+          count="${#SERVING_NODE_INDEXES[@]}"; [ "$count" -gt 0 ] || count="$placement"
+          require_profile_topology "$count" "$topology_class" "$min_rails" 2>"$errors" >/dev/null; status=$?
+          error=$(cat "$errors")
+          printf '%s\t%s\t%s\n' "$status" "$CLUSTER_TOPOLOGY_REFUSAL" "${error//$'\n'/|}"
+        done
+    '''
+    result = subprocess.run(['bash', '-c', script, 'gate', str(ROOT), topology_class, str(min_rails),
+                             *map(str, placements)], env=fixture.env, capture_output=True, text=True, timeout=60)
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return [tuple(line.split('\t', 2)) for line in result.stdout.splitlines()]
+
+
+def ring_fixture(test, count):
+    fixture = Fixture(Path(test.enterContext(tempfile.TemporaryDirectory())), probes=shuffled(ring_probes(count)))
+    return fixture, [node['hostname'] for node in fixture.topology['nodes']]
+
+
+class TheLaunchCheckForARingPattern(unittest.TestCase):
+    """A recipe that passes data around a loop needs each of its nodes cabled to
+    the next in role order, and the last to the first; nothing else."""
+
+    def refused(self, names, first, second):
+        return ('1', 'cabling', f'topology: {tm.ring_loop_refusal(names[first], names[second])}')
+
+    def test_a_ring_of_four(self):
+        fixture, names = ring_fixture(self, 4)
+        passing = [4, '0,1,2,3', '1,2,3,0', '3,2,1,0', 2, '1,2', '3,0', '0,3']
+        self.assertEqual(gate(fixture, *passing), [('0', '', '')] * len(passing))
+        self.assertEqual(gate(fixture, 3, '1,2,3', '0,2,1,3', '0,1,3,2', '0,2'), [
+            # Fewer nodes than the ring: the loop does not close.
+            self.refused(names, 2, 0), self.refused(names, 3, 1),
+            # Out of cable order: the first pair in role order that is not cabled.
+            self.refused(names, 0, 2), self.refused(names, 1, 3),
+            # Two nodes that are not neighbours.
+            self.refused(names, 0, 2)])
+        self.assertEqual(tm.ring_loop_refusal('alpha', 'bravo'), 'alpha and bravo are not cabled to each other: this '
+                         'recipe passes data around a closed loop of its nodes, each cabled to the next and the last '
+                         'to the first')
+
+    def test_a_ring_of_six(self):
+        fixture, names = ring_fixture(self, 6)
+        self.assertEqual(gate(fixture, 6, '0,1,2,3,4,5', '5,0,1,2,3,4', '4,5'), [('0', '', '')] * 4)
+        self.assertEqual(gate(fixture, 4, 5, '0,1,2,4,3,5'), [
+            self.refused(names, 3, 0), self.refused(names, 4, 0), self.refused(names, 2, 4)])
+
+    def test_a_cable_with_too_few_links_names_the_pair_and_both_counts(self):
+        fixture = Fixture(Path(self.enterContext(tempfile.TemporaryDirectory())),
+                          probes=shuffled(ring_probes(4, single_link_cables={0})))
+        names = [node['hostname'] for node in fixture.topology['nodes']]
+        pair = sorted((names.index('fixture-ring-dorado'), names.index('fixture-ring-bravo')))
+        (status, kind, error), = gate(fixture, 4)
+        self.assertEqual((status, kind), ('1', 'links'))
+        self.assertRegex(error, r'^topology: fixture-ring-\w+ and fixture-ring-\w+ share 1 link on their cable; '
+                                r'this recipe needs 2$')
+        self.assertEqual(sorted(names.index(name) for name in error.split(': ', 1)[1].split(' share')[0]
+                                .split(' and ')), pair)
+        self.assertEqual(gate(fixture, 4, min_rails=1), [('0', '', '')])
+
+    def test_a_full_mesh_passes_since_every_pair_is_cabled(self):
+        fixture = Fixture(Path(self.enterContext(tempfile.TemporaryDirectory())), nodes=3)
+        self.assertEqual(gate(fixture, 2, 3, '2,0,1', min_rails=1), [('0', '', '')] * 3)
+        # The fixture mesh has one link per pair: too few, in the mesh's own words.
+        self.assertEqual(gate(fixture, 3), [
+            ('1', 'links', 'topology: ranks 0/1 expose 1 shared RoCE rail(s); the spec requires 2')])
+
+    def test_a_recipe_without_the_declaration_is_judged_as_before(self):
+        fixture, names = ring_fixture(self, 4)
+        self.assertEqual(gate(fixture, 2, 4, '0,2', topology_class='roce-full-mesh'), [
+            ('0', '', ''),
+            ('1', 'cabling', f'topology: {tm.ring_refusal(names[0], names[2])}'),
+            ('1', 'cabling', f'topology: {tm.ring_refusal(names[0], names[2])}')])
+
+
+class StartRefusesARingPatternThatDoesNotFit(unittest.TestCase):
+    """Start records a broken loop as a cabling refusal with no command, as for
+    any recipe whose nodes are not cabled as it needs."""
+    setUp = test_start_blockers.StartScenarios.setUp
+    start = test_start_blockers.StartScenarios.start
+
+    def test_three_of_four_nodes_leave_the_loop_open(self):
+        refusal = tm.ring_loop_refusal('fixture-ring-alpha', 'fixture-ring-dorado')
+        result, codes = self.start(nodes=3, topology=4, topology_class='roce-ring', fabric=refusal,
+                                   extra_env={'FIXTURE_REFUSAL': 'cabling'})
+        self.assertEqual(codes, ['fabric_incomplete'])
+        self.assertIn(f'FAIL  fabric    {refusal}', result.stdout)
+        self.assertIn(f'({refusal})', self.records[0]['message'])
+        self.assertIsNone(self.records[0]['fix'])
+        self.assertEqual(self.records[0]['note'],
+                         'On this ring no 3 machines form a closed loop of cables; only all 4 do, in cable order.')
+
+    def test_the_whole_ring_out_of_cable_order(self):
+        refusal = tm.ring_loop_refusal('fixture-ring-dorado', 'fixture-ring-echo')
+        # The Start fixture has three node slots: as many recipe nodes as saved ones.
+        result, codes = self.start(nodes=3, topology=3, topology_class='roce-ring', fabric=refusal,
+                                   extra_env={'FIXTURE_REFUSAL': 'cabling'})
+        self.assertEqual(codes, ['fabric_incomplete'], result.stdout + result.stderr)
+        self.assertIsNone(self.records[0]['fix'])
+        self.assertEqual(self.records[0]['note'], "Serve it on the ring's machines in cable order, the default order.")
+
+    def test_a_recipe_without_the_declaration_keeps_its_note(self):
+        refusal = tm.ring_refusal('fixture-ring-dorado', 'fixture-ring-echo')
+        self.start(nodes=3, topology=4, fabric=refusal, extra_env={'FIXTURE_REFUSAL': 'cabling'})
+        self.assertEqual(self.records[0]['note'], 'On this cluster no 3 machines are all cabled to each other.')
 
 
 if __name__ == '__main__':

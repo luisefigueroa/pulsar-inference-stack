@@ -265,7 +265,12 @@ if [ "$NODES" -gt 1 ]; then
     start_check fail fabric "${fabric_reason:-the confirmed fabric does not meet this spec}"
     if [ "${CLUSTER_TOPOLOGY_REFUSAL:-}" = cabling ]; then
       # No command changes the cabling, so the record names none.
-      if [ "$NODES" = 2 ]; then
+      if [ "$TOPOLOGY_CLASS" = roce-ring ] && [ "$NODES" -gt 2 ] && [ "$NODES" -lt "$CLUSTER_TOPOLOGY_COUNT" ]; then
+        # A recipe that passes data around a loop closes it only on the whole ring.
+        cabling_note="On this ring no $NODES machines form a closed loop of cables; only all $CLUSTER_TOPOLOGY_COUNT do, in cable order."
+      elif [ "$TOPOLOGY_CLASS" = roce-ring ] && [ "$NODES" -gt 2 ]; then
+        cabling_note="Serve it on the ring's machines in cable order, the default order."
+      elif [ "$NODES" = 2 ]; then
         cabling_note="Choose two machines that are neighbours on the ring, which share a cable."
       else
         cabling_note="On this cluster no $NODES machines are all cabled to each other."

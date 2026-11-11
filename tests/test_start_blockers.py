@@ -47,7 +47,7 @@ acquire_model_library_lifecycle_lock() {
 }
 acquire_model_library_hot_lock() { :; }
 release_model_library_locks() { touch "$FIXTURE_DIR/locks-released"; }
-load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS=mesh; MIN_RAILS_PER_PAIR=2; }
+load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS="${FIXTURE_TOPOLOGY_CLASS:-mesh}"; MIN_RAILS_PER_PAIR=2; }
 require_spec_launch_admission() { :; }
 spec_overlay_node_selector() { echo "$1"; }
 resolve_single_node_placement() {

@@ -379,6 +379,18 @@ def ring_refusal(first: str, second: str) -> str:
     return f"{first} and {second} are not cabled to each other: {RING_CABLING}"
 
 
+# A recipe that declares the ring pattern (NCCL_ALGO=Ring) needs only each of
+# its nodes cabled to the next and the last to the first, in role order. The
+# same words are in require_profile_topology in cluster/topology.sh.
+RING_LOOP = "this recipe passes data around a closed loop of its nodes, each cabled to the next and the last to the first"
+
+
+def ring_loop_refusal(first: str, second: str) -> str:
+    """The launch check's refusal for a ring-pattern recipe whose loop is broken
+    between FIRST and SECOND: the first pair in role order that shares no link."""
+    return f"{first} and {second} are not cabled to each other: {RING_LOOP}"
+
+
 def cabled_neighbours(nodes: list[dict[str, Any]]) -> list[set[int]]:
     """For each node, the indexes of the nodes it shares at least one link with."""
     neighbours: list[set[int]] = [set() for _ in nodes]
