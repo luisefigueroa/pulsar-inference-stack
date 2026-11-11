@@ -11,9 +11,11 @@ import copy
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -696,6 +698,102 @@ class RecordOfAnEarlierCluster(Cluster):
         result = c.pulsar('stop', self.spec['spec_id'], SERVICE_UNREACHABLE=c.node_id(3))
         self.assertEqual(result.returncode, 1)
         self.assertIn(f'error: stop did not run: {c.hostname(3)} cannot be observed', result.stderr)
+        self.assertTrue(c.recorded(self.plan))
+
+
+class GuardedRecordOfAnEarlierCluster(Cluster):
+    """A guarded trial's record saved under an earlier saved cluster gets the
+    same way out as an ordinary one, once no guarded controller is running:
+    Stop looks on every node of this cluster for the trial's container (its
+    name, guard-run and launch-plan labels), retires the record when there is
+    none, and otherwise names it and removes nothing. (Until this, Stop said it
+    was recorded under a different confirmed membership and nothing cleared it.)"""
+
+    def setUp(self):
+        super().setUp()
+        c = self.cluster
+        self.spec, self.manifest = c.spec(2, catalog=False, guarded=True)
+        self.plan = c.plan(self.spec, self.manifest, [2, 3], topology_id='e' * 64)
+        self.run = self.plan['guard_run_id'][:12]
+
+    def stop(self, **env):
+        return self.cluster.pulsar('stop', self.spec['spec_id'], **env)
+
+    def test_no_container_left_anywhere_retires_it(self):
+        c = self.cluster
+        for positions in ([2, 3], [0, 1]):
+            with self.subTest(positions=positions):
+                plan = c.plan(self.spec, self.manifest, positions, topology_id='e' * 64)
+                result = self.stop()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Guarded trial {plan['guard_run_id'][:12]} of spec {self.spec['spec_id'][:12]} was "
+                              'recorded under an earlier saved cluster and has no container on any node of this one; '
+                              "retired its stale service record. The trial's run directory keeps its own result.",
+                              ' '.join(result.stdout.split()))
+                self.assertFalse(c.recorded(plan))
+                self.assertEqual(c.removed(), [])
+
+    def test_its_container_still_there_is_named_and_left(self):
+        c = self.cluster
+        (first,) = c.run(self.plan, positions=[1, 0], ranks=[0])
+        spec_id = self.spec['spec_id']
+        result = self.stop()
+        self.assertEqual(result.returncode, 1)
+        # The spec is a candidate, not a catalog file, so the command names its complete ID.
+        self.assertIn(f"error: guarded trial {self.run} of spec {spec_id[:12]} was recorded under an earlier saved "
+                      f"cluster, and its container {first['id'][:12]} on {c.hostname(1)} is still there. Pulsar does "
+                      'not remove containers of an earlier saved cluster, so nothing was removed and the record is '
+                      f"kept. Next: remove that container with Docker on its node (docker rm -f {first['id'][:12]}), "
+                      f'then rerun ./pulsar stop {spec_id}', ' '.join(result.stderr.split()))
+        self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(self.plan))
+
+    def test_a_container_of_another_run_is_not_the_trials(self):
+        c = self.cluster
+        c.run(self.plan, positions=[1, 0], labels={'io.pulsar.gb10.guard-run': 'd' * 64})
+        result = self.stop()
+        self.assertIn('retired its stale service record', result.stdout)
+        self.assertFalse(c.recorded(self.plan))
+        # The label sweep that follows refuses those containers as before: their
+        # labels name the earlier cluster.
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('ownership not proven', result.stderr)
+        self.assertEqual(c.removed(), [])
+        self.assertEqual(len(c.remaining()), 2)
+
+    def test_a_node_that_does_not_answer_changes_nothing(self):
+        c = self.cluster
+        result = self.stop(SERVICE_UNREACHABLE=c.node_id(3))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'error: stop did not run: {c.hostname(3)} cannot be observed', result.stderr)
+        self.assertTrue(c.recorded(self.plan))
+        self.assertEqual(c.removed(), [])
+
+    def test_a_running_controller_is_still_refused_first(self):
+        c = self.cluster
+        lock = Path(c.env['PULSAR_MODEL_LIBRARY_DIR']) / 'lifecycle.lock'
+        holder_script = c.root / 'guarded-serving.sh'
+        holder_script.write_text(f'exec {{fd}}>"{lock}"\nflock -s "$fd"\nsleep 30\n')
+        holder = subprocess.Popen(['bash', str(holder_script)])
+        self.addCleanup(lambda: (holder.kill(), holder.wait()))
+        deadline = time.monotonic() + 5
+        while subprocess.run(['flock', '-n', '-x', str(lock), 'true']).returncode == 0 and time.monotonic() < deadline:
+            time.sleep(.05)
+        c.forget_calls()
+        result = self.stop()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"has guarded trial {self.run} on {c.hostname(2)}, {c.hostname(3)}, and a guarded run's "
+                      'controller is running', result.stderr)
+        self.assertEqual(c.trace(), [])
+        self.assertTrue(c.recorded(self.plan))
+
+    def test_stop_all_keeps_refusing_and_names_stop(self):
+        c = self.cluster
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"stop --all does not stop guarded trial {self.run} (spec {self.spec['spec_id'][:12]}) on "
+                      f"{c.hostname(2)}, {c.hostname(3)}; nothing was stopped. Next: ./pulsar stop "
+                      f"{self.spec['spec_id']} after its controller exits, then rerun stop --all", result.stderr)
         self.assertTrue(c.recorded(self.plan))
 
 

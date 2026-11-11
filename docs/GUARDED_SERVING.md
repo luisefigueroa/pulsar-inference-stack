@@ -226,6 +226,14 @@ changed. A trial always stops on all its nodes together, so `--node` is
 refused, and `stop --all` does not stop a guarded trial on a nondefault
 placement.
 
+A trial recorded under an earlier saved cluster has container labels that
+name that cluster, so stop never removes them. It looks on every confirmed
+node for the trial's recorded name with its guard-run and launch-plan labels:
+none found on any node retires the trial's service locator, one found is named
+with its node and the `docker rm -f` that removes it while nothing is removed,
+and a node that does not answer changes nothing. The run directory is not
+changed.
+
 A failed prerequisite check retains its full private stdout/stderr captures and
 writes a failed `result.json` with no run/service identity. Its preflight,
 execution and cleanup phases are marked not started. The command reports a
