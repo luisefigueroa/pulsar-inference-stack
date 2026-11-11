@@ -5,9 +5,12 @@ GPU or the Hugging Face Hub."""
 import json
 from pathlib import Path
 import sys
+import tempfile
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
+from scripts import serve_plan as serve  # noqa: E402
 from scripts import topology_manifest as tm  # noqa: E402
 from support.topology_fixture import ring_probes, shuffled  # noqa: E402
 from tests.test_catalog_menu import checked  # noqa: E402
@@ -114,6 +117,95 @@ class NoPairQuestion(RingHarness):
                                            f"image stage {SPEC} --plan --json", f"start {SPEC} --dry-run --json",
                                            f"start {SPEC}"])
         self.assertIn("Serve org/model on fixture-ring-dorado and fixture-ring-bravo", result.stdout)
+
+
+def names_of(topology):
+    from model_library.node_names import NodeNames
+    nodes = sorted(topology["nodes"], key=lambda node: node["rank"])
+    return NodeNames({node["node_id"]: node["hostname"] for node in nodes}, [node["node_id"] for node in nodes],
+                     topology["validation"]["class"])
+
+
+class Pairs(unittest.TestCase):
+    """The pairs, their order and the commands each leads to, from scripts/serve_plan.py."""
+
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.topology = ring_topology(self.root)
+        self.names = names_of(self.topology)
+
+    def test_this_machines_pairs_first_then_cable_order(self):
+        self.assertEqual(serve.ring_pairs(self.topology),
+                         [(IDS[0], IDS[1]), (IDS[0], IDS[3]), (IDS[1], IDS[2]), (IDS[2], IDS[3])])
+
+    def test_start_accepts_every_pair_in_the_order_offered(self):
+        from scripts.start_placement import ordinary_start_refusal
+        for pair in serve.ring_pairs(self.topology):
+            self.assertIsNone(ordinary_start_refusal(self.topology, list(pair), guarded=False), pair)
+
+    def test_no_pairs_without_saved_links(self):
+        self.assertEqual(serve.ring_pairs(dict(self.topology, links=[])), [])
+        self.assertEqual(serve.ring_pairs(None), [])
+
+    def test_who_is_asked(self):
+        mesh = names_of(dict(self.topology, validation={"class": "roce-full-mesh"}))
+        cases = [(recipe(2), self.names, True), (recipe(1), self.names, False), (recipe(3), self.names, False),
+                 (recipe(2, container_env=["NCCL_ALGO=Ring"]), self.names, False), (recipe(2), mesh, False),
+                 (recipe(2, start_supported=False, start_unsupported_reason="guard_unsupported"), self.names, False)]
+        for row, names, asked in cases:
+            with self.subTest(nodes=row["geometry"]["nodes"], env=row.get("container_env"), shape=names.shape):
+                self.assertEqual(serve.asks_for_a_pair(row, names), asked)
+
+    def test_each_choice_names_its_pair_in_that_order_and_the_default_leads(self):
+        lines = serve.pair_lines(recipe(2), serve.ring_pairs(self.topology), self.names, width=200)
+        self.assertEqual(lines, [
+            "title\tWhich two neighbouring machines should serve org/model?",
+            f"default\t{IDS[0]},{IDS[1]}",
+            f"node\t{IDS[0]},{IDS[1]}\t{HOSTS[0]} and {HOSTS[1]}, API on {HOSTS[0]}; what Start uses when no "
+            f"machines are named; its model files are on {HOSTS[0]}",
+            f"node\t{IDS[0]},{IDS[3]}\t{HOSTS[0]} and {HOSTS[3]}, API on {HOSTS[0]}; its model files are on "
+            f"{HOSTS[0]}",
+            f"node\t{IDS[1]},{IDS[2]}\t{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}",
+            f"node\t{IDS[2]},{IDS[3]}\t{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}"])
+
+    def test_files_ready_only_in_the_order_they_were_prepared_and_services_from_the_inventory(self):
+        def view(rank, node, topology_id=self.topology["topology_id"]):
+            return {"rank": rank, "node_id": node, "topology_id": topology_id}
+        row = recipe(2, prepared_copies=[view(0, IDS[1]), view(1, IDS[2]),
+                                         # The other order of 2 and 3, and a copy of an earlier saved cluster.
+                                         view(0, IDS[3]), view(1, IDS[2]), view(0, IDS[0], "e" * 64)])
+        everything = [row, recipe(1, spec_id=OTHER, model_id="org/other")]
+        lines = serve.pair_lines(row, serve.ring_pairs(self.topology), self.names, width=200, entries=everything,
+                                 inventory=ring_inventory((OTHER, "running", [3])),
+                                 topology_id=self.topology["topology_id"])
+        self.assertEqual([line.split("\t")[-1] for line in lines[2:]], [
+            f"{HOSTS[0]} and {HOSTS[1]}, API on {HOSTS[0]}; what Start uses when no machines are named; its model "
+            f"files are on {HOSTS[0]}",
+            f"{HOSTS[0]} and {HOSTS[3]}, API on {HOSTS[0]}; its model files are on {HOSTS[0]}; org/other is running "
+            f"on {HOSTS[3]}",
+            f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}; its files are ready here",
+            f"{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}; org/other is running on {HOSTS[3]}"])
+
+    def test_the_default_pair_names_no_nodes_and_any_other_pair_names_both_in_order(self):
+        row = recipe(2)
+        for node, placement in ((f"{IDS[0]},{IDS[1]}", []),
+                                (f"{IDS[0]},{IDS[3]}", ["--placement-nodes", f"{HOSTS[0]},{HOSTS[3]}"]),
+                                (f"{IDS[2]},{IDS[3]}", ["--placement-nodes", f"{HOSTS[2]},{HOSTS[3]}"])):
+            with self.subTest(node=node):
+                serving = serve.serving_nodes(row, self.names.order, node)
+                self.assertEqual(serve.placement_args(row, self.names, serving, node), placement)
+                requests = dict(serve.preview_requests(row, [row], names=self.names, node=node, sources=[],
+                                                       files_scanned=False, source=None))
+                self.assertEqual(requests["prepare"], ["./pulsar", "model", "prepare", SPEC, *placement, "--plan",
+                                                       "--json"])
+                self.assertEqual(requests["start"], ["./pulsar", "start", SPEC, *placement, "--dry-run", "--json"])
+                self.assertEqual(requests["image"], ["./pulsar", "image", "stage", SPEC, *placement, "--plan",
+                                                     "--json"])
+        # Without a choice the menu plans as before the question existed.
+        self.assertEqual(serve.preview_requests(row, [row], names=self.names, node=None, sources=[],
+                                                files_scanned=False, source=None),
+                         serve.preview_requests(row, [row], names=self.names, node=f"{IDS[0]},{IDS[1]}", sources=[],
+                                                files_scanned=False, source=None))
 
 
 if __name__ == "__main__":

@@ -147,6 +147,95 @@ def serving_nodes(row: dict, order: list[str], node: str | None) -> list[str]:
     return list(order[:count]) if len(order) >= count else []
 
 
+def placement_args(row: dict, names: NodeNames, serving: list[str], node: str | None) -> list[str]:
+    """How Prepare, the serving image and Start name the serving nodes: a
+    one-node recipe's machine; a multi-node recipe's nodes in role order when
+    NODE named them and they differ from the default order (role rank r on
+    saved rank r). Otherwise nothing: Start uses the default order."""
+    hosts = [names(item) for item in serving]
+    if row["geometry"]["nodes"] == 1:
+        return ["--node", hosts[0]] if hosts else []
+    if node and "," in node and serving and serving != list(names.order[:len(serving)]):
+        return ["--placement-nodes", ",".join(hosts)]
+    return []
+
+
+def ring_pairs(topology: dict | None) -> list[tuple[str, str]]:
+    """The neighbouring pairs of a saved ring as node_ids in role order (the
+    first serves the API): this machine (saved rank 0) with its rank-1
+    neighbour, which is the default order; this machine with its other
+    neighbour; then the other pairs in cable order, each led by its lower
+    saved rank. Empty unless the saved links make rank 0 and 1 neighbours."""
+    try:
+        nodes = sorted((topology or {}).get("nodes") or [], key=lambda node: node["rank"])
+        ids = [str(node["node_id"]) for node in nodes]
+        cables = {tuple(sorted(int(rank) for rank in link["ranks"])) for link in (topology or {}).get("links") or []}
+    except (KeyError, TypeError, ValueError):
+        return []
+    if (0, 1) not in cables or any(len(cable) != 2 or max(cable) >= len(ids) for cable in cables):
+        return []
+    mine = [(0, 1)] + sorted(cable for cable in cables if cable[0] == 0 and cable != (0, 1))
+    rest = sorted(cable for cable in cables if cable[0] != 0)
+    return [(ids[first], ids[second]) for first, second in mine + rest]
+
+
+def asks_for_a_pair(row: dict, names: NodeNames) -> bool:
+    """Whether Serve a model… asks which two neighbours serve ROW: a two-node
+    recipe Start can run, on a saved ring, that does not pass data around a
+    loop of its nodes (such a recipe serves on the ring's own order)."""
+    return (names.ring and row["geometry"]["nodes"] == 2 and not ring_pattern(row)
+            and not start_unsupported(row))
+
+
+def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, width: int,
+               inventory: dict | None = None, entries: list[dict] = (), topology_id: str | None = None) -> list[str]:
+    """The pair question of a two-node recipe on a ring: a title, the pair the
+    cursor starts on (the default order), then one choice per neighbouring
+    pair, in ring_pairs' order. Each names both machines and the one that
+    serves the API, says what Start uses when no machines are named, and what
+    saved records and the captured service inventory already show there: the
+    recipe's files ready in this order, its model files on one of them, a
+    service running. A choice too wide goes on to "line" rows."""
+    import textwrap
+    model = clean(row["model_id"])
+    lines = [f"title\tWhich two neighbouring machines should serve {model}?"]
+    if pairs:
+        lines.append(f"default\t{','.join(pairs[0])}")
+    homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
+    views = [view for view in row.get("prepared_copies") or []
+             if topology_id is None or view.get("topology_id") in (None, topology_id)]
+    services = []
+    if inventory:
+        from scripts.inventory_menu import project, project_others
+        catalog = [{"spec_id": entry["spec_id"], "model_id": entry["model_id"], "nodes": entry["geometry"]["nodes"]}
+                   for entry in entries]
+        try:
+            found = {**project(inventory, catalog), **project_others(inventory, catalog)}
+        except ValueError:
+            found = {}
+        services = [service for service in found.values() if service["state"] in ACTIVE]
+    for index, pair in enumerate(pairs):
+        hosts = [names(node) for node in pair]
+        hints = [f"{hosts[0]} and {hosts[1]}, API on {hosts[0]}"]
+        if index == 0:
+            hints.append("what Start uses when no machines are named")
+        if all(any(view.get("rank") == rank and view.get("node_id") == node for view in views)
+               for rank, node in enumerate(pair)):
+            hints.append("its files are ready here")
+        else:
+            hints += [f"its model files are on {names(node)}" for node in pair if node in homes][:1]
+        for service in services:
+            there = [host for host in service["hosts"] if host in hosts]
+            if there:
+                hints.append(f"{clean(service['model_id'])} is {SERVICE_STATES.get(service['state'], service['state'])}"
+                             f" on {_list(there)}")
+        wrapped = textwrap.wrap("; ".join(hints), max(MIN_WIDTH, width - 2), subsequent_indent="  ",
+                                break_long_words=True, break_on_hyphens=False)
+        lines.append(f"node\t{','.join(pair)}\t{wrapped[0]}")
+        lines += [f"line\t{text}" for text in wrapped[1:]]
+    return lines
+
+
 def without_home(row: dict) -> list:
     """Required snapshots with no recorded home, in the order they are recovered."""
     snapshots = members(row)
@@ -486,11 +575,10 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     serving = serving_nodes(row, order, node)
     hosts = [names(item) for item in serving]
     ref = spec_ref(spec, entries)
-    placement = ["--node", hosts[0]] if nodes == 1 and hosts else []
-    if nodes > 1 and node and "," in node and hosts:
-        # Named nodes: Start runs it on them again, in the same order.
-        placement = ["--placement-nodes", ",".join(hosts)]
-    told = [part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
+    # Named nodes (the pair question, or Restart of a service Start ran on
+    # them): Prepare, the image and Start name them, in the same order.
+    placement = placement_args(row, names, serving, node)
+    told =[part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
     plan: dict = {"kind": PLAN_KIND, "spec_id": spec, "model_id": model, "ready_only": ready_only,
                   "restart": restart,
                   "title": (f"{'Get' if ready_only else 'Restart' if restart else 'Serve'} {model}"
@@ -1208,7 +1296,7 @@ def preview_requests(row: dict, entries: list[dict], *, names: NodeNames, node: 
     if without_home(row) and not files_scanned and source is None:
         return [("files", ["./pulsar", "model", "files", "--json"])]
     ref = spec_ref(row["spec_id"], entries)
-    placement = ["--node", names(serving[0])] if row["geometry"]["nodes"] == 1 else []
+    placement = placement_args(row, names, serving, node)
     requests: list[tuple[str, list[str]]] = []
     for item in sources:
         name = "-" if item["snapshot"] is None else str(item["snapshot"])
@@ -1277,6 +1365,16 @@ def _unanswered(repo: Path, topology_id: str | None) -> list[str]:
     return [item["node_id"] for item in record.get("missing") or [] if not item.get("answered")]
 
 
+def _saved_topology(repo: Path) -> dict | None:
+    """The saved membership document, for its links; None when unreadable."""
+    from model_library.node_names import topology_path
+    from scripts.topology_manifest import extract_topology
+    try:
+        return extract_topology(json.loads(topology_path(repo).read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def _topology_id(repo: Path) -> str | None:
     from scripts.cluster_status import membership
     state, topology = membership(repo)
@@ -1313,6 +1411,7 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--leave-out", action="append", default=[], help="a recipe not to list")
     nodes = sub.add_parser("nodes")
     nodes.add_argument("--spec-id", required=True)
+    nodes.add_argument("--inventory", help="the captured service inventory, for what runs on each pair")
     previews = sub.add_parser("previews")
     compose_ = sub.add_parser("compose")
     for command in (previews, compose_):
@@ -1399,10 +1498,20 @@ def main(argv: list[str] | None = None) -> int:
                 print(line)
             return 0
         if args.command == "nodes":
-            # Nothing for a multi-node recipe: it serves on the saved order.
-            row = _row(_entries(sys.stdin), args.spec_id)
+            # A one-node recipe's machine; a two-node recipe's pair of
+            # neighbours on a ring; nothing for any other recipe, which serves
+            # on the saved order.
+            entries = _entries(sys.stdin)
+            row = _row(entries, args.spec_id)
             if row["geometry"]["nodes"] == 1:
                 print("\n".join(node_lines(row, names.order, names, width=width)))
+            elif asks_for_a_pair(row, names):
+                pairs = ring_pairs(_saved_topology(args.repo_root))
+                inventory = load_json(args.inventory)
+                if pairs:
+                    print("\n".join(pair_lines(row, pairs, names, width=width,
+                                               inventory=inventory if isinstance(inventory, dict) else None,
+                                               entries=entries, topology_id=_topology_id(args.repo_root))))
             return 0
         if args.command in ("previews", "compose"):
             entries = _entries(sys.stdin)
