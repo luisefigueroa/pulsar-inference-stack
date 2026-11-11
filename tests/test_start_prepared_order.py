@@ -57,6 +57,24 @@ class PreparedOrder(unittest.TestCase):
                           'removes it'))
         self.assertEqual(plan['blockers'], ['node-2: existing prepared copy is pinned or referenced'])
 
+    def test_a_container_of_an_earlier_saved_cluster_names_the_docker_removal(self):
+        # Prepare's own command: a Pulsar container whose labels name another
+        # saved cluster mounts the copy. Stop refuses it, so the fix is Docker's.
+        f = self.f
+        view = next(v for v in Store(f.state).views(spec_id=f.spec['spec_id']) if v['node_id'] == 'node-2')
+        node = next(n for n in f.cfg['nodes'] if n['node_id'] == 'node-2')
+        labels = {'io.pulsar.gb10.managed': 'true', 'io.pulsar.gb10.conf': f.spec['spec_id'],
+                  'io.pulsar.gb10.topology': 'e' * 64}
+        node['containers'] = [{'Id': 'left-earlier', 'State': {'Running': False}, 'Config': {'Labels': labels},
+                               'Mounts': [{'Source': view['path']}]}]
+        f.save()
+        result = f.run('prepare', '--placement-nodes', 'node-3,node-2', '--plan', spec=True)
+        (detail,) = json.loads(result.stdout)['blocker_details']
+        self.assertEqual(detail['fix'], 'remove that container with Docker on its node (docker rm -f left-earlier): '
+                                        'it is left from an earlier saved cluster, and Pulsar does not remove '
+                                        'containers of an earlier saved cluster')
+        self.assertTrue(detail['container']['earlier_cluster'])
+
 
 class StartInTheOtherOrder(unittest.TestCase):
     """Start's own refusal says what to do: prepare again in this order, and
