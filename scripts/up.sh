@@ -424,8 +424,14 @@ else
           fi
           blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}" ${stage_note[@]+"${stage_note[@]}"}
         elif [ "$DRY" = 1 ]; then
-          echo "INFO  image     missing${missing_on:+ on $missing_on}; --pull-image would stage it"
-          start_check info image "missing${missing_on:+ on $missing_on}; --pull-image would stage it"
+          # Which staging --pull-image would run: decided as the staging below decides it.
+          if controller_holds_pinned_image; then
+            would_stage="--pull-image would copy it from this machine; a registry call adds only the pinned name where the copy does not keep it"
+          else
+            would_stage="--pull-image would pull it from its registry on each of those nodes, because this machine does not hold it"
+          fi
+          echo "INFO  image     missing${missing_on:+ on $missing_on}; $would_stage"
+          start_check info image "missing${missing_on:+ on $missing_on}; $would_stage"
         else
           start_check info image "missing${missing_on:+ on $missing_on}; --pull-image stages it after the other checks"
           IMAGE_SYNC="$img_state"
@@ -618,21 +624,21 @@ fi
 stop_if_blocked
 
 # --- deferred image staging (--pull-image) ---
-case "$IMAGE_SYNC" in
-  "") ;;
-  missing-on-worker|missing-on-rank)
-    # Streaming from this node can omit the digest reference; --pull-image
-    # also permits pulling the exact digest on a node where that happens.
+# Whatever the image check's state name, which counts role ranks: when this
+# machine holds the pinned image, it is copied from here, and --pull-image
+# also permits pulling the exact digest on a node where the copy did not keep
+# the pinned name. When this machine lacks it, only a pull works.
+if [ -n "$IMAGE_SYNC" ]; then
+  if controller_holds_pinned_image; then
     "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes --pull-if-stream-incomplete
     QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
       || die "the pinned image is still missing after staging; see the staging errors above"
-    ;;
-  *)
+  else
     "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
     QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
       || die "the pinned image is still missing after pulling it; see the pull errors above"
-    ;;
-esac
+  fi
+fi
 
 # --- multi-node preflight ---
 if [ "$NODES" -gt 1 ]; then

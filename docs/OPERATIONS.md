@@ -1516,8 +1516,14 @@ checks early, because later checks need every node or would be distorted by
 the running service. A check that could not run is reported as such
 (`*_check_failed`), never as the condition it checks. With `--pull-image`, the
 image is staged only after every other check passes, so a start that is
-blocked anyway changes nothing. When the pinned image is missing on a serving
-node and this machine holds it, the `image_missing` line also offers a copy
+blocked anyway changes nothing. It then copies the image from this machine
+when this machine holds it, whichever nodes lack it, and calls the registry
+only to add the pinned name on a node where the copy did not keep it (a node
+that already holds the content under another name gets that call and no
+copy). When this machine does not hold it, each node that lacks it pulls it
+from its registry. The dry run's `image` line says which it would do. When
+the pinned image is missing on a serving node and this machine holds it, the
+`image_missing` line also offers a copy
 from this machine on the same nodes: `./pulsar image stage <spec-id>
 [--node <node> | --placement-nodes <list>] --plan`, then the same command with
 `--yes`.

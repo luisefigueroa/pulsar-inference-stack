@@ -54,6 +54,7 @@ load_docker_argv_from_plan() { local -n out=$3; out=(docker run fixture); }
 require_launch_image_check() { :; }
 require_launch_memory_check() { :; }
 port_free() { return 0; }
+controller_holds_pinned_image() { return 1; }
 persist_launch_plan_file() { :; }
 release_model_library_locks() { :; }
 container_ownership_inspect_local() { return 0; }
@@ -110,6 +111,7 @@ load_docker_argv_from_plan() { local -n out=$3; out=(docker run fixture); }
 require_launch_image_check() { :; }
 require_launch_memory_check() { :; }
 port_free() { return 0; }
+controller_holds_pinned_image() { return 1; }
 persist_launch_plan_file() { :; }
 release_model_library_locks() { touch "$FIXTURE_DIR/released"; }
 container_ownership_inspect_local() { return 0; }
@@ -169,6 +171,7 @@ require_cluster_nodes() { CLUSTER_TOPOLOGY_COUNT=1; CLUSTER_TOPOLOGY_ID=fixture;
 container_name_for() { echo fixture-container; }
 container_ownership_inspect_local() { return 3; }
 port_free() { return 0; }
+controller_holds_pinned_image() { return 1; }
 ''')
             (scripts/'check-image.sh').write_text(r'''#!/usr/bin/env bash
 case " $* " in *" --json "*) echo '{"state":"missing-on-head"}' ;; *) echo 'FAIL image missing' ;; esac

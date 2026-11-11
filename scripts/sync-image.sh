@@ -137,7 +137,12 @@ if [ "$PULL" = 0 ]; then
   # a registry pull unless the caller passed --pull-if-stream-incomplete.
   "$PULSAR_DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 || die "controller lacks pinned image; choose --pull --yes or acquire it explicitly"
 fi
-mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
+# A node that holds the pinned content under another name gets no second copy
+# when a pull may follow (--pull-if-stream-incomplete): the pull adds the name
+# and reuses the content already there.
+copy_states='"missing","other-name"'
+[ "$PULL" = 1 ] || [ "$PULL_FALLBACK" != 1 ] || copy_states='"missing"'
+mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ('"$copy_states"',)]')
 for physical in "${missing[@]}"; do
   if [ "$PULL" = 1 ]; then
     if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi

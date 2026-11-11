@@ -459,6 +459,14 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
 
+    def test_start_staging_copies_nothing_to_a_node_that_holds_the_content(self):
+        # start --pull-image stages with --pull-if-stream-incomplete when this
+        # machine holds the image: a node with the content under another name
+        # gets only the pull that adds the pinned name, not a second copy.
+        result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes','--pull-if-stream-incomplete'],'other-name')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
+
     def test_image_check_json_returns_its_report_whatever_it_found(self):
         spec_id=self.spec['spec_id']
         for mode,state,ranks in (('missing-pull','missing-on-rank',['ok','missing','ok']),

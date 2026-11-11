@@ -414,7 +414,9 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual((result.returncode, codes), (0, []), result.stderr + result.stdout)
         self.assertEqual([outcome for _, outcome in self.outcomes()],
                          ["info", "pass", "pass", "info", "pass", "pass", "pass", "pass", "pass"])
-        self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would stage it")
+        self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would pull it from its "
+                                                     "registry on each of those nodes, because this machine does not "
+                                                     "hold it")
 
     def test_multi_node_checks_keep_their_order_and_record_preflight(self):
         # A fabric blocker leaves the topology check passed, not not_run.
@@ -476,6 +478,29 @@ class StartScenarios(unittest.TestCase):
                 self.reset()
                 self.start(*flags, image="missing-on-rank", nodes=nodes)
                 self.assertIsNone(self.records[0]["note"])
+
+    def test_pull_image_copies_from_this_machine_when_it_holds_the_image_whatever_the_state(self):
+        # The state names count role ranks, not this machine: missing-on-head on
+        # named nodes can mean two other nodes lack it while this one holds it.
+        for state in ("missing-on-head", "missing-on-rank", "missing-both"):
+            for held, staged, would in (
+                    (1, "--yes --pull-if-stream-incomplete",
+                     "--pull-image would copy it from this machine; a registry call adds only the pinned name "
+                     "where the copy does not keep it"),
+                    (0, "--pull --yes",
+                     "--pull-image would pull it from its registry on each of those nodes, because this machine "
+                     "does not hold it")):
+                with self.subTest(state=state, held=held):
+                    self.reset()
+                    (self.root / "synced").unlink(missing_ok=True)
+                    result, codes = self.start("--pull-image", "--dry-run", image=state, controller_image=held)
+                    self.assertEqual((result.returncode, codes), (0, []), result.stdout + result.stderr)
+                    self.assertIn(f"INFO  image     missing on fixture-host-0; {would}\n", result.stdout)
+                    self.assertFalse(self.ran("synced"))
+                    result, codes = self.start("--pull-image", image=state, controller_image=held)
+                    self.assertEqual((result.returncode, codes), (0, []), result.stdout + result.stderr)
+                    self.assertEqual((self.root / "synced").read_text().split(), [SPEC, "--node", "node-0",
+                                                                                 *staged.split()])
 
     def test_known_missing_image_is_reported_with_an_unreachable_node(self):
         result, codes = self.start(image="mixed")
@@ -560,7 +585,8 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--dry-run", "--pull-image")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(codes, [])
-        self.assertIn("INFO  image     missing on fixture-host-0; --pull-image would stage it", result.stdout)
+        self.assertIn("INFO  image     missing on fixture-host-0; --pull-image would pull it from its registry on "
+                      "each of those nodes, because this machine does not hold it", result.stdout)
         self.assertIn("DRY-RUN OK", result.stdout)
         # The follow-up command names the node by hostname, like the blocker fixes; a
         # spec that is not a catalog file keeps its complete ID.
