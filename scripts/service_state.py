@@ -209,9 +209,26 @@ def recorded_ownership(container, *, position, topology_id, node_ids, bindings):
     return True, ''
 
 
+def recorded_elsewhere(store, *, selected_spec_id, topology_id, node_ids):
+    """The other services of SELECTED_SPEC_ID that active records hold: each
+    as the hostnames of its nodes in role order. A Start on NODE_IDS (in role
+    order, under TOPOLOGY_ID) would be its own service, so a record of the
+    same service is not listed; one of an earlier saved cluster is."""
+    from scripts.container_runtime import service_identifier
+    own = service_identifier(selected_spec_id, topology_id, list(node_ids))
+    result = []
+    for row in store.records('services'):
+        if row['selected_spec_id'] != selected_spec_id or row['service_id'] == own:
+            continue
+        plan = store.get('service-plans', row['plan_id'])
+        validate_plan(plan)
+        result.append([rank.get('hostname') or rank['node_id'] for rank in plan['ranks']])
+    return result
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['save','locate','actual','retire','bindings','ownership'])
+    parser.add_argument('command',choices=['save','locate','actual','retire','bindings','ownership','elsewhere'])
     parser.add_argument('--state-root',required=True)
     parser.add_argument('--plan')
     parser.add_argument('--service-id')
@@ -238,6 +255,12 @@ def main():
         if args.command=='retire':
             result={'retired_service_ids':retire(store,topology_id=args.topology_id,
                 node_ids=args.node_id,selected_spec_id=args.selected_spec_id)}
+        elif args.command=='elsewhere':
+            # One line per other service of the spec: its nodes, comma-separated.
+            for hosts in recorded_elsewhere(store,selected_spec_id=args.selected_spec_id,
+                                            topology_id=args.topology_id,node_ids=args.node_id):
+                print(', '.join(hosts))
+            return 0
         elif args.command=='bindings':
             # For inventory: a record that does not validate proves nothing,
             # so its containers are judged by saved position.

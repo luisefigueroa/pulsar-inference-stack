@@ -125,6 +125,12 @@ role_index() { printf '%s' "${SERVING_NODE_INDEXES[$1]}"; }
 role_host() { [ "${SERVING_NODE_INDEXES[$1]}" = 0 ] || printf '%s' "${CLUSTER_NODE_SSH_HOSTS[${SERVING_NODE_INDEXES[$1]}]}"; }
 role_name() { human_node_name "${SERVING_NODE_INDEXES[$1]}"; }
 role_id() { printf '%s' "${CLUSTER_NODE_IDS[${SERVING_NODE_INDEXES[$1]}]:-}"; }
+# --replace removes the existing service by saved position, so it acts only on
+# the default order; elsewhere the service is stopped first, then started.
+for ((rank = 0; rank < NODES; rank++)); do
+  [ "$REPLACE" != 1 ] || [ "${SERVING_NODE_INDEXES[$rank]}" = "$rank" ] \
+    || die "--replace replaces a service on the default node order only; stop this spec's service first, then start it" 2
+done
 # docker_for_role R ARGS... — one docker command on role rank R's node.
 docker_for_role() {
   local role="$1" host

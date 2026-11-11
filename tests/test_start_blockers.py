@@ -340,6 +340,8 @@ class StartScenarios(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/up.sh", self.root / "scripts/up.sh")
         shutil.copyfile(ROOT / "scripts/start_blockers.py", self.root / "scripts/start_blockers.py")
         shutil.copyfile(ROOT / "scripts/start_checks.py", self.root / "scripts/start_checks.py")
+        # Start reads the saved service records (none here) for one service per spec.
+        shutil.copyfile(ROOT / "scripts/service_state.py", self.root / "scripts/service_state.py")
         (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
                                                    + lib_function("launch_plan_service_id"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),

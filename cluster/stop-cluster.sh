@@ -39,12 +39,14 @@ if [ "$ARG" = --all ]; then
   # nodes its record names and with the same proofs as stop SPEC. Guarded
   # trials keep their own path: scripts/down.sh refuses --all while one is
   # recorded off the default order.
-  if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
+  if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
 import sys
 from model_library.state import Store
 from scripts.service_state import off_default_order, recorded_bindings
 for item in recorded_bindings(Store(sys.argv[1])):
-    if not item['guarded'] and off_default_order(item['node_ids'], sys.argv[2:]):
+    # Also an ordinary multi-node record of an earlier saved cluster.
+    earlier = len(item['node_ids']) > 1 and item['topology_id'] != sys.argv[2]
+    if not item['guarded'] and (off_default_order(item['node_ids'], sys.argv[3:]) or earlier):
         print(item['selected_spec_id'], item['plan_id'], sep='\t')
 PY_RECORDED
   ); then

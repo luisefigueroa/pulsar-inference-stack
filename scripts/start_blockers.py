@@ -75,6 +75,11 @@ BLOCKERS = {
     "service_exists": Kind("a service for this spec already exists",
                            "./pulsar status {spec} {candidate}{placement}",
                            note="To replace it, rerun start with --replace, only with explicit replacement approval."),
+    # Stop takes no placement: it stops the spec's service wherever its record says.
+    "service_recorded_elsewhere": Kind("a service of this spec is recorded on other nodes",
+                                       "./pulsar stop {spec} {candidate}",
+                                       note="A spec runs as one service. Stop it first; stop also clears a record "
+                                            "whose containers are gone."),
     "port_in_use": Kind("the service port is already in use", "./pulsar inventory",
                         note="Free the port, or change the deployment port."),
     "preflight_failed": Kind("the multi-node preflight failed", START, adds="--verbose"),

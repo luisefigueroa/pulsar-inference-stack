@@ -158,6 +158,11 @@ else
   if [ "$FIRST_INDEX" != 0 ]; then
     SERVICE_API_BASE="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[$FIRST_INDEX]}"):$PORT"
   fi
+  OFF_DEFAULT_ORDER=0
+  for ((slot=0;slot<NODES;slot++)); do [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || OFF_DEFAULT_ORDER=1; done
+  if [ "$REPLACE" = 1 ] && [ "$OFF_DEFAULT_ORDER" = 1 ]; then
+    usage_die "--replace replaces a service on the default node order only. To start this spec on $PLACEMENT_NODES, stop its service first (./pulsar stop $(spec_reference "$NAME")), then start it without --replace"
+  fi
   if [ "$DRY" != 1 ] && [ -n "$PLACEMENT_NODES" ]; then
     for ((slot=0;slot<NODES;slot++)); do
       [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || usage_die "nondefault multi-node placement requires guarded run; ordinary start cannot launch a remote head"
@@ -291,6 +296,27 @@ if [ "$NODES" -gt 1 ]; then
   start_check pass fabric "the confirmed fabric meets this spec"
 fi
 echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
+
+# --- one service per spec: the saved records, read here, never by probing ---
+# A multi-node spec recorded on other nodes (or in another order, or under an
+# earlier saved cluster) is another service of it; Start never runs a second.
+if [ "$NODES" -gt 1 ]; then
+  elsewhere_args=()
+  for node in "${SERVING_NODE_IDS[@]}"; do elsewhere_args+=(--node-id "$node"); done
+  if ! elsewhere=$(python3 "$REPO_DIR/scripts/service_state.py" elsewhere --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
+      --selected-spec-id "$NAME" --topology-id "$CLUSTER_TOPOLOGY_ID" "${elsewhere_args[@]}" 2>/dev/null); then
+    start_check fail service "the saved service records cannot be read"
+    blocked service_recorded_elsewhere --detail "the saved service records cannot be read"
+    stop_if_blocked
+  fi
+  if [ -n "$elsewhere" ]; then
+    while IFS= read -r hosts; do
+      start_check fail service "a service of this spec is recorded on $hosts"
+      blocked service_recorded_elsewhere --detail "on $hosts"
+    done <<<"$elsewhere"
+    stop_if_blocked
+  fi
+fi
 # A new home goes on the start placement (one node) or on rank 0.
 if [ "$NODES" -eq 1 ]; then
   START_BLOCKER_HOME_NODE="${SINGLE_NODE_HOSTNAME:-}"

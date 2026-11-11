@@ -111,6 +111,59 @@ class Preflight(Cluster):
             self.assertNotIn(word, result.stdout)
 
 
+class OneServicePerSpec(Cluster):
+    """Start reads the saved records: a spec runs as one service."""
+
+    def recorded_on(self, positions, **options):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        return spec, c.plan(spec, manifest, positions, **options)
+
+    def test_a_record_on_other_nodes_refuses_a_default_order_start(self):
+        c = self.cluster
+        spec, _ = self.recorded_on([2, 3])
+        for flags in ((), ('--replace',)):
+            with self.subTest(flags=flags):
+                c.forget_calls()
+                result = c.start(spec['spec_id'], '--skip-preflight', *flags)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes '
+                              '(on fixture-ring-echo, fixture-ring-alpha). Next: ./pulsar stop '
+                              f"{spec['spec_id'][:12]}", ' '.join(result.stdout.split()))
+                self.assertFalse([line for line in self.trace() if 'docker' in line])
+
+    def test_a_record_of_an_earlier_saved_cluster_is_another_service(self):
+        c = self.cluster
+        spec, plan = self.recorded_on([0, 1], topology_id='e' * 64)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('service_recorded_elsewhere', result.stdout)
+        # ./pulsar stop clears it when none of its containers is left, and Start then runs.
+        self.assertEqual(c.pulsar('stop', spec['spec_id']).returncode, 0)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_replace_off_the_default_order_is_refused_before_anything_is_contacted(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--replace', '--placement-nodes',
+                         f'{c.hostname(2)},{c.hostname(3)}')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--replace replaces a service on the default node order only. To start this spec on '
+                      f'{c.hostname(2)},{c.hostname(3)}, stop its service first (./pulsar stop {spec["spec_id"][:12]}), '
+                      'then start it without --replace', result.stderr)
+        self.assertEqual(self.trace(), [])
+
+    def test_the_launcher_refuses_replace_off_the_default_order_too(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--replace', '--placement-nodes',
+                               f'{c.hostname(2)},{c.hostname(3)}')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--replace replaces a service on the default node order only', result.stderr)
+        self.assertFalse([line for line in self.trace() if 'docker' in line])
+
+
 KEY = 'fixture-secret-key-5f1e'
 
 
