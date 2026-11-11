@@ -275,7 +275,7 @@ choose_node() {
       node) ids+=("$first"); labels+=("$second") ;;
       line) [ "${#labels[@]}" -eq 0 ] || labels[-1]+=$'\n'"$first" ;;
     esac
-  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec" "${inventory[@]}")
+  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec" --pairs "${inventory[@]}")
   [ "${#ids[@]}" -gt 0 ] || return 0
   for index in "${!ids[@]}"; do [ "${ids[$index]}" != "$default" ] || start=$index; done
   index=$(PULSAR_CHOOSE_DEFAULT="$start" choose_index "$title" "${labels[@]}" "Back") || return $?
