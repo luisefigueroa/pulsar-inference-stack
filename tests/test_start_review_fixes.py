@@ -165,5 +165,36 @@ class OneServicePerSpecWhereTheRecordIsSaved(Cluster):
         self.assertEqual(len(c.store.records('services')), 1)
 
 
+class SmallOnes(Cluster):
+    def test_unreadable_records_say_why(self):
+        c = self.cluster
+        spec, _ = c.spec(3)
+        c.store.put('services', 'f' * 64, {'schema_version': 1, 'service_id': 'f' * 64,
+                                           'selected_spec_id': spec['spec_id'], 'plan_id': 'a' * 64})
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 1)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes (the '
+                      'saved service records cannot be read: ', text)
+        self.assertFalse([line for line in self.trace() if 'docker' in line])
+
+    def test_the_ports_are_checked_on_the_first_node(self):
+        c = self.cluster
+        spec, _ = c.spec(3)
+        for args, where in (((), 'local'),
+                            (('--placement-nodes', ','.join(c.hostname(p) for p in (2, 0, 3))), 'alias-2')):
+            with self.subTest(where=where):
+                c.forget_calls()
+                for record in c.store.records('services'):
+                    c.store.remove('services', record['service_id'])
+                c.containers = []
+                c.write()
+                result = c.start(spec['spec_id'], '--skip-preflight', *args,
+                                 SERVICE_HEALTHY='127.0.0.1' if where == 'local' else '192.0.2.12')
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                ports = [line for line in self.trace() if line.startswith('port ')]
+                self.assertEqual(ports, [f'port 8000 on {where}', f'port 29500 on {where}'] * 2)
+
+
 if __name__ == '__main__':
     unittest.main()

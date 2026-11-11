@@ -185,6 +185,7 @@ PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
 # already remove what this launch started removes it now: no rank is left
 # running with nothing said.
 CLUSTER_ABORTED=0
+# shellcheck disable=SC2317 # run by the EXIT trap
 launch_exit() {
   local rc=$?
   rm -f "${PLAN_FILE:-}"
@@ -352,8 +353,9 @@ for ((rank = 1; rank < NODES; rank++)); do
 done
 build_docker_cmd 0
 HEAD_CMD=("${_DOCKER_CMD[@]}")
+first_host=$(role_host 0)
 for cluster_port in "$PORT" "${MASTER_PORT:-29500}"; do
-  if ! port_free "$cluster_port" $(role_host 0); then
+  if ! port_free "$cluster_port" ${first_host:+"$first_host"}; then
     START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "$(role_name 0)" \
       --node-id "$(role_id 0)" --detail "port $cluster_port"
     refuse_launch "port $cluster_port is unavailable on $(role_name 0) (rank 0); refusing launch"

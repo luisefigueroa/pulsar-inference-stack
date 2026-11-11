@@ -307,12 +307,17 @@ echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COU
 if [ "$NODES" -gt 1 ] && [ "${SPEC_GUARDED:-0}" = 0 ]; then
   elsewhere_args=()
   for node in "${SERVING_NODE_IDS[@]}"; do elsewhere_args+=(--node-id "$node"); done
+  elsewhere_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-elsewhere.XXXXXX")
   if ! elsewhere=$(python3 "$REPO_DIR/scripts/service_state.py" elsewhere --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
-      --selected-spec-id "$NAME" --topology-id "$CLUSTER_TOPOLOGY_ID" "${elsewhere_args[@]}" 2>/dev/null); then
-    start_check fail service "the saved service records cannot be read"
-    blocked service_recorded_elsewhere --detail "the saved service records cannot be read"
+      --selected-spec-id "$NAME" --topology-id "$CLUSTER_TOPOLOGY_ID" "${elsewhere_args[@]}" 2>"$elsewhere_err"); then
+    # The reader's own reason goes into the blocker's detail.
+    elsewhere_reason=$(sed -n 's/^error: //p' "$elsewhere_err" | tail -n1)
+    rm -f "$elsewhere_err"
+    start_check fail service "the saved service records cannot be read${elsewhere_reason:+: $elsewhere_reason}"
+    blocked service_recorded_elsewhere --detail "the saved service records cannot be read${elsewhere_reason:+: $elsewhere_reason}"
     stop_if_blocked
   fi
+  rm -f "$elsewhere_err"
   if [ -n "$elsewhere" ]; then
     while IFS= read -r hosts; do
       start_check fail service "a service of this spec is recorded on $hosts"

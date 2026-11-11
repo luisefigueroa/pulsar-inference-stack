@@ -578,7 +578,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     # Named nodes (the pair question, or Restart of a service Start ran on
     # them): Prepare, the image and Start name them, in the same order.
     placement = placement_args(row, names, serving, node)
-    told =[part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
+    told = [part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
     plan: dict = {"kind": PLAN_KIND, "spec_id": spec, "model_id": model, "ready_only": ready_only,
                   "restart": restart,
                   "title": (f"{'Get' if ready_only else 'Restart' if restart else 'Serve'} {model}"
