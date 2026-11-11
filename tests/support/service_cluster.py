@@ -368,6 +368,30 @@ for path in pathlib.Path(sys.argv[1]).glob("probe-*.json"):
     if probe["node_id"] == sys.argv[2]: print(json.dumps(probe))' "$SERVICE_FIXTURE" "${CLUSTER_NODE_IDS[0]}"; }
 }
 PULSAR_RDMA_VERBS_DEVICE="$SERVICE_FIXTURE/infiniband"
+# SERVICE_ARGV_RANK: count each build of that role rank's docker command in
+# argv-builds; SERVICE_ARGV_FAILS_AT: that build fails, as an unreadable launch
+# plan does.
+eval "_service_load_docker_argv() $(declare -f load_docker_argv_from_plan | tail -n +2)"
+load_docker_argv_from_plan() {
+  if [ -n "${SERVICE_ARGV_RANK:-}" ] && [ "${2:-}" = "$SERVICE_ARGV_RANK" ]; then
+    printf 'build\n' >>"$SERVICE_FIXTURE/argv-builds"
+    if [ "$(wc -l <"$SERVICE_FIXTURE/argv-builds")" = "${SERVICE_ARGV_FAILS_AT:-0}" ]; then
+      printf 'argv of rank %s fails\n' "$2" >>"$SERVICE_FIXTURE/trace.log"
+      die "fixture: the launch command of rank $2 could not be read"
+    fi
+  fi
+  _service_load_docker_argv "$@"
+}
+# SERVICE_FAILS_LOADING: once a container started, the next step that builds
+# the API's request arguments (the health wait's) fails, as an unexpected error would.
+eval "_service_api_auth_curl_args() $(declare -f api_auth_curl_args | tail -n +2)"
+api_auth_curl_args() {
+  if [ -n "${SERVICE_FAILS_LOADING:-}" ] && grep -q 'docker run' "$SERVICE_FIXTURE/trace.log" 2>/dev/null; then
+    printf 'loading step fails\n' >>"$SERVICE_FIXTURE/trace.log"
+    return 1
+  fi
+  _service_api_auth_curl_args "$@"
+}
 port_free() {
   printf '%s\n' "port $1 ${2:-local}" >>"$SERVICE_FIXTURE/checks.log"
   printf '%s\n' "port $1 on ${2:-local}" >>"$SERVICE_FIXTURE/trace.log"
@@ -620,7 +644,7 @@ class ServiceCluster:
 
     def forget_calls(self):
         for name in ('docker-calls.jsonl', 'ssh-calls.jsonl', 'runs.jsonl', 'curl-calls.jsonl', 'checks.log',
-                     'trace.log', 'prepared-readings',
+                     'trace.log', 'prepared-readings', 'argv-builds',
                      'mutations.jsonl', 'blockers.jsonl'):
             (self.root / name).unlink(missing_ok=True)
 

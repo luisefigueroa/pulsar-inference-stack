@@ -180,8 +180,22 @@ fi
 CONTAINER="$(container_name_for "$MODEL_NAME" "$NODES")"
 MASTER_ADDR="${CLUSTER_NODE_CONTROL_IPS[$(role_index 0)]}"
 PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/pulsar-launch-plan.XXXXXX")
-# shellcheck disable=SC2064
-trap 'rm -f "${PLAN_FILE:-}"' EXIT
+# From the first docker run to the end of the health wait, any exit that is
+# not an interruption (which reports and removes nothing) and that did not
+# already remove what this launch started removes it now: no rank is left
+# running with nothing said.
+CLUSTER_ABORTED=0
+launch_exit() {
+  local rc=$?
+  rm -f "${PLAN_FILE:-}"
+  if [ "$rc" -ne 0 ] && [ "$rc" -lt 128 ] && [ "$CLUSTER_ABORTED" = 0 ]; then
+    case "$CLUSTER_PHASE" in
+      launching|loading) cluster_abort "the launch stopped unexpectedly (exit $rc)" ;;
+    esac
+  fi
+  return "$rc"
+}
+trap launch_exit EXIT
 LAUNCH_ACTION=start
 [ "$REPLACE" != 1 ] || LAUNCH_ACTION=replace
 write_launch_plan_file "$PLAN_FILE" "$([ "$DRY_RUN" = 1 ] && echo dry-run || echo "$LAUNCH_ACTION")"
@@ -247,7 +261,7 @@ declare -A TRACKED_CIDS=()
 # Best-effort teardown by immutable IDs created by this invocation only.
 cluster_abort() {
   local why="${1:-cluster start failed}" rank host
-  CLUSTER_PHASE=removing
+  CLUSTER_PHASE=removing CLUSTER_ABORTED=1
   error_line "$why — removing launch-tracked IDs only"
   # Rank 0 first, then the others; each on its own node, by the ID it returned.
   for rank in 0 $(seq $((NODES - 1)) -1 1); do
@@ -359,7 +373,9 @@ launch_role() {
   local -a run=()
   LAUNCHING_RANK=$role
   host=$(role_host "$role")
-  if [ "$role" = 0 ]; then run=("${HEAD_CMD[@]}"); else build_docker_cmd "$role"; run=("${_DOCKER_CMD[@]}"); fi
+  # Every rank's command was built before the first docker run; a rank's
+  # shell-quoted command reads back as its argv.
+  if [ "$role" = 0 ]; then run=("${HEAD_CMD[@]}"); else eval "run=(${REMOTE_COMMANDS[$role]})"; fi
   if [ -z "$host" ]; then
     log "starting rank $role locally"
     run[0]="$PULSAR_DOCKER"
