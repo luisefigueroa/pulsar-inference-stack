@@ -878,6 +878,10 @@ in private configuration, never a published spec or example. See
 
 The dry run checks prerequisites without launching or staging an image. It
 identifies checks deferred to actual start, including the multi-node preflight.
+For a multi-node spec it shows the `fabric` check, judged from the saved links
+between the serving nodes; an actual start's preflight then pings those links
+and, without `--verbose`, prints one line under `preflight cluster OK` with how
+many of them answered both ways between each pair of serving nodes.
 Actual start rechecks its prerequisites; ordinary start prints `READY` only
 after the service answers a test completion. Its output includes the served
 model name and API URL. A refusal or failed launch needs inspection before a

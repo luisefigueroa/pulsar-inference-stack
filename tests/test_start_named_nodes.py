@@ -141,6 +141,9 @@ class StartWithPreflight(Cluster):
                          SERVICE_HEALTHY='192.0.2.32')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('PASS  preflight cluster OK', result.stdout)
+        # The cable between the serving nodes, as preflight counted its links.
+        self.assertIn(f'PASS  preflight cluster OK\n      links that answered both ways: 2 of 2 between '
+                      f'{c.hostname(2)} and {c.hostname(3)}\n', result.stdout)
         self.assertNotIn('--skip-preflight', ' '.join(json.dumps(call) for call in c.calls()['checks']))
         self.assertEqual(self.preflight(), {'node-2': self.OVER_SSH, 'node-3': self.OVER_SSH}, self.trace())
         self.assertEqual([line for line in self.trace() if 'docker run' in line],
@@ -160,6 +163,19 @@ class StartWithPreflight(Cluster):
             'node-1': self.OVER_SSH}, self.trace())
         self.assertEqual([line for line in self.trace() if 'docker run' in line],
                          ['node-1 docker run rank 1 over ssh', 'node-0 docker run rank 0'])
+
+    def test_the_fabric_check_is_shown_by_the_dry_run_and_start(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        for args in (('--dry-run',), ('--skip-preflight',)):
+            with self.subTest(args=args):
+                c.forget_calls()
+                result = c.start(spec['spec_id'], *args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('PASS  fabric    the confirmed fabric meets this spec\n', result.stdout)
+                # Neither pinged anything, so neither says a link answered.
+                self.assertNotIn('answered', result.stdout)
+                c.pulsar('stop', spec['spec_id'])
 
 
 class StatusOnNamedNodes(Cluster):

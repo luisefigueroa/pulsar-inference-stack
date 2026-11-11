@@ -298,6 +298,8 @@ if [ "$NODES" -gt 1 ]; then
   start_check pass fabric "the confirmed fabric meets this spec"
 fi
 echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
+# Judged from the saved links; preflight pings them before a launch.
+[ "$NODES" -le 1 ] || echo "PASS  fabric    the confirmed fabric meets this spec"
 
 # --- one service per spec: the saved records, read here, never by probing ---
 # A multi-node spec recorded on other nodes (or in another order, or under an
@@ -632,6 +634,13 @@ if [ "$NODES" -gt 1 ]; then
         if "$REPO_DIR/cluster/preflight.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
             >"$_pf_log" 2>&1; then
           echo "PASS  preflight cluster OK"
+          # The links preflight pinged between the serving nodes, as it
+          # counted them; its rows name role ranks.
+          pf_links=""
+          while IFS=' ' read -r pf_first pf_second pf_count; do
+            pf_links+="${pf_links:+; }$pf_count between $(human_node_name "${SERVING_NODE_INDEXES[$pf_first]:-$pf_first}") and $(human_node_name "${SERVING_NODE_INDEXES[$pf_second]:-$pf_second}")"
+          done < <(sed -nE 's|^  ok   ranks ([0-9]+)/([0-9]+): ([0-9]+ of [0-9]+) links answered both ways$|\1 \2 \3|p' "$_pf_log")
+          [ -z "$pf_links" ] || echo "      links that answered both ways: $pf_links"
           start_check pass preflight "cluster OK"
           rm -f "$_pf_log"
         else
