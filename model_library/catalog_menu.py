@@ -1182,9 +1182,11 @@ START_CHOICES = {
 }
 # Codes that get no choice here: the memory-warning retry is offered on its
 # own, an interrupted Start's outcome names the next inspection, and the rest
-# have no menu operation that resolves them.
+# have no menu operation that resolves them. service_recorded_elsewhere names
+# ./pulsar stop SPEC, which also clears a record with no container; the menu's
+# Stop is offered only for containers the inventory sees, so it is not offered.
 START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
-                             "service_stopped"})
+                             "service_stopped", "service_recorded_elsewhere"})
 START_CHOICE_LABELS = {
     "topology-menu": "Open Cluster topology (membership)",
     "topology-check": "Check saved nodes and fabric (checks nodes now)",
