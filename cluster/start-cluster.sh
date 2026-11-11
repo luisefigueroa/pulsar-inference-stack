@@ -324,7 +324,27 @@ if [ "$existing" = 1 ] && [ "$REPLACE" != 1 ]; then
   START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_exists --detail "container $CONTAINER on $where"
   die "service $CONTAINER already exists on $where; inspect every rank, then pass --replace only with explicit replacement approval"
 fi
+# refuse_recorded_elsewhere HOSTS — one service_recorded_elsewhere blocker per
+# line of HOSTS (another service of this spec), then the launch is refused.
+refuse_recorded_elsewhere() {
+  local hosts
+  while IFS= read -r hosts; do
+    [ -z "$hosts" ] || START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_recorded_elsewhere --detail "on $hosts"
+  done <<<"$1"
+  refuse_launch "a service of spec ${MODEL_NAME:0:12} is recorded on other nodes; a spec runs as one service, so nothing was started"
+}
 if [ "$REPLACE" = 1 ]; then
+  # Saving this launch's record would refuse it if another service of the spec
+  # is recorded: ask the records first, read-only, so nothing is removed for
+  # a launch that cannot start. The save asks again.
+  check_rc=0
+  elsewhere=$(python3 "$REPO_DIR/scripts/service_state.py" check-save --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
+    --plan "$PLAN_FILE") || check_rc=$?
+  if [ "$check_rc" = 3 ]; then
+    refuse_recorded_elsewhere "$elsewhere"
+  elif [ "$check_rc" != 0 ]; then
+    die "the saved service records cannot be read; nothing was removed or started"
+  fi
   log "removing existing stack-managed ranks (ownership required)"
   stale_rc=0
   # The service ID is the same for the service being replaced.
@@ -372,10 +392,7 @@ STARTUP_STARTED_NS=$(date +%s%N)
 save_rc=0
 elsewhere=$(persist_launch_plan_file "$PLAN_FILE") || save_rc=$?
 if [ "$save_rc" = 3 ]; then
-  while IFS= read -r hosts; do
-    [ -z "$hosts" ] || START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_recorded_elsewhere --detail "on $hosts"
-  done <<<"$elsewhere"
-  refuse_launch "a service of spec ${MODEL_NAME:0:12} is recorded on other nodes; a spec runs as one service, so nothing was started"
+  refuse_recorded_elsewhere "$elsewhere"
 elif [ "$save_rc" != 0 ]; then
   die "the launch record could not be saved; nothing was started"
 fi

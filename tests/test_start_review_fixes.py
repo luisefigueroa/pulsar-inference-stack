@@ -193,6 +193,54 @@ class OneServicePerSpecWhereTheRecordIsSaved(Cluster):
         self.assertEqual(len(c.store.records('services')), 1)
 
 
+class ReplaceAsksTheRecordsFirst(Cluster):
+    """--replace removes the old service only when the save that follows can
+    record the new one."""
+
+    def test_another_service_of_the_spec_recorded_meanwhile_removes_nothing(self):
+        import json
+        import subprocess
+        c = self.cluster
+        spec, manifest = c.spec(3)
+        running = c.run(c.plan(spec, manifest, [0, 1, 2]))
+        # Another Start of the spec recorded its service on other nodes after
+        # this Start's own check, as a save in that race would.
+        other = c.plan(spec, manifest, [1, 2, 3], record=False)
+        c.store.put('service-plans', other['plan_id'], other)
+        c.store.put('services', other['service_id'], {'schema_version': 1, 'service_id': other['service_id'],
+                                                      'selected_spec_id': spec['spec_id'], 'plan_id': other['plan_id']})
+        stack = c.install()
+        blockers = c.root / 'blockers.jsonl'
+        environment = {**c.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(c.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '',
+                       'WAIT_ATTEMPTS': '2', 'WAIT_SECONDS': '0', 'PULSAR_START_BLOCKERS_FILE': str(blockers)}
+        result = subprocess.run(['bash', str(stack / 'cluster/start-cluster.sh'), spec['spec_id'], '--skip-preflight',
+                                 '--replace'], env=environment, text=True, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn('is recorded on other nodes; a spec runs as one service, so nothing was started', result.stderr)
+        self.assertNotIn('removing existing stack-managed ranks', result.stdout + result.stderr)
+        records = [json.loads(line) for line in blockers.read_text().splitlines()]
+        self.assertEqual([record['blocker'] for record in records], ['service_recorded_elsewhere'], records)
+        self.assertIn(f'on {c.hostname(1)}, {c.hostname(2)}, {c.hostname(3)}', json.dumps(records[0]))
+        self.assertEqual(c.removed(), [])
+        self.assertEqual(sorted(item['id'] for item in c.remaining()), sorted(item['id'] for item in running))
+        self.assertFalse([line for line in self.trace() if 'docker run' in line or 'docker rm' in line])
+
+    def test_check_save_changes_nothing_and_follows_saves_rule(self):
+        from scripts.service_state import RecordedElsewhere, check_save, save
+        c = self.cluster
+        spec, manifest = c.spec(3)
+        first = c.plan(spec, manifest, [1, 2, 3], record=False)
+        second = c.plan(spec, manifest, [0, 1, 2], record=False)
+        check_save(c.store, first)
+        self.assertEqual(c.store.records('services'), [])
+        save(c.store, first)
+        check_save(c.store, first)
+        with self.assertRaises(RecordedElsewhere):
+            check_save(c.store, second)
+        self.assertIsNone(c.store.get('services', second['service_id']))
+
+
 class SmallOnes(Cluster):
     def test_unreadable_records_say_why(self):
         c = self.cluster

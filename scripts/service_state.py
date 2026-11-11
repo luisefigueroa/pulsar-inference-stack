@@ -24,6 +24,33 @@ class RecordedElsewhere(ValueError):
         self.hosts = hosts
 
 
+def _others(store, plan):
+    """The rule save keeps: for an ordinary multi-node PLAN, the nodes of each
+    other service of its selected spec that an active record holds. A guarded
+    trial and a one-node service keep their own rules: none. The caller holds
+    services.lock."""
+    if plan.get('guard_run_id') or len(plan['ranks']) < 2:
+        return []
+    others = []
+    for row in store.records('services'):
+        if row['selected_spec_id'] != plan['selected_spec_id'] or row['service_id'] == plan['service_id']:
+            continue
+        other = store.get('service-plans', row['plan_id']) or {}
+        others.append([rank.get('hostname') or rank.get('node_id') for rank in other.get('ranks') or []])
+    return others
+
+
+def check_save(store, plan):
+    """Raise RecordedElsewhere when save would refuse PLAN, changing nothing:
+    for a step that must not run when the save will refuse, such as --replace
+    removing the old service."""
+    with store.lock(name='services.lock'):
+        validate_plan(plan)
+        others = _others(store, plan)
+        if others:
+            raise RecordedElsewhere(others)
+
+
 def save(store, plan):
     # Callers may share the lifecycle lock; serialize index compare/write/remove
     # separately, without upgrading the lifecycle lock held by a foreground run.
@@ -32,15 +59,9 @@ def save(store, plan):
         # One service per spec, decided here, under the lock every save and
         # retire takes, so two Starts of one spec at once cannot both record
         # one. A guarded trial and a one-node service keep their own rules.
-        if not plan.get('guard_run_id') and len(plan['ranks']) > 1:
-            others = []
-            for row in store.records('services'):
-                if row['selected_spec_id'] != plan['selected_spec_id'] or row['service_id'] == plan['service_id']:
-                    continue
-                other = store.get('service-plans', row['plan_id']) or {}
-                others.append([rank.get('hostname') or rank.get('node_id') for rank in other.get('ranks') or []])
-            if others:
-                raise RecordedElsewhere(others)
+        others = _others(store, plan)
+        if others:
+            raise RecordedElsewhere(others)
         existing = store.get('service-plans', plan['plan_id'])
         if existing is not None and existing != plan:
             raise ValueError('stored launch plan differs from its content digest')
@@ -250,7 +271,7 @@ def recorded_elsewhere(store, *, selected_spec_id, topology_id, node_ids):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['save','locate','actual','retire','bindings','ownership','elsewhere'])
+    parser.add_argument('command',choices=['save','check-save','locate','actual','retire','bindings','ownership','elsewhere'])
     parser.add_argument('--state-root',required=True)
     parser.add_argument('--plan')
     parser.add_argument('--service-id')
@@ -262,9 +283,9 @@ def main():
     args=parser.parse_args()
     try:
         store=Store(args.state_root)
-        if args.command=='save':
+        if args.command in ('save','check-save'):
             try:
-                save(store,load_json(args.plan))
+                (save if args.command=='save' else check_save)(store,load_json(args.plan))
             except RecordedElsewhere as exc:
                 # Exit 3, one line per other service of the spec: its nodes, comma-separated.
                 for hosts in exc.hosts:
