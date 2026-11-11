@@ -169,7 +169,10 @@ if args[:1] == ["run"]:
             key, _, value = args[i + 1].partition("="); labels[key] = value; i += 2; continue
         i += 1
     cid = hashlib.sha256(f"{node}:{name}:{len(everything)}:{args}".encode()).hexdigest()
-    everything.append({"node": node, "id": cid, "name": name, "labels": labels, "state": "running",
+    # SERVICE_RUN_EXITS lists node IDs whose container exits as soon as it starts.
+    exits = node in os.environ.get("SERVICE_RUN_EXITS", "").split(",")
+    everything.append({"node": node, "id": cid, "name": name, "labels": labels,
+                       "state": "exited" if exits else "running",
                        "image": "example/image@sha256:" + "d" * 64, "cmd": args[args.index("--model"):]
                        if "--model" in args else [], "argv": args})
     json.dump(everything, open(state, "w"))
@@ -181,7 +184,12 @@ if args[:1] == ["run"]:
 if args[:2] == ["logs", "--tail"]:
     trace("docker logs")
     find(args[3])
-    print("fixture engine log line")
+    # SERVICE_LOG_TEXT: the engine's log on the nodes in SERVICE_LOG_NODES (default: every node).
+    shown = os.environ.get("SERVICE_LOG_NODES")
+    if os.environ.get("SERVICE_LOG_TEXT") and (not shown or node in shown.split(",")):
+        print(os.environ["SERVICE_LOG_TEXT"])
+    else:
+        print("fixture engine log line")
     sys.exit(0)
 if args[:1] == ["inspect"] and len(args) == 2:
     c = find(args[1])

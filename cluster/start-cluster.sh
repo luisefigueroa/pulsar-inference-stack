@@ -538,9 +538,14 @@ for _attempt in $(seq 1 "$WAIT_LIMIT"); do
     case "${RANK_STATES[rank]}" in
       exited)
         error_line "the rank $rank container on $(role_name "$rank") exited before the service became healthy; last logs:"
-        docker_for_role "$rank" logs --tail 80 "$CONTAINER" >&2 || true
+        # Read once, before the clean-up removes the container, and shown as before.
+        rank_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-rank-log.XXXXXX")
+        docker_for_role "$rank" logs --tail 80 "$CONTAINER" >"$rank_log" 2>&1 || true
+        cat "$rank_log" >&2
         cluster_abort "rank $rank exited during health wait"
         cluster_failure container_exited "$rank" --no-command --note "The cluster's containers were removed; the logs are shown above."
+        engine_memory_refusal "$(role_name "$rank") (rank $rank)" "$rank_log" || true
+        rm -f "$rank_log"
         exit 1
         ;;
       absent)
@@ -557,12 +562,21 @@ done
 
 load_progress_end
 error_line "timed out waiting for health. Rank 0 logs:"
-docker_for_role 0 logs --tail 120 "$CONTAINER" >&2 || true
-for ((rank = 1; rank < NODES; rank++)); do
-  host=$(role_host "$rank")
-  log "rank $rank logs (${host:-$(role_name "$rank")}):" >&2
-  docker_for_role "$rank" logs --tail 120 "$CONTAINER" >&2 || true
+# Each rank's log is read once, before the clean-up removes its container.
+declare -a rank_logs=()
+for ((rank = 0; rank < NODES; rank++)); do
+  if [ "$rank" -gt 0 ]; then
+    host=$(role_host "$rank")
+    log "rank $rank logs (${host:-$(role_name "$rank")}):" >&2
+  fi
+  rank_logs[rank]=$(mktemp "${TMPDIR:-/tmp}/pulsar-rank-log.XXXXXX")
+  docker_for_role "$rank" logs --tail 120 "$CONTAINER" >"${rank_logs[rank]}" 2>&1 || true
+  cat "${rank_logs[rank]}" >&2
 done
 cluster_abort "health wait timed out"
 cluster_failure health_timeout 0 --no-command --note "The cluster's containers were removed; the logs are shown above."
+for ((rank = 0; rank < NODES; rank++)); do
+  engine_memory_refusal "$(role_name "$rank") (rank $rank)" "${rank_logs[rank]}" && break
+done
+rm -f "${rank_logs[@]}"
 exit 1

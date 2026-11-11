@@ -811,8 +811,12 @@ else
     case "$container_state" in
       exited)
         error_line "the container $CONTAINER exited before it became healthy; last logs:"
-        service_logs 80
+        service_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-service-log.XXXXXX")
+        service_logs 80 2>"$service_log"
+        cat "$service_log" >&2
         blocked container_exited --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "$SERVICE_ID"
+        engine_memory_refusal "$(single_node_display)" "$service_log" || true
+        rm -f "$service_log"
         exit 1
         ;;
       absent)

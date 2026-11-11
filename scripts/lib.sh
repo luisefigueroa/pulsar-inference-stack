@@ -3754,6 +3754,24 @@ check_exit_convention() {
 }
 check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 
+# engine_memory_refusal WHERE LOG_FILE — when a failed rank's container log
+# (read before clean-up removed the container) holds the engine's own refusal
+# for free GPU memory at its startup, as vLLM words it ("Free memory on device
+# ... on startup is less than desired GPU memory utilization"), quote that line
+# once with WHERE (the node and rank) and say what it means, on stderr. Start's
+# own memory check is separate and unchanged. Returns 1 when the log has no
+# such line.
+engine_memory_refusal() {
+  local where="$1" line
+  line=$(grep -m1 -E 'Free memory on device .* on startup is less than desired GPU memory utilization' "$2" 2>/dev/null \
+    | tr -d '\r') || return 1
+  [ -n "$line" ] || return 1
+  # From the exception's name when the line has one, without the log's prefix.
+  case "$line" in *ValueError:*) line="ValueError:${line#*ValueError:}" ;; *) line="Free memory on device${line#*Free memory on device}" ;; esac
+  printf 'engine on %s: %s\n' "$where" "$line" >&2
+  printf '  The engine measures free GPU memory when it starts, and that reading varies from one start to the next, so a retry can pass.\n' >&2
+}
+
 # controller_holds_pinned_image — whether this machine's Docker holds the
 # spec's pinned image (IMAGE) as the image check verifies it: its identity,
 # the pinned repository@digest reference and arm64. Only then can image stage

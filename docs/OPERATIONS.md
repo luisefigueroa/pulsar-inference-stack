@@ -1556,7 +1556,15 @@ every container it launched gone on every node the record names, it retires
 that record and says so in one line. When a node could not be checked, a
 container remains, or the record was there before this start, the record is
 kept, and one line says so, why, and names `./pulsar stop <spec-id>`, which
-clears it. An interrupted start removes nothing and keeps its record. The same blockers appear in `start --json`
+clears it. An interrupted start removes nothing and keeps its record.
+
+When a failed rank's container log, read before the clean-up removes the
+container, holds the engine's own refusal for free GPU memory at its startup
+(vLLM's `Free memory on device … on startup is less than desired GPU memory
+utilization`), Start quotes that line once with the node and rank and says
+that the engine measures free GPU memory when it starts, that the reading
+varies from one start to the next, and that a retry can pass. Start's own
+memory check before launch is separate and unchanged. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
 guard is refused by ordinary start before any check as `guard_unsupported`.
 Use the separately owned [bounded guarded serving](GUARDED_SERVING.md) path

@@ -145,6 +145,32 @@ class DefaultOrder(Scenario):
                       self.lines(result, spec))
         self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 0))
 
+    def test_the_engines_memory_refusal_is_quoted_from_the_failed_ranks_log(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        refusal = ("ValueError: Free memory on device cuda:0 (86.66/121.69 GiB) on startup is less than desired "
+                   "GPU memory utilization (0.75, 91.27 GiB)")
+        # Rank 0's engine refuses at its startup and its container exits.
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_HEALTHY='none', SERVICE_RUN_EXITS=c.node_id(0),
+                         SERVICE_LOG_TEXT=f'(EngineCore_DP0 pid=7) {refusal}', SERVICE_LOG_NODES=c.node_id(0))
+        self.assertEqual(result.returncode, 1)
+        lines = self.lines(result, spec)
+        self.assertIn('FAILED container_exited: fixture-ring-dorado (rank 0): the service container exited before '
+                      "it became healthy. Note: The cluster's containers were removed; the logs are shown above.",
+                      lines)
+        self.assertIn(f'engine on fixture-ring-dorado (rank 0): {refusal}', lines)
+        self.assertIn('The engine measures free GPU memory when it starts, and that reading varies from one start '
+                      'to the next, so a retry can pass.', lines)
+        # The log was read before the clean-up removed the container, once.
+        trace = self.trace()
+        self.assertLess(trace.index('node-0 docker logs'), trace.index('node-0 docker rm by id'))
+        self.assertEqual(trace.count('node-0 docker logs'), 1)
+        # A failure whose log holds no such line says nothing of it.
+        c.forget_calls()
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_HEALTHY='none', SERVICE_RUN_EXITS=c.node_id(0))
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('engine on', result.stdout + result.stderr)
+
     def test_a_health_timeout_removes_both_ranks_and_retires_the_record(self):
         c = self.cluster
         spec, _ = c.spec(2)

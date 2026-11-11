@@ -134,7 +134,8 @@ case "$url" in
   *) exit 2 ;;
 esac
 '''
-DOCKER = '#!/usr/bin/env bash\necho "$*" >>"$FIXTURE_DIR/docker-calls"\n[ "$1" != logs ] || echo "fixture engine log line"\n'
+DOCKER = ('#!/usr/bin/env bash\necho "$*" >>"$FIXTURE_DIR/docker-calls"\n'
+          '[ "$1" != logs ] || echo "${FIXTURE_LOG:-fixture engine log line}"\n')
 
 
 # Blockers that no ./pulsar command resolves; their note says why. Adding a
@@ -346,7 +347,8 @@ class StartScenarios(unittest.TestCase):
         # Start reads the saved service records (none here) for one service per spec.
         shutil.copyfile(ROOT / "scripts/service_state.py", self.root / "scripts/service_state.py")
         (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
-                                                   + lib_function("launch_plan_service_id"))
+                                                   + lib_function("launch_plan_service_id")
+                                                   + lib_function("engine_memory_refusal"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
                            ("scripts/check-memory.sh", MEMORY),
                            # Staging records the arguments it was given.
@@ -725,6 +727,19 @@ class StartScenarios(unittest.TestCase):
                 self.assertEqual(codes, [code])
                 self.assertEqual((self.records[0]["fix"], self.records[0]["service_id"]), (fix, SERVICE_ID))
                 self.assertIn(f"FAILED {code}: spark-1: ", result.stdout)
+
+    def test_an_engine_memory_refusal_in_the_log_is_quoted_and_explained(self):
+        refusal = ("ValueError: Free memory on device cuda:0 (86.66/121.69 GiB) on startup is less than desired "
+                   "GPU memory utilization (0.75, 91.27 GiB)")
+        result, codes = self.start(image="ok", health="fail", container="exited",
+                                   log=f"(EngineCore pid=1) ERROR 01-01 00:00:00 [core.py:1] {refusal}")
+        self.assertEqual(codes, ["container_exited"])
+        self.assertIn(f"engine on fixture-host: {refusal}\n  The engine measures free GPU memory when it starts, and "
+                      "that reading varies from one start to the next, so a retry can pass.\n", result.stderr)
+        # Other logs say nothing more.
+        self.reset()
+        result, _ = self.start(image="ok", health="fail", container="exited")
+        self.assertNotIn("engine on", result.stderr)
 
     # TUI-31: the wait reports elapsed time, the check count and the container state.
     def test_captured_wait_progress_is_plain_lines_on_stderr(self):
