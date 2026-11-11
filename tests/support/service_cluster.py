@@ -674,14 +674,14 @@ class ServiceCluster:
         from model_library.catalog import entries as catalog_entries
         from model_library.node_names import NodeNames
         from scripts import cluster_status, services_page
-        from scripts import topology_manifest as tm
         result = self.pulsar('inventory', '--json')
         if result.returncode != 0:
             raise AssertionError(result.stderr)
         inventory = json.loads(result.stdout)
         entries = catalog_entries(self.root, self.store)
+        # The saved shape: a ring, or a full mesh for ServiceCluster(mesh=N).
         names = NodeNames({node['node_id']: node['hostname'] for node in self.nodes},
-                          [node['node_id'] for node in self.nodes], tm.RING_CLASS)
+                          [node['node_id'] for node in self.nodes], self.topology['validation']['class'])
         page = services_page.Page(inventory, entries, names=names, topology=self.topology)
         environ = {'CLUSTER_TOPOLOGY_FILE': str(self.fixture.path),
                    'PULSAR_CLUSTER_CHANGES_FILE': str(self.root / 'state/cluster-changes.json'),
