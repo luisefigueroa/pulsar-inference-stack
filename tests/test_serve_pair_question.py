@@ -205,6 +205,63 @@ class PairQuestion(RingHarness):
         self.assertEqual(self.ran(), [])
 
 
+def card_inventory(*services):
+    """A ring inventory as Running services… reads it; each service is (spec_id, saved positions)."""
+    from tests.test_services_menu import service
+    document = ring_inventory()
+    for index, node in document["nodes"].items():
+        node.update(control_ip=f"192.0.2.{30 + int(index[1:])}", local=index == "k0")
+    document["services"] = [service(spec, keys=[f"k{position}" for position in positions])
+                            for spec, positions in services]
+    return document
+
+
+class RunningServices(RingHarness):
+    """Restart and Switch from Running services…, through the real serve-menu.sh."""
+    MENUS = ("services-menu.sh", "serve-menu.sh", "cluster-review.sh", "connect_card.py")
+    MENU = "services-menu.sh"
+
+    def setUp(self):
+        super().setUp()
+        self.entries(recipe(2), recipe(2, spec_id=OTHER, model_id="org/other"))
+        self.inventory(card_inventory((SPEC, [2, 3])))
+        (self.fixtures / "stop.inventory").write_text(json.dumps(card_inventory()))
+
+    def test_restart_starts_it_again_on_the_same_pair_in_the_same_order(self):
+        result = self.run_menu(["Restart…", "Go ahead", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Restart…", self.menus()[0])
+        self.assertEqual(self.menus()[1], ["Restart a service", "Cancel", "Go ahead", "Details"])
+        text = " ".join(result.stdout.split())
+        self.assertIn(f"Restart org/model on {HOSTS[2]} and {HOSTS[3]}", text)
+        self.assertIn(f"1. Stop org/model on {HOSTS[2]} and {HOSTS[3]}. Its model files are kept.", text)
+        # No pair question: Restart uses the nodes it runs on.
+        self.assertNotIn(QUESTION, " ".join(" ".join(menu) for menu in self.menus()))
+        self.assertEqual(self.ran(), [f"stop {SPEC}", f"start {SPEC} --placement-nodes {HOSTS[2]},{HOSTS[3]}"])
+        self.assertIn(f"Same as: ./pulsar stop abababababab ./pulsar start abababababab --placement-nodes "
+                      f"{HOSTS[2]},{HOSTS[3]}", text)
+        self.assert_no_unapproved_authority()
+        self.assert_plain_choices()
+
+    def test_switch_stops_it_then_asks_its_own_question_for_the_new_recipe(self):
+        self.fixture("prepare-plan", envelope(prepare_plan((IDS[0], "reuse"), (IDS[3], "copy"))))
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (3, "ok"))))
+        result = self.run_menu(["Switch to another model…", "1", "1", "Go ahead", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[1][0], "Switch to another model")
+        self.assertEqual(self.menus()[2][0], "Which two neighbouring machines should serve org/other?")
+        # Each pair says where the service being switched from runs.
+        self.assertEqual(self.menus()[2][-3:], [f"{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}; org/model",
+                                                f"  is running on {HOSTS[2]} and {HOSTS[3]}", "Back"])
+        text = " ".join(result.stdout.split())
+        self.assertIn(f"Stop org/model on {HOSTS[2]} and {HOSTS[3]}; you are switching from it.", text)
+        placement = f"--placement-nodes {HOSTS[0]},{HOSTS[3]}"
+        self.assertEqual(self.ran(), [f"model prepare {OTHER} {placement} --yes", f"stop {SPEC}",
+                                      f"start {OTHER} {placement}"])
+        self.assert_no_unapproved_authority()
+        self.assert_plain_choices()
+
+
 def names_of(topology):
     from model_library.node_names import NodeNames
     nodes = sorted(topology["nodes"], key=lambda node: node["rank"])
