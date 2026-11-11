@@ -73,7 +73,8 @@ for row in store.records('services'):
         hosts=', '.join(rank.get('hostname') or rank['node_id'] for rank in plan['ranks'])
         # '-' marks a plan without a guarded run; tab-separated read would drop an empty field.
         print('\t'.join([plan['plan_id'], plan.get('guard_run_id') or '-', plan['selected_spec_id'], hosts,
-                         'nondefault' if nondefault else 'default']))
+                         'nondefault' if nondefault else 'default',
+                         'earlier' if plan['topology_id']!=topology else 'current']))
 PY_STOP
 }
 # no_node_selection SPEC HOSTS RUN: --node cannot select one node of a service
@@ -90,13 +91,15 @@ no_node_selection() {
 # the services stop drives come from a second read once the lock is held.
 recorded_trials=$(recorded_rows) || die "the saved service records cannot be read; nothing was stopped"
 if [ -n "$recorded_trials" ]; then
-  while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement; do
+  while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement trial_cluster; do
     trial_ref=$(spec_reference "$trial_spec")
     if [ "$trial_run" = - ]; then
       # An ordinary multi-node service recorded off the default node order:
-      # stop --all stops it in cluster/stop-cluster.sh before its sweep.
+      # stop --all stops it in cluster/stop-cluster.sh before its sweep. A
+      # record of an earlier saved cluster is cleared or reported before
+      # stop SPEC --node runs its label stop.
       [ "$TARGET" != --all ] || continue
-      [ -z "$NODE_SELECTOR" ] || no_node_selection "$trial_spec" "$trial_hosts" -
+      [ -z "$NODE_SELECTOR" ] || [ "$trial_cluster" = earlier ] || no_node_selection "$trial_spec" "$trial_hosts" -
       continue
     fi
     # A running guarded controller holds the lifecycle lock for its whole life, on
@@ -109,6 +112,9 @@ if [ -n "$recorded_trials" ]; then
     fi
     # On the default placement ordinary stop already proves ownership by its labels.
     [ "$trial_placement" = nondefault ] || continue
+    # A trial of an earlier saved cluster: stop --all clears or reports its
+    # record in its own pass, and stop SPEC --node before its label stop.
+    [ "$trial_cluster" != earlier ] || continue
     if [ "$TARGET" = --all ]; then
       error_line "stop --all does not stop guarded trial ${trial_run:0:12} (spec ${trial_spec:0:12}) on $trial_hosts; nothing was stopped. Next: ./pulsar stop $trial_ref after its controller exits, then rerun stop --all"
       exit 1
@@ -130,11 +136,11 @@ load_cluster_topology || die "confirmed topology is required for safe stop"
 # on its recorded nodes too, never left to the label sweep.
 recorded_plans=""
 recorded_trials=$(recorded_rows) || die "the saved service records cannot be read; nothing was stopped"
-while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement; do
+while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement trial_cluster; do
   [ -n "$trial_plan" ] || continue
   # A guarded trial on the default placement is stopped by its labels.
   [ "$trial_run" = - ] || [ "$trial_placement" = nondefault ] || continue
-  [ -z "$NODE_SELECTOR" ] || no_node_selection "$trial_spec" "$trial_hosts" "$trial_run"
+  [ -z "$NODE_SELECTOR" ] || [ "$trial_cluster" = earlier ] || no_node_selection "$trial_spec" "$trial_hosts" "$trial_run"
   recorded_plans+="$trial_plan"$'\n'
 done <<<"$recorded_trials"
 # The exclusive lock proves no guarded controller is running; stop each such
@@ -146,9 +152,20 @@ if [ -n "$recorded_plans" ]; then
     list_managed_container_ids_on_node "$index" >/dev/null || { stop_unobservable_error "$index" "$TARGET"; exit 1; }
   done
 fi
+earlier_left=0
 while IFS= read -r trial_plan; do
   [ -n "$trial_plan" ] || continue
-  stop_recorded_service "$TARGET" "$trial_plan"
+  if [ -n "$NODE_SELECTOR" ]; then
+    # Only records of an earlier saved cluster reach here with --node: each is
+    # cleared or reported, and the label stop on that node runs either way.
+    rc=0
+    stop_recorded_service "$TARGET" "$trial_plan" || rc=$?
+    case "$rc" in 0) ;; 3) earlier_left=1 ;; *) exit "$rc" ;; esac
+    continue
+  fi
+  # Without --node, a container left there ends the stop (status 1), as any
+  # other refusal of a recorded service does.
+  stop_recorded_service "$TARGET" "$trial_plan" || exit 1
 done <<<"$recorded_plans"
 # Any other container of the spec, judged by its labels.
 stop_named_service_by_labels "$TARGET" "$NODE_SELECTOR"
@@ -162,3 +179,5 @@ if [ "${STOP_NAMED_NOTHING_FOUND:-0}" = 1 ] && [ "${RECORDED_SERVICE_STOPPED:-0}
 else
   log "Stopped. Model files, pins, archives and experiment evidence are retained."
 fi
+# A container of an earlier saved cluster was left, as said above.
+[ "$earlier_left" = 0 ] || exit 1

@@ -37,28 +37,37 @@ if [ "$ARG" = --all ]; then
 
   # First each ordinary service recorded off the default node order, on the
   # nodes its record names and with the same proofs as stop SPEC. Guarded
-  # trials keep their own path: scripts/down.sh refuses --all while one is
-  # recorded off the default order.
+  # trials of this saved cluster keep their own path: scripts/down.sh refuses
+  # --all while one is recorded off the default order. Each multi-node record
+  # of an earlier saved cluster, ordinary or a guarded trial's, is cleared when
+  # none of its containers is on any node of this cluster; a container still
+  # there is reported, the record is kept, and the sweep below judges that
+  # container by its labels.
   if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
 import sys
 from model_library.state import Store
 from scripts.service_state import off_default_order, recorded_bindings
 for item in recorded_bindings(Store(sys.argv[1])):
-    # Also an ordinary multi-node record of an earlier saved cluster.
     earlier = len(item['node_ids']) > 1 and item['topology_id'] != sys.argv[2]
-    if not item['guarded'] and (off_default_order(item['node_ids'], sys.argv[3:]) or earlier):
-        print(item['selected_spec_id'], item['plan_id'], sep='\t')
+    if earlier or (not item['guarded'] and off_default_order(item['node_ids'], sys.argv[3:])):
+        print(item['selected_spec_id'], item['plan_id'], 'earlier' if earlier else 'current', sep='\t')
 PY_RECORDED
   ); then
     echo "error: stop --all did not run: the saved service records cannot be read, so no container was removed. Next: ./pulsar inventory" >&2
     exit 1
   fi
-  while IFS=$'\t' read -r recorded_spec recorded_plan; do
+  earlier_left=0
+  while IFS=$'\t' read -r recorded_spec recorded_plan recorded_cluster; do
     [ -n "$recorded_plan" ] || continue
-    if ! stop_recorded_service "$recorded_spec" "$recorded_plan"; then
-      echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop $(spec_reference "$recorded_spec"), which says what it needs, then rerun ./pulsar stop --all --yes" >&2
-      exit 1
+    step=0
+    stop_recorded_service "$recorded_spec" "$recorded_plan" "./pulsar stop --all --yes" || step=$?
+    [ "$step" != 0 ] || continue
+    if [ "$recorded_cluster" = earlier ] && [ "$step" = 3 ]; then
+      earlier_left=1
+      continue
     fi
+    echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop $(spec_reference "$recorded_spec"), which says what it needs, then rerun ./pulsar stop --all --yes" >&2
+    exit 1
   done <<<"$recorded"
 
   rc=0
@@ -75,6 +84,8 @@ PY_RECORDED
   case "$rc" in
     0)
       retire_stopped_service_indexes --all
+      # A container of an earlier saved cluster was left, as said above.
+      [ "$earlier_left" = 0 ] || exit 1
       log "clean — no stack-managed containers remain"
       exit 0
       ;;

@@ -2788,13 +2788,16 @@ print(str((json.load(sys.stdin).get("labels") or {}).get("io.pulsar.gb10.launch-
 # controller is running). Its containers' labels name that cluster, so Pulsar
 # cannot prove they are its own and never removes them. Every node of the
 # current cluster is asked for a container named NAME with that launch plan
-# (and that guard-run): none anywhere retires the record; one found refuses
-# and says how to clear it; a node that cannot be observed changes nothing.
+# (and that guard-run): none anywhere retires the record; one found refuses,
+# says how to clear it and returns 3; a node that cannot be observed changes
+# nothing and returns 1. RERUN is the command the operator reruns after
+# removing a container found (default: ./pulsar stop SPEC).
 stop_earlier_cluster_record() {
-  local spec="$1" plan_id="$2" name="$3" run="${4:--}" index ids id prefix ref filters subject
+  local spec="$1" plan_id="$2" name="$3" run="${4:--}" rerun="${5:-}" index ids id prefix ref filters subject
   local -a found=()
   prefix="${PULSAR_MANAGED_LABEL%managed}"
   ref=$(spec_reference "$spec")
+  [ -n "$rerun" ] || rerun="./pulsar stop $ref"
   filters="name=^/$name\$|label=${prefix}launch-plan=$plan_id"
   subject="spec ${spec:0:12}'s service"
   if [ "$run" != - ]; then
@@ -2813,8 +2816,8 @@ stop_earlier_cluster_record() {
     done <<<"$ids"
   done
   if [ "${#found[@]}" -gt 0 ]; then
-    error_line "$subject was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun ./pulsar stop $ref"
-    return 1
+    error_line "$subject was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun $rerun"
+    return 3
   fi
   python3 -c '
 import sys
@@ -2855,9 +2858,11 @@ retire_plan(store, store.get("service-plans", sys.argv[2]))
 # ownership test removes nothing. Removal is by container ID; absence is then
 # confirmed on every recorded node, and only this plan's service record is
 # retired. Sets RECORDED_SERVICE_STOPPED=1 when it removed a container, and
-# also ORDINARY_RECORDED_STOPPED=1 when that was an ordinary service.
+# also ORDINARY_RECORDED_STOPPED=1 when that was an ordinary service. A record
+# of an earlier saved cluster goes to stop_earlier_cluster_record, with RERUN
+# (the third argument) and its return status.
 stop_recorded_service() {
-  local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rows prefix
+  local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rerun="${3:-}" rows prefix
   local rank label node_id host name run plan spec_label topology index i ids removed=0 where trial_run=""
   local trial_topology="" changed subject meta probe verdict
   local -a indexes=() hosts=() filters_of=() absent_of=() found=() node_ids=() left=()
@@ -2877,7 +2882,7 @@ for row in plan["ranks"]:
     || { error_line "cannot read the saved launch plan of spec ${spec:0:12}; nothing was removed"; return 1; }
   IFS=$'\t' read -r _ _ _ _ name run _ _ topology <<<"${rows%%$'\n'*}"
   if [ "$CLUSTER_TOPOLOGY_ID" != "$topology" ]; then
-    stop_earlier_cluster_record "$spec" "$plan_id" "$name" "$run"
+    stop_earlier_cluster_record "$spec" "$plan_id" "$name" "$run" "$rerun"
     return
   fi
   while IFS=$'\t' read -r rank label node_id host name run plan spec_label topology; do

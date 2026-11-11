@@ -688,12 +688,15 @@ class RecordOfAnEarlierCluster(Cluster):
                       f'{prefix}', result.stderr)
         self.assertEqual(c.removed(), [])
         self.assertTrue(c.recorded(self.plan))
+        # stop --all reports it, keeps the record and goes on to its sweep, which
+        # refuses that container by its labels (tests/test_stop_review_fixes.py).
         result = c.pulsar('stop', '--all', '--yes')
         self.assertEqual(result.returncode, 1)
-        self.assertIn("error: stop --all stopped before removing the other services' containers, because spec "
-                      f"{prefix}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop {prefix}, "
-                      'which says what it needs, then rerun ./pulsar stop --all --yes', result.stderr)
+        self.assertIn(f"then rerun ./pulsar stop --all --yes", result.stderr)
+        self.assertIn(f"warning: refusing managed candidate id={first['id'][:12]} on ring-bravo: does not match its "
+                      'saved service record: the record was saved under another saved cluster', result.stderr)
         self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(self.plan))
 
     def test_a_node_that_does_not_answer_changes_nothing(self):
         c = self.cluster
@@ -789,22 +792,20 @@ class GuardedRecordOfAnEarlierCluster(Cluster):
         self.assertEqual(c.trace(), [])
         self.assertTrue(c.recorded(self.plan))
 
-    def test_stop_all_keeps_refusing_and_names_stop(self):
-        # On other nodes, and on the nodes of the default order too: a record of
-        # an earlier saved cluster is off the default order of this one.
+    def test_stop_all_clears_it_in_its_own_pass(self):
+        # On other nodes, and on the nodes of the default order too: stop --all
+        # retires a trial record of an earlier saved cluster with no container
+        # left, instead of refusing as it does for a trial of this one.
         c = self.cluster
         for positions in ([2, 3], [0, 1]):
             with self.subTest(positions=positions):
-                c.store.remove('services', self.plan['service_id'])
                 self.plan = c.plan(self.spec, self.manifest, positions, topology_id='e' * 64)
                 result = c.pulsar('stop', '--all', '--yes')
-                self.assertEqual(result.returncode, 1)
-                self.assertIn(f"stop --all does not stop guarded trial {self.plan['guard_run_id'][:12]} (spec "
-                              f"{self.spec['spec_id'][:12]}) on {c.hostname(positions[0])}, "
-                              f"{c.hostname(positions[1])}; nothing was stopped. Next: ./pulsar stop "
-                              f"{self.spec['spec_id']} after its controller exits, then rerun stop --all",
-                              result.stderr)
-                self.assertTrue(c.recorded(self.plan))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f"Guarded trial {self.plan['guard_run_id'][:12]} of spec {self.spec['spec_id'][:12]} "
+                              'was recorded under an earlier saved cluster and has no container on any node of this '
+                              'one; retired its stale service record.', ' '.join(result.stdout.split()))
+                self.assertFalse(c.recorded(self.plan))
                 self.assertEqual(c.removed(), [])
 
 
