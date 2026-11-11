@@ -418,8 +418,15 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
                'release-binding': 'release this prepared copy; its files stay (the home, or a shared copy)',
                'remove-copy': 'delete this prepared copy and its files'}
     for item in document.get('actions') or []:
+        words = actions.get(item.get('action'), item.get('action', 'unknown action'))
+        previous = item.get('previous') if isinstance(item.get('previous'), dict) else {}
+        if item.get('action') == 'rebind' and previous.get('topology_id') \
+                and previous.get('topology_id') == document.get('topology_id'):
+            # Same saved cluster: only the role order of its nodes changed.
+            words = ('take over verified files prepared for these nodes in another role order; '
+                     'nothing is copied or deleted')
         out.field(f'Rank {item.get("rank", "?")}',
-                  f'{names(item["node_id"]) if item.get("node_id") else "unknown node"}: {actions.get(item.get("action"), item.get("action", "unknown action"))}')
+                  f'{names(item["node_id"]) if item.get("node_id") else "unknown node"}: {words}')
         for line in copy_route_lines({'passes_through': item.get('passes_through')}, names):
             out.field('Route', line, indent=2, label_width=8)
     views = document.get('views')

@@ -1566,13 +1566,16 @@ def plan_effect(action: str, plan: dict) -> dict:
                   for index, member in enumerate(members) for step in member.get("actions") or []
                   if step.get("action") == "copy"}
         # A takeover (rebind) copies nothing: it records files made before the
-        # cluster's membership changed under the current membership.
+        # cluster's membership changed, or for the same nodes in another role
+        # order, under the current membership and order.
         taken = sum(1 for step in steps if step.get("action") == "rebind")
+        reordered = sum(1 for member in members for step in member.get("actions") or []
+                        if step.get("action") == "rebind" and rebind_reason(step, member) == "order")
         # An adoption (--adopt-unrecorded) copies nothing either: it records a
         # folder no record named once every file matches (D7).
         adopted = sum(1 for step in steps if step.get("action") == "adopt")
         return {"copied": len(copies), "reused": len(steps) - len(copies) - taken - adopted, "taken_over": taken,
-                "adopted": adopted, "nothing": bool(steps) and not copies}
+                "taken_over_reordered": reordered, "adopted": adopted, "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -1602,13 +1605,34 @@ def plan_effect(action: str, plan: dict) -> dict:
     return {"nothing": False}
 
 
-def _taken_over(count: int) -> str:
+def rebind_reason(step: dict, plan: dict) -> str:
+    """Why a takeover (rebind) STEP of preparation PLAN takes over its copy:
+    "membership" when the copy was made under another saved cluster, "order"
+    when it was made under this one for another role order of its nodes."""
+    previous = step.get("previous") if isinstance(step.get("previous"), dict) else {}
+    same = previous.get("topology_id") and previous.get("topology_id") == plan.get("topology_id")
+    return "order" if same else "membership"
+
+
+def taken_over_reason(count: int, reordered: int = 0) -> str:
+    """What COUNT taken-over copies were made under, REORDERED of them for
+    another role order of the same nodes: the words after "N copies"."""
+    membership = "made before the cluster's membership changed"
+    order = "prepared for these nodes in another role order"
+    if not reordered:
+        return membership
+    if reordered >= count:
+        return order
+    return f"({count - reordered} {membership}, {reordered} {order})"
+
+
+def _taken_over(count: int, reordered: int = 0) -> str:
     """The sentence for Prepare's takeovers: copies made before the cluster's
-    membership changed, whose files still verify, recorded for the current
-    membership without copying or deleting anything."""
+    membership changed, or for the same nodes in another role order, whose
+    files still verify, recorded for the current membership and order without
+    copying or deleting anything."""
     copies = "copy" if count == 1 else "copies"
-    return (f"It takes over {count} {copies} made before the cluster's membership changed; "
-            "nothing is copied or deleted.")
+    return f"It takes over {count} {copies} {taken_over_reason(count, reordered)}; nothing is copied or deleted."
 
 
 def _adopted(count: int) -> str:
@@ -1735,7 +1759,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
             lines = [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
                      "Prepare verifies the files and records them."]
             if effect["taken_over"]:
-                lines.append(_taken_over(effect["taken_over"]))
+                lines.append(_taken_over(effect["taken_over"], effect["taken_over_reordered"]))
             if effect["adopted"]:
                 lines.append(_adopted(effect["adopted"]))
             return lines
@@ -1869,7 +1893,7 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         steps = _plan_actions(plan)
         effect = plan_effect(action, plan)
         where = _node_list([str(step["node_id"]) for step in steps if step.get("node_id")], names) or place or "its nodes"
-        taken = (f" {_taken_over(effect['taken_over'])}" if effect["taken_over"] else "")
+        taken = (f" {_taken_over(effect['taken_over'], effect['taken_over_reordered'])}" if effect["taken_over"] else "")
         if effect["nothing"]:
             return (f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files "
                     f"already there.{taken}")

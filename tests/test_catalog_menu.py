@@ -2124,7 +2124,8 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
             "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": False})
 
     def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
@@ -2148,7 +2149,8 @@ class PlanSummary(unittest.TestCase):
     def test_prepare_takes_over_copies_made_before_the_membership_changed(self):
         # D13: a takeover (rebind) copies nothing and reads as taking over.
         plan = preparation(("n0", "rebind"), ("n1", "rebind"))
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": True})
         self.assertEqual(self.summary("prepare", plan), [
             "Nothing to copy: the snapshot is already on spark-1, spark-2. "
@@ -2163,6 +2165,17 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES),
                          "Prepare org/model on spark-1, spark-2? 1 new copy, 0 reused, 1 taken over. It takes over "
                          "1 copy made before the cluster's membership changed; nothing is copied or deleted.")
+        # Under the same saved cluster only the role order changed, and it says so.
+        reordered = preparation(("n0", "rebind"), ("n1", "rebind"), topology_id="d" * 64)
+        reordered["actions"][0]["previous"] = {"topology_id": "d" * 64, "rank": 1}
+        reordered["actions"][1]["previous"] = {"topology_id": "d" * 64, "rank": 0}
+        self.assertEqual(self.summary("prepare", reordered)[1],
+                         "It takes over 2 copies prepared for these nodes in another role order; nothing is copied "
+                         "or deleted.")
+        reordered["actions"][1]["previous"] = {"topology_id": "e" * 64, "rank": 0}
+        self.assertEqual(self.summary("prepare", reordered)[1],
+                         "It takes over 2 copies (1 made before the cluster's membership changed, 1 prepared for "
+                         "these nodes in another role order); nothing is copied or deleted.")
         # The full preview names the action, and the estimate counts it as existing files.
         from model_library.render import preparation_estimate
         _, nodes = preparation_estimate([mixed])
@@ -2172,7 +2185,8 @@ class PlanSummary(unittest.TestCase):
         plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": False})
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",

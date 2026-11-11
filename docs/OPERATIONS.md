@@ -478,7 +478,10 @@ until Prepare records them again. Prepare takes over a copy made before the
 membership changed when it is on a node that still serves the spec and its
 files still verify: the plan shows the action `rebind` ("take over verified
 files prepared before the cluster's membership changed"), and only the records
-change, on the node and on this controller. Nothing is copied or deleted, the
+change, on the node and on this controller. Prepare takes over a copy the same
+way when only the role order changed: the same nodes were prepared under the
+same saved cluster in another order. The plan and Prepare's progress then say
+"prepared for these nodes in another role order" instead. Nothing is copied or deleted, the
 copy needs no free space, and a pin stays. A copy whose files no longer verify,
 or that a container still mounts, is reported as before (`changed-copy`,
 `pinned` or `container-reference`), to be purged before it is prepared again.

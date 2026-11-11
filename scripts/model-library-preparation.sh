@@ -131,7 +131,14 @@ prepare_snapshot() {
       adopt) ;;
       reuse) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): reusing verified files" ;;
       bind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): binding to existing verified files" ;;
-      rebind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed" ;;
+      rebind)
+        # The same saved cluster: only the role order of these nodes changed.
+        previous=$(printf '%s' "$plan" | python3 -c 'import json,sys; print((json.load(sys.stdin)["actions"][int(sys.argv[1])].get("previous") or {}).get("topology_id") or "")' "$slot")
+        if [ "$previous" = "$CLUSTER_TOPOLOGY_ID" ]; then
+          phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared for these nodes in another role order"
+        else
+          phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed"
+        fi ;;
       home-view) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): using files from the home" ;;
       *) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): copying and verifying files" ;;
     esac

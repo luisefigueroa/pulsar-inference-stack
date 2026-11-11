@@ -31,7 +31,13 @@ class PreparedOrder(unittest.TestCase):
         plan = json.loads(f.run('prepare', '--placement-nodes', 'node-3,node-2', '--plan', spec=True).stdout)
         self.assertEqual([(a['node_id'], a['action'], a['rank']) for a in plan['actions']],
                          [('node-3', 'rebind', 0), ('node-2', 'rebind', 1)])
-        self.assertEqual(f.run('prepare', '--placement-nodes', 'node-3,node-2', '--yes', spec=True).returncode, 0)
+        # The saved cluster is the same; only the role order changed, and Prepare says so.
+        self.assertEqual({a['previous']['topology_id'] for a in plan['actions']}, {plan['topology_id']})
+        result = f.run('prepare', '--placement-nodes', 'node-3,node-2', '--yes', spec=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('taking over verified files prepared for these nodes in another role order',
+                      result.stdout + result.stderr)
+        self.assertNotIn('membership changed', result.stdout + result.stderr)
         self.assertEqual(f.run('check', '--placement-nodes', 'node-3,node-2', spec=True).returncode, 0)
 
     def test_prepare_again_is_blocked_while_a_container_mounts_the_copy(self):

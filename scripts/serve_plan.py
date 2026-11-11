@@ -60,7 +60,8 @@ from model_library.catalog_menu import (ARCHIVE_LOCATION, SERVICE_STATES, CARD_N
                                         _plan_document, clean, copy_route_sentences, distinguishing_facts,
                                         found_files, members,
                                         node_count, plan_blocked, plan_effect, plan_summary, recorded_node,
-                                        services_in_the_way, short_model_names, start_unsupported)
+                                        services_in_the_way, short_model_names, start_unsupported,
+                                        taken_over_reason)
 from model_library.node_names import NodeNames  # noqa: E402
 from model_library.render import short_size  # noqa: E402
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, terminal_width  # noqa: E402
@@ -731,8 +732,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                     blocked.append(line.removeprefix("Blocked: "))
             step["facts"] = {"copy_to": copied}
             taken = effect["taken_over"]
-            takeover = (f" It takes over {_count(taken, 'copy', 'copies')} made before the cluster's membership "
-                        "changed, whose files still verify; they are not copied again." if taken else "")
+            takeover = (f" It takes over {_count(taken, 'copy', 'copies')} "
+                        f"{taken_over_reason(taken, effect['taken_over_reordered'])}, whose files still verify; "
+                        "they are not copied again." if taken else "")
             if copied:
                 # A copy to a node that shares no cable with this one says what it passes through.
                 route = "".join(" " + line for line in copy_route_sentences(document, names))
