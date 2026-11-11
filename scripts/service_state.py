@@ -14,11 +14,33 @@ from scripts.container_runtime import validate_plan, PLAN_LABEL, PREFIX, SELECTE
 from release_spec.serving import load_json
 
 
+class RecordedElsewhere(ValueError):
+    """Saving an ordinary multi-node record while another service of the same
+    spec is recorded: a spec runs as one service. HOSTS lists each other
+    service's nodes, in role order."""
+
+    def __init__(self, hosts):
+        super().__init__('a service of this spec is recorded on other nodes')
+        self.hosts = hosts
+
+
 def save(store, plan):
     # Callers may share the lifecycle lock; serialize index compare/write/remove
     # separately, without upgrading the lifecycle lock held by a foreground run.
     with store.lock(name='services.lock'):
         validate_plan(plan)
+        # One service per spec, decided here, under the lock every save and
+        # retire takes, so two Starts of one spec at once cannot both record
+        # one. A guarded trial and a one-node service keep their own rules.
+        if not plan.get('guard_run_id') and len(plan['ranks']) > 1:
+            others = []
+            for row in store.records('services'):
+                if row['selected_spec_id'] != plan['selected_spec_id'] or row['service_id'] == plan['service_id']:
+                    continue
+                other = store.get('service-plans', row['plan_id']) or {}
+                others.append([rank.get('hostname') or rank.get('node_id') for rank in other.get('ranks') or []])
+            if others:
+                raise RecordedElsewhere(others)
         existing = store.get('service-plans', plan['plan_id'])
         if existing is not None and existing != plan:
             raise ValueError('stored launch plan differs from its content digest')
@@ -241,7 +263,14 @@ def main():
     try:
         store=Store(args.state_root)
         if args.command=='save':
-            save(store,load_json(args.plan))
+            try:
+                save(store,load_json(args.plan))
+            except RecordedElsewhere as exc:
+                # Exit 3, one line per other service of the spec: its nodes, comma-separated.
+                for hosts in exc.hosts:
+                    print(', '.join(str(host) for host in hosts))
+                print(f'error: {exc}',file=sys.stderr)
+                return 3
             return 0
         if args.command=='ownership':
             # The container's ownership inspect JSON on stdin: one line out,

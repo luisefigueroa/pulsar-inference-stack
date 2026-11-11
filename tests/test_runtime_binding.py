@@ -45,7 +45,12 @@ class ObservationShell(unittest.TestCase):
                         row['hub_path'] = f'/var/tmp/selected-node-{index}'
                         row['path'] = row['hub_path']+'/snapshots/'+member['revision']
                 plan = container_runtime.build_plan(spec, spec['spec_id'], facts, prepared)
-                save(Store(root/'library'), plan)
+                # The service runs on the selection, not on the fixture's default
+                # nodes: a spec is recorded as one service.
+                library = Store(root/'library')
+                for row in library.records('services'):
+                    library.remove('services', row['service_id'])
+                save(library, plan)
                 for slot in range(nodes):
                     expected = container_runtime.rank_spec(plan, slot)
                     ref = spec['source']['image_repository']+'@'+spec['recipe']['image_digest']

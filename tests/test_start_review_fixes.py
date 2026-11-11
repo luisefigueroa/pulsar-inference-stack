@@ -100,5 +100,70 @@ class ThePlanCheckFailsClosed(Cluster):
         self.assertEqual(c.calls()['runs'], [])
 
 
+class OneServicePerSpecWhereTheRecordIsSaved(Cluster):
+    """service_state.save refuses an ordinary multi-node record while another
+    service of the same spec is recorded, under the lock every save takes."""
+
+    def test_two_saves_for_different_nodes(self):
+        from scripts.service_state import RecordedElsewhere, save
+        c = self.cluster
+        spec, manifest = c.spec(3)
+        first = c.plan(spec, manifest, [1, 2, 3], record=False)
+        second = c.plan(spec, manifest, [2, 0, 3], record=False)
+        save(c.store, first)
+        with self.assertRaises(RecordedElsewhere) as refused:
+            save(c.store, second)
+        self.assertEqual(refused.exception.hosts, [[c.hostname(1), c.hostname(2), c.hostname(3)]])
+        self.assertTrue(c.recorded(first))
+        self.assertIsNone(c.store.get('services', second['service_id']))
+
+    def test_a_re_save_of_the_same_service_after_a_failed_start(self):
+        from scripts.service_state import save
+        from support.service_cluster import replanned
+        c = self.cluster
+        spec, manifest = c.spec(3)
+        plan = c.plan(spec, manifest, [2, 0, 3], record=False)
+        save(c.store, plan)
+        again = replanned(plan, port=8001)
+        save(c.store, again)
+        self.assertTrue(c.recorded(again))
+
+    def test_guarded_and_one_node_records_keep_their_own_rules(self):
+        from scripts.service_state import save
+        c = self.cluster
+        guarded, guarded_manifest = c.spec(2, catalog=False, guarded=True)
+        for positions in ([0, 1], [2, 3]):
+            save(c.store, c.plan(guarded, guarded_manifest, positions, record=False))
+        one, one_manifest = c.spec(1)
+        for positions in ([1], [2]):
+            save(c.store, c.plan(one, one_manifest, positions, record=False))
+        self.assertEqual(len(c.store.records('services')), 4)
+
+    def test_the_launcher_refuses_before_any_docker_run(self):
+        # Another Start of the spec saved its record after this Start's own check:
+        # the launcher, called as up.sh calls it, refuses when it saves its record.
+        import json
+        import subprocess
+        c = self.cluster
+        spec, manifest = c.spec(3)
+        c.plan(spec, manifest, [1, 2, 3])
+        stack = c.install()
+        blockers = c.root / 'blockers.jsonl'
+        environment = {**c.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(c.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '',
+                       'WAIT_ATTEMPTS': '2', 'WAIT_SECONDS': '0', 'PULSAR_START_BLOCKERS_FILE': str(blockers)}
+        result = subprocess.run(['bash', str(stack / 'cluster/start-cluster.sh'), spec['spec_id'], '--skip-preflight',
+                                 '--placement-nodes', ','.join(c.hostname(p) for p in (2, 0, 3))],
+                                env=environment, text=True, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('a service of spec', result.stderr)
+        self.assertIn('is recorded on other nodes; a spec runs as one service, so nothing was started', result.stderr)
+        records = [json.loads(line) for line in blockers.read_text().splitlines()]
+        self.assertEqual([record['blocker'] for record in records], ['service_recorded_elsewhere'], records)
+        self.assertIn(f'on {c.hostname(1)}, {c.hostname(2)}, {c.hostname(3)}', json.dumps(records[0]))
+        self.assertFalse([line for line in self.trace() if 'docker run' in line])
+        self.assertEqual(len(c.store.records('services')), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -361,7 +361,19 @@ for cluster_port in "$PORT" "${MASTER_PORT:-29500}"; do
 done
 
 STARTUP_STARTED_NS=$(date +%s%N)
-persist_launch_plan_file "$PLAN_FILE"
+# Saving the record decides one service per spec under the record's own lock:
+# another service of this spec recorded meanwhile refuses the launch here,
+# before any docker run.
+save_rc=0
+elsewhere=$(persist_launch_plan_file "$PLAN_FILE") || save_rc=$?
+if [ "$save_rc" = 3 ]; then
+  while IFS= read -r hosts; do
+    [ -z "$hosts" ] || START_BLOCKER_SPEC="$MODEL_NAME" start_blocker service_recorded_elsewhere --detail "on $hosts"
+  done <<<"$elsewhere"
+  refuse_launch "a service of spec ${MODEL_NAME:0:12} is recorded on other nodes; a spec runs as one service, so nothing was started"
+elif [ "$save_rc" != 0 ]; then
+  die "the launch record could not be saved; nothing was started"
+fi
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 CLUSTER_PHASE=launching
 # launch_role R — docker run of role rank R on its node: local Docker when the
