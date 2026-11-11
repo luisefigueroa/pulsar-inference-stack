@@ -9,9 +9,11 @@ container labelled by rank_spec on each node the plan names
 """
 import copy
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
+import textwrap
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -506,6 +508,92 @@ class Pages(Cluster):
                          'Health    not checked here; choose Check it now\n'
                          'Restart   not offered: it runs on fixture-ring-echo and fixture-ring-alpha, but\n'
                          '          Start serves it on fixture-ring-dorado and fixture-ring-bravo\n')
+
+
+WIDTHS = (80, 60)
+
+
+def folded(text, width):
+    """TEXT as a terminal of WIDTH columns shows it: stop's lines are not
+    wrapped by Pulsar, so the terminal breaks them at the last column."""
+    lines = []
+    for line in text.splitlines():
+        lines += [line[start:start + width] for start in range(0, max(len(line), 1), width)]
+    return '\n'.join(lines) + '\n'
+
+
+class Renders(Cluster):
+    """What a person reads, at 80 and 60 columns with NO_COLOR=1: the stop
+    output, Running services' row, card and Stop question, and Home's
+    Serving row. STOP_RECORDED_RENDERS names a folder outside the checkout
+    that receives them for review."""
+
+    def setUp(self):
+        super().setUp()
+        self.renders = {}
+
+    def tearDown(self):
+        target = os.environ.get('STOP_RECORDED_RENDERS')
+        if target and self.renders:
+            target = Path(target).resolve()
+            self.assertFalse(target.is_relative_to(ROOT), 'write renders outside the checkout')
+            target.mkdir(parents=True, exist_ok=True)
+            for name, text in self.renders.items():
+                (target / f'{name}.txt').write_text(text)
+
+    def keep(self, name, text, width):
+        self.renders[f'{name}-{width}'] = text
+        self.assertTrue(all(len(line) <= width for line in text.splitlines()),
+                        '\n'.join(line for line in text.splitlines() if len(line) > width))
+
+    def shown(self, result):
+        return f'$ ./pulsar {self.command}\n{result.stdout}{result.stderr}'
+
+    def test_the_stop_output(self):
+        c = self.cluster
+        spec, _, _ = self.pair()
+        before = (c.root / 'containers.json').read_text()
+        records = c.store.records('services')
+        self.command = f"stop {spec['spec_id']}"
+        for width in WIDTHS:
+            for name, env in (('stop', {}), ('stop-unobservable', {'SERVICE_UNREACHABLE': c.node_id(3)})):
+                (c.root / 'containers.json').write_text(before)
+                for row in records:
+                    c.store.put('services', row['service_id'], row)
+                result = c.pulsar('stop', spec['spec_id'], COLUMNS=str(width), **env)
+                self.assertEqual(result.returncode, 0 if name == 'stop' else 1, result.stderr)
+                self.keep(name, folded(self.shown(result), width), width)
+
+    def test_stop_all_output(self):
+        c = self.cluster
+        self.pair()
+        self.pair((0, 1), variant=1)
+        self.pair((1, 0), variant=2, record=False)
+        before = (c.root / 'containers.json').read_text()
+        records = c.store.records('services')
+        self.command = 'stop --all --yes'
+        for width in WIDTHS:
+            (c.root / 'containers.json').write_text(before)
+            for row in records:
+                c.store.put('services', row['service_id'], row)
+            result = c.pulsar('stop', '--all', '--yes', COLUMNS=str(width))
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.keep('stop-all', folded(self.shown(result), width), width)
+
+    def test_running_services_and_home(self):
+        c = self.cluster
+        spec, _, _ = self.pair()
+        for width in WIDTHS:
+            pages = c.pages(spec['spec_id'], width=width)
+            page = pages['page']
+            row = page.label(spec['spec_id'], width).replace('\x1f', '\n')
+            self.keep('running-services-row', row + '\n', width)
+            self.keep('running-services-card', pages['screen'], width)
+            question = textwrap.fill(pages['question'], width) + '\n'
+            self.keep('running-services-stop-question', question, width)
+            self.keep('home', pages['home_block'], width)
+            self.assertIn('running on fixture-ring-echo, fixture-ring-alpha', ' '.join(pages['home_block'].split()))
+            self.assertNotIn('degraded', pages['home_block'] + pages['screen'])
 
 
 class DefaultOrderRetire(Cluster):
