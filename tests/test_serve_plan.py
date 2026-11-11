@@ -306,6 +306,19 @@ class Compose(unittest.TestCase):
                                            "not copied again.")
         self.assertEqual(step["facts"], {"copy_to": ["n2"]})
 
+    def test_a_copy_to_a_node_that_shares_no_cable_says_what_it_passes_through(self):
+        state = checked(home=HOME, local_state="missing")
+        prepare = prepare_plan(("n2", "copy"))
+        prepare["actions"][0]["passes_through"] = [{"copies": "to", "node_id": "n2", "through": ["n1"]}]
+        step = self.plan(state, previews={"prepare": envelope(prepare)})["steps"][0]
+        self.assertEqual(step["sentence"].replace(serve.KEEP, " "), "Copy the model files from spark-1 to spark-3 "
+                         "(212 GiB). Copies to spark-3 pass through spark-2.")
+        # A copy with no node in between reads as before.
+        prepare["actions"][0].pop("passes_through")
+        step = self.plan(state, previews={"prepare": envelope(prepare)})["steps"][0]
+        self.assertEqual(step["sentence"].replace(serve.KEEP, " "), "Copy the model files from spark-1 to spark-3 "
+                         "(212 GiB).")
+
     def test_hf_on_the_download_node_blocks_warns_or_is_not_checked(self):
         state = row()
         sources = serve.file_sources(state, serving=["n0", "n1", "n2"], order=NAMES.order,

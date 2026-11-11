@@ -30,8 +30,8 @@ from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, a
                       recipe_text)
 from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
-from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
-                     projected_headroom, short_size, size_text)
+from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, copy_route_lines,
+                     preparation_estimate, projected_headroom, short_size, size_text)
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, cut_middle, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
@@ -1686,11 +1686,17 @@ def menu_fix(detail: dict) -> str:
     return str(detail.get("fix") or "")
 
 
+def copy_route_sentences(plan: dict, names: NodeNames) -> list[str]:
+    """What a plan's copies pass through, as the copy's log says it: "Copies to
+    echo pass through bravo." None for copies with no node in between."""
+    return [line[0].upper() + line[1:] + "." for line in copy_route_lines(_plan_document(plan), names)]
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
     What changes, where, how much, and the projected headroom; or why the plan
-    is blocked. Sizes use binary units; exact byte counts stay in the full
+    is blocked. A copy that passes through other nodes adds a line per leg. Sizes use binary units; exact byte counts stay in the full
     preview (model_library.render).
     """
     names = names or NodeNames()
@@ -1735,6 +1741,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
                  + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
                  + (f", {_count(effect['adopted'], 'folder')} no record named taken over after checking every file"
                     if effect["adopted"] else "") + ")."]
+        lines += copy_route_sentences(plan, names)
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])
@@ -1768,19 +1775,22 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         source = names(document["source_node"]) if document.get("source_node") else "its current node"
         routes = {"direct-ssh-roce": "a direct copy over the confirmed RoCE rail",
                   "controller-stream-relay": "streamed through this node over RoCE; this node keeps no copy"}
+        if document.get("passes_through"):
+            routes["direct-ssh-roce"] = "a copy over confirmed RoCE cables, through the nodes between"
         route = routes.get(document.get("transfer_route"), document.get("transfer_route") or "route not stated")
-        return [f"Move the home from {source} to {target}: {route}."]
+        return [f"Move the home from {source} to {target}: {route}.", *copy_route_sentences(plan, names)]
     if action == "archive":
         home = document.get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
         root = document.get("archive_root")
         return [f"Copy the home on {where} into the archive{' at ' + root if root else ''}; "
-                "an archive already there is verified, never replaced."]
+                "an archive already there is verified, never replaced.", *copy_route_sentences(plan, names)]
     if action == "restore":
         target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
         size, count = document.get("total_bytes"), document.get("file_count")
         available = (document.get("destination_space") or {}).get("available")
-        lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}."]
+        lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}.",
+                 *copy_route_sentences(plan, names)]
         if type(available) is int and type(size) is int and available >= 0 and size >= 0:
             after = available - size
             lines.append(f"Short by about {size_text(-after)} on {target}." if after < 0

@@ -2242,6 +2242,22 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("move", {**plan, "transfer_route": "already-home"}),
                          ["Nothing to move: the home is already on spark-3."])
 
+    def test_a_copy_through_a_neighbour_names_the_nodes_it_passes_through(self):
+        leg = {"copies": "to", "node_id": "n2", "through": ["n1"]}
+        plan = preparation(("n0", "home-view"), ("n2", "copy"), budgets={"n2": budget()})
+        plan["actions"][1]["passes_through"] = [leg]
+        self.assertEqual(self.summary("prepare", plan)[:2], [
+            "Copy 2.00 GiB to spark-3 (1 new copy, 1 reused).", "Copies to spark-3 pass through spark-2."])
+        move = {"source_node": "n0", "destination_node": "n2", "transfer_route": "direct-ssh-roce",
+                "passes_through": [leg]}
+        self.assertEqual(self.summary("move", move), [
+            "Move the home from spark-1 to spark-3: a copy over confirmed RoCE cables, through the nodes between.",
+            "Copies to spark-3 pass through spark-2."])
+        restore = self.summary("restore", {"selected_node": "n2", "passes_through": [leg]})
+        self.assertEqual(restore[1], "Copies to spark-3 pass through spark-2.")
+        archive = {"home": {**HOME, "node_id": "n2"}, "passes_through": [{**leg, "copies": "from"}]}
+        self.assertEqual(self.summary("archive", archive)[1], "Copies from spark-3 pass through spark-2.")
+
     def test_an_existing_archive_is_verified_never_replaced(self):
         self.assertEqual(self.summary("archive", {"home": HOME, "archive_root": "/fixture/archive"}),
                          ["Copy the home on spark-1 into the archive at /fixture/archive; "
