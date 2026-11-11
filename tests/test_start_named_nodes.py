@@ -442,6 +442,89 @@ class Readers(Cluster):
             ['./pulsar', 'start', self.spec['spec_id'], '--placement-nodes', 'fixture-ring-echo,fixture-ring-alpha']])
 
 
+def folded(text, width):
+    """TEXT as a terminal of WIDTH columns shows lines Pulsar does not wrap."""
+    lines = []
+    for line in text.splitlines():
+        lines += [line[start:start + width] for start in range(0, max(len(line), 1), width)]
+    return '\n'.join(lines) + '\n'
+
+
+class Renders(Cluster):
+    """At 80 and 60 columns with NO_COLOR=1, for a pair on saved ranks 2 and 3:
+    Start's output, the Connect card, a refused --replace, a refused second
+    service of the spec, and the Running services card with Restart.
+    START_NAMED_RENDERS names a folder outside the checkout that receives them."""
+
+    def setUp(self):
+        super().setUp()
+        self.renders = {}
+        self.spec, _ = self.cluster.spec(2)
+        self.names = f'{self.cluster.hostname(2)},{self.cluster.hostname(3)}'
+
+    def tearDown(self):
+        import os
+        target = os.environ.get('START_NAMED_RENDERS')
+        if target and self.renders:
+            target = Path(target).resolve()
+            self.assertFalse(target.is_relative_to(ROOT), 'write renders outside the checkout')
+            target.mkdir(parents=True, exist_ok=True)
+            for name, text in self.renders.items():
+                (target / f'{name}.txt').write_text(text)
+
+    def keep(self, name, text, width, *, fits=True):
+        self.renders[f'{name}-{width}'] = text
+        if fits:
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+
+    def start(self, *args, **env):
+        return self.cluster.start(self.spec['spec_id'], *args, **env)
+
+    def test_start_and_the_connect_card(self):
+        from scripts import connect_card
+        c = self.cluster
+        for width in (80, 60):
+            c.store.remove('services', service_identifier(self.spec['spec_id'], c.topology_id,
+                                                          [c.node_id(2), c.node_id(3)]))
+            c.containers = []
+            c.write()
+            card = c.root / f'card-{width}.json'
+            result = self.start('--skip-preflight', '--placement-nodes', self.names, SERVICE_HEALTHY='192.0.2.32',
+                                PULSAR_SERVICE_RESULT_FILE=str(card), COLUMNS=str(width))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            shown = f"$ ./pulsar start {self.spec['spec_id'][:12]} --placement-nodes {self.names}\n" + result.stdout
+            self.keep('start', folded(shown, width), width)
+            lines = connect_card.card(json.loads(card.read_text()))
+            self.assertIn('  API:    http://192.0.2.32:8000/v1', lines)
+            self.keep('connect-card', '\n'.join(lines) + '\n', width, fits=False)
+
+    def test_refused_replace_and_second_service(self):
+        c = self.cluster
+        for width in (80, 60):
+            result = self.start('--skip-preflight', '--replace', '--placement-nodes', self.names, COLUMNS=str(width))
+            self.keep('refused-replace', folded(result.stderr, width), width)
+            self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.start('--skip-preflight', '--placement-nodes', self.names,
+                                    SERVICE_HEALTHY='192.0.2.32').returncode, 0)
+        for width in (80, 60):
+            result = self.start('--skip-preflight', COLUMNS=str(width))
+            self.assertEqual(result.returncode, 1)
+            blocked = '\n'.join(line for line in (result.stdout + result.stderr).splitlines()
+                                if 'BLOCKED' in line or line.startswith(('  ', 'error:')))
+            self.keep('refused-second-service', folded(blocked, width), width)
+
+    def test_the_running_services_card_offers_restart(self):
+        c = self.cluster
+        self.assertEqual(self.start('--skip-preflight', '--placement-nodes', self.names,
+                                    SERVICE_HEALTHY='192.0.2.32').returncode, 0)
+        for width in (80, 60):
+            pages = c.pages(self.spec['spec_id'], width=width)
+            choices = '\n'.join(label for _, label in pages['choices'])
+            self.keep('running-services-card', pages['screen'] + '\n' + choices + '\n', width)
+            self.assertIn('Restart…', choices)
+            self.assertNotIn('Restart   not offered', pages['screen'])
+
+
 class RecordsWithoutContainers(Cluster):
     """After a Start that failed once its plan was saved (the plan and record
     are saved just before the first docker run, and a failed launch keeps
