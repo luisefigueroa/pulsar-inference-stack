@@ -393,13 +393,16 @@ print(json.dumps(dict(schema_version=1, kind="pulsar-prepared-set", spec_id=spec
 '''
 
 
-def recipe(nodes, variant=0, *, guarded=False):
+def recipe(nodes, variant=0, *, guarded=False, ring=False):
     """A frozen spec on NODES nodes; VARIANT gives another spec of the same size,
-    and GUARDED one that runs only as a guarded trial."""
+    GUARDED one that runs only as a guarded trial, and RING one that passes data
+    around a closed loop of its nodes (NCCL_ALGO=Ring)."""
     data = b'synthetic service weights'
     manifest = build_snapshot_manifest(model_id=MODEL_ID, snapshot_revision='c' * 40, files=[
         dict(path='weights.bin', size=len(data), sha256=hashlib.sha256(data).hexdigest())])
     draft = example(nodes)
+    if ring:
+        draft['recipe']['container_env'] = sorted([*draft['recipe']['container_env'], 'NCCL_ALGO=Ring'])
     draft['source']['image_repository'] = 'example/image'
     draft['recipe']['model'] = {'model_id': MODEL_ID, 'model_commit': 'c' * 40}
     draft['recipe']['image_digest'] = 'sha256:' + 'd' * 64
@@ -451,8 +454,8 @@ class ServiceCluster:
     def node_id(self, position):
         return self.nodes[position]['node_id']
 
-    def spec(self, nodes, variant=0, *, catalog=True, guarded=False):
-        spec, manifest = recipe(nodes, variant, guarded=guarded)
+    def spec(self, nodes, variant=0, *, catalog=True, guarded=False, ring=False):
+        spec, manifest = recipe(nodes, variant, guarded=guarded, ring=ring)
         if catalog:
             (self.releases / f"{spec['spec_id']}.json").write_text(json.dumps(spec))
         return spec, manifest

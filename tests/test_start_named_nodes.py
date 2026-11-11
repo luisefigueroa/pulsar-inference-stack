@@ -375,15 +375,35 @@ class Decision(Cluster):
                 self.assertIsNone(self.refusal(positions))
 
     def test_what_stays_refused(self):
-        self.assertEqual(self.refusal((0, 1, 2)), 'on a ring Start runs only a two-node recipe on named nodes; this '
-                         'recipe needs 3 nodes and runs on the ring\'s nodes in saved order; omit --placement-nodes')
-        self.assertEqual(self.refusal((0, 2)), 'fixture-ring-dorado and fixture-ring-echo are not neighbours on the ring')
-        self.assertEqual(self.refusal((2, 3), guarded=True), 'a guarded recipe runs only as a guarded trial')
-        mesh = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())), mesh=3)
+        # The cabling is the launch check's to judge (tests/test_start_any_named_nodes.py):
+        # the decision refuses only a guarded spec and a node outside the saved cluster.
         from scripts.start_placement import ordinary_start_refusal
-        self.assertEqual(ordinary_start_refusal(mesh.topology, [mesh.node_id(2), mesh.node_id(1)], guarded=False),
-                         'on a full mesh Start runs a 2-node recipe on the first 2 nodes in saved order; '
-                         'omit --placement-nodes')
+        c = self.cluster
+        for positions in ((0, 1, 2), (0, 2), (1, 2, 3, 0)):
+            with self.subTest(positions=positions):
+                self.assertIsNone(self.refusal(positions))
+        self.assertEqual(self.refusal((2, 3), guarded=True), 'a guarded recipe runs only as a guarded trial')
+        self.assertEqual(ordinary_start_refusal(c.topology, [c.node_id(2), 'fixture-elsewhere'], guarded=False),
+                         'a named node is not in the saved cluster')
+        mesh = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())), mesh=3)
+        self.assertIsNone(ordinary_start_refusal(mesh.topology, [mesh.node_id(2), mesh.node_id(1)], guarded=False))
+
+    def test_the_cabling_as_the_launch_check_reads_the_saved_links(self):
+        from scripts.start_placement import cabling_refusal
+        c = self.cluster
+        ids = [c.node_id(position) for position in range(4)]
+        self.assertIsNone(cabling_refusal(c.topology, [ids[2], ids[3]], loop=False))
+        self.assertEqual(cabling_refusal(c.topology, [ids[0], ids[2]], loop=False),
+                         'fixture-ring-dorado and fixture-ring-echo are not cabled to each other: the cluster is a '
+                         'ring, and this recipe needs every one of its nodes cabled to the others')
+        self.assertIsNone(cabling_refusal(c.topology, [ids[1], ids[2], ids[3], ids[0]], loop=True))
+        self.assertEqual(cabling_refusal(c.topology, [ids[0], ids[2], ids[1], ids[3]], loop=True),
+                         'fixture-ring-dorado and fixture-ring-echo are not cabled to each other: this recipe '
+                         'passes data around a closed loop of its nodes, each cabled to the next and the last to '
+                         'the first')
+        mesh = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())), mesh=4)
+        self.assertIsNone(cabling_refusal(mesh.topology, [mesh.node_id(3), mesh.node_id(1), mesh.node_id(2)],
+                                          loop=False))
 
 
 class StartOnNamedNodes(Cluster):

@@ -4,12 +4,15 @@
     python3 scripts/start_placement.py check --topology FILE --spec FILE NODE_ID...
 
 The one place that decides it. The default order (role rank r on saved rank r)
-is not judged here: Start always uses it. Today an ordinary Start accepts one
-case off it, which the maintainer approved: a two-node recipe on two
-neighbouring nodes of a saved ring, named in either order (the first named runs
-the API). Every other placement off the default order is refused before
-anything is contacted, with a sentence that says why. `check` prints nothing
-and exits 0 when the placement is accepted, or prints the reason and exits 1.
+is not judged here: Start always uses it. An ordinary Start runs a multi-node
+recipe on the nodes the operator names, in that order (the first named runs
+the API), when they are saved members cabled as the recipe needs; the launch
+check (require_profile_topology in cluster/topology.sh) decides the cabling
+from the saved links and refuses an uncabled placement before any node is
+contacted. This decision refuses only what the launch check does not judge: a
+guarded spec, which runs only as a guarded trial, and a node that is not a
+saved member. `check` prints nothing and exits 0 when the placement is
+accepted, or prints the reason and exits 1.
 """
 from __future__ import annotations
 
@@ -27,26 +30,46 @@ from scripts.topology_manifest import RING_CLASS  # noqa: E402  (the saved shape
 
 def ordinary_start_refusal(topology: dict, node_ids: list[str], *, guarded: bool) -> str | None:
     """Why an ordinary Start may not run a recipe on NODE_IDS (role order) off
-    the default order, or None when it may."""
+    the default order, or None when it may; the launch check then judges the
+    cabling."""
     nodes = topology.get("topology", topology).get("nodes") or []
-    validation = topology.get("topology", topology).get("validation") or {}
     rank_of = {node["node_id"]: node["rank"] for node in nodes}
-    hostname = {node["node_id"]: node.get("hostname") or node["node_id"] for node in nodes}
     if guarded:
         return "a guarded recipe runs only as a guarded trial"
     if any(node not in rank_of for node in node_ids):
         return "a named node is not in the saved cluster"
+    return None
+
+
+def cabling_refusal(topology: dict, node_ids: list[str], *, loop: bool) -> str | None:
+    """Why the launch check refuses NODE_IDS (role order) for their cabling, read
+    from the saved links, in its own words; None when every pair the recipe
+    needs is cabled. LOOP: the recipe passes data around a closed loop of its
+    nodes (NCCL_ALGO=Ring), so it needs each node cabled to the next and the
+    last to the first; any other recipe needs every pair cabled. Start itself
+    asks the launch check (require_profile_topology in cluster/topology.sh),
+    which also counts each pair's links; this reading is for pages that offer
+    a Start without running it, so they never offer one the check refuses for
+    its cabling."""
+    from scripts.topology_manifest import ring_loop_refusal, ring_refusal
+    document = topology.get("topology", topology)
+    rank_of = {node["node_id"]: node["rank"] for node in document.get("nodes") or []}
+    hostname = {node["node_id"]: node.get("hostname") or node["node_id"] for node in document.get("nodes") or []}
+    if any(node not in rank_of for node in node_ids):
+        return "a named node is not in the saved cluster"
+    cabled = {tuple(sorted(link["ranks"])) for link in document.get("links") or []}
     count = len(node_ids)
-    if validation.get("class") != RING_CLASS:
-        return (f"on a full mesh Start runs a {count}-node recipe on the first {count} nodes in saved order; "
-                "omit --placement-nodes")
-    if count != 2:
-        return (f"on a ring Start runs only a two-node recipe on named nodes; this recipe needs {count} nodes "
-                "and runs on the ring's nodes in saved order; omit --placement-nodes")
-    first, second = sorted(rank_of[node] for node in node_ids)
-    cabled = {tuple(sorted(link["ranks"])) for link in topology.get("topology", topology).get("links") or []}
-    if (first, second) not in cabled:
-        return f"{hostname[node_ids[0]]} and {hostname[node_ids[1]]} are not neighbours on the ring"
+    if loop:
+        pairs = [(node_ids[index], node_ids[(index + 1) % count]) for index in range(count if count > 2 else 1)]
+    else:
+        pairs = [(node_ids[a], node_ids[b]) for a in range(count) for b in range(a + 1, count)]
+    ring = (document.get("validation") or {}).get("class") == RING_CLASS
+    for first, second in pairs:
+        if tuple(sorted((rank_of[first], rank_of[second]))) not in cabled:
+            if not ring:
+                return f"{hostname[first]} and {hostname[second]} share no link in the saved cluster"
+            words = ring_loop_refusal if loop else ring_refusal
+            return words(hostname[first], hostname[second])
     return None
 
 

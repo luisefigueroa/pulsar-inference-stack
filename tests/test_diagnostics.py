@@ -352,13 +352,10 @@ ssh_node() {{
         self.assertEqual(checked.returncode, 0, checked.stderr+checked.stdout)
         self.assertEqual([row['available_gib'] for row in json.loads(checked.stdout)['rank_available_gib']], [120.0, 120.0])
 
-    def test_ordinary_start_refuses_a_pair_off_the_default_order_of_a_full_mesh_before_any_mutation(self):
-        # This scenario was refused because ordinary start could not launch a
-        # remote first node. It can now, and an ordinary Start accepts named
-        # nodes for a two-node recipe on neighbouring nodes of a saved ring
-        # (tests/test_start_named_nodes.py). On a full mesh, as here, a pair off
-        # the default order is still refused before anything is contacted, and
-        # the reason says what Start does instead.
+    def test_ordinary_start_takes_a_pair_off_the_default_order_of_a_full_mesh(self):
+        # This scenario was refused, first because ordinary start could not
+        # launch a remote first node, then because Start named nodes only on a
+        # ring.
         self.spec, self.path, *_ = fixture(self.root, 2)
         topology = self.root/'mesh-topology.json'
         topology.write_text(json.dumps({'validation': {'class': 'roce-full-mesh'}, 'links': [
@@ -366,10 +363,15 @@ ssh_node() {{
             {'rank': rank, 'node_id': f'node-{rank}', 'hostname': f'rank-{rank}'} for rank in range(3)]}))
         result = self.run_tool('up.sh', [self.spec['spec_id'], '--placement-nodes', 'node-2,node-1', '--yes'],
                                extra={'CLUSTER_TOPOLOGY_FILE': str(topology)})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('start does not run this recipe on node-2,node-1: on a full mesh Start runs a 2-node recipe on '
-                      'the first 2 nodes in saved order; omit --placement-nodes', result.stderr)
-        self.assertNotIn('guarded run', result.stderr)
+        # Inverted on purpose: Start now runs a recipe on the nodes it names when they are cabled as it
+        # needs, so it goes on to its checks on node-2 and node-1. This harness's Docker double cannot
+        # list containers, so Start stops there; the same placement starts end to end in
+        # tests/test_start_any_named_nodes.py (FullMeshOfThree).
+        self.assertNotIn('start does not run this recipe', result.stderr)
+        self.assertIn('PASS image Pinned arm64 image verified on all 2 serving ranks.', ' '.join(result.stdout.split()))
+        self.assertIn('BLOCKED docker_unavailable: rank-2:', result.stdout)
+        self.assertIn('BLOCKED docker_unavailable: rank-1:', result.stdout)
+        self.assertNotIn('rank-0', result.stdout)
         self.assertFalse((self.root/'mutations').exists())
 
     def test_named_export_refuses_missing_peer_reference_without_pulling(self):
