@@ -481,7 +481,13 @@ if [ "$SKIP_W" != 1 ]; then
     0) start_check pass model-files "prepared files verified on every serving rank" ;;
     1)
       start_check fail model-files "prepared files are not ready on every serving rank"
-      blocked model_files_not_ready --detail "see the model-files check above" ;;
+      if [ -n "$PLACEMENT_NODES" ] && [ "$NODES" -gt 1 ]; then
+        # Prepared copies hold one rank per node: another order needs Prepare again.
+        blocked model_files_not_ready --detail "see the model-files check above" \
+          --note "Each node's prepared copy serves one rank. Copies prepared for these nodes in another order are prepared again for this order by the command above; if a service of this spec still runs on them, stop it first: ./pulsar stop $(spec_reference "$NAME")"
+      else
+        blocked model_files_not_ready --detail "see the model-files check above"
+      fi ;;
     *)
       w_detail=$(check_error "$w_err")
       start_check fail model-files "the model-files check could not complete: ${w_detail:-exit $w_rc}"

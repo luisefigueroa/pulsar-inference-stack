@@ -239,6 +239,8 @@ sys.exit(2)
 # elsewhere; these tests are about where Start acts.
 CHECK = r'''#!/usr/bin/env bash
 printf '%s\n' "${0##*/} $*" >>"$SERVICE_FIXTURE/checks.log"
+# SERVICE_WEIGHTS_RC: the model-file check's answer (1: not prepared on every rank).
+if [ "${0##*/}" = check-weights.sh ] && [ -n "${SERVICE_WEIGHTS_RC:-}" ]; then exit "$SERVICE_WEIGHTS_RC"; fi
 case " $* " in *" --json "*) echo '{"state":"ok","ranks":[],"reason":""}' ;; *) echo "PASS  ${0##*/}" ;; esac
 exit 0
 '''
