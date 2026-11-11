@@ -215,27 +215,82 @@ list_managed_container_ids_remote() { return 0; }
         self.assertEqual(json.loads(result.stdout)['result'],
                          {'completed':True,'spec_id':self.plan['selected_spec_id'],'stopped':False})
 
-    def test_ordinary_stop_refuses_nondefault_recorded_pair_before_mutation(self):
+    def test_ordinary_stop_stops_nondefault_recorded_pair_on_its_recorded_nodes(self):
+        # This scenario was refused while ordinary stop could not prove which
+        # containers of a pair recorded off the default order were its own. It
+        # now stops the pair on the nodes its record names, retires only that
+        # record, and still runs the label stop for anything else of the spec.
         spec, facts, prepared, _, _, _ = fixture(2)
         for slot, physical in enumerate((2, 1)):
             facts['ranks'][slot].update(node_id=f'node-{physical}', hostname=f'rank-{physical}', ssh_host=f'rank-{physical}')
             prepared['ranks'][slot]['node_id'] = f'node-{physical}'
-        plan = build_plan(spec, spec['spec_id'], facts, prepared)
+        with patch.dict('os.environ', {'API_KEY': '', 'VLLM_API_KEY': ''}):
+            plan = build_plan(spec, spec['spec_id'], facts, prepared)
         save(self.store, plan)
+        from scripts.container_runtime import rank_spec
+        containers = [{'node': str(physical), 'id': str(physical) * 64, 'name': plan['container_name'],
+                       'labels': rank_spec(plan, rank)['labels']} for rank, physical in enumerate((2, 1))]
+        (self.root/'containers.json').write_text(json.dumps(containers))
+        docker = self.root/'docker-double'
+        docker.write_text(DOCKER)
+        docker.chmod(0o700)
         marker = self.root/'stopped'
         envfile = self.root/'nondefault-env.sh'
         envfile.write_text(f". '{ROOT}/scripts/lib.sh'\n"+f'''
-load_cluster_topology() {{ CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_NODE_IDS=(node-0 node-1 node-2); }}
-stop_named_service_by_labels() {{ touch '{marker}'; }}
+load_cluster_topology() {{ CLUSTER_TOPOLOGY_COUNT=3; CLUSTER_TOPOLOGY_ID={'c'*64}; CLUSTER_NODE_IDS=(node-0 node-1 node-2);
+ CLUSTER_NODE_HOSTNAMES=(rank-0 rank-1 rank-2); CLUSTER_NODE_SSH_HOSTS=(local rank-1 rank-2); }}
+reload_cluster_topology() {{ load_cluster_topology; }}
+require_topology_ssh_trust() {{ :; }}
+list_managed_container_ids_on_node() {{ :; }}
+ssh_node() {{ local node="$1"; shift; PULSAR_TEST_NODE="$node" bash -c "${{1/#docker/$PULSAR_DOCKER}}"; }}
+container_ownership_inspect_on_node() {{ PULSAR_TEST_NODE="$1" "$PULSAR_DOCKER" inspect --format x "$2"; }}
+stop_named_service_by_labels() {{ touch '{marker}'; STOP_NAMED_NOTHING_FOUND=1; }}
 ''')
         result = subprocess.run([str(ROOT/'pulsar'), 'stop', spec['spec_id'], '--json'],
-            env={**os.environ, 'BASH_ENV':str(envfile), 'PULSAR_MODEL_LIBRARY_DIR':str(self.store.root)},
-            text=True, capture_output=True, timeout=10)
-        self.assertNotEqual(result.returncode, 0)
-        # Not a guarded run: no guarded labels prove ownership, so nothing is touched.
-        self.assertIn('not by a guarded run, so stop cannot prove which containers are its own', result.stderr)
-        self.assertFalse(marker.exists())
-        self.assertIsNotNone(self.store.get('services', plan['service_id']))
+            env={**os.environ, 'BASH_ENV':str(envfile), 'PULSAR_MODEL_LIBRARY_DIR':str(self.store.root),
+                 'PULSAR_DOCKER': str(docker), 'PULSAR_TEST_ROOT': str(self.root), 'PYTHONDONTWRITEBYTECODE': '1'},
+            text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['result'],
+                         {'completed': True, 'spec_id': spec['spec_id'], 'stopped': True})
+        self.assertIn(f"Stopped spec {spec['spec_id'][:12]} on rank-2 (rank 0), rank-1 (rank 1): removed 2 "
+                      'container(s) and retired its service record.', result.stderr)
+        self.assertEqual(json.loads((self.root/'containers.json').read_text()), [])
+        self.assertTrue(marker.exists())
+        self.assertIsNone(self.store.get('services', plan['service_id']))
+        # The unrelated default-placement record from setUp is untouched.
+        self.assertIsNotNone(self.store.get('services', self.plan['service_id']))
+
+
+# A docker double for one service's containers on numbered nodes: lists by
+# name and label filters, inspects for ownership, removes by ID.
+DOCKER = '''#!/usr/bin/env python3
+import json,os,pathlib,sys
+root=pathlib.Path(os.environ['PULSAR_TEST_ROOT'])
+node=os.environ.get('PULSAR_TEST_NODE','0')
+state=root/'containers.json'
+containers=[c for c in json.loads(state.read_text())]
+here=[c for c in containers if c['node']==node]
+args=sys.argv[1:]
+if args[:4]==['container','ls','-aq','--no-trunc']:
+    filters=[args[i+1] for i in range(4,len(args),2)]
+    def match(c):
+        for f in filters:
+            key,_,value=f.partition('=')
+            if key=='name' and '^/'+c['name']+'$'!=value:return False
+            if key=='label' and c['labels'].get(value.partition('=')[0])!=value.partition('=')[2]:return False
+        return True
+    for c in here:
+        if match(c):print(c['id'])
+elif args[:2]==['inspect','--format']:
+    for c in here:
+        if c['id']==args[3]:print(json.dumps({'id':c['id'],'name':'/'+c['name'],'labels':c['labels']}));break
+    else:raise SystemExit(1)
+elif args==['info']:pass
+elif args[:2]==['rm','-f']:
+    state.write_text(json.dumps([c for c in containers if not (c['node']==node and c['id']==args[2])]))
+else:raise SystemExit(97)
+'''
 
 
 if __name__=='__main__': unittest.main()

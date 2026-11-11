@@ -107,9 +107,10 @@ class Agreement(Cluster):
     the same container, because they ask the same ownership test."""
 
     def callers(self, ids):
-        """Whether each caller would remove the containers IDS: Stop's label
-        sweep, stop --all and inventory. Containers and records are put back
-        between them."""
+        """Whether each caller removes the containers IDS (inventory: offers to),
+        and whether it succeeds: the public named stop, its label sweep alone,
+        stop --all, and inventory. Containers and records are put back between
+        them."""
         c = self.cluster
         before = (c.root / 'containers.json').read_text()
         records = c.store.records('services')
@@ -123,34 +124,33 @@ class Agreement(Cluster):
         spec = c.remaining()[0]['labels'][PREFIX + 'conf']
         answers = {}
         self.said = {}
-        result = c.bash(f'stop_named_service_by_labels {spec}')
-        self.said['stop'] = result.stderr
-        answers['stop'] = sorted(item for _, item in c.removed()) == sorted(ids), result.returncode
-        restore()
-        result = c.script('cluster/stop-cluster.sh', '--all')
-        self.said['stop --all'] = result.stderr
-        answers['stop --all'] = sorted(item for _, item in c.removed()) == sorted(ids), result.returncode
-        restore()
+        for caller, run in (('stop', lambda: c.pulsar('stop', spec)),
+                            ('stop label sweep', lambda: c.bash(f'stop_named_service_by_labels {spec}')),
+                            ('stop --all', lambda: c.pulsar('stop', '--all', '--yes'))):
+            result = run()
+            self.said[caller] = result.stderr
+            removed = sorted(item for _, item in c.removed())
+            answers[caller] = removed == sorted(ids), result.returncode == 0
+            self.assertIn(removed, ([], sorted(ids)), caller)
+            restore()
         result = c.pulsar('inventory', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         (service,) = json.loads(result.stdout)['services']
         safe = service['safe_to_stop'] and all(rank['safe_to_stop'] for rank in service['ranks'])
         self.reasons = service['reasons']
         self.said['inventory'] = ' '.join(service['reasons'])
-        answers['inventory'] = safe, 0 if safe else 2
+        answers['inventory'] = safe, safe
         return answers
 
     def assert_said(self, reason):
         """Each caller gives the same reason for a refusal of the ownership test."""
         for caller, text in self.said.items():
-            self.assertIn(f'does not match its saved service record: {reason}', text, caller)
+            self.assertIn(f'does not match its saved service record: {reason}', ' '.join(text.split()), caller)
 
     def assert_agree(self, containers, removable):
         answers = self.callers([item['id'] for item in containers])
-        rc = 0 if removable else 2
-        expected = {'stop': (removable, rc), 'stop --all': (removable, 0 if removable else 1),
-                    'inventory': (removable, rc)}
-        self.assertEqual(answers, expected, self.reasons)
+        self.assertEqual(answers, dict.fromkeys(('stop', 'stop label sweep', 'stop --all', 'inventory'),
+                                                (removable, removable)), self.reasons)
 
     def test_a_matching_record(self):
         _, _, containers = self.pair()
@@ -175,6 +175,164 @@ class Agreement(Cluster):
         _, _, containers = self.pair(labels={PREFIX + 'topology': 'e' * 64})
         self.assert_agree(containers, False)
         self.assert_said('its topology label names another saved cluster')
+
+
+class RecordedStop(Cluster):
+    """`./pulsar stop SPEC` of a pair recorded on saved ranks 2 and 3."""
+
+    def setUp(self):
+        super().setUp()
+        self.spec, self.plan, self.containers = self.pair()
+        self.ids = sorted(item['id'] for item in self.containers)
+
+    def stop(self, *args, **env):
+        return self.cluster.pulsar('stop', self.spec['spec_id'], *args, **env)
+
+    def assert_untouched(self):
+        c = self.cluster
+        self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(self.plan))
+        self.assertTrue(set(self.ids) <= {item['id'] for item in c.remaining()})
+
+    def test_it_stops_on_its_recorded_nodes_and_retires_only_its_record(self):
+        c = self.cluster
+        prefix = self.spec['spec_id'][:12]
+        result = self.stop()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout,
+                         f"Stopped spec {prefix} on fixture-ring-echo (rank 0), fixture-ring-alpha (rank 1): removed "
+                         "2 container(s) and retired its service record.\n"
+                         "Stopped. Model files, pins, archives and experiment evidence are retained.\n")
+        self.assertEqual(result.stderr, '')
+        self.assertEqual(sorted(c.removed()), sorted([(c.node_id(2), self.containers[0]['id']),
+                                                      (c.node_id(3), self.containers[1]['id'])]))
+        self.assertFalse(c.recorded(self.plan))
+        self.assertEqual(c.store.get('service-plans', self.plan['plan_id']), self.plan)
+
+    def test_json_says_it_stopped(self):
+        result = self.stop('--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['result'],
+                         {'completed': True, 'spec_id': self.spec['spec_id'], 'stopped': True})
+
+    def test_other_services_are_untouched_and_the_reverse(self):
+        c = self.cluster
+        _, default, default_containers = self.pair((0, 1), variant=1)
+        _, elsewhere, elsewhere_containers = self.pair((1, 0), variant=2)
+        spec, manifest = c.spec(2, catalog=False, guarded=True)
+        trial = c.plan(spec, manifest, [3, 2])
+        trial_containers = c.run(trial)
+        result = self.stop()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(item for _, item in c.removed()), self.ids)
+        for plan in (default, elsewhere, trial):
+            self.assertTrue(c.recorded(plan))
+        # The reverse: stopping the default-order service and the guarded trial
+        # leaves another pair recorded off the default order alone.
+        _, again, again_containers = self.pair((3, 2), variant=3)
+        for selector, containers in ((default['selected_spec_id'], default_containers),
+                                     (trial['selected_spec_id'], trial_containers),
+                                     (elsewhere['selected_spec_id'], elsewhere_containers)):
+            with self.subTest(selector=selector[:12]):
+                before = len(c.removed())
+                result = c.pulsar('stop', selector)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(sorted(item for _, item in c.removed()[before:]),
+                                 sorted(item['id'] for item in containers))
+        self.assertTrue(c.recorded(again))
+        self.assertEqual(sorted(item['id'] for item in c.remaining()), sorted(item['id'] for item in again_containers))
+
+    def test_an_unobservable_recorded_node_removes_nothing(self):
+        c = self.cluster
+        result = self.stop(SERVICE_UNREACHABLE=c.node_id(3))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'error: stop did not run: {c.hostname(3)} cannot be observed', result.stderr)
+        self.assert_untouched()
+
+    def test_a_membership_change_during_the_stop_removes_nothing(self):
+        c = self.cluster
+        result = self.stop(SERVICE_SWAP_AFTER_PROBE=str(c.changed_membership()))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('error: nothing was removed: confirmed membership changed while stop was running; the service '
+                      'record is kept.', result.stderr)
+        self.assert_untouched()
+
+    def test_two_matches_on_one_node_remove_nothing(self):
+        c = self.cluster
+        c.run(self.plan, ranks=[0])
+        result = self.stop()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: more than one container matches spec {self.spec['spec_id'][:12]}'s service on "
+                      f"{c.hostname(2)} (rank 0); nothing was removed. Next: ./pulsar inventory", result.stderr)
+        self.assert_untouched()
+
+    def test_a_container_of_its_plan_that_fails_the_ownership_test_removes_nothing(self):
+        c = self.cluster
+        c.containers = [dict(item, labels=dict(item['labels'], **{PREFIX + 'topology': 'e' * 64}))
+                        if item['id'] == self.containers[1]['id'] else item for item in c.remaining()]
+        c.write()
+        result = self.stop()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: container {self.containers[1]['id'][:12]} on {c.hostname(3)} carries the launch plan "
+                      f"of spec {self.spec['spec_id'][:12]}'s service, but it does not match its saved service "
+                      "record: its topology label names another saved cluster; nothing was removed.", result.stderr)
+        self.assert_untouched()
+
+    def test_the_record_is_kept_until_absence_is_confirmed_on_every_node(self):
+        c = self.cluster
+        result = self.stop(SERVICE_RM_KEEPS=c.node_id(3))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"error: the container of spec {self.spec['spec_id'][:12]}'s service on {c.hostname(3)} "
+                      "(rank 1) could not be confirmed absent; the service record is kept.", result.stderr)
+        self.assertTrue(c.recorded(self.plan))
+
+    def test_a_record_with_no_container_left_is_retired_and_said_so(self):
+        c = self.cluster
+        c.containers = []
+        c.write()
+        result = self.stop('--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)['result']['stopped'])
+        self.assertIn(f"Spec {self.spec['spec_id'][:12]} had no container left on fixture-ring-echo (rank 0), "
+                      "fixture-ring-alpha (rank 1); retired its stale service record.", result.stderr)
+        self.assertFalse(c.recorded(self.plan))
+
+    def test_same_name_with_another_plan_is_left_and_reported(self):
+        c = self.cluster
+        other = dict(c.remaining()[0], id='f' * 64,
+                     labels=dict(self.containers[0]['labels'], **{PLAN_LABEL: 'e' * 64}))
+        c.containers = [other if item['id'] == self.containers[0]['id'] else item for item in c.remaining()]
+        c.write()
+        result = self.stop()
+        self.assertEqual(c.removed(), [(c.node_id(3), self.containers[1]['id'])])
+        self.assertFalse(c.recorded(self.plan))
+        self.assertIn(f"warning: left container ffffffffffff on {c.hostname(2)}: it has the name of spec "
+                      f"{self.spec['spec_id'][:12]}'s service but another launch plan, so it is not that "
+                      "service's. Next: ./pulsar inventory", result.stderr)
+        # The label stop that follows refuses it too, and says why.
+        self.assertIn(f'refusing spec {self.spec["spec_id"][:12]} id=ffffffffffff on {c.hostname(2)}', result.stderr)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual([item['id'] for item in c.remaining()], ['f' * 64])
+
+    def test_its_plan_on_a_node_it_does_not_record_is_left_and_reported(self):
+        c = self.cluster
+        (extra,) = c.run(self.plan, positions=[0, 1], ranks=[0])
+        result = self.stop()
+        self.assertEqual(sorted(item for _, item in c.removed()), self.ids)
+        self.assertEqual([item['id'] for item in c.remaining()], [extra['id']])
+        self.assertIn(f'refusing spec {self.spec["spec_id"][:12]} id={extra["id"][:12]} on {c.hostname(0)}',
+                      result.stderr)
+        self.assertEqual(result.returncode, 2)
+
+    def test_node_cannot_select_one_node(self):
+        c = self.cluster
+        result = self.stop('--node', c.hostname(2))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(f"error: spec {self.spec['spec_id'][:12]} runs on fixture-ring-echo, fixture-ring-alpha as one "
+                      "multi-node service; it stops on all its nodes together, so --node cannot select one. Nothing "
+                      f"was stopped. Next: ./pulsar stop {self.spec['spec_id'][:12]}", result.stderr)
+        self.assertFalse((c.root / 'docker-calls.jsonl').exists())
+        self.assert_untouched()
 
 
 if __name__ == '__main__':

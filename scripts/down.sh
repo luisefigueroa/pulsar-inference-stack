@@ -51,8 +51,9 @@ load_cluster_topology || die "confirmed topology is required for safe stop"
 # Guarded trials, and any service recorded outside the default node order.
 # Each line: plan ID, guarded run ID ('-' when none), spec ID, recorded hosts,
 # and 'nondefault' or 'default' placement. Ordinary stop's default-placement
-# ownership cannot address a nondefault placement; a guarded trial there is
-# stopped on its recorded bindings once its controller has exited.
+# ownership cannot address a nondefault placement: such a service, and a
+# guarded trial whose controller has exited, is stopped on the bindings its
+# record names (stop_recorded_service).
 recorded_trials=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$TARGET" "${CLUSTER_NODE_IDS[@]}" <<'PY_STOP'
 import sys
 from model_library.state import Store
@@ -69,15 +70,19 @@ for row in store.records('services'):
                          'nondefault' if nondefault else 'default']))
 PY_STOP
 ) || die "the saved service records cannot be read; nothing was stopped"
-guarded_trials=""
+recorded_plans=""
 if [ -n "$recorded_trials" ]; then
   while IFS=$'\t' read -r trial_plan trial_run trial_spec trial_hosts trial_placement; do
     trial_ref=$(spec_reference "$trial_spec")
     if [ "$trial_run" = - ]; then
-      # Only guarded runs place ranks off the default order; without a guarded run
-      # ID there are no labels that prove which containers belong to it.
-      error_line "spec ${trial_spec:0:12} has a service recorded on $trial_hosts outside the default node order, but not by a guarded run, so stop cannot prove which containers are its own. Nothing was stopped. Next: ./pulsar inventory"
-      exit 1
+      # An ordinary multi-node service recorded off the default node order:
+      # stop --all stops it in cluster/stop-cluster.sh before its sweep.
+      [ "$TARGET" != --all ] || continue
+      if [ -n "$NODE_SELECTOR" ]; then
+        usage_die "spec ${trial_spec:0:12} runs on $trial_hosts as one multi-node service; it stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $trial_ref"
+      fi
+      recorded_plans+="$trial_plan"$'\n'
+      continue
     fi
     # A running guarded controller holds the lifecycle lock for its whole life, on
     # any placement; refuse now rather than wait for the lock. Any other holder is
@@ -96,7 +101,7 @@ if [ -n "$recorded_trials" ]; then
     if [ -n "$NODE_SELECTOR" ]; then
       usage_die "spec ${trial_spec:0:12} runs as guarded trial ${trial_run:0:12} on $trial_hosts; a trial stops on all its nodes together, so --node cannot select one. Nothing was stopped. Next: ./pulsar stop $trial_ref"
     fi
-    guarded_trials+="$trial_plan"$'\n'
+    recorded_plans+="$trial_plan"$'\n'
   done <<<"$recorded_trials"
 fi
 if [ "$TARGET" = --all ]; then
@@ -110,24 +115,26 @@ acquire_model_library_lifecycle_lock exclusive
 load_cluster_topology || die "confirmed topology is required for safe stop"
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
 # The exclusive lock proves no guarded controller is running; stop each such
-# trial on its recorded bindings before the default-placement stop. Probe every
-# confirmed node first, as that stop does, so no failure follows a removal.
-if [ -n "$guarded_trials" ]; then
+# trial, and each ordinary service recorded off the default node order, on its
+# recorded bindings before the default-placement stop. Probe every confirmed
+# node first, as that stop does, so no failure follows a removal.
+if [ -n "$recorded_plans" ]; then
   for ((index = 0; index < CLUSTER_TOPOLOGY_COUNT; index++)); do
     list_managed_container_ids_on_node "$index" >/dev/null || { stop_unobservable_error "$index" "$TARGET"; exit 1; }
   done
 fi
 while IFS= read -r trial_plan; do
   [ -n "$trial_plan" ] || continue
-  stop_recorded_guarded_service "$TARGET" "$trial_plan"
-done <<<"$guarded_trials"
+  stop_recorded_service "$TARGET" "$trial_plan"
+done <<<"$recorded_plans"
+# Any other container of the spec, judged by its labels.
 stop_named_service_by_labels "$TARGET" "$NODE_SELECTOR"
 retire_stopped_service_indexes "$TARGET" "$NODE_SELECTOR"
 if [ -n "${PULSAR_STOP_RESULT_FILE:-}" ]; then
-  stopped=true; [ "${STOP_NAMED_NOTHING_FOUND:-0}" != 1 ] || [ "${GUARDED_TRIAL_STOPPED:-0}" = 1 ] || stopped=false
+  stopped=true; [ "${STOP_NAMED_NOTHING_FOUND:-0}" != 1 ] || [ "${RECORDED_SERVICE_STOPPED:-0}" = 1 ] || stopped=false
   printf '{"spec_id": "%s", "stopped": %s}\n' "$TARGET" "$stopped" >"$PULSAR_STOP_RESULT_FILE"
 fi
-if [ "${STOP_NAMED_NOTHING_FOUND:-0}" = 1 ] && [ "${GUARDED_TRIAL_STOPPED:-0}" != 1 ]; then
+if [ "${STOP_NAMED_NOTHING_FOUND:-0}" = 1 ] && [ "${RECORDED_SERVICE_STOPPED:-0}" != 1 ]; then
   log "Nothing was stopped. Model files, pins, archives and experiment evidence are unchanged."
 else
   log "Stopped. Model files, pins, archives and experiment evidence are retained."

@@ -36,7 +36,7 @@ MODEL_ID = 'example/service-synthetic'
 # double set SERVICE_NODE). Every call is logged as [node, args] and every
 # removal as [node, id]. SERVICE_DOCKER_DOWN lists node IDs whose Docker
 # fails. SERVICE_SWAP_AFTER_PROBE replaces the saved cluster with the file it
-# names after the first container listing, as a concurrent save would.
+# names after the first `container ls`, as a concurrent save would.
 DOCKER = r'''#!/usr/bin/env python3
 import json, os, shutil, sys
 root = os.environ["SERVICE_FIXTURE"]
@@ -111,7 +111,9 @@ if args[:2] == ["rm", "-f"]:
     c = find(args[2])
     with open(os.path.join(root, "mutations.jsonl"), "a") as stream:
         stream.write(json.dumps([node, c["id"]]) + "\n")
-    json.dump([other for other in everything if other is not c], open(state, "w"))
+    # SERVICE_RM_KEEPS lists node IDs whose removal reports success but keeps the container.
+    if node not in os.environ.get("SERVICE_RM_KEEPS", "").split(","):
+        json.dump([other for other in everything if other is not c], open(state, "w"))
     sys.exit(0)
 print("unexpected docker operation: " + " ".join(args), file=sys.stderr)
 sys.exit(97)
