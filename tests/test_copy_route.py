@@ -56,6 +56,24 @@ RSYNC = r'''#!/usr/bin/env python3
 import json,os,pathlib,shutil,sys
 root=pathlib.Path(os.environ['TRANSFER_FIXTURE']);args=sys.argv[1:]
 with (root/'calls.jsonl').open('a') as log: log.write(json.dumps(['rsync',args])+'\n')
+# rsync splits -e itself (do_cmd in rsync's main.c): words at spaces; a single
+# or double quote opens a quoted part, the same quote doubled inside it is a
+# literal quote; a backslash is an ordinary character. Its first word must run.
+command=args[args.index('-e')+1];words=[];i=0
+while i<len(command):
+ if command[i]==' ':i+=1;continue
+ word='';quote=None
+ while i<len(command) and (command[i]!=' ' or quote):
+  c=command[i]
+  if c in '"\'':
+   if not quote:quote=c;i+=1;continue
+   if c==quote:
+    if command[i+1:i+2]==quote:word+=c;i+=2;continue
+    quote=None;i+=1;continue
+  word+=c;i+=1
+ words.append(word)
+if not os.access(words[0],os.X_OK):
+ print(f'rsync: Failed to exec {words[0]}: No such file or directory (2)',file=sys.stderr);sys.exit(14)
 listfile=pathlib.Path(next(a.split('=',1)[1] for a in args if a.startswith('--files-from=')))
 source,dest=args[-2:]
 source=source.split(':',1)[1] if not source.startswith('/') else source
@@ -310,8 +328,28 @@ class CopyThroughANeighbour(unittest.TestCase):
         copies = [call[1] for call in calls if call[0] == 'rsync']
         self.assertTrue(copies)
         for args in copies:
-            self.assertRegex(args[args.index('-e') + 1], r"^'<root>/[^']*/route/route-ssh-1'$|^'/[^']*/route/route-ssh-1'$")
+            # shell_join_q leaves a plain path as it is: rsync reads it as one word (its double checks).
+            self.assertRegex(args[args.index('-e') + 1], r"^/[A-Za-z0-9_./-]*/route/route-ssh-1$")
             self.assertEqual(args[-1].split(':', 1)[0], 'ring-echo')
+
+    def test_a_temporary_folder_rsync_cannot_name_in_its_command_is_refused_plainly(self):
+        # rsync splits -e at spaces and quotes and ignores the backslashes that
+        # shell_join_q writes, so a wrapper in this folder could not run.
+        odd = Path(self.enterContext(tempfile.TemporaryDirectory())) / "pulsar a b'c"
+        odd.mkdir()
+        result, calls, received = Harness(self, self.ring, env={'TMPDIR': str(odd)}).run(0, 2)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        words = ' '.join(result.stderr.split())
+        self.assertIn(f'the copy route cannot use the temporary folder {odd}/pulsar-transfer.', words)
+        self.assertIn('rsync cannot run a program whose path holds a space, a quote or another character the '
+                      'shell must escape; set TMPDIR to a folder without them; nothing was copied', words)
+        self.assertEqual([call for call in calls if call[0] in ('ip', 'ssh', 'ssh_node', 'rsync')], [])
+        self.assertEqual(received, [])
+        self.assertEqual(list(odd.iterdir()), [])
+        # A copy with no node in between keeps today's transfer, whatever the folder.
+        result, calls, received = Harness(self, self.ring, env={'TMPDIR': str(odd)}).run(0, 1)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(received, ['part-0.bin', 'part-1.bin', 'part-2.bin'])
 
     def test_a_pull_passes_through_the_same_neighbour(self):
         result, calls, received = Harness(self, self.ring).run(2, 0)

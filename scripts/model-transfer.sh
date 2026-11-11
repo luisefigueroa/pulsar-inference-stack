@@ -58,6 +58,16 @@ model_transfer_jump() {
   JUMP_THROUGH=$(python3 -c 'import sys; names=sys.argv[1:]; print(names[0] if len(names)<2 else ", ".join(names[:-1])+" and "+names[-1])' "${passed[@]}")
 }
 
+# model_transfer_rsync_folder DIR: whether rsync can run a program in DIR
+# as its -e. rsync splits -e itself, at spaces and quotes, and does not read
+# the backslashes shell_join_q writes; a path shell_join_q leaves unchanged is
+# one word. Otherwise sets ROUTE_REFUSAL and returns 1.
+model_transfer_rsync_folder() {
+  [ "$(shell_join_q "$1")" != "$1" ] || return 0
+  ROUTE_REFUSAL="the copy route cannot use the temporary folder $1: rsync cannot run a program whose path holds a space, a quote or another character the shell must escape; set TMPDIR to a folder without them"
+  return 1
+}
+
 # model_transfer_plan_route SOURCE DEST: for the plan of a copy between two
 # physical ranks, what it passes through, as model_transfer runs it, with each
 # route through a neighbour proven now by the same read-only checks (route
@@ -82,6 +92,10 @@ model_transfer_plan_route() {
       || { ROUTE_REFUSAL="the copy route to $(human_node_name "$rank") has no confirmed cable"; return 1; }
     model_transfer_prove_hops "$mapped" || return 1
     dir=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-route.XXXXXX") || { ROUTE_REFUSAL="the copy route could not be prepared on this machine"; return 1; }
+    # A copy to or from this machine runs the route as rsync's -e; a relay runs it in Bash.
+    if [ "$source_rank" = 0 ] || [ "$destination_rank" = 0 ]; then
+      model_transfer_rsync_folder "$dir" || { rm -rf -- "$dir"; return 1; }
+    fi
     if ! model_transfer_jump "$mapped" "$dir/route"; then rm -rf -- "$dir"; return 1; fi
     rm -rf -- "$dir"
   done < <(printf '%s' "$ROUTE_PASSES" | python3 -c 'import json,sys; [print(leg["node_id"]) for leg in json.load(sys.stdin)]')
@@ -135,6 +149,9 @@ model_transfer() (
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
+  if [ "$hops" -gt 0 ]; then
+    model_transfer_rsync_folder "$temp" || die "$ROUTE_REFUSAL; nothing was copied"
+  fi
   effective=$(printf '%s' "$manifest" | python3 -m model_library.transfer partition --out "$temp") || die "invalid transfer manifest"
   revision=$(printf '%s' "$manifest" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot_revision"])')
   # Prove both endpoint routes using the control plane before starting bulk SSH.
@@ -159,14 +176,14 @@ model_transfer() (
   fi
   if [ "$hops" -gt 0 ]; then
     # Each hop is one SSH connection on its own cable; the proofs run the
-    # same wrappers rsync uses. rsync splits -e itself: one quoted path.
+    # same wrappers rsync uses. rsync splits -e itself: one word (checked above).
     model_transfer_jump "$transfer_map" "$temp/route" || die "$ROUTE_REFUSAL; nothing was copied"
     if [ "$destination_rank" = 0 ]; then
       log "Copies from $(human_node_name "$remote_rank") pass through $JUMP_THROUGH." >&2
     else
       log "Copies to $(human_node_name "$remote_rank") pass through $JUMP_THROUGH." >&2
     fi
-    shell="'$JUMP_WRAPPER'"
+    shell=$(shell_join_q "$JUMP_WRAPPER")
   else
   ssh_argv=("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -o "HostName=$remote_ip" -o "HostKeyAlias=$alias" -o "BindAddress=$local_ip" -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no)
   shell=$(shell_join_q "${ssh_argv[@]}")

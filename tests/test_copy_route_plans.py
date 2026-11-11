@@ -161,6 +161,17 @@ class PlanAndCopyAgree(unittest.TestCase):
         self.assertEqual(result.stderr.count(line), 1, result.stderr)
         self.assertEqual(result.stderr.count('pass through'), 1, result.stderr)
 
+    def test_a_temporary_folder_rsync_cannot_name_blocks_the_plan_as_it_would_the_copy(self):
+        odd = self.root / "tmp a b'c"
+        odd.mkdir()
+        self.f.env['TMPDIR'] = str(odd)
+        plan = json.loads(self.prepare('--plan').stdout)
+        self.assertFalse(plan['eligible'])
+        (detail,) = plan['blocker_details']
+        self.assertEqual(detail['code'], 'copy-route')
+        self.assertIn(f'the copy route cannot use the temporary folder {odd}/pulsar-route.', detail['message'])
+        self.assertEqual(list(odd.glob('pulsar-route.*')), [])
+
     def test_a_home_move_whose_route_cannot_be_proven_is_blocked_and_copies_nothing(self):
         self.f.cfg['wrong_route'] = True
         self.f.save()
