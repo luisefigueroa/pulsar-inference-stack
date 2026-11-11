@@ -729,27 +729,35 @@ class Renders(Cluster):
 
 
 class RecordsWithoutContainers(Cluster):
-    """After a Start that failed once its plan was saved (the plan and record
-    are saved just before the first docker run, and a failed launch keeps
-    them, as the default-order pins show)."""
+    """The plan and record are saved just before the first docker run. A Start
+    that fails after that and confirms every container it launched gone
+    retires the record it saved (maintainer's decision, 2026-11-11); one kept,
+    as a failed start left it before, refuses the spec elsewhere until Stop
+    clears it."""
 
-    def test_a_retry_on_the_same_nodes_works(self):
+    def test_a_failed_start_retires_its_record_so_any_start_follows(self):
         c = self.cluster
         spec, _ = c.spec(2)
         names = f'{c.hostname(2)},{c.hostname(3)}'
         result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names,
                          SERVICE_RUN_FAILS=c.node_id(2))
         self.assertEqual(result.returncode, 1)
-        self.assertEqual((len(c.store.records('services')), c.remaining()), (1, []))
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
+                      result.stdout)
+        self.assertEqual((c.store.records('services'), c.remaining()), ([], []))
+        # A retry on the same nodes, or the default order, starts.
         result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='192.0.2.32')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(c.pulsar('stop', spec['spec_id']).returncode, 0)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_other_nodes_are_refused_until_stop_clears_the_record(self):
+    def test_other_nodes_are_refused_until_stop_clears_a_kept_record(self):
         c = self.cluster
-        spec, _ = c.spec(2)
-        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
-                         SERVICE_RUN_FAILS=c.node_id(2))
-        self.assertEqual(result.returncode, 1)
+        spec, manifest = c.spec(2)
+        # A record with no container, as a failed start left one before.
+        c.plan(spec, manifest, [2, 3])
+        c.write()
         for positions in ((0, 1), (3, 2)):
             with self.subTest(positions=positions):
                 names = ','.join(c.hostname(p) for p in positions)

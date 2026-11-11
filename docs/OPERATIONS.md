@@ -937,8 +937,10 @@ A spec runs as one service. Start reads the saved service records first: when
 the spec is recorded on other nodes, in another order or under an earlier saved
 cluster, it refuses (`service_recorded_elsewhere`) and names those nodes and
 `./pulsar stop <spec-id>`, which stops that service or clears a record whose
-containers are gone. A record of the same service, as a failed start leaves,
-does not block a retry on the same nodes. `--replace` replaces a service on the
+containers are gone. A failed multi-node start retires the record it saved
+once it confirmed every container it launched gone (below), so it blocks
+nothing. A record of the same service that is kept does not block a retry on
+the same nodes. `--replace` replaces a service on the
 default node order only: with a placement off it, stop the service, then start
 it.
 
@@ -1548,7 +1550,13 @@ multi-node start that never became healthy removes its containers. Where a
 container remains, the note names `./pulsar logs <spec-id>` for more than the
 last lines printed. It says
 they were removed only after confirming it on every node; otherwise it names
-the nodes left and suggests `./pulsar stop`. The same blockers appear in `start --json`
+the nodes left and suggests `./pulsar stop`. A multi-node start saves its
+service record before its first container; when it then fails and confirms
+every container it launched gone on every node the record names, it retires
+that record and says so in one line. When a node could not be checked, a
+container remains, or the record was there before this start, the record is
+kept, and one line says so, why, and names `./pulsar stop <spec-id>`, which
+clears it. An interrupted start removes nothing and keeps its record. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
 guard is refused by ordinary start before any check as `guard_unsupported`.
 Use the separately owned [bounded guarded serving](GUARDED_SERVING.md) path

@@ -298,6 +298,29 @@ cluster_failure() {
   [ -z "$left" ] || cleanup=(--unconfirmed "$left")
   START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(role_name "$rank")" \
     --node-id "$(role_id "$rank")" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
+  failed_launch_record "$left"
+}
+
+# failed_launch_record LEFT — what a failed launch does with the service record
+# it saved before its first docker run (SAVED_RECORD: "created" or "existed",
+# SAVED_PLAN_ID). Every container of this start confirmed gone on every node
+# the record names (LEFT empty): a record this start created is retired, and
+# one line says so. A node not confirmed (LEFT names it) or a record that was
+# there before this start keeps the record, and one line says why and names
+# the stop that clears it. Nothing is said before the record was saved.
+failed_launch_record() {
+  local left="$1" outcome stop
+  [ -n "${SAVED_RECORD:-}" ] && [ -n "${SAVED_PLAN_ID:-}" ] || return 0
+  stop="./pulsar stop $(spec_reference "$MODEL_NAME")"
+  if [ -n "$left" ]; then
+    log "The service record this start saved is kept, because removing its containers could not be confirmed on $left. Next: $stop, which removes what remains and retires the record."
+  elif [ "$SAVED_RECORD" != created ]; then
+    log "The service record is kept, because it was saved before this start. Next: $stop, which retires a record whose containers are gone."
+  elif outcome=$(retire_recorded_plan "$SAVED_PLAN_ID"); then
+    log "No container this start launched is left on its nodes; $(retired_words "$outcome" "")."
+  else
+    log "The service record this start saved could not be retired. Next: $stop"
+  fi
 }
 
 existing=0
@@ -390,12 +413,21 @@ STARTUP_STARTED_NS=$(date +%s%N)
 # another service of this spec recorded meanwhile refuses the launch here,
 # before any docker run.
 save_rc=0
-elsewhere=$(persist_launch_plan_file "$PLAN_FILE") || save_rc=$?
+saved_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-record-saved.XXXXXX")
+elsewhere=$(persist_launch_plan_file "$PLAN_FILE" "$saved_file") || save_rc=$?
 if [ "$save_rc" = 3 ]; then
+  rm -f "$saved_file"
   refuse_recorded_elsewhere "$elsewhere"
 elif [ "$save_rc" != 0 ]; then
+  rm -f "$saved_file"
   die "the launch record could not be saved; nothing was started"
 fi
+# Whether this save created the service record, which a failed launch then
+# retires once its containers are confirmed gone (failed_launch_record).
+SAVED_RECORD=$(cat "$saved_file" 2>/dev/null || true)
+rm -f "$saved_file"
+SAVED_PLAN_ID=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_id"])' "$PLAN_FILE" 2>/dev/null) \
+  || SAVED_PLAN_ID=""
 STARTUP_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)
 CLUSTER_PHASE=launching
 # launch_role R — docker run of role rank R on its node: local Docker when the

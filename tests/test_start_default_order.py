@@ -97,7 +97,7 @@ class DefaultOrder(Scenario):
             'node-0 docker rm by id', 'node-0 docker inspect by id',
             'port 8000 on local', 'port 29500 on local'] + LAUNCH + SERVED)
 
-    def test_a_failed_launch_removes_what_it_started_and_keeps_the_record(self):
+    def test_a_failed_launch_removes_what_it_started_and_retires_its_record(self):
         c = self.cluster
         spec, _ = c.spec(2)
         result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(0))
@@ -109,14 +109,43 @@ class DefaultOrder(Scenario):
         self.assertIn('FAILED container_start_failed: fixture-ring-dorado (rank 0): the service container could not '
                       'be started. Next: ./pulsar doctor', lines)
         # The plan and record are saved just before the first docker run; a
-        # failed launch removes its containers and keeps the record.
-        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 0))
+        # failed launch removes its containers and, once every node shows
+        # them gone, retires the record it saved (the plan stays as history).
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.', lines)
+        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (0, 0))
+        self.assertEqual(len(c.store.records('service-plans')), 1)
         # A retry on the same nodes starts.
         c.forget_calls()
         result = c.start(spec['spec_id'], '--skip-preflight')
         self.assertEqual((result.returncode, len(c.store.records('services')), len(c.remaining())), (0, 1, 2))
 
-    def test_a_health_timeout_removes_both_ranks_and_keeps_the_record(self):
+    def test_a_container_left_by_a_failed_launch_keeps_the_record(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        # Rank 1's removal reports success but keeps the container.
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(0),
+                         SERVICE_RM_KEEPS=c.node_id(1))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"The service record this start saved is kept, because removing its containers could not be "
+                      f"confirmed on fixture-ring-bravo (rank 1). Next: ./pulsar stop {spec['spec_id'][:12]}, which "
+                      'removes what remains and retires the record.', self.lines(result, spec))
+        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 1))
+
+    def test_a_record_saved_before_this_start_is_kept(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # The same service's record, left with no container (as a failed start
+        # left one before failed launches retired their own).
+        c.plan(spec, manifest, [0, 1])
+        c.write()
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(0))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('The service record is kept, because it was saved before this start. Next: ./pulsar stop '
+                      f"{spec['spec_id'][:12]}, which retires a record whose containers are gone.",
+                      self.lines(result, spec))
+        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 0))
+
+    def test_a_health_timeout_removes_both_ranks_and_retires_the_record(self):
         c = self.cluster
         spec, _ = c.spec(2)
         result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_HEALTHY='none')
@@ -130,7 +159,9 @@ class DefaultOrder(Scenario):
         self.assertIn("FAILED health_timeout: fixture-ring-dorado (rank 0): the service did not become healthy in time. "
                       "Note: The cluster's containers were removed; the logs are shown above.",
                       self.lines(result, spec))
-        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (1, 0))
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
+                      self.lines(result, spec))
+        self.assertEqual((len(c.store.records('services')), len(c.remaining())), (0, 0))
 
 
 if __name__ == '__main__':
