@@ -6,14 +6,11 @@ on a saved four-node ring, with Docker and SSH doubles (tests/support/
 service_cluster.py). They record what these paths do, so that teaching Stop
 the nodes a service's record names leaves them unchanged.
 """
-from datetime import datetime
 import json
-import os
 from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
@@ -267,29 +264,8 @@ class Pages(Scenario):
     """The Running services card and Home's Serving row, from the live inventory."""
 
     def pages(self, spec_id):
-        from model_library.catalog import entries as catalog_entries
-        from model_library.node_names import NodeNames
-        from scripts import cluster_status, services_page
-        from scripts import topology_manifest as tm
-        c = self.cluster
-        result = c.pulsar('inventory', '--json')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        inventory = json.loads(result.stdout)
-        entries = catalog_entries(c.root, c.store)
-        names = NodeNames({node['node_id']: node['hostname'] for node in c.nodes},
-                          [node['node_id'] for node in c.nodes], tm.RING_CLASS)
-        page = services_page.Page(inventory, entries, names=names)
-        environ = {'CLUSTER_TOPOLOGY_FILE': str(c.fixture.path),
-                   'PULSAR_CLUSTER_CHANGES_FILE': str(c.root / 'state/cluster-changes.json'),
-                   'PULSAR_SERVICE_INVENTORY_FILE': str(c.root / 'state/service-inventory.json'),
-                   'PULSAR_STORAGE_BUDGET_FILE': str(c.root / 'state/storage-budget.json')}
-        with mock.patch.dict(os.environ, environ):
-            now = datetime.fromisoformat(inventory['generated_at'].replace('Z', '+00:00'))
-            records = cluster_status.Records(c.root, now=now, environ={'PULSAR_COLD_ROOT': ''})
-            home = cluster_status.serving_rows(records, entries, 80 - cluster_status.LABEL_WIDTH - 24)
-        return {'screen': self.named(page.screen(spec_id, width=80).replace(page.age, '<age>')),
-                'choices': page.choices(spec_id), 'question': self.named(page.question(spec_id) or ''),
-                'home': home}
+        pages = self.cluster.pages(spec_id)
+        return dict(pages, screen=self.named(pages['screen']), question=self.named(pages['question']))
 
     CHOICES = [('check', 'Check it now'), ('connect', 'How to connect (a first request to copy)'),
                ('logs', 'Logs'), ('restart', 'Restart…'), ('switch', 'Switch to another model…'),

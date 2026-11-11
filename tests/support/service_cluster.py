@@ -312,6 +312,36 @@ class ServiceCluster:
                    containers=containers, gpu_processes=[])
         return raw
 
+    def pages(self, spec_id, width=80):
+        """The Running services card of SPEC_ID, its choices and Stop question,
+        and Home's Serving row, from a live inventory on the doubles. The
+        card's inventory age reads <age>."""
+        from datetime import datetime
+        from model_library.catalog import entries as catalog_entries
+        from model_library.node_names import NodeNames
+        from scripts import cluster_status, services_page
+        from scripts import topology_manifest as tm
+        result = self.pulsar('inventory', '--json')
+        if result.returncode != 0:
+            raise AssertionError(result.stderr)
+        inventory = json.loads(result.stdout)
+        entries = catalog_entries(self.root, self.store)
+        names = NodeNames({node['node_id']: node['hostname'] for node in self.nodes},
+                          [node['node_id'] for node in self.nodes], tm.RING_CLASS)
+        page = services_page.Page(inventory, entries, names=names)
+        environ = {'CLUSTER_TOPOLOGY_FILE': str(self.fixture.path),
+                   'PULSAR_CLUSTER_CHANGES_FILE': str(self.root / 'state/cluster-changes.json'),
+                   'PULSAR_SERVICE_INVENTORY_FILE': str(self.root / 'state/service-inventory.json'),
+                   'PULSAR_STORAGE_BUDGET_FILE': str(self.root / 'state/storage-budget.json')}
+        with mock.patch.dict(os.environ, environ):
+            now = datetime.fromisoformat(inventory['generated_at'].replace('Z', '+00:00'))
+            records = cluster_status.Records(self.root, now=now, environ={'PULSAR_COLD_ROOT': ''})
+            home = cluster_status.serving_rows(records, entries, width - cluster_status.LABEL_WIDTH - 24)
+            block = cluster_status.home_block(records, entries, width=width)
+        return {'screen': page.screen(spec_id, width=width).replace(page.age, '<age>'),
+                'choices': page.choices(spec_id), 'question': page.question(spec_id) or '', 'home': home,
+                'home_block': block, 'page': page}
+
     def inventory(self, raw=None, *extra):
         path = self.root / 'raw-snapshot.json'
         path.write_text(json.dumps(raw if raw is not None else self.snapshot()))

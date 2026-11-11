@@ -478,6 +478,36 @@ class Inventory(Cluster):
                          ('degraded', 'mismatch', False))
 
 
+class Pages(Cluster):
+    """Running services and Home for a pair recorded on saved ranks 2 and 3."""
+
+    def test_it_reads_as_running_on_its_nodes_and_offers_stop(self):
+        spec, _, _ = self.pair()
+        pages = self.cluster.pages(spec['spec_id'])
+        prefix = spec['spec_id'][:12]
+        # Stop, and Switch, which stops it before Start, are offered.
+        self.assertEqual([action for action, _ in pages['choices']],
+                         ['check', 'connect', 'logs', 'switch', 'stop', 'stop-all', 'back'])
+        self.assertEqual(pages['question'],
+                         f'Stop and remove the service containers of example/service-synthetic [{prefix}] on '
+                         'fixture-ring-echo, fixture-ring-alpha? Model files, pins and archives are kept.')
+        self.assertEqual(pages['home'], [
+            'example/service-synthetic running on fixture-ring-echo, fixture-ring-alpha ·\xa0port\xa08000 '
+            '·\xa0seen less than a minute ago; **Running services…** has the details'])
+        # Its API is on its first node; Restart stays as it is until Start can
+        # serve on named nodes; Stop is offered, so the card has no Stop row.
+        self.assertEqual(pages['screen'],
+                         'example/service-synthetic running on fixture-ring-echo, fixture-ring-alpha\n'
+                         '  · port 8000\n'
+                         'Seen      by the service inventory <age>\n'
+                         'Model     example/service-synthetic, the model name requests use\n'
+                         'API       http://192.0.2.32:8000/v1 · seen\n'
+                         'Key       not recorded: add the key header if the service was started with one\n'
+                         'Health    not checked here; choose Check it now\n'
+                         'Restart   not offered: it runs on fixture-ring-echo and fixture-ring-alpha, but\n'
+                         '          Start serves it on fixture-ring-dorado and fixture-ring-bravo\n')
+
+
 class DefaultOrderRetire(Cluster):
     """No stop path that finds containers by saved position retires the record
     of a service recorded off the default order: it never looked there."""
