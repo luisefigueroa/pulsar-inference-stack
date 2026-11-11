@@ -20,6 +20,15 @@ names at the rank's prepared copy ``path`` has the layout, manifest, file set
 and sizes of this snapshot, and the run hashes every file before it records
 the folder as the rank's copy (decision D7). Nothing is copied or deleted, and
 it needs no budget.
+
+A copy between two nodes that share no cable passes through the nodes
+between them (a ring). Its plan says so: a ``copy`` action, or a move,
+restore or archive plan, carries ``passes_through``, one entry per leg that
+has a node in between: ``copies`` (``to`` or ``from`` the node), the
+``node_id`` at the far end and the ``through`` node_ids in order. A copy
+with no node in between has no such field. A route that cannot be made or
+proven is a ``copy-route`` blocker that names the hop, and the plan is not
+eligible.
 """
 from __future__ import annotations
 
@@ -98,6 +107,42 @@ def _nested(one: str, other: str) -> bool:
 
 def detail(code: str, message: str, fix: str, node_id: str | None = None, **fields) -> dict:
     return {'code': code, 'message': message, **({'node_id': node_id} if node_id else {}), 'fix': fix, **fields}
+
+
+COPY_ROUTE_FIX = 'check the cables and SSH servers of the machines named, then preview again'
+
+
+def with_copy_routes(plan: dict, routes: list[dict]) -> dict:
+    """PLAN with each copy action's route, as the copy will run it.
+
+    ROUTES has one entry per copy action, by its ``slot`` in the actions:
+    ``passes_through`` (the legs with a node in between) and, when the route
+    cannot be made or proven, the ``refusal`` that says why."""
+    actions = [dict(action) for action in plan['actions']]
+    blockers, details = list(plan['blockers']), list(plan.get('blocker_details') or [])
+    for route in routes:
+        action = actions[route['slot']]
+        if action['action'] != 'copy':
+            raise StorageError('a copy route belongs to a copy action')
+        if route.get('passes_through'):
+            action['passes_through'] = route['passes_through']
+        if route.get('refusal'):
+            blockers.append(f"{action['node_id']}: {route['refusal']}")
+            details.append(detail('copy-route', blockers[-1], COPY_ROUTE_FIX, action['node_id']))
+    return {**plan, 'actions': actions, 'eligible': not blockers, 'blockers': blockers,
+            'blocker_details': details}
+
+
+def with_copy_route(plan: dict, node_id: str, passes_through: list, refusal: str = '') -> dict:
+    """A plan of one copy to or from NODE_ID (move, restore, archive) with its route.
+    A copy with no node in between and no refusal leaves the plan unchanged."""
+    plan = {**plan, **({'passes_through': passes_through} if passes_through else {})}
+    if refusal:
+        message = f'{node_id}: {refusal}'
+        plan.update(eligible=False, blockers=[*(plan.get('blockers') or []), message],
+                    blocker_details=[*(plan.get('blocker_details') or []),
+                                     detail('copy-route', message, COPY_ROUTE_FIX, node_id)])
+    return plan
 
 
 def container_details(record: dict, observations: dict[str, dict], message: str) -> list[dict]:

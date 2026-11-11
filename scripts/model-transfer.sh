@@ -5,24 +5,26 @@
 # model_transfer_prove_hops MAP: for a copy route through neighbours (the
 # transfer map's hops), prove on both ends of every hop, over control SSH,
 # that the far end's address on their cable goes out through that cable's
-# interface from the node's own address on it. Dies naming the hop.
+# interface from the node's own address on it. On the first that is not,
+# sets ROUTE_REFUSAL to a reason that names the hop and returns 1.
 model_transfer_prove_hops() {
   local mapped="$1" from_rank from_name from_ip from_dev to_rank to_name to_ip to_dev _to_alias network route
+  ROUTE_REFUSAL=""
   while IFS=$'\t' read -r from_rank from_name from_ip from_dev to_rank to_name to_ip to_dev _to_alias network; do
     [ -n "$from_rank" ] || continue
     if [ "$from_rank" = 0 ]; then
       route=$("${PULSAR_IP:-ip}" -j route get "$to_ip" </dev/null) \
-        || die "the copy route is not proven: this machine has no route to $to_name's address $to_ip on their cable; nothing was copied"
+        || { ROUTE_REFUSAL="the copy route is not proven: this machine has no route to $to_name's address $to_ip on their cable"; return 1; }
     else
       route=$(ssh_node "$from_rank" "$(shell_join_q ip -j route get "$to_ip")" </dev/null) \
-        || die "the copy route is not proven: $from_name did not say how it reaches $to_name's address $to_ip on their cable; nothing was copied"
+        || { ROUTE_REFUSAL="the copy route is not proven: $from_name did not say how it reaches $to_name's address $to_ip on their cable"; return 1; }
     fi
     printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$to_ip" --netdev "$from_dev" --source-ip "$from_ip" \
-      || die "the copy route is not proven: on $from_name, $to_name's address $to_ip ($network) does not go out through $from_dev from $from_ip; nothing was copied"
+      || { ROUTE_REFUSAL="the copy route is not proven: on $from_name, $to_name's address $to_ip ($network) does not go out through $from_dev from $from_ip"; return 1; }
     route=$(ssh_node "$to_rank" "$(shell_join_q ip -j route get "$from_ip")" </dev/null) \
-      || die "the copy route is not proven: $to_name did not say how it reaches $from_name's address $from_ip on their cable; nothing was copied"
+      || { ROUTE_REFUSAL="the copy route is not proven: $to_name did not say how it reaches $from_name's address $from_ip on their cable"; return 1; }
     printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$from_ip" --netdev "$to_dev" --source-ip "$to_ip" \
-      || die "the copy route is not proven: on $to_name, $from_name's address $from_ip ($network) does not go out through $to_dev from $to_ip; nothing was copied"
+      || { ROUTE_REFUSAL="the copy route is not proven: on $to_name, $from_name's address $from_ip ($network) does not go out through $to_dev from $to_ip"; return 1; }
   done < <(printf '%s' "$mapped" | python3 -m model_library.transfer hops)
 }
 
@@ -30,27 +32,67 @@ model_transfer_prove_hops() {
 # DIR, then prove each in order with one short command: this machine to its
 # neighbour over their cable, then each next node through the one before.
 # Sets JUMP_WRAPPER, the wrapper that reaches the far end, and JUMP_THROUGH,
-# the machines the copy passes through. Dies naming the hop that failed.
+# the machines the copy passes through. On a hop that does not connect, sets
+# ROUTE_REFUSAL to a reason that names it and returns 1.
 model_transfer_jump() {
   local mapped="$1" dir="$2" options path alias to_name from_name to_ip index=0
-  local -a through=()
-  JUMP_WRAPPER="" JUMP_THROUGH=""
-  mkdir -m 700 "$dir" || die "cannot prepare the copy route"
+  local -a passed=()
+  JUMP_WRAPPER="" JUMP_THROUGH="" ROUTE_REFUSAL=""
+  mkdir -m 700 "$dir" || { ROUTE_REFUSAL="the copy route could not be prepared on this machine"; return 1; }
   options=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1:]))' "${PULSAR_SSH_OPTS[@]}")
   while IFS=$'\t' read -r path alias to_name from_name to_ip; do
     [ -n "$path" ] || continue
     if ! "$path" -n -- "$alias" true </dev/null >/dev/null 2>"$dir/proof.err"; then
       if [ "$index" = 0 ]; then
-        die "the copy route is not proven: SSH from this machine to $to_name over their cable ($to_ip) did not connect: $(tail -n1 "$dir/proof.err"); nothing was copied"
+        ROUTE_REFUSAL="the copy route is not proven: SSH from this machine to $to_name over their cable ($to_ip) did not connect: $(tail -n1 "$dir/proof.err")"
+        return 1
       fi
-      die "the copy route is not proven: SSH to $to_name through $from_name did not connect: $(tail -n1 "$dir/proof.err"). $from_name's SSH server must allow it to forward the connection to $to_ip (AllowTcpForwarding); nothing was copied"
+      ROUTE_REFUSAL="the copy route is not proven: SSH to $to_name through $from_name did not connect: $(tail -n1 "$dir/proof.err"). $from_name's SSH server must allow it to forward the connection to $to_ip (AllowTcpForwarding)"
+      return 1
     fi
-    [ "$index" = 0 ] || through+=("$from_name")
+    [ "$index" = 0 ] || passed+=("$from_name")
     JUMP_WRAPPER="$path"
     index=$((index + 1))
   done < <(printf '%s' "$mapped" | python3 -m model_library.transfer jump --dir "$dir" --ssh "$PULSAR_SSH" --options-json "$options")
-  [ -n "$JUMP_WRAPPER" ] || die "the copy route has no hop to prove"
-  JUMP_THROUGH=$(python3 -c 'import sys; names=sys.argv[1:]; print(names[0] if len(names)<2 else ", ".join(names[:-1])+" and "+names[-1])' "${through[@]}")
+  [ -n "$JUMP_WRAPPER" ] || { ROUTE_REFUSAL="the copy route has no hop to prove"; return 1; }
+  JUMP_THROUGH=$(python3 -c 'import sys; names=sys.argv[1:]; print(names[0] if len(names)<2 else ", ".join(names[:-1])+" and "+names[-1])' "${passed[@]}")
+}
+
+# model_transfer_plan_route SOURCE DEST: for the plan of a copy between two
+# physical ranks, what it passes through, as model_transfer runs it, with each
+# route through a neighbour proven now by the same read-only checks (route
+# lookups, then one `true` through each hop). Sets ROUTE_PASSES to the legs
+# that pass through another node, as JSON ([] when none). When a leg has no
+# chain of cables or its route is not proven, sets ROUTE_REFUSAL to the reason
+# and returns 1. A copy with no node in between checks nothing here.
+model_transfer_plan_route() {
+  local source_rank="$1" destination_rank="$2" legs node rank mapped dir
+  ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  legs=$(python3 -m model_library.transfer legs --topology "$CLUSTER_TOPOLOGY_FILE" --source-rank "$source_rank" --destination-rank "$destination_rank") \
+    || { ROUTE_REFUSAL="the copy route could not be read from the saved membership"; return 1; }
+  ROUTE_PASSES=$(json_fields "$legs" passes_through)
+  ROUTE_REFUSAL=$(printf '%s' "$legs" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("refusal") or "")')
+  [ -z "$ROUTE_REFUSAL" ] || return 1
+  [ "$ROUTE_PASSES" != '[]' ] || return 0
+  require_topology_ssh_trust >/dev/null 2>&1 \
+    || { ROUTE_REFUSAL="the copy route cannot be proven: the cluster's SSH identities are not enrolled"; return 1; }
+  while IFS= read -r node; do
+    rank=$(model_physical_rank "$node") || { ROUTE_REFUSAL="the copy route names a node outside the saved membership"; return 1; }
+    mapped=$(python3 -m model_library.transfer map --topology "$CLUSTER_TOPOLOGY_FILE" --source-rank 0 --destination-rank "$rank") \
+      || { ROUTE_REFUSAL="the copy route to $(human_node_name "$rank") has no confirmed cable"; return 1; }
+    model_transfer_prove_hops "$mapped" || return 1
+    dir=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-route.XXXXXX") || { ROUTE_REFUSAL="the copy route could not be prepared on this machine"; return 1; }
+    if ! model_transfer_jump "$mapped" "$dir/route"; then rm -rf -- "$dir"; return 1; fi
+    rm -rf -- "$dir"
+  done < <(printf '%s' "$ROUTE_PASSES" | python3 -c 'import json,sys; [print(leg["node_id"]) for leg in json.load(sys.stdin)]')
+}
+
+# model_transfer_route_plan PLAN NODE_ID: PLAN, of one copy to or from
+# NODE_ID (move, restore, archive), with the route model_transfer_plan_route
+# found: its legs through other nodes, or the blocker that says why not.
+model_transfer_route_plan() {
+  printf '%s' "$1" | python3 -c 'import json,sys; from model_library.planning import with_copy_route; print(json.dumps(with_copy_route(json.load(sys.stdin),sys.argv[1],json.loads(sys.argv[2]),sys.argv[3])))' \
+    "$2" "${ROUTE_PASSES:-[]}" "${ROUTE_REFUSAL:-}"
 }
 
 model_transfer() (
@@ -98,7 +140,7 @@ model_transfer() (
   # Prove both endpoint routes using the control plane before starting bulk SSH.
   if [ "$hops" -gt 0 ]; then
     # No shared link: prove every hop's cable on both of its ends.
-    model_transfer_prove_hops "$transfer_map"
+    model_transfer_prove_hops "$transfer_map" || die "$ROUTE_REFUSAL; nothing was copied"
   else
   route=$("${PULSAR_IP:-ip}" -j route get "$remote_ip") || die "local RoCE route is unavailable"
   printf '%s' "$route" | python3 -m model_library.transfer route --remote-ip "$remote_ip" --netdev "$local_dev" --source-ip "$local_ip" || die "local route differs from confirmed rail"
@@ -118,7 +160,7 @@ model_transfer() (
   if [ "$hops" -gt 0 ]; then
     # Each hop is one SSH connection on its own cable; the proofs run the
     # same wrappers rsync uses. rsync splits -e itself: one quoted path.
-    model_transfer_jump "$transfer_map" "$temp/route"
+    model_transfer_jump "$transfer_map" "$temp/route" || die "$ROUTE_REFUSAL; nothing was copied"
     if [ "$destination_rank" = 0 ]; then
       log "Copies from $(human_node_name "$remote_rank") pass through $JUMP_THROUGH." >&2
     else
@@ -189,8 +231,8 @@ model_transfer_relay() (
     aliases[$role]="$alias"
     if [ "$(printf '%s' "$mapped" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("hops") or []))')" -gt 0 ]; then
       # This leg shares no link with this machine: it passes through neighbours.
-      model_transfer_prove_hops "$mapped"
-      model_transfer_jump "$mapped" "$temp/route-$role"
+      model_transfer_prove_hops "$mapped" || die "$ROUTE_REFUSAL; nothing was copied"
+      model_transfer_jump "$mapped" "$temp/route-$role" || die "$ROUTE_REFUSAL; nothing was copied"
       shells[$role]=$(shell_join_q "$JUMP_WRAPPER")
       through[$role]="$JUMP_THROUGH"
       continue

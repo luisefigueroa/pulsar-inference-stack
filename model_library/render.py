@@ -261,6 +261,29 @@ def blocker_message(text: str, names: NodeNames) -> str:
     return names.prefixed(text)
 
 
+def copy_route_lines(document: dict, names: NodeNames) -> list[str]:
+    """What a plan's copies pass through, one sentence per leg with a node in
+    between, in the words the copy's log uses: "copies to echo pass through
+    bravo". From a plan's or its copy actions' ``passes_through``, in order,
+    each once; a copy with no node in between says nothing."""
+    legs = list(document.get('passes_through') or [])
+    for action in document.get('actions') or []:
+        legs += action.get('passes_through') or []
+    for member in document.get('snapshots') or []:
+        if isinstance(member, dict):
+            legs += [leg for action in member.get('actions') or [] for leg in action.get('passes_through') or []]
+    lines = []
+    for leg in legs:
+        if not isinstance(leg, dict) or leg.get('copies') not in ('to', 'from') or not leg.get('through'):
+            continue
+        through = [names(node) for node in leg['through']]
+        joined = through[0] if len(through) == 1 else ', '.join(through[:-1]) + ' and ' + through[-1]
+        line = f"copies {leg['copies']} {names(leg.get('node_id'))} pass through {joined}"
+        if line not in lines:
+            lines.append(line)
+    return lines
+
+
 HOME_REMOVAL_RECOVERY = 'Recovery requires a usable archive or an available download source.'
 
 
@@ -368,8 +391,12 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
     routes = {'direct-ssh-roce': 'Direct copy over the confirmed RoCE rail',
               'controller-stream-relay': 'Stream through controller pipes over confirmed RoCE rails; no controller model copy',
               'already-home': 'Home is already on the selected node'}
+    if route == 'direct-ssh-roce' and document.get('passes_through'):
+        routes['direct-ssh-roce'] = 'Copy over confirmed RoCE cables, through the nodes between'
     if route:
         out.field('Copy route', routes.get(route, route))
+    for line in copy_route_lines({'passes_through': document.get('passes_through')}, names):
+        out.field('Route', line)
     if 'home' in document:
         _home(out, document['home'], names)
     existing = document.get('existing_homes')
@@ -390,6 +417,8 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
     for item in document.get('actions') or []:
         out.field(f'Rank {item.get("rank", "?")}',
                   f'{names(item["node_id"]) if item.get("node_id") else "unknown node"}: {actions.get(item.get("action"), item.get("action", "unknown action"))}')
+        for line in copy_route_lines({'passes_through': item.get('passes_through')}, names):
+            out.field('Route', line, indent=2, label_width=8)
     views = document.get('views')
     if isinstance(views, list):
         out.field('Copies', len(views))

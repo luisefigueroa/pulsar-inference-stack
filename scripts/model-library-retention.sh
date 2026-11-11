@@ -145,8 +145,16 @@ move_home() {
   route=direct-ssh-roce
   if [ "$source_rank" -eq "$target_rank" ]; then route=already-home; elif [ "$source_rank" -gt 0 ] && [ "$target_rank" -gt 0 ]; then route=controller-stream-relay; fi
   plan=$(model_json kind pulsar-home-move-plan snapshot_manifest_id "$MANIFEST_ID" source_node "$(json_fields "$HOME_JSON" node_id)" destination_node "$target_node" transfer_route "$route")
+  ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  if [ "$route" != already-home ]; then
+    # Between nodes that share no cable the copy passes through the nodes between.
+    . "$REPO_DIR/scripts/model-transfer.sh"
+    model_transfer_plan_route "$source_rank" "$target_rank" || true
+    plan=$(model_transfer_route_plan "$plan" "$target_node") || die "could not check the copy route"
+  fi
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "move requires --yes after reviewing destination and transfer route"
+  [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was moved"
   phase 1 3 "verifying the home on $(human_node_name "$source_rank")"
   source_state=$(model_node "$source_rank" "$(model_node_request path-state path "$(json_fields "$HOME_JSON" path)")") || die "source home is unobservable"
   if [ "$(json_fields "$source_state" state)" = missing ]; then

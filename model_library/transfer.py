@@ -29,6 +29,10 @@ def selected_rail_between(topology, first, second, rail_index=0):
     return rail[first_side],rail[second_side],rail['network']
 
 
+class NoCopyRoute(StorageError):
+    """Two saved nodes that no chain of cables joins: no copy can be made between them."""
+
+
 def copy_route(topology, first, second):
     """Saved ranks from FIRST to SECOND along the shortest chain of cables.
 
@@ -55,7 +59,7 @@ def copy_route(topology, first, second):
         chains=longer;seen|={chain[-1] for chain in longer}
     if not best:
         names=[node.get('hostname') or f'rank {node["rank"]}' for node in topology['nodes']]
-        raise StorageError(f'no chain of cables joins {names[first]} and {names[second]}')
+        raise NoCopyRoute(f'no chain of cables joins {names[first]} and {names[second]}')
     return min(best,key=lambda chain:(sorted(chain[1:-1]),chain[1:-1]))
 
 
@@ -103,9 +107,33 @@ def route_hops(topology, chain):
     return hops
 
 
-def transfer_map(topology_path,source_rank,destination_rank):
-    from scripts.topology_manifest import load_json, extract_topology, validate_manifest, topology_has_ssh_trust
+def copy_legs(topology, source_rank, destination_rank):
+    """The legs of a copy between two saved ranks that pass through other
+    nodes, as the copy runs them: this machine (rank 0) copies to or from the
+    other end, and a copy between two other nodes streams through this machine
+    on two legs, from the source and to the destination. Each leg follows
+    copy_route from this machine; a leg with no node in between is left out.
+    Raises NoCopyRoute when a leg has no chain of cables."""
+    if source_rank==destination_rank:raise StorageError('a copy needs two different nodes')
+    nodes=topology['nodes'];legs=[]
+    for copies,rank in (('from',source_rank),('to',destination_rank)):
+        if rank==0:continue
+        chain=copy_route(topology,0,rank)
+        if len(chain)>2:
+            legs.append(dict(copies=copies,node_id=nodes[rank]['node_id'],
+                             through=[nodes[middle]['node_id'] for middle in chain[1:-1]]))
+    return legs
+
+
+def saved_topology(topology_path):
+    from scripts.topology_manifest import load_json, extract_topology, validate_manifest
     topology=extract_topology(load_json(topology_path));validate_manifest(topology,require_verified=True)
+    return topology
+
+
+def transfer_map(topology_path,source_rank,destination_rank):
+    from scripts.topology_manifest import topology_has_ssh_trust
+    topology=saved_topology(topology_path)
     if not topology_has_ssh_trust(topology):raise StorageError('transfer requires enrolled topology SSH identities')
     if source_rank==destination_rank or (source_rank!=0 and destination_rank!=0):
         raise StorageError('transfer supports one local and one remote endpoint; two-remote transfer requires explicit orchestration')
@@ -193,7 +221,7 @@ finally:os.close(fd)
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command',choices=['map','partition','route','staging-code','stream-command','jump','hops'])
+    parser.add_argument('command',choices=['map','partition','route','staging-code','stream-command','jump','hops','legs'])
     parser.add_argument('--dir');parser.add_argument('--ssh');parser.add_argument('--options-json')
     parser.add_argument('--topology');parser.add_argument('--source-rank',type=int);parser.add_argument('--destination-rank',type=int)
     parser.add_argument('--mode');parser.add_argument('--path');parser.add_argument('--stream',type=int)
@@ -201,6 +229,12 @@ def main():
     args=parser.parse_args()
     try:
         if args.command=='map':print(json.dumps(transfer_map(args.topology,args.source_rank,args.destination_rank)))
+        elif args.command=='legs':
+            # What a copy passes through, for its plan; no chain of cables is a
+            # plain refusal for the plan to show, not a failure of this command.
+            topology=saved_topology(args.topology)
+            try:print(json.dumps({'passes_through':copy_legs(topology,args.source_rank,args.destination_rank)}))
+            except NoCopyRoute as exc:print(json.dumps({'passes_through':[],'refusal':str(exc)}))
         elif args.command=='route':validate_ssh_roce_route(json.load(sys.stdin),remote_ip=args.remote_ip,expected_netdev=args.netdev,expected_source_ip=args.source_ip)
         elif args.command=='staging-code':print(STAGING_CHECK_CODE)
         elif args.command=='hops':

@@ -6,10 +6,20 @@ archive_create() {
   require_archive_root
   require_home
   local rank result stage
+  rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
+  ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  if [ "$rank" -ne 0 ]; then
+    # A home on another node is copied to this machine, through the nodes between when they share no cable.
+    . "$REPO_DIR/scripts/model-transfer.sh"
+    model_transfer_plan_route "$rank" 0 || true
+  fi
   if [ "$PLAN" -eq 1 ]; then
-    emit_result "$(model_json kind pulsar-archive-plan snapshot_manifest_id "$MANIFEST_ID" home: "$HOME_JSON" archive_root "$PULSAR_COLD_ROOT")"; return
+    result=$(model_json kind pulsar-archive-plan snapshot_manifest_id "$MANIFEST_ID" home: "$HOME_JSON" archive_root "$PULSAR_COLD_ROOT")
+    [ "$rank" -eq 0 ] || result=$(model_transfer_route_plan "$result" "$(json_fields "$HOME_JSON" node_id)") || die "could not check the copy route"
+    emit_result "$result"; return
   fi
   [ "$YES" -eq 1 ] || die "archive creation requires --yes"
+  [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was archived"
   phase 1 3 "verifying the home on $(human_node_name "$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")")"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
@@ -45,6 +55,12 @@ restore_model() {
   if [ -n "$SPEC_JSON" ] && [ "$SPEC_JSON" != null ] && [ "${NODES:-1}" -gt 1 ] && [ "$rank" -ge "$NODES" ]; then die "selected home node is outside exact serving geometry"; fi
   existing=$(find_source_homes) || die "all-node home presence is unobservable"
   [ "$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" -eq 0 ] || die "a home exists; verify/reuse it instead of replacing it"
+  ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  if [ "$rank" -ne 0 ]; then
+    # The archive on this machine is copied to the node, through the nodes between when they share no cable.
+    . "$REPO_DIR/scripts/model-transfer.sh"
+    model_transfer_plan_route 0 "$rank" || true
+  fi
   if [ "$PLAN" -eq 1 ]; then
     # Capacity is advisory: an unavailable observation stays unknown and does
     # not replace the restore operation's existing checks or stage any files.
@@ -57,12 +73,15 @@ restore_model() {
     else
       rc=$?; [ "$rc" -ne 130 ] || return 130
     fi
-    emit_result "$(model_json kind pulsar-restore-plan snapshot_manifest_id "$MANIFEST_ID" \
+    result=$(model_json kind pulsar-restore-plan snapshot_manifest_id "$MANIFEST_ID" \
       total_bytes: "$(json_fields "$MANIFEST_JSON" total_bytes)" file_count: "$(json_fields "$MANIFEST_JSON" file_count)" \
       selected_node "${CLUSTER_NODE_IDS[$rank]}" archive_root "$PULSAR_COLD_ROOT" \
-      destination_root "$destination_root" destination_space: "$space")"; return
+      destination_root "$destination_root" destination_space: "$space")
+    [ "$rank" -eq 0 ] || result=$(model_transfer_route_plan "$result" "${CLUSTER_NODE_IDS[$rank]}") || die "could not check the copy route"
+    emit_result "$result"; return
   fi
   [ "$YES" -eq 1 ] || die "restoration requires --yes"
+  [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was restored"
   archive_path=$(python3 -c 'from model_library.local import location,payload; import json,sys; m=json.loads(sys.argv[2]); print(payload(location(sys.argv[1],m,archive=True),m))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   # Suggested commands select the same snapshot as this restore: a catalog spec by
   # its 12-character prefix, a candidate with its --spec-file, or the --manifest.
