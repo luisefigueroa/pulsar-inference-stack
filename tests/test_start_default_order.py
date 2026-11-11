@@ -119,6 +119,16 @@ class DefaultOrder(Scenario):
         result = c.start(spec['spec_id'], '--skip-preflight')
         self.assertEqual((result.returncode, len(c.store.records('services')), len(c.remaining())), (0, 1, 2))
 
+    def test_a_failed_verification_after_health_retires_the_record_too(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_VERIFY_RC='1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('all-rank verification failed after health', result.stderr)
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
+                      self.lines(result, spec))
+        self.assertEqual((c.store.records('services'), c.remaining()), ([], []))
+
     def test_a_container_left_by_a_failed_launch_keeps_the_record(self):
         c = self.cluster
         spec, _ = c.spec(2)

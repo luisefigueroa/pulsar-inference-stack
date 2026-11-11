@@ -3065,7 +3065,9 @@ spec_reference() {
   local spec="$1" releases="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}" matches
   if [[ "$spec" =~ ^[0-9a-f]{64}$ ]] && [ -f "$releases/$spec.json" ]; then
     matches=$(find "$releases" -maxdepth 1 -name "${spec:0:12}*.json" | wc -l)
-    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return; }
+    # return 0, not a bare return: called from an EXIT trap, a bare return
+    # gives the status the shell is exiting with, and set -e ends the trap.
+    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return 0; }
   fi
   printf '%s\n' "$spec"
 }

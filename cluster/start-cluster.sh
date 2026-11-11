@@ -194,7 +194,9 @@ launch_exit() {
   rm -f "${PLAN_FILE:-}"
   if [ "$rc" -ne 0 ] && [ "$CLUSTER_INTERRUPTED" = 0 ] && [ "$CLUSTER_ABORTED" = 0 ]; then
     case "$CLUSTER_PHASE" in
-      launching|loading) cluster_abort "the launch stopped unexpectedly (exit $rc)" ;;
+      launching|loading)
+        cluster_abort "the launch stopped unexpectedly (exit $rc)"
+        failed_launch_record "$(launch_containers_left)" ;;
     esac
   fi
   return "$rc"
@@ -287,18 +289,27 @@ cluster_abort() {
 # record keeps its "removed" note only when every one is confirmed gone, and
 # otherwise names the nodes left and suggests stop. An unobservable node is left.
 cluster_failure() {
-  local code="$1" rank="$2" left="" other host
+  local code="$1" rank="$2" left
   local -a cleanup=(--removed)
   shift 2
+  left=$(launch_containers_left)
+  [ -z "$left" ] || cleanup=(--unconfirmed "$left")
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(role_name "$rank")" \
+    --node-id "$(role_id "$rank")" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
+  failed_launch_record "$left"
+}
+
+# launch_containers_left — the serving nodes, as "NAME (rank R)" joined by
+# ", ", where this launch's container is not confirmed absent: still there,
+# or a node that could not be observed. Empty when every one is gone.
+launch_containers_left() {
+  local other host left=""
   for ((other = 0; other < NODES; other++)); do
     host=$(role_host "$other")
     [ "$(container_state_exact "$CONTAINER" "$host")" = absent ] \
       || left+="${left:+, }$(role_name "$other") (rank $other)"
   done
-  [ -z "$left" ] || cleanup=(--unconfirmed "$left")
-  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker "$code" --node "$(role_name "$rank")" \
-    --node-id "$(role_id "$rank")" --rank "$rank" --service-id "${SERVICE_ID:-}" "$@" "${cleanup[@]}"
-  failed_launch_record "$left"
+  printf '%s' "$left"
 }
 
 # failed_launch_record LEFT — what a failed launch does with the service record
@@ -523,6 +534,7 @@ for _attempt in $(seq 1 "$WAIT_LIMIT"); do
         cat "$verify_err" >&2
         rm -f "$verify_err"
         cluster_abort "all-rank verification failed after health"
+        failed_launch_record "$(launch_containers_left)"
         exit 1
         ;;
     esac

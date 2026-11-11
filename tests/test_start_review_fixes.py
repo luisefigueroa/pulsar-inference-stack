@@ -86,6 +86,10 @@ class AnExitIsNotAnInterruption(Cluster):
         self.assertEqual([line for line in trace if 'docker run' in line], ['node-1 docker run rank 1 over ssh'])
         self.assertIn('node-1 docker rm by id over ssh', trace)
         self.assertEqual(c.remaining(), [])
+        # Every container it launched is confirmed gone, so it retires the record it saved.
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
+                      result.stdout)
+        self.assertEqual(c.store.records('services'), [])
 
     def test_a_real_interruption_still_reports_and_removes_nothing(self):
         import json
@@ -98,6 +102,9 @@ class AnExitIsNotAnInterruption(Cluster):
         self.assertEqual([item['node'] for item in c.remaining()], [c.node_id(1)])
         records = [json.loads(line) for line in (c.root / 'blockers.jsonl').read_text().splitlines()]
         self.assertIn('start_interrupted', [record['blocker'] for record in records])
+        # An interruption keeps the record it saved, as it keeps the container.
+        self.assertEqual(len(c.store.records('services')), 1)
+        self.assertNotIn('retired', result.stdout)
 
 
 class ThePlanCheckFailsClosed(Cluster):

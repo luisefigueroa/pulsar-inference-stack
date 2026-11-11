@@ -1011,6 +1011,7 @@ class ClusterCleanup(unittest.TestCase):
                 *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
                 lib_function("start_blocker"),
                 lib_function("cluster_failure", "cluster/start-cluster.sh"),
+                lib_function("launch_containers_left", "cluster/start-cluster.sh"),
                 lib_function("failed_launch_record", "cluster/start-cluster.sh"),
                 *([f"SAVED_RECORD={saved} SAVED_PLAN_ID={'7a' * 32}"] if saved else []),
                 "cluster_failure " + " ".join(shlex.quote(arg) for arg in args),
