@@ -634,22 +634,59 @@ class OtherPathsKeepTheirOutput(Cluster):
 
 
 class RecordOfAnEarlierCluster(Cluster):
-    """A record off the default order saved under an earlier saved cluster:
-    both stops refuse and keep it, as Stop refused it before. Nothing here
-    clears it; Start on named nodes must account for it."""
+    """A record off the default order saved under an earlier saved cluster.
+    Its containers' labels name that cluster, so Pulsar never removes them:
+    Stop looks on every node of this cluster for one, retires the record when
+    there is none, and otherwise says how to clear it. (Until this, both stops
+    refused such a record with no way out.)"""
 
-    def test_both_stops_refuse_and_keep_it(self):
+    def setUp(self):
+        super().setUp()
         c = self.cluster
-        spec, manifest = c.spec(2)
-        plan = c.plan(spec, manifest, [2, 3], topology_id='e' * 64)
-        result = c.pulsar('stop', spec['spec_id'])
+        self.spec, manifest = c.spec(2)
+        self.plan = c.plan(self.spec, manifest, [2, 3], topology_id='e' * 64)
+
+    def test_no_container_left_anywhere_retires_it(self):
+        c = self.cluster
+        result = c.pulsar('stop', self.spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Spec {self.spec['spec_id'][:12]}'s service was recorded under an earlier saved cluster and "
+                      'has no container on any node of this one; retired its stale service record.', result.stdout)
+        self.assertFalse(c.recorded(self.plan))
+        self.assertEqual(c.removed(), [])
+
+    def test_stop_all_retires_it_too(self):
+        c = self.cluster
+        result = c.pulsar('stop', '--all', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(c.recorded(self.plan))
+
+    def test_its_container_still_there_is_named_and_left(self):
+        c = self.cluster
+        (first,) = c.run(self.plan, positions=[1, 0], ranks=[0])
+        prefix = self.spec['spec_id'][:12]
+        result = c.pulsar('stop', self.spec['spec_id'])
         self.assertEqual(result.returncode, 1)
-        self.assertIn(f"error: spec {spec['spec_id'][:12]}'s service was recorded under a different confirmed "
-                      'membership; nothing was removed. Next: ./pulsar topology show', result.stderr)
+        self.assertIn(f"error: spec {prefix}'s service was recorded under an earlier saved cluster, and its container "
+                      f"{first['id'][:12]} on {c.hostname(1)} is still there. Pulsar does not remove containers of an "
+                      'earlier saved cluster, so nothing was removed and the record is kept. Next: remove that '
+                      f"container with Docker on its node (docker rm -f {first['id'][:12]}), then rerun ./pulsar stop "
+                      f'{prefix}', result.stderr)
+        self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(self.plan))
         result = c.pulsar('stop', '--all', '--yes')
         self.assertEqual(result.returncode, 1)
-        self.assertIn("error: stop --all stopped before removing the other services' containers", result.stderr)
-        self.assertTrue(c.recorded(plan))
+        self.assertIn("error: stop --all stopped before removing the other services' containers, because spec "
+                      f"{prefix}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop {prefix}, "
+                      'which says what it needs, then rerun ./pulsar stop --all --yes', result.stderr)
+        self.assertEqual(c.removed(), [])
+
+    def test_a_node_that_does_not_answer_changes_nothing(self):
+        c = self.cluster
+        result = c.pulsar('stop', self.spec['spec_id'], SERVICE_UNREACHABLE=c.node_id(3))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f'error: stop did not run: {c.hostname(3)} cannot be observed', result.stderr)
+        self.assertTrue(c.recorded(self.plan))
 
 
 class DefaultOrderRetire(Cluster):

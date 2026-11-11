@@ -2779,6 +2779,45 @@ print(str((json.load(sys.stdin).get("labels") or {}).get("io.pulsar.gb10.launch-
 '
 }
 
+# stop_earlier_cluster_record SPEC PLAN_ID NAME — an ordinary service record
+# saved under an earlier saved cluster. Its containers' labels name that
+# cluster, so Pulsar cannot prove they are its own and never removes them.
+# Every node of the current cluster is asked for a container named NAME with
+# that launch plan: none anywhere retires the record; one found refuses and
+# says how to clear it; a node that cannot be observed changes nothing.
+stop_earlier_cluster_record() {
+  local spec="$1" plan_id="$2" name="$3" index ids id prefix ref
+  local -a found=()
+  prefix="${PULSAR_MANAGED_LABEL%managed}"
+  ref=$(spec_reference "$spec")
+  if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
+    error_line "reaching the other nodes needs confirmed SSH trust; nothing was changed. Next: ./pulsar ssh-trust check"
+    return 1
+  fi
+  for ((index = 0; index < CLUSTER_TOPOLOGY_COUNT; index++)); do
+    ids=$(recorded_service_containers "$index" "name=^/$name\$|label=${prefix}launch-plan=$plan_id") \
+      || { stop_unobservable_error "$index" "$spec"; return 1; }
+    while IFS= read -r id; do
+      [ -z "$id" ] || found+=("${id:0:12} on $(human_node_name "$index")")
+    done <<<"$ids"
+  done
+  if [ "${#found[@]}" -gt 0 ]; then
+    error_line "spec ${spec:0:12}'s service was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun ./pulsar stop $ref"
+    return 1
+  fi
+  python3 -c '
+import sys
+from model_library.state import Store
+from scripts.service_state import retire_plan
+store = Store(sys.argv[1])
+retire_plan(store, store.get("service-plans", sys.argv[2]))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" || {
+    error_line "the service record of spec ${spec:0:12} could not be retired. Next: ./pulsar inventory"
+    return 1
+  }
+  log "Spec ${spec:0:12}'s service was recorded under an earlier saved cluster and has no container on any node of this one; retired its stale service record."
+}
+
 # stop_recorded_service SPEC PLAN_ID — stop a service on the rank-to-node
 # bindings its launch plan records: a guarded trial whose controller has
 # exited, or an ordinary multi-node service recorded off the default node
@@ -2817,6 +2856,11 @@ for row in plan["ranks"]:
                      plan["plan_id"], plan["spec_id"], plan["topology_id"]]))
 ' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id") \
     || { error_line "cannot read the saved launch plan of spec ${spec:0:12}; nothing was removed"; return 1; }
+  IFS=$'\t' read -r _ _ _ _ name run _ _ topology <<<"${rows%%$'\n'*}"
+  if [ "$run" = - ] && [ "$CLUSTER_TOPOLOGY_ID" != "$topology" ]; then
+    stop_earlier_cluster_record "$spec" "$plan_id" "$name"
+    return
+  fi
   while IFS=$'\t' read -r rank label node_id host name run plan spec_label topology; do
     trial_run="$run"
     if [ "$run" != - ]; then subject="guarded trial ${run:0:12}"; else subject="spec ${spec:0:12}'s service"; fi

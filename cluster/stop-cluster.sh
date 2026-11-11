@@ -54,7 +54,7 @@ PY_RECORDED
   while IFS=$'\t' read -r recorded_spec recorded_plan; do
     [ -n "$recorded_plan" ] || continue
     if ! stop_recorded_service "$recorded_spec" "$recorded_plan"; then
-      echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar inventory, then rerun ./pulsar stop --all --yes" >&2
+      echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop $(spec_reference "$recorded_spec"), which says what it needs, then rerun ./pulsar stop --all --yes" >&2
       exit 1
     fi
   done <<<"$recorded"
