@@ -163,10 +163,12 @@ else
   if [ "$REPLACE" = 1 ] && [ "$OFF_DEFAULT_ORDER" = 1 ]; then
     usage_die "--replace replaces a service on the default node order only. To start this spec on $PLACEMENT_NODES, stop its service first (./pulsar stop $(spec_reference "$NAME")), then start it without --replace"
   fi
-  if [ "$DRY" != 1 ] && [ -n "$PLACEMENT_NODES" ]; then
-    for ((slot=0;slot<NODES;slot++)); do
-      [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || usage_die "nondefault multi-node placement requires guarded run; ordinary start cannot launch a remote head"
-    done
+  # Off the default order, scripts/start_placement.py alone decides whether an
+  # ordinary Start runs this recipe there; a refusal comes before any probe.
+  if [ "$DRY" != 1 ] && [ "$OFF_DEFAULT_ORDER" = 1 ]; then
+    placement_refusal=$(python3 "$REPO_DIR/scripts/start_placement.py" check --topology "$CLUSTER_TOPOLOGY_FILE" \
+      --spec "$CONF_PATH" "${SERVING_NODE_IDS[@]}") \
+      || usage_die "start does not run this recipe on $PLACEMENT_NODES: ${placement_refusal:-the placement could not be judged}"
   fi
 fi
 resolve_spec_decode "$SPEC_MODE"

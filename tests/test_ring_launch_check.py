@@ -181,7 +181,7 @@ class EveryCallerAppliesTheSameRule(unittest.TestCase):
     """Each caller judges the placement it serves on with the same check and the
     recipe's own requirement; Stop judges none."""
     CALLERS = {'scripts/up.sh': True, 'scripts/resources.sh': True, 'scripts/check-weights.sh': True,
-               'scripts/observe-serving.sh': True, 'cluster/start-cluster.sh': False, 'cluster/preflight.sh': False,
+               'scripts/observe-serving.sh': True, 'cluster/start-cluster.sh': True, 'cluster/preflight.sh': True,
                'scripts/guard-storage.sh': False}
 
     def test_each_caller_checks_after_its_placement(self):
@@ -195,9 +195,10 @@ class EveryCallerAppliesTheSameRule(unittest.TestCase):
                 if resolves:
                     # The placement it serves on is resolved first, so the check judges those nodes.
                     self.assertLess(text.find('resolve_serving_placement'), checked)
-        # The others serve on the default order only: Start refuses another order
-        # outside a guarded dry run, and guard-storage requires each rank on its own position.
-        self.assertIn('ordinary start cannot launch a remote head', (ROOT / 'scripts/up.sh').read_text())
+        # The launcher and preflight take Start's placement; off the default order
+        # Start asks scripts/start_placement.py whether it runs there at all, and
+        # guard-storage requires each rank on its own position.
+        self.assertIn('scripts/start_placement.py" check', (ROOT / 'scripts/up.sh').read_text())
         self.assertIn('[ "$expected_rank" = "$rank" ]', (ROOT / 'scripts/guard-storage.sh').read_text())
         self.assertNotIn('require_profile_topology', (ROOT / 'cluster/stop-cluster.sh').read_text())
 
