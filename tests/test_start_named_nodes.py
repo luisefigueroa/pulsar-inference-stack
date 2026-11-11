@@ -178,6 +178,32 @@ class StartWithPreflight(Cluster):
                 c.pulsar('stop', spec['spec_id'])
 
 
+class InventoryOnNamedNodes(Cluster):
+    """Inventory's page lists a service's nodes in role order and says which
+    one serves the API; its JSON keeps its own order."""
+
+    def test_role_order_and_the_api_node(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # Role order: saved rank 3 first, then saved rank 2.
+        c.run(c.plan(spec, manifest, [3, 2]))
+        before = json.loads(c.pulsar('inventory', '--json').stdout)['services'][0]['ranks']
+        result = c.pulsar('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        headings = [line.strip() for line in result.stdout.splitlines() if line.startswith('  fixture-ring-')]
+        self.assertEqual(headings, [f'{c.hostname(3)} · rank 0, serves the API', f'{c.hostname(2)} · rank 1'])
+        # Saved cluster order in the JSON, as before.
+        self.assertEqual([r['rank'] for r in before], ['1', '0'])
+
+    def test_a_one_node_service_keeps_its_heading(self):
+        c = self.cluster
+        spec, manifest = c.spec(1)
+        c.run(c.plan(spec, manifest, [2]))
+        result = c.pulsar('inventory')
+        self.assertIn(f'\n  {c.hostname(2)}\n', result.stdout)
+        self.assertNotIn('serves the API', result.stdout)
+
+
 class StatusOnNamedNodes(Cluster):
     """`./pulsar status` with the real observe-serving.sh, for a service Start ran
     on saved ranks 2 and 3: it observes those nodes and the first one's address."""

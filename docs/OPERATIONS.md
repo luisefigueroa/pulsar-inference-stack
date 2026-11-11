@@ -1029,6 +1029,11 @@ printed. It has no `--json` form; `status --json` reports the service's state.
 A failed multi-node start removes its containers, so only the logs that start
 printed remain.
 
+`inventory` lists each service with one section per container, headed by its
+node's hostname. A multi-node service's nodes are listed in role order, each
+with its rank, and the first is marked `serves the API`, as in
+`spark-3 · rank 0, serves the API`. `inventory --json` keeps its own order.
+
 In the menu, **Running services…** on home shows what runs and offers these
 commands by what they do: **Check it now** (`status`), **How to connect**,
 **Logs** (`logs`), **Restart…**, **Switch to another model…**, **Stop…** and

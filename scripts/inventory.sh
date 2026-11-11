@@ -1565,6 +1565,13 @@ def service_inactive_unknown_legacy(s):
     return not service_active(s)
 
 
+def role_number(rank_record):
+    """A container's role rank as a number, or None (a one-node service's
+    "single", or no rank label)."""
+    value = str(rank_record.get("rank") or "")
+    return int(value) if value.isdigit() else None
+
+
 def fmt_ranks(vals):
     if not vals:
         return "-"
@@ -1600,14 +1607,24 @@ def print_service(s):
     if verbose or obs_y != "complete":
         field("observe", obs_y)
 
-    for r in s.get("ranks") or []:
+    # A multi-node service's nodes in role order, the first serving the API;
+    # the JSON keeps its own order.
+    ranks = list(s.get("ranks") or [])
+    roles = [role_number(r) for r in ranks]
+    in_roles = len(ranks) > 1 and None not in roles
+    if in_roles:
+        ranks = [r for _, r in sorted(zip(roles, ranks), key=lambda pair: pair[0])]
+    for r in ranks:
         g = r.get("gpu_memory") or {}
         gm = g.get("measured_mib")
         run = "running" if r.get("running") else ("stale" if r.get("stale") else "stopped")
         st = "safe_to_stop" if r.get("safe_to_stop") else "not_safe_to_stop"
         print()
+        heading = placement_label(r.get("node"))
+        if in_roles:
+            heading += f" · rank {role_number(r)}" + (", serves the API" if role_number(r) == 0 else "")
         emit(
-            placement_label(r.get("node")),
+            heading,
             initial_indent="  ",
             subsequent_indent="    ",
         )
