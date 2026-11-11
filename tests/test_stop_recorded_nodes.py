@@ -596,6 +596,43 @@ class Renders(Cluster):
             self.assertNotIn('degraded', pages['home_block'] + pages['screen'])
 
 
+class OtherPathsKeepTheirOutput(Cluster):
+    """A guarded trial's stop and a default-order stop read as they did."""
+
+    def test_a_guarded_trial_off_the_default_order_through_the_real_label_stop(self):
+        c = self.cluster
+        spec, manifest = c.spec(2, catalog=False, guarded=True)
+        trial = c.plan(spec, manifest, [2, 1])
+        c.run(trial)
+        result = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout,
+                         f"Stopped guarded trial {trial['guard_run_id'][:12]} of spec {spec['spec_id'][:12]} on "
+                         "fixture-ring-echo (rank 0), fixture-ring-bravo (rank 1): removed 2 container(s) and retired "
+                         "its service record. The trial's run directory keeps its own result.\n"
+                         f"no stack-managed service is running for spec {spec['spec_id']}; nothing to stop\n"
+                         "Stopped. Model files, pins, archives and experiment evidence are retained.\n")
+        self.assertEqual(c.remaining(), [])
+        self.assertFalse(c.recorded(trial))
+
+    def test_another_specs_unreadable_record_does_not_block_a_default_order_stop(self):
+        c = self.cluster
+        _, broken, _ = self.pair()
+        c.store.put('service-plans', broken['plan_id'], dict(broken, port=9000))
+        spec, manifest = c.spec(2, variant=1)
+        plan = c.plan(spec, manifest, [0, 1])
+        containers = c.run(plan)
+        result = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(item for _, item in c.removed()), sorted(item['id'] for item in containers))
+        self.assertFalse(c.recorded(plan))
+        # Inventory leaves that record out: its containers are judged by saved position.
+        result = c.pulsar('inventory', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        (service,) = json.loads(result.stdout)['services']
+        self.assertEqual((service['ownership'], service['safe_to_stop']), ('mismatch', False))
+
+
 class DefaultOrderRetire(Cluster):
     """No stop path that finds containers by saved position retires the record
     of a service recorded off the default order: it never looked there."""

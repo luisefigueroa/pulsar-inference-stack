@@ -2796,7 +2796,8 @@ print(str((json.load(sys.stdin).get("labels") or {}).get("io.pulsar.gb10.launch-
 # more than one match on a node, or a container of this plan that fails the
 # ownership test removes nothing. Removal is by container ID; absence is then
 # confirmed on every recorded node, and only this plan's service record is
-# retired. Sets RECORDED_SERVICE_STOPPED=1 when it removed a container.
+# retired. Sets RECORDED_SERVICE_STOPPED=1 when it removed a container, and
+# also ORDINARY_RECORDED_STOPPED=1 when that was an ordinary service.
 stop_recorded_service() {
   local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rows prefix
   local rank label node_id host name run plan spec_label topology index i ids removed=0 where trial_run=""
@@ -2925,6 +2926,7 @@ retire_plan(store, store.get("service-plans", sys.argv[2]))
     if [ "$trial_run" != - ]; then
       log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
     else
+      ORDINARY_RECORDED_STOPPED=1
       log "Stopped spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record."
     fi
   elif [ "$trial_run" != - ]; then
@@ -3034,8 +3036,10 @@ stop_named_service_by_labels() {
   fi
 
   if [ "${#found_ids[@]}" -eq 0 ]; then
-    # After a stop on recorded nodes (stop_recorded_service), nothing else is left.
-    [ "${RECORDED_SERVICE_STOPPED:-0}" = 1 ] \
+    # After an ordinary service was stopped on its recorded nodes
+    # (stop_recorded_service), nothing else is left; a guarded trial's stop
+    # keeps this line, as it always printed it.
+    [ "${ORDINARY_RECORDED_STOPPED:-0}" = 1 ] \
       || log "no stack-managed service is running for spec $conf; nothing to stop"
     STOP_NAMED_NOTHING_FOUND=1
     return 0

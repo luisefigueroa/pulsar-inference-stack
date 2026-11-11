@@ -129,17 +129,35 @@ def binding(plan):
             'guarded': bool(plan.get('guard_run_id')), 'node_ids': [rank['node_id'] for rank in plan['ranks']]}
 
 
-def recorded_bindings(store):
+def _recorded(store, row):
+    plan = store.get('service-plans', row['plan_id'])
+    validate_plan(plan)
+    if plan['service_id'] != row['service_id']:
+        raise ValueError('service index differs from saved plan')
+    return binding(plan)
+
+
+def recorded_bindings(store, *, skip_invalid=False):
     """The binding of every active service record. A retired record's plan is
-    kept as history and proves nothing about a container."""
+    kept as history and proves nothing about a container. SKIP_INVALID leaves
+    out a record whose plan does not validate, which then proves nothing."""
     result = []
     for row in store.records('services'):
-        plan = store.get('service-plans', row['plan_id'])
-        validate_plan(plan)
-        if plan['service_id'] != row['service_id']:
-            raise ValueError('service index differs from saved plan')
-        result.append(binding(plan))
+        try:
+            result.append(_recorded(store, row))
+        except (ValueError, KeyError, TypeError):
+            if not skip_invalid:
+                raise
     return result
+
+
+def recorded_binding(store, plan_id):
+    """The binding of the active record of launch plan PLAN_ID, or None. Only
+    that record's plan is read, so another spec's record cannot block it."""
+    for row in store.records('services'):
+        if plan_id and row.get('plan_id') == plan_id:
+            return _recorded(store, row)
+    return None
 
 
 def off_default_order(node_ids, confirmed):
@@ -212,15 +230,18 @@ def main():
             # The container's ownership inspect JSON on stdin: one line out,
             # "none", "owned", or "refused<TAB>REASON".
             container=json.load(sys.stdin)
+            record=recorded_binding(store,(container.get('labels') or {}).get(PLAN_LABEL))
             verdict=recorded_ownership(container,position=args.position,topology_id=args.topology_id,
-                                       node_ids=args.node_id,bindings=recorded_bindings(store))
+                                       node_ids=args.node_id,bindings=[record] if record else [])
             print('none' if verdict is None else 'owned' if verdict[0] else f'refused\t{verdict[1]}')
             return 0
         if args.command=='retire':
             result={'retired_service_ids':retire(store,topology_id=args.topology_id,
                 node_ids=args.node_id,selected_spec_id=args.selected_spec_id)}
         elif args.command=='bindings':
-            result=recorded_bindings(store)
+            # For inventory: a record that does not validate proves nothing,
+            # so its containers are judged by saved position.
+            result=recorded_bindings(store,skip_invalid=True)
         elif args.command=='locate':
             result=locate(store,service_id=args.service_id,selected_spec_id=args.selected_spec_id)
         else:
