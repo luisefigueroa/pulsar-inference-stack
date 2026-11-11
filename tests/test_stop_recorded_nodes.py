@@ -518,8 +518,10 @@ class Pages(Cluster):
         spec, _, _ = self.pair((1, 3))
         pages = self.cluster.pages(spec['spec_id'])
         self.assertNotIn('restart', [action for action, _ in pages['choices']])
-        self.assertIn('Restart   not offered: it runs on fixture-ring-bravo and fixture-ring-alpha, but\n'
-                      '          Start serves it on fixture-ring-dorado and fixture-ring-bravo', pages['screen'])
+        # In the launch check's words, as Start would refuse it.
+        self.assertIn('Restart   not offered: fixture-ring-bravo and fixture-ring-alpha are not cabled\n'
+                      '          to each other: the cluster is a ring, and this recipe needs every one\n'
+                      '          of its nodes cabled to the others', pages['screen'])
 
 
 WIDTHS = (80, 60)

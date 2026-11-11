@@ -207,12 +207,15 @@ class Page:
         order = self.names.order
         serving = [self.names(node) for node in order[:nodes]] if len(order) >= nodes else []
         if list(service["hosts"]) != serving:
-            # Start runs it again on its own nodes when it accepts them (scripts/start_placement.py).
-            from scripts.start_placement import ordinary_start_refusal
+            # Start runs it again on its own nodes when it accepts them
+            # (scripts/start_placement.py) and they are cabled as the recipe
+            # needs, as the launch check reads the saved links.
+            from scripts.release_consumer import ring_pattern
+            from scripts.start_placement import cabling_refusal, ordinary_start_refusal
             placement = self.placement(conf)
-            if (placement and self.topology is not None
-                    and ordinary_start_refusal(self.topology, placement, guarded=False) is None):
-                return None
+            if placement and self.topology is not None:
+                return (ordinary_start_refusal(self.topology, placement, guarded=False)
+                        or cabling_refusal(self.topology, placement, loop=ring_pattern(row.get("container_env"))))
             return (f"it runs on {_list(service['hosts'])}, but Start serves it on "
                     f"{_list(serving) or 'nodes the cluster does not have'}")
         return None
