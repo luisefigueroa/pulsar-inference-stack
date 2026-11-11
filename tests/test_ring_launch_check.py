@@ -56,8 +56,7 @@ class TheRequirementSteersOnlyTheGate(unittest.TestCase):
 
     def test_the_ring_pattern_requirement_reaches_nothing_else_either(self):
         # roce-ring also names a saved membership's shape; these files read that shape.
-        shape_readers = {'topology_manifest.py', 'cluster_status.py', 'cluster_overview.py', 'node_names.py',
-                         'release_consumer.py', 'model_identity.py'}
+        shape_readers = {'topology_manifest.py', 'node_names.py', 'release_consumer.py'}
         for path, text in sources():
             if path.suffix == '.py' and path.name not in shape_readers:
                 with self.subTest(path=path.name):

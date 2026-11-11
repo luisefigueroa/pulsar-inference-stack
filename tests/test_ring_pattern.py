@@ -239,6 +239,35 @@ class TheLaunchCheckForARingPattern(unittest.TestCase):
             ('1', 'cabling', f'topology: {tm.ring_refusal(names[0], names[2])}')])
 
 
+class FromTheSpecToTheLaunchCheck(unittest.TestCase):
+    """load_conf of a spec file, then the real launch check with what it set, on a saved ring of four."""
+
+    def check(self, fixture, spec):
+        spec_file = fixture.root / f"{spec['spec_id']}.json"
+        spec_file.write_text(json.dumps(spec))
+        script = r'''
+            . "$1/scripts/lib.sh"
+            load_conf "$2" || exit 9
+            require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$3"; status=$?
+            printf '%s\t%s\t%s\n' "$status" "$TOPOLOGY_CLASS" "$(cat "$3")"
+        '''
+        result = subprocess.run(['bash', '-c', script, 'loaded', str(ROOT), spec['spec_id'],
+                                 str(fixture.root / 'gate.err')],
+                                env={**fixture.env, 'PULSAR_SPEC_FILE': str(spec_file),
+                                     'PULSAR_OVERLAY_PATH': str(fixture.root / 'no-overlay.json')},
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return tuple(result.stdout.rstrip('\n').split('\t', 2))
+
+    def test_the_declaration_reaches_the_launch_check(self):
+        fixture, names = ring_fixture(self, 4)
+        self.assertEqual(self.check(fixture, ring_recipe.recipe(4)), ('0', 'roce-ring', ''))
+        self.assertEqual(self.check(fixture, ring_recipe.recipe(3)),
+                         ('1', 'roce-ring', f'topology: {tm.ring_loop_refusal(names[2], names[0])}'))
+        self.assertEqual(self.check(fixture, ring_recipe.recipe(4, env=())),
+                         ('1', 'roce-full-mesh', f'topology: {tm.ring_refusal(names[0], names[2])}'))
+
+
 class AdaptersAndPreflightForTheWholeRing(unittest.TestCase):
     """Each rank of a ring-pattern recipe on the whole ring gets the adapters on
     both of its cables; preflight pings and judges only the loop's pairs."""
@@ -302,6 +331,45 @@ class AdaptersAndPreflightForTheWholeRing(unittest.TestCase):
         self.assertIn('topology_ping_links "$CLUSTER_TOPOLOGY_FILE" "$EXPECTED_NODES" '
                       '"$([ "$TOPOLOGY_CLASS" != roce-ring ] || echo loop)"', text)
         self.assertIn('[ "$CLUSTER_TOPOLOGY_CLASS" != roce-ring ] || TOPOLOGY_CLASS=roce-ring', text)
+
+
+class TheLaunchPlanForFourRanks(unittest.TestCase):
+    """The launch plan and each rank's container for the synthetic four-node
+    recipe on the whole ring: nothing beyond the launch check limits it to
+    three ranks. Plan and arguments only; nothing is started."""
+
+    def test_four_ranks_in_the_default_order(self):
+        from scripts import container_runtime as runtime
+        fixture, _names = ring_fixture(self, 4)
+        topology = fixture.topology
+        spec = ring_recipe.recipe(4)
+        adapters = launch.profile(topology, *range(4))
+        nodes = topology['nodes']
+        commit = spec['recipe']['model']['model_commit']
+        facts = dict(port=8000, served_name='synthetic', topology_id=topology['topology_id'], ranks=[
+            dict(rank=i, node_id=nodes[i]['node_id'], hostname=nodes[i]['hostname'], ssh_host=nodes[i]['ssh_host'],
+                 control_ip=nodes[i]['control']['ip'], control_if=nodes[i]['control']['interface'],
+                 hcas=','.join(sorted(adapters[i]))) for i in range(4)])
+        prepared = dict(schema_version=1, kind='pulsar-prepared-set', spec_id=spec['spec_id'],
+                        topology_id=topology['topology_id'],
+                        snapshot_manifest_id=spec['recipe']['model']['snapshot_manifest']['manifest_id'],
+                        revision=commit, home_node_id=nodes[0]['node_id'],
+                        ranks=[dict(rank=i, node_id=nodes[i]['node_id'], hub_path=f'/var/tmp/fixture-rank-{i}',
+                                    path=f'/var/tmp/fixture-rank-{i}/snapshots/{commit}') for i in range(4)])
+        with mock.patch.dict(os.environ, {'API_KEY': '', 'VLLM_API_KEY': ''}):
+            plan = runtime.build_plan(spec, spec['spec_id'], facts, prepared)
+        runtime.validate_plan(plan)
+        for rank in range(4):
+            with self.subTest(rank=rank):
+                argv = runtime.docker_argv(plan, rank, include_secrets=False)
+                self.assertEqual(argv[argv.index('--nnodes') + 1], '4')
+                self.assertEqual(argv[argv.index('--node-rank') + 1], str(rank))
+                self.assertEqual(argv[argv.index('--tensor-parallel-size') + 1], '4')
+                environment = runtime.environment(plan, rank)
+                self.assertEqual(environment['NCCL_ALGO'], 'Ring')
+                self.assertEqual(set(environment['NCCL_IB_HCA'].split(',')), launch.PORT0 | launch.PORT1)
+                for setting in ring_recipe.RING_ENV:
+                    self.assertIn(setting, [*argv, *(f'{key}={value}' for key, value in environment.items())])
 
 
 class StartRefusesARingPatternThatDoesNotFit(unittest.TestCase):

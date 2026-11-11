@@ -1,7 +1,8 @@
-"""The screens the ring pattern changed, at 80 and 60 columns, for a synthetic
-four-node recipe that passes data around a loop (tensor parallelism 4,
-NCCL_ALGO=Ring) and the same recipe on three nodes, in a fixture catalog
-written to a temporary folder. Doubles only; nothing here contacts a node."""
+"""The screens the ring pattern changed, at 80, 60 and 44 columns, for a
+synthetic four-node recipe that passes data around a loop (tensor
+parallelism 4, NCCL_ALGO=Ring) and the same recipe on three nodes, in a
+fixture catalog written to a temporary folder. Doubles only; nothing here
+contacts a node."""
 import json
 import os
 from pathlib import Path
@@ -20,7 +21,7 @@ from tests import test_ring_pattern as pattern, test_ring_readers as readers, te
 from tests.test_catalog_menu import inventory
 from tests.test_ring_saved_readers import ring_names
 
-WIDTHS = (80, 60)
+WIDTHS = (80, 60, 44)
 
 
 def flat(text):
