@@ -2,11 +2,14 @@
 SSH identity check, diagnostics with every node's prerequisites, inventory and
 model budget, with every saved node shown and a source that failed reported,
 never hidden. What it finds is saved beside the changes noticed."""
+from datetime import datetime
 import io
 import json
 import os
 from pathlib import Path
+import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -18,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import cluster_overview
 from scripts.terminal_format import TerminalWriter
+from tests import test_ui_confirm
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 GIB = 1024 ** 3
@@ -284,6 +288,124 @@ class Overview(unittest.TestCase):
                       "checked_at": "2026-11-09T00:00:00Z"})
 
 
+def passing_diagnostics():
+    """Diagnostics without rank-1's blocking issue: two warnings remain (hf CLI and API key)."""
+    document = diagnostics()
+    document["checks"] = [check for check in document["checks"] if check["level"] != "fail"]
+    return document
+
+
+class Summary(unittest.TestCase):
+    """One line for this check under the closed pager, counted as the report's Result line counts."""
+    STARTED = 1_700_000_000
+    WHEN = datetime.fromtimestamp(STARTED).strftime("%H:%M:%S")
+
+    def sources(self, **overrides):
+        overrides.setdefault("diagnostics", (passing_diagnostics(), 0, ""))
+        return write_sources(Path(self.enterContext(tempfile.TemporaryDirectory())), **overrides)
+
+    def summary(self, directory, width=80, terminal=False, **values):
+        class Terminal(io.StringIO):
+            def isatty(self):
+                return True
+        out = Terminal() if terminal else io.StringIO()
+        clean = {key: value for key, value in os.environ.items()
+                 if key not in ("PULSAR_COLOR", "NO_COLOR", "PULSAR_ACCENT", "TERM")}
+        with mock.patch.dict(os.environ, {**clean, "TERM": "xterm-256color", **values}, clear=True):
+            cluster_overview.summary(directory, self.STARTED, TerminalWriter(width=width, stream=out))
+        return out.getvalue()
+
+    def result_parts(self, directory):
+        """The report's Result line, split into its parts."""
+        text = " ".join(Overview.render(self, directory, width=200).split())
+        verdict = text.split(" Result ", 1)[1].split("; each finding above names its fix.", 1)[0]
+        return verdict.split(" · ")
+
+    def test_every_node_answered(self):
+        directory = self.sources()
+        self.assertEqual(self.summary(directory),
+                         f"Checked   {self.WHEN} · no blocking issue · 3 of 3 answered · 2 warnings\n")
+        self.assertEqual(self.result_parts(directory), ["no blocking issue", "2 warnings"])
+
+    def test_a_blocking_issue_leads_and_marks_the_label(self):
+        directory = self.sources(diagnostics=(diagnostics(), 1, ""))
+        self.assertEqual(self.summary(directory),
+                         f"Checked   {self.WHEN} · 1 blocking issue · 3 of 3 answered · 2 warnings\n")
+        self.assertIn("\x1b[1;31mChecked\x1b[0m   ", self.summary(directory, terminal=True))
+
+    def test_a_node_that_did_not_answer_is_named_before_anything_fine(self):
+        noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        directory = self.sources(discovery=(noticed, 1, ""),
+                                 topology=(topology("blocked", [cluster_overview.UNREACHABLE]), 1, ""))
+        self.assertEqual(" ".join(self.summary(directory).split()),
+                         f"Checked {self.WHEN} · 1 blocking issue · 1 of 3 answered (rank-1 and rank-2 did not "
+                         "answer) · 3 warnings")
+        # The frame after Back counts the same answers from the saved check.
+        record = cluster_overview.Report(directory).check_record()
+        self.assertEqual([node["answered"] for node in record["nodes"]], [True, False, False])
+        # Nodes that did not answer are named even when nothing counts as blocking.
+        missing = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        directory = self.sources(discovery=(missing, 1, ""))
+        self.assertEqual(" ".join(self.summary(directory).split()),
+                         f"Checked {self.WHEN} · 2 of 3 answered (rank-2 did not answer) · no blocking issue · "
+                         "3 warnings")
+        self.assertIn("\x1b[33mChecked\x1b[0m   ", self.summary(directory, terminal=True))
+
+    def test_a_source_that_failed_is_not_summarised_as_fine(self):
+        # Unknown is not absent: what was not observed comes before "no blocking issue".
+        doctor = self.sources(diagnostics=("", 3, ""))
+        self.assertEqual(self.summary(doctor),
+                         f"Checked   {self.WHEN} · 1 check not observed · no blocking issue · 3 of 3 answered\n")
+        self.assertIn("\x1b[33mChecked\x1b[0m   ", self.summary(doctor, terminal=True))
+        membership = self.sources(topology=("", 1, "error: no confirmed topology\n"))
+        self.assertEqual(" ".join(self.summary(membership).split()),
+                         f"Checked {self.WHEN} · 3 nodes not observed · 1 check not observed · no blocking issue · "
+                         "2 warnings")
+        nothing = self.sources(topology=("", 1, ""), inventory=("", 1, ""), budget=("", 1, ""))
+        self.assertTrue(" ".join(self.summary(nothing).split()).startswith(
+            f"Checked {self.WHEN} · no node observed · 3 checks not observed · no blocking issue"))
+
+    def test_it_counts_what_the_result_line_counts(self):
+        noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        for overrides in ({}, {"diagnostics": (diagnostics(), 1, "")}, {"diagnostics": ("", 3, "")},
+                          {"identities": (identities(failed=(2,)), 1, "")}, {"discovery": (noticed, 1, "")},
+                          {"topology": ("", 1, ""), "inventory": ("", 1, ""), "budget": ("", 1, "")}):
+            with self.subTest(overrides=sorted(overrides)):
+                directory = self.sources(**overrides)
+                text = " ".join(self.summary(directory).split())
+                for part in self.result_parts(directory):
+                    self.assertIn(f" · {part}", text)
+
+    def test_it_fits_the_width_and_breaks_only_between_parts(self):
+        noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        directory = self.sources(discovery=(noticed, 1, ""), diagnostics=(diagnostics(), 1, ""),
+                                 budget=("", 1, ""))
+        for width in (44, 60, 80):
+            with self.subTest(width=width):
+                plain = self.summary(directory, width)
+                self.assertTrue(all(len(line) <= width for line in plain.splitlines()), plain)
+                self.assertEqual(ANSI.sub("", self.summary(directory, width, terminal=True)), plain)
+                self.assertEqual(self.summary(directory, width, terminal=True, NO_COLOR="1"),
+                                 plain.replace("Checked", "\x1b[1mChecked\x1b[0m", 1))
+                for line in plain.splitlines():
+                    # Each line ends with a whole part: a count never loses its noun.
+                    self.assertNotRegex(line, r"\d$")
+                    self.assertFalse(line.startswith(" " * 10 + "·"), plain)
+        self.assertEqual(self.summary(directory, 60),
+                         f"Checked   {self.WHEN} · 1 blocking issue ·\n"
+                         "          2 of 3 answered (rank-2 did not answer) ·\n"
+                         "          1 check not observed · 3 warnings\n")
+
+    def test_the_command_needs_only_when_the_check_started(self):
+        directory = self.sources()
+        output = io.StringIO()
+        with mock.patch("sys.stdout", output):
+            self.assertEqual(cluster_overview.main([str(directory), "--started", str(self.STARTED), "--summary"]), 0)
+        self.assertTrue(output.getvalue().startswith(f"Checked   {self.WHEN} · "), output.getvalue())
+        with mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            cluster_overview.main([str(directory), "--summary"])
+
+
 class Runner(unittest.TestCase):
     """scripts/cluster-overview.sh runs the six sources in turn, saves the check and offers Check again."""
 
@@ -297,7 +419,14 @@ class Runner(unittest.TestCase):
 require_gum() { :; }
 ui_keep_styles() { :; }
 wait_continue() { printf 'continue: %s\n' "$1" >> "$SPIN_LOG"; }
-page_output() { printf 'page: %s\n' "$1" >> "$SPIN_LOG"; shift; "$@"; }
+# IN_PLACE=1 prints the report in place, as short output does; else the pager
+# shows it and closes. PAGE_RC=130 is Ctrl-C in the pager.
+page_output() {
+  printf 'page: %s\n' "$1" >> "$SPIN_LOG"; shift
+  PAGE_OUTPUT_IN_PLACE=${IN_PLACE:-0}
+  "$@" || return
+  return "${PAGE_RC:-0}"
+}
 # Like Gum, the spinner draws on stderr while the command runs.
 spin() { printf '%s\n' "$1" >> "$SPIN_LOG"; printf 'spinner: %s\n' "$1" >&2; shift; "$@"; }
 choose_index() {
@@ -421,12 +550,111 @@ choose_index() {
                       result.stdout)
         self.assertEqual((self.root / "spin.log").read_text().splitlines()[-1], "continue: Cluster check error")
 
+    SUMMARY = re.compile(r"(?m)^Checked   \d\d:\d\d:\d\d · .*$")
+
+    def test_this_checks_summary_follows_every_showing_of_the_report(self):
+        # First check, Show the report again, Check again, Back.
+        result = self.run_overview(["0", "1", "2"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summaries = self.SUMMARY.findall(result.stdout)
+        self.assertEqual(len(summaries), 3, result.stdout)
+        # Show the report again shows the same check, so the same line.
+        self.assertEqual(summaries[0], summaries[1])
+        # Each one sits under its report's last line, after a blank line.
+        self.assertEqual(result.stdout.count("inventory and model budget\n\nChecked   "), 3)
+        self.assertIn(" · 1 blocking issue · 3 of 3 answered · 2 warnings\n", result.stdout)
+
+    def test_after_a_review_the_check_again_has_its_summary(self):
+        noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        (self.fixtures / "topology detect").write_text(json.dumps(noticed))
+        result = self.run_overview(["0", "esc"], REVIEW_RC="10")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summaries = self.SUMMARY.findall(result.stdout)
+        self.assertEqual(len(summaries), 2, result.stdout)
+        self.assertIn(" · 2 of 3 answered (rank-2 did not answer) ·", " ".join(result.stdout.split()))
+
+    def test_a_report_printed_in_place_keeps_its_own_result_line(self):
+        result = self.run_overview(["0", "1", "2"], IN_PLACE="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.SUMMARY.findall(result.stdout), [])
+        self.assertEqual(result.stdout.count("\nResult    "), 3)
+
+    def test_the_summary_comes_from_this_check_even_when_it_was_not_saved(self):
+        from scripts import saved_observations as saved
+        saved.save_changes({**changes(), "topology_id": "e" * 64}, self.changes)
+        result = self.run_overview(["esc"])
+        self.assertIn("the cluster check was not saved", result.stderr)
+        self.assertEqual(len(self.SUMMARY.findall(result.stdout)), 1, result.stdout)
+
+    def test_no_summary_after_ctrl_c_or_a_report_that_could_not_be_shown(self):
+        stopped = self.run_overview([], PULSAR_RC="130")
+        self.assertEqual(stopped.returncode, 130)
+        self.assertEqual(self.SUMMARY.findall(stopped.stdout), [])
+        paged = self.run_overview([], PAGE_RC="130")
+        self.assertEqual(paged.returncode, 130)
+        self.assertEqual(self.SUMMARY.findall(paged.stdout), [])
+        (self.root / "scripts/cluster_overview.py").write_text("raise SystemExit('renderer defect')\n")
+        failed = self.run_overview([])
+        self.assertEqual(failed.returncode, 1)
+        self.assertEqual(self.SUMMARY.findall(failed.stdout), [])
+
     def test_esc_returns_and_ctrl_c_stops(self):
         self.assertEqual(self.run_overview(["esc"]).returncode, 0)
         self.assertEqual(self.run_overview(["1", "ctrl-c"]).returncode, 130)
         stopped = self.run_overview(["1"], PULSAR_RC="130")
         self.assertEqual(stopped.returncode, 130)
         self.assertEqual(self.log()[-1], "topology detect --json")
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumCheck(test_ui_confirm.BundledGum):
+    """The cluster check with real Gum over fixture sources: the report opens in
+    the pager, and this check's line stays on screen once the pager closes."""
+    LEAVE_PAGER = "\x1b[?1049l"
+
+    def setUp(self):
+        # A tree whose scripts are this checkout's, with a pulsar that prints fixtures.
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (self.root / "scripts").symlink_to(ROOT / "scripts")
+        fixtures = self.root / "fixtures"
+        fixtures.mkdir()
+        for command, name in (("topology detect", "discovery"), ("topology check", "topology"),
+                              ("ssh-trust check", "identities"), ("doctor", "diagnostics"),
+                              ("inventory", "inventory"), ("model budget", "budget")):
+            (fixtures / command).write_text(json.dumps(DOCUMENTS[name]()))
+        pulsar = self.root / "pulsar"
+        pulsar.write_text('#!/usr/bin/env bash\nargs="$*"; cat "$FIXTURES/${args% --json}"\n')
+        pulsar.chmod(0o755)
+        # PULSAR_SELFTEST without a changes file: nothing is saved.
+        self.script = (f"export PULSAR_SELFTEST=1 FIXTURES={shlex.quote(str(fixtures))} PYTHONDONTWRITEBYTECODE=1\n"
+                       f'exec "{self.root}/scripts/cluster-overview.sh"\n')
+
+    def summaries(self, output, columns):
+        """Each summary drawn after the pager closed, and where the next menu starts."""
+        found = []
+        for closed in [match.end() for match in re.finditer(re.escape(self.LEAVE_PAGER), output)]:
+            after = ANSI.sub("", output[closed:]).replace("\r", "")
+            menu = after.index("Show the report again")
+            line = re.search(r"Checked   \d\d:\d\d:\d\d · [^\n]*(?:\n {10}[^\n]*)*", after[:menu])
+            self.assertIsNotNone(line, f"no summary under the closed pager at {columns} columns: {after[:menu]!r}")
+            self.assertTrue(all(len(row) <= columns for row in line.group().splitlines()), line.group())
+            found.append(" ".join(line.group().split()))
+        return found
+
+    def test_this_checks_line_stays_under_the_closed_pager_and_after_check_again(self):
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.drive(self.script, b"q", ready=b"Changes noticed", columns=columns,
+                                          then=[(b"Show the report again", b"\x1b[B\r"),
+                                                (b"Changes noticed", b"q"),
+                                                (b"Show the report again", b"\x1b")])
+                self.assertEqual(code, 0, output)
+                summaries = self.summaries(output, columns)
+                self.assertEqual(len(summaries), 2, output)
+                for summary in summaries:
+                    self.assertRegex(summary, r"^Checked \d\d:\d\d:\d\d · 1 blocking issue · 3 of 3 answered · "
+                                              r"2 warnings$")
 
 
 if __name__ == "__main__":

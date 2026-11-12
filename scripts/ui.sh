@@ -486,10 +486,15 @@ _UI_PAGER_LINES=8
 # shows a spinner while a slow command runs. COMMAND must be an executable,
 # not a shell function: it runs with COLUMNS set to the pager's text width.
 # Returns the command's status, or 130 after Ctrl-C while it runs or in the
-# pager.
+# pager. Each call sets PAGE_OUTPUT_IN_PLACE to 1 when the output printed in
+# place and stays on screen (short output, or a pager that could not open),
+# and to 0 when the pager showed it and closed; it stays empty when nothing
+# was shown. A caller can then print what must stay readable under a closed
+# pager without repeating what is already on screen.
 page_output() {
   local title="$1" out columns rc=0 pager_rc=0
   shift
+  PAGE_OUTPUT_IN_PLACE=""
   _ui_require_gum || return
   local -a command=("$@") page_env=()
   # The pager's border and padding take four columns.
@@ -518,11 +523,16 @@ page_output() {
   fi
   if [ "$(wc -l <"$out")" -le "$_UI_PAGER_LINES" ]; then
     cat -- "$out"
+    PAGE_OUTPUT_IN_PLACE=1
   else
     _ui_gum_pager_style_args
     _ui_gum pager "${GUM_PAGER_STYLE_ARGS[@]}" <"$out" || pager_rc=$?
+    PAGE_OUTPUT_IN_PLACE=0
     # A pager that could not open must not hide the output.
-    [ "$pager_rc" -eq 0 ] || [ "$pager_rc" -eq 130 ] || cat -- "$out"
+    if [ "$pager_rc" -ne 0 ] && [ "$pager_rc" -ne 130 ]; then
+      cat -- "$out"
+      PAGE_OUTPUT_IN_PLACE=1
+    fi
   fi
   rm -f -- "$out"
   [ "$pager_rc" -ne 130 ] || return 130

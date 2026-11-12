@@ -343,7 +343,7 @@ class BundledGumOutput(BundledGum):
 . "$REPO_DIR/scripts/ui.sh"
 rc=0
 page_output "" bash -c 'for i in $(seq 1 "$1"); do echo "fixture line $i"; done; exit "$2"' _ "$@" || rc=$?
-printf '\\nPAGED=%s\\n' "$rc"
+printf '\\nPAGED=%s IN_PLACE=%s\\n' "$rc" "$PAGE_OUTPUT_IN_PLACE"
 exit "$rc"
 '''
     CONTINUE = '''
@@ -362,7 +362,8 @@ exit "$rc"
             with self.subTest(keys=keys):
                 code, output = self.page(40, keys, status=3)
                 self.assertEqual(code, 3, output)
-                self.assertIn("PAGED=3", output)
+                # The pager closed and took the output with it.
+                self.assertIn("PAGED=3 IN_PLACE=0", output)
                 self.assertIn("esc quit", output)
                 self.assertIn("\x1b[?1049h", output)  # the pager's own screen
 
@@ -445,6 +446,7 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
         code, output = self.page(3, b"")
         self.assertEqual(code, 0, output)
         self.assertIn("fixture line 3", output)
+        self.assertIn("PAGED=0 IN_PLACE=1", output)  # it stays on screen
         self.assertNotIn("esc quit", output)
         self.assertNotIn("\x1b[?1049h", output)
 

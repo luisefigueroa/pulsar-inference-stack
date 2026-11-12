@@ -1965,8 +1965,16 @@ when a saved record changed. Its choices:
   warning and blocking issue with its fix; `hf` findings are warnings),
   memory, disk and services, then the archive and API key settings, the
   sources that could not be observed, and a verdict. A long report opens in
-  the pager. Its findings are saved beside the changes noticed, so home and
-  this frame show them later. Under the report: **Review what changed…** when
+  the pager. When the pager closes, one line for this check stays on screen,
+  for example
+  `Checked   16:13:05 · no blocking issue · 4 of 4 answered · 3 warnings`:
+  when it started and what the verdict counts, with the nodes that did not
+  answer named. Blocking issues, nodes that did not answer or were not
+  observed, and checks not observed come first, so the frame above, which
+  still shows the check saved before, is not the only result in view. **Show
+  the report again** and **Check again** print it again. Its findings are
+  saved beside the changes noticed, so home and this frame show them later.
+  Under the report: **Review what changed…** when
   discovery noticed a change, **Show the report again**, **Check again** and
   **Back**. It replaces the earlier home menu's **Cluster overview**.
 - **Review what changed…**, shown when the saved changes hold a change, shows

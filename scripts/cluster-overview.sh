@@ -9,6 +9,14 @@
 # until the operator chooses it. The sources only read the nodes; model budget
 # takes the shared storage lock, so it runs last.
 #
+# When the pager closes, one line for this check stays on screen
+# (cluster_overview.py --summary): its time, blocking issues, how many nodes
+# answered, checks not observed and warnings, so the Cluster menu's older frame
+# above is not the only result in view. It follows every showing of the
+# report: the first, Show the report again, Check again and the check again
+# after Review what changed…. Ctrl-C and a report that could not be shown
+# print none.
+#
 # Under the report: Review what changed… when discovery noticed a change (the
 # fix this menu can run; it returns to the Cluster menu), Show the report
 # again, Check again and Back.
@@ -76,6 +84,15 @@ show() {
     wait_continue "Cluster check error" || return
     return "$rc"
   fi
+  # A closed pager takes the report with it, and the Cluster menu's frame
+  # above still shows the check saved before this one. One line for this
+  # check stays under it, counted from the same sources as the report (never
+  # from the saved record, which a failed save leaves old). A report printed
+  # in place already shows its Result line. A summary that fails prints its
+  # error here and the menu continues.
+  [ "${PAGE_OUTPUT_IN_PLACE:-}" != 1 ] || return 0
+  echo
+  python3 "$REPO_DIR/scripts/cluster_overview.py" "$WORK" --started "$STARTED" --summary || true
 }
 
 # changed: whether this check's discovery noticed a change to review.

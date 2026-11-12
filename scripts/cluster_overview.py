@@ -7,6 +7,7 @@ changes noticed), `topology check --json`, `ssh-trust check --json`,
 `model budget --json`.
 
     python3 scripts/cluster_overview.py DIR --started EPOCH --finished EPOCH
+    python3 scripts/cluster_overview.py DIR --started EPOCH --summary
     python3 scripts/cluster_overview.py DIR --check-record
 
 DIR holds each source's output as NAME.json, NAME.err and NAME.rc, for NAME
@@ -15,18 +16,24 @@ that failed or printed no JSON is reported as not observed, with its error;
 the others still show. Nodes come from topology check, which lists every
 saved node by hostname, and the other sources join them by node ID or
 position. Memory is the node's available memory: on GB10 the GPU and the host
-share it. Each finding carries its fix. `--check-record` prints what the
-report found as the `check` body that scripts/saved_observations.py
+share it. Each finding carries its fix. `--summary` prints one line for this
+check, counted as the report's Result line counts: when it ran, the blocking
+issues, how many nodes answered, the checks not observed and the warnings. The
+Cluster menu prints it under a report the pager has closed, so the screen shows
+this check and not only the saved one. `--check-record` prints what the report
+found as the `check` body that scripts/saved_observations.py
 save-cluster-check keeps beside the changes noticed.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import io
 import json
 from pathlib import Path
 import re
 import sys
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -47,6 +54,7 @@ FABRIC_UNCHECKED = "Fabric connectivity could not be checked."
 SETTINGS_CHECKS = {"api_auth": "API key", "cold_storage": "Archives"}
 CLUSTER_CHECKS = {"topology", "ssh_trust", "local_fabric", "catalog"}
 REMOTE = re.compile(r"^rank_(\d+)_(.+)$")
+KEEP = " "  # no-break space: textwrap never breaks at it; printed as a space
 
 
 def read_source(directory: Path, name: str) -> tuple[dict | None, str | None]:
@@ -230,7 +238,77 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
     return rows
 
 
-def render(directory: Path, started: float, finished: float, writer: TerminalWriter | None = None) -> None:
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def verdict_parts(counts: dict[str, int], missing: int) -> dict[str, str | None]:
+    """The Result line's parts: the blocking issues, the warnings and the checks not observed."""
+    return {"blocking": plural(counts["fail"], "blocking issue") if counts["fail"] else "no blocking issue",
+            "warnings": plural(counts["warn"], "warning") if counts["warn"] else None,
+            "not_observed": f"{plural(missing, 'check')} not observed" if missing else None}
+
+
+def answered_words(report: Report) -> tuple[str, bool]:
+    """How many nodes answered this check, and whether every one did.
+
+    Unknown is not absent: a node the check could not observe is counted
+    apart, never as one that answered or one that did not."""
+    if not report.nodes:
+        return "no node observed", False
+    answers = [(node, report.answered(node)) for node in report.nodes]
+    total = len(answers)
+    unknown = sum(1 for _, answer in answers if answer is None)
+    if unknown == total:
+        return f"{plural(total, 'node')} not observed", False
+    answered = sum(1 for _, answer in answers if answer is True)
+    silent = [str(node["hostname"]) for node, answer in answers if answer is False]
+    text = f"{answered} of {total} answered"
+    if unknown:
+        text += f", {unknown} not observed"
+    if silent:
+        names = silent[0] if len(silent) == 1 else ", ".join(silent[:-1]) + " and " + silent[-1]
+        text += f" ({names} did not answer)"
+    return text, answered == total
+
+
+def summary(directory: Path, started: float, writer: TerminalWriter | None = None) -> None:
+    """One line for this check, for the screen under a report the pager closed.
+
+    It counts what the report's Result line counts, from the same sources, and
+    leads with what needs attention: blocking issues, nodes that did not answer
+    or were not observed, and checks not observed come before anything that
+    reads as fine."""
+    out = writer or TerminalWriter()
+    report = Report(directory)
+    counts = render(directory, started, started, TerminalWriter(width=out.width, stream=io.StringIO()))
+    verdict = verdict_parts(counts, len(report.missing))
+    answers, everyone = answered_words(report)
+    parts = [datetime.fromtimestamp(started).strftime("%H:%M:%S")]
+    if counts["fail"]:
+        parts.append(verdict["blocking"])
+    if not everyone:
+        parts.append(answers)
+    parts.append(verdict["not_observed"])
+    if not counts["fail"]:
+        parts.append(verdict["blocking"])
+    if everyone:
+        parts.append(answers)
+    parts.append(verdict["warnings"])
+    attention = "fail" if counts["fail"] else "warn" if not everyone or report.missing else None
+    # Lines break only between parts, unless a part is wider than the line.
+    room = out.width - LABEL_WIDTH
+    kept = [part.replace(" ", KEEP) if len(part) < room else part for part in parts if part]
+    lines = textwrap.wrap(f"{KEEP}· ".join(kept), width=out.width, initial_indent=f"{'Checked':<{LABEL_WIDTH}}",
+                          subsequent_indent=" " * LABEL_WIDTH, break_on_hyphens=False)
+    for number, line in enumerate(lines):
+        line = line.replace(KEEP, " ")
+        label = len("Checked") if number == 0 else 0
+        print(out.paint(line, [attention] * label + [None] * (len(line) - label)), file=out.stream)
+
+
+def render(directory: Path, started: float, finished: float, writer: TerminalWriter | None = None) -> dict[str, int]:
+    """Print the report; return the blocking issues and warnings it counted as {"fail": N, "warn": N}."""
     out = writer or TerminalWriter()
     report = Report(directory)
     inventory, budget = report.inventory, report.budget
@@ -410,18 +488,12 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
         for name, reason in report.missing.items():
             out.emit(reason, initial_indent="  ", subsequent_indent="    ", markup=True)
     out.blank()
-    if counts["fail"]:
-        verdict = f"{counts['fail']} blocking issue{'' if counts['fail'] == 1 else 's'}"
-    else:
-        verdict = "no blocking issue"
-    if counts["warn"]:
-        verdict += f" · {counts['warn']} warning{'' if counts['warn'] == 1 else 's'}"
-    if report.missing:
-        verdict += f" · {len(report.missing)} check{'' if len(report.missing) == 1 else 's'} not observed"
+    verdict = " · ".join(part for part in verdict_parts(counts, len(report.missing)).values() if part)
     out.field("Result", verdict + "; each finding above names its fix.", label_width=LABEL_WIDTH,
               label_role="fail" if counts["fail"] else None)
     out.field("Same as", "`./pulsar topology detect`, `topology check`, `ssh-trust check`, `doctor`, `inventory` "
                          "and `model budget`", label_width=LABEL_WIDTH, markup=True)
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -429,11 +501,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--started", type=float)
     parser.add_argument("--finished", type=float)
+    parser.add_argument("--summary", action="store_true",
+                        help="print one line for this check: when it ran and what the report's Result counts")
     parser.add_argument("--check-record", action="store_true",
                         help="print the check body saved beside the changes noticed")
     args = parser.parse_args(argv)
     if args.check_record:
         print(json.dumps(Report(args.directory).check_record(), sort_keys=True))
+        return 0
+    if args.summary:
+        if args.started is None:
+            parser.error("--started is required for the summary")
+        summary(args.directory, args.started)
         return 0
     if args.started is None or args.finished is None:
         parser.error("--started and --finished are required to render the report")
