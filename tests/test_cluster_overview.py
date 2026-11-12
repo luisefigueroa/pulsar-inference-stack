@@ -395,6 +395,18 @@ class Summary(unittest.TestCase):
                          f"Checked   {self.WHEN} · 1 blocking issue ·\n"
                          "          2 of 3 answered (rank-2 did not answer) ·\n"
                          "          1 check not observed · 3 warnings\n")
+        # A part that fits only without its " ·" may break inside, but never
+        # leaves the separator to start a line.
+        for name in ("node-c-long-name", "node-c-longer-name"):
+            with self.subTest(name=name):
+                long = topology()
+                long["nodes"][2]["hostname"] = name
+                directory = self.sources(discovery=(noticed, 1, ""), topology=(long, 0, ""))
+                plain = self.summary(directory, 60)
+                self.assertTrue(all(len(line) <= 60 for line in plain.splitlines()), plain)
+                self.assertNotIn("\n          ·", plain)
+                self.assertFalse(any(line.endswith(" ") for line in plain.splitlines()), plain)
+                self.assertIn(f"({name} did not answer)", " ".join(plain.split()))
 
     def test_the_command_needs_only_when_the_check_started(self):
         directory = self.sources()

@@ -296,9 +296,9 @@ def summary(directory: Path, started: float, writer: TerminalWriter | None = Non
         parts.append(answers)
     parts.append(verdict["warnings"])
     attention = "fail" if counts["fail"] else "warn" if not everyone or report.missing else None
-    # Lines break only between parts, unless a part is wider than the line.
+    # Lines break only between parts, unless a part with its " ·" is wider than the line.
     room = out.width - LABEL_WIDTH
-    kept = [part.replace(" ", KEEP) if len(part) < room else part for part in parts if part]
+    kept = [part.replace(" ", KEEP) if len(part) + 2 <= room else part for part in parts if part]
     lines = textwrap.wrap(f"{KEEP}· ".join(kept), width=out.width, initial_indent=f"{'Checked':<{LABEL_WIDTH}}",
                           subsequent_indent=" " * LABEL_WIDTH, break_on_hyphens=False)
     for number, line in enumerate(lines):
