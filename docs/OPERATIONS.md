@@ -207,7 +207,7 @@ below are for reading.
 | Serve: needs its files checked | Its files are where it serves, but no saved check has found them prepared. The plan checks and records them; nothing is copied. |
 | Serve: ready to start on … | On a saved *ring*, a recipe on one or two nodes can serve on several machines, so its phrase names the ones it is about: for a one-node recipe the machine saved records name (its home, else a prepared copy), where **Serve a model…** starts its machine question; for a two-node recipe this machine and its neighbour at rank 1, which Start uses when no machines are named. Here this saved cluster's records show their copies complete and the last saved check found the files ready. A pair is named in role order, `first + second`: the first serves the API. |
 | Serve: needs its files checked on … | On a *ring*: the machines named, chosen as for `ready to start on …`, hold its files, but no saved check has found them prepared, or the copies there were recorded for an earlier saved cluster and must be taken over. The plan checks and records them; nothing is copied. |
-| Serve: files ready on … | On a *ring*, when the machines named first are not ready: saved records of this saved cluster show a complete copy of its files on these other machines, in this role order, and the first of a pair serves the API. `and N more` counts the other machines or pairs. Records are not proof that the copies still verify; a plan that serves there checks them first. Copies recorded for an earlier saved cluster never count. |
+| Serve: copies recorded on … | On a *ring*, when the machines named first are not ready to start: saved records of this saved cluster show a complete copy of its files on these other machines, in this role order, and the first of a pair serves the API. `and N more` counts the other machines or pairs. A record is not a check: no saved check has said these copies are ready, and a plan that serves there checks them first. Copies recorded for an earlier saved cluster never count. |
 | Serve: needs restoring from its archive | No home (the copy Pulsar keeps) is recorded, and its archive is there: the plan restores the files from it, without the internet. |
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
@@ -1686,22 +1686,24 @@ needs, which the operator approves once.
    restoring from its archive`, `needs downloading · …` or `needs …; the
    cluster has …` (see the [Serve labels](#catalog-labels)). On a saved ring
    a recipe on one or two nodes names its machines, such as `needs its files
-   checked on … · files ready on …`. The phrases come
+   checked on … · copies recorded on …`. The phrases come
    from saved records and one service inventory, which the menu reuses while
    it is under a minute old.
 3. **The machine.** A one-node recipe asks which machine serves it, starting
    on the one its files are on. On a saved ring, a two-node recipe asks which
-   two neighbouring machines serve it: this machine and its neighbour at rank
-   1 first, which is what Start uses when no machines are named and where the
-   cursor starts; then this machine and its other neighbour; then the other
-   pairs in cable order. Each choice names both machines and the one that
-   serves the API (this machine when it is one of them, otherwise the one
-   earlier in the saved order), and says what saved records and the service
-   inventory taken on entry already show there: its files ready in that
-   order, its model files on one of them, a service running. The plan's first
-   line names the pair again, and its Prepare, serving image and Start steps
-   name it with `--placement-nodes`, in that order, unless it is the first
-   pair, whose plan is the one Start uses without naming machines. **Back**
+   two neighbouring machines serve it, one choice per cable: this machine
+   and its neighbour at rank 1 first, which is what Start uses when no
+   machines are named and where the cursor starts; then this machine and its
+   other neighbour; then the other pairs in cable order. Each choice names
+   both machines and the one that serves the API: the one earlier in the
+   saved order, unless this saved cluster's records show the recipe's copies
+   complete only in the other order, which Prepare used; that order is
+   offered instead, so Start finds each rank's copy. Each choice also says
+   what saved records and the service inventory taken on entry already show
+   there: its copies recorded in that order, its model files on one of them,
+   a service running. The plan's first line names the pair again, and its
+   Prepare, serving image and Start steps name it with `--placement-nodes`,
+   in that order, unless it is the pair Start uses without naming machines. **Back**
    or Esc returns to the list with nothing planned. Any other multi-node
    recipe, a recipe that passes data around a loop of its nodes
    (`NCCL_ALGO=Ring`), and every recipe on a full mesh serve on the saved

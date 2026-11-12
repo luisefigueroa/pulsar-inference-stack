@@ -1,7 +1,7 @@
 """The readiness phrase on a saved ring: a recipe on one or two nodes can serve
 on several placements, so the phrase names the nodes it is about and, when the
-default placement is not ready, a placement whose files this saved cluster's
-records show ready. On a full mesh nothing changes. Synthetic records only;
+default placement is not ready to start, a placement whose copies this saved
+cluster's records show complete. On a full mesh nothing changes. Synthetic records only;
 nothing here runs a command or probes a node."""
 import contextlib
 import io
@@ -70,23 +70,23 @@ def phrase(state, *, names=NAMES, topology_id=CURRENT, context=True):
 
 
 class RingPhrase(unittest.TestCase):
-    def test_one_node_default_needing_a_check_names_where_files_are_ready(self):
-        self.assertEqual(phrase(ONE_NODE), "needs its files checked on node-a · files ready on node-c and node-d")
+    def test_one_node_default_needing_a_check_names_where_copies_are_recorded(self):
+        self.assertEqual(phrase(ONE_NODE), "needs its files checked on node-a · copies recorded on node-c and node-d")
         more = recipe(1, view(0, "n1"), view(0, "n2"), view(0, "n3"))
-        self.assertEqual(phrase(more), "needs its files checked on node-a · files ready on node-b, node-c and 1 more")
+        self.assertEqual(phrase(more), "needs its files checked on node-a · copies recorded on node-b, node-c and 1 more")
 
-    def test_a_pair_is_ready_only_in_the_role_order_it_was_prepared(self):
-        self.assertEqual(phrase(PAIR), "needs its files checked on node-a + node-b · files ready on node-d + node-c")
-        # node-d then node-c is ready; node-c then node-d is not.
-        self.assertTrue(serve.files_ready(PAIR, ("n3", "n2"), CURRENT))
-        self.assertFalse(serve.files_ready(PAIR, ("n2", "n3"), CURRENT))
+    def test_a_pairs_copies_are_recorded_only_in_the_role_order_it_was_prepared(self):
+        self.assertEqual(phrase(PAIR), "needs its files checked on node-a + node-b · copies recorded on node-d + node-c")
+        # node-d then node-c is recorded; node-c then node-d is not.
+        self.assertTrue(serve.copies_recorded(PAIR, ("n3", "n2"), CURRENT))
+        self.assertFalse(serve.copies_recorded(PAIR, ("n2", "n3"), CURRENT))
         both = recipe(2, view(0, "n3"), view(1, "n2"), view(0, "n1"), view(1, "n2"))
-        self.assertEqual(phrase(both), "needs its files checked on node-a + node-b · files ready on node-b + node-c "
+        self.assertEqual(phrase(both), "needs its files checked on node-a + node-b · copies recorded on node-b + node-c "
                                        "and 1 more pair")
 
     def test_a_pair_that_needs_a_copy_names_the_machine_it_goes_to(self):
         state = recipe(2, view(0, "n3"), view(1, "n2"), state="missing")
-        self.assertEqual(phrase(state), "needs copying to node-b · 212 GiB · files ready on node-d + node-c")
+        self.assertEqual(phrase(state), "needs copying to node-b · 212 GiB · copies recorded on node-d + node-c")
 
     def test_a_ready_default_names_its_nodes_and_nothing_else(self):
         self.assertEqual(phrase(recipe(1, view(0, "n0"), view(0, "n2"), state="ready")), "ready to start on node-a")
@@ -96,15 +96,15 @@ class RingPhrase(unittest.TestCase):
         # cluster's records of the default placement, no nodes are named.
         self.assertEqual(phrase(recipe(1, view(0, "n0", EARLIER), state="ready")), "ready to start")
 
-    def test_copies_of_an_earlier_saved_cluster_never_count_as_ready(self):
+    def test_copies_of_an_earlier_saved_cluster_never_count(self):
         state = recipe(2, view(0, "n0", EARLIER), view(1, "n1", EARLIER), view(0, "n3", EARLIER),
                        view(1, "n2", EARLIER))
         self.assertEqual(phrase(state), "needs its files checked on node-a + node-b")
-        self.assertFalse(serve.files_ready(state, ("n3", "n2"), CURRENT))
-        # Without the saved cluster's topology_id nothing is ready.
+        self.assertFalse(serve.copies_recorded(state, ("n3", "n2"), CURRENT))
+        # Without the saved cluster's topology_id no copy counts.
         self.assertEqual(phrase(ONE_NODE, topology_id=None), "needs its files checked on node-a")
 
-    def test_every_required_snapshot_must_be_copied_for_files_to_be_ready(self):
+    def test_every_required_snapshot_must_be_copied_for_copies_to_count(self):
         draft = "22" * 32
         snapshots = {"target": {"model_id": "org/model", "model_commit": "c" * 40, "home": HOME,
                                 "snapshot_manifest_id": MODEL},
@@ -112,7 +112,7 @@ class RingPhrase(unittest.TestCase):
                                "snapshot_manifest_id": draft}}
         partial = recipe(1, view(0, "n2", manifest=MODEL), view(0, "n3", manifest=MODEL),
                          view(0, "n3", manifest=draft), snapshots=snapshots)
-        self.assertEqual(phrase(partial), "needs its files checked on node-a · files ready on node-d")
+        self.assertEqual(phrase(partial), "needs its files checked on node-a · copies recorded on node-d")
 
     def test_whole_ring_and_refused_recipes_and_services_are_unchanged(self):
         loop = recipe(2, view(0, "n3"), view(1, "n2"), container_env=["NCCL_ALGO=Ring"])
@@ -125,14 +125,25 @@ class RingPhrase(unittest.TestCase):
                                          service=running, ring=True, host=NAMES, pairs=PAIRS, topology_id=CURRENT),
                          "running on node-c")
 
-    def test_the_pair_question_still_says_files_are_ready_in_that_order(self):
+    def test_the_pair_question_offers_the_order_the_phrase_names(self):
+        # The trial's pair: copies recorded as node-d then node-c, so that is the choice offered.
         lines = serve.pair_lines(PAIR, PAIRS, NAMES, width=200, topology_id=CURRENT)
-        ready = [line for line in lines if line.endswith("its files are ready here")]
-        self.assertEqual(ready, [])  # node-d + node-c is not one of the question's choices
+        self.assertEqual([line.split("\t")[1:] for line in lines if line.endswith("its copies are recorded here")],
+                         [["n3,n2", "node-d and node-c, API on node-d; its copies are recorded here"]])
+        self.assertEqual(len([line for line in lines if line.startswith("node\t")]), 4)
         state = recipe(2, view(0, "n2"), view(1, "n3"))
         lines = serve.pair_lines(state, PAIRS, NAMES, width=200, topology_id=CURRENT)
-        self.assertEqual([line.split("\t")[1] for line in lines if line.endswith("its files are ready here")],
+        self.assertEqual([line.split("\t")[1] for line in lines if line.endswith("its copies are recorded here")],
                          ["n2,n3"])
+        # Records are never called ready, in the question or the phrase.
+        self.assertNotIn("ready", " ".join(serve.pair_lines(PAIR, PAIRS, NAMES, width=200, topology_id=CURRENT)))
+        self.assertNotIn("ready", phrase(PAIR))
+
+    def test_the_trial_pair_with_both_orders_recorded_and_no_check(self):
+        # Both pairs have the same evidence: complete records, no saved check.
+        state = recipe(2, view(0, "n0"), view(1, "n1"), view(0, "n3"), view(1, "n2"), state="unknown")
+        self.assertEqual(phrase(state), "needs its files checked on node-a + node-b · copies recorded on "
+                                        "node-d + node-c")
 
 
 class Mesh(unittest.TestCase):
@@ -201,8 +212,8 @@ class Screens(unittest.TestCase):
             with self.subTest(columns=columns):
                 text = self.serve_list(columns)
                 self.assertTrue(all(len(line) <= columns - 2 for line in text), text)
-                for part in ("needs its files checked on node-a", "files ready on node-c and node-d",
-                             "needs its files checked on node-a + node-b", "files ready on node-d + node-c"):
+                for part in ("needs its files checked on node-a", "copies recorded on node-c and node-d",
+                             "needs its files checked on node-a + node-b", "copies recorded on node-d + node-c"):
                     self.assertTrue(any(part in line for line in text), (part, text))
 
     def test_the_models_page_at_80_and_60_columns(self):
@@ -211,8 +222,8 @@ class Screens(unittest.TestCase):
                 text = self.models(columns)
                 self.assertTrue(all(len(line) <= columns for line in text.splitlines()), text)
                 self.assertNotIn(" ", text)
-                for part in ("needs its files checked on node-a", "files ready on node-c and node-d",
-                             "needs its files checked on node-a + node-b", "files ready on node-d + node-c"):
+                for part in ("needs its files checked on node-a", "copies recorded on node-c and node-d",
+                             "needs its files checked on node-a + node-b", "copies recorded on node-d + node-c"):
                     self.assertTrue(any(part in line for line in text.splitlines()), (part, text))
                 self.assertFalse(any(line.lstrip().startswith("·") for line in text.splitlines()), text)
 
@@ -252,20 +263,20 @@ class Commands(unittest.TestCase):
         return " ".join(" ".join(line.split("\t")[-1] for line in output.getvalue().splitlines()
                                  if line != "gap").split())
 
-    def test_the_serve_list_command_names_the_ready_pair(self):
+    def test_the_serve_list_command_names_the_recorded_pair(self):
         text = self.run_main(serve.main, ["list"], self.catalog.read_text())
-        self.assertIn("needs its files checked on node-a + node-b files ready on node-d + node-c", text)
-        self.assertIn("needs its files checked on node-a files ready on node-c and node-d", text)
+        self.assertIn("needs its files checked on node-a + node-b copies recorded on node-d + node-c", text)
+        self.assertIn("needs its files checked on node-a copies recorded on node-c and node-d", text)
 
-    def test_the_models_page_command_names_the_ready_pair(self):
+    def test_the_models_page_command_names_the_recorded_pair(self):
         text = self.run_main(mp.main, ["page", "--files", str(self.files), "--budget", str(self.budget),
                                        "--catalog", str(self.catalog)])
-        self.assertIn("needs its files checked on node-a + node-b · files ready on node-d + node-c", text)
+        self.assertIn("needs its files checked on node-a + node-b · copies recorded on node-d + node-c", text)
 
     def test_on_a_full_mesh_the_commands_name_nothing(self):
         self.topology.write_text(json.dumps({**TOPOLOGY, "validation": {"class": "roce-full-mesh"}}))
         text = self.run_main(serve.main, ["list"], self.catalog.read_text())
-        self.assertNotIn("files ready on", text)
+        self.assertNotIn("copies recorded on", text)
         self.assertNotIn("checked on", text)
 
 

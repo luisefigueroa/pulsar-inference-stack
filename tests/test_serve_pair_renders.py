@@ -97,7 +97,7 @@ class PairRenders(test_ui_confirm.BundledGum):
                 screen = self.question(root, exports, columns)
                 self.keep(f"question-files-and-service-{columns}.txt", screen)
                 flat = " ".join(" ".join(screen).split())
-                self.assertIn(f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}; its files are ready here", flat)
+                self.assertIn(f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}; its copies are recorded here", flat)
                 self.assertIn(f"org/other is running on {HOSTS[3]}", flat)
 
     def test_the_plan_for_the_pair_on_saved_ranks_2_and_3(self):

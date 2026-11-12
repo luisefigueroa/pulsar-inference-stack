@@ -196,6 +196,30 @@ class PairQuestion(RingHarness):
                       f"{SPEC} {placement} --pull --yes ./pulsar start abababababab {placement}", text)
         self.assert_no_unapproved_authority()
 
+    def test_a_cable_recorded_only_in_reverse_is_offered_and_started_in_that_order(self):
+        # Prepare recorded rank 0 on saved rank 3 and rank 1 on saved rank 2, under this cluster.
+        topology_id = json.loads(self.topology.read_text())["topology_id"]
+        copies = [{"rank": 0, "node_id": IDS[3], "topology_id": topology_id},
+                  {"rank": 1, "node_id": IDS[2], "topology_id": topology_id}]
+        self.entries(recipe(2, local_state="missing", prepared_copies=copies),
+                     recipe(1, spec_id=OTHER, model_id="org/other"))
+        self.fixture("prepare-plan", envelope(prepare_plan((IDS[3], "reuse"), (IDS[2], "reuse"))))
+        self.fixture("image-plan", envelope(image_plan((3, "ok"), (2, "ok"))))
+        result = self.run_menu(["0", "3", "Go ahead", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        question = " ".join(" ".join(self.menus()[1]).split())
+        self.assertIn(f"{HOSTS[3]} and {HOSTS[2]}, API on {HOSTS[3]}; its copies are recorded here", question)
+        self.assertNotIn(f"{HOSTS[2]} and {HOSTS[3]}", question)
+        placement = f"--placement-nodes {HOSTS[3]},{HOSTS[2]}"
+        commands = self.commands()
+        self.assertIn(f"model prepare {SPEC} {placement} --plan --json", commands)
+        self.assertIn(f"start {SPEC} {placement} --dry-run --json", commands)
+        self.assertEqual(commands[-1], f"start {SPEC} {placement}")
+        text = " ".join(result.stdout.split())
+        self.assertIn(f"Serve org/model on {HOSTS[3]} and {HOSTS[2]}", text)
+        self.assertIn(f"./pulsar start abababababab {placement}", text)
+        self.assert_no_unapproved_authority()
+
     def test_change_never_offers_another_machine_for_a_pair(self):
         self.fixture("image-plan", envelope(image_plan((0, "ok"), (3, "missing"))))
         result = self.run_menu(["0", "1", "Change…", "Back", "Cancel", "Back"])
@@ -244,6 +268,13 @@ class RunningServices(RingHarness):
         self.assert_no_unapproved_authority()
         self.assert_plain_choices()
 
+    def test_restart_keeps_a_reversed_pair_in_its_order(self):
+        self.inventory(card_inventory((SPEC, [3, 2])))
+        result = self.run_menu(["Restart…", "Go ahead", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"Restart org/model on {HOSTS[3]} and {HOSTS[2]}", " ".join(result.stdout.split()))
+        self.assertEqual(self.ran(), [f"stop {SPEC}", f"start {SPEC} --placement-nodes {HOSTS[3]},{HOSTS[2]}"])
+
     def test_switch_stops_it_then_asks_its_own_question_for_the_new_recipe(self):
         self.fixture("prepare-plan", envelope(prepare_plan((IDS[0], "reuse"), (IDS[3], "copy"))))
         self.fixture("image-plan", envelope(image_plan((0, "ok"), (3, "ok"))))
@@ -286,6 +317,8 @@ class Pairs(unittest.TestCase):
         from scripts.start_placement import ordinary_start_refusal
         for pair in serve.ring_pairs(self.topology):
             self.assertIsNone(ordinary_start_refusal(self.topology, list(pair), guarded=False), pair)
+            # A cable is offered in reverse when only that order has its copies recorded.
+            self.assertIsNone(ordinary_start_refusal(self.topology, list(reversed(pair)), guarded=False), pair)
 
     def test_no_pairs_without_saved_links(self):
         self.assertEqual(serve.ring_pairs(dict(self.topology, links=[])), [])
@@ -332,7 +365,7 @@ class Pairs(unittest.TestCase):
             f"node\t{IDS[1]},{IDS[2]}\t{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}",
             f"node\t{IDS[2]},{IDS[3]}\t{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}"])
 
-    def test_files_ready_only_in_the_order_they_were_prepared_and_services_from_the_inventory(self):
+    def test_copies_recorded_only_in_the_order_they_were_prepared_and_services_from_the_inventory(self):
         def view(rank, node, topology_id=self.topology["topology_id"]):
             return {"rank": rank, "node_id": node, "topology_id": topology_id}
         row = recipe(2, prepared_copies=[view(0, IDS[1]), view(1, IDS[2]),
@@ -347,8 +380,39 @@ class Pairs(unittest.TestCase):
             f"files are on {HOSTS[0]}",
             f"{HOSTS[0]} and {HOSTS[3]}, API on {HOSTS[0]}; its model files are on {HOSTS[0]}; org/other is running "
             f"on {HOSTS[3]}",
-            f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}; its files are ready here",
-            f"{HOSTS[2]} and {HOSTS[3]}, API on {HOSTS[2]}; org/other is running on {HOSTS[3]}"])
+            f"{HOSTS[1]} and {HOSTS[2]}, API on {HOSTS[1]}; its copies are recorded here",
+            # Only the reverse of this cable has its copies recorded, so it is offered in that order.
+            f"{HOSTS[3]} and {HOSTS[2]}, API on {HOSTS[3]}; its copies are recorded here; org/other is running on "
+            f"{HOSTS[3]}"])
+        self.assertEqual([line.split("\t")[1] for line in lines[2:]],
+                         [f"{IDS[0]},{IDS[1]}", f"{IDS[0]},{IDS[3]}", f"{IDS[1]},{IDS[2]}", f"{IDS[3]},{IDS[2]}"])
+
+    def test_each_cable_keeps_its_lower_rank_first_unless_only_its_reverse_is_recorded(self):
+        topology_id = self.topology["topology_id"]
+
+        def view(rank, node, recorded_under=topology_id):
+            return {"rank": rank, "node_id": node, "topology_id": recorded_under}
+        cases = (
+            ([], (IDS[2], IDS[3])),
+            ([view(0, IDS[3]), view(1, IDS[2])], (IDS[3], IDS[2])),
+            # Both orders recorded: neither is the only one, so the lower rank leads.
+            ([view(0, IDS[3]), view(1, IDS[2]), view(0, IDS[2]), view(1, IDS[3])], (IDS[2], IDS[3])),
+            # Records of an earlier saved cluster do not count.
+            ([view(0, IDS[3], "e" * 64), view(1, IDS[2], "e" * 64)], (IDS[2], IDS[3])),
+        )
+        for copies, offered in cases:
+            with self.subTest(copies=len(copies)):
+                row = recipe(2, prepared_copies=copies)
+                self.assertEqual(serve.offered_order(row, (IDS[2], IDS[3]), topology_id), offered)
+        # The default cable reversed is still the first choice, with the cursor on it,
+        # but it is no longer what Start uses when no machines are named.
+        row = recipe(2, prepared_copies=[view(0, IDS[1]), view(1, IDS[0])])
+        lines = serve.pair_lines(row, serve.ring_pairs(self.topology), self.names, width=200,
+                                 topology_id=topology_id)
+        self.assertEqual(lines[1], f"default\t{IDS[1]},{IDS[0]}")
+        self.assertEqual(lines[2], f"node\t{IDS[1]},{IDS[0]}\t{HOSTS[1]} and {HOSTS[0]}, API on {HOSTS[1]}; its "
+                                   "copies are recorded here")
+        self.assertNotIn("what Start uses", " ".join(lines))
 
     def test_the_default_pair_names_no_nodes_and_any_other_pair_names_both_in_order(self):
         row = recipe(2)

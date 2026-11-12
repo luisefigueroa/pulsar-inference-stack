@@ -87,7 +87,7 @@ READINESS = {
     "ready-on": "ready to start on {hosts}",
     "verify-on": "needs its files checked on {hosts}",
     "copy-to": "needs copying to {hosts} · {size}",
-    "files-ready": "files ready on {hosts}",
+    "copies-recorded": "copies recorded on {hosts}",
 }
 # The plan screen's choices, in order; the cursor starts on Cancel (D1).
 CHOICES = (("cancel", "Cancel"), ("go", "Go ahead"), ("ready", "Get it ready, but do not start"),
@@ -187,13 +187,14 @@ def ring_pairs(topology: dict | None) -> list[tuple[str, str]]:
     return [(ids[first], ids[second]) for first, second in mine + rest]
 
 
-def files_ready(row: dict, placement, topology_id: str | None) -> bool:
+def copies_recorded(row: dict, placement, topology_id: str | None) -> bool:
     """Whether saved records hold a prepared copy of every required snapshot
     on every node of PLACEMENT in that role order: role rank r on its r-th
     node, recorded under TOPOLOGY_ID (any saved cluster when None). A saved
-    record is not proof the copy still verifies; the plan's own preview says.
-    The pair question's "its files are ready here" and the ring's "files
-    ready on" both mean this."""
+    record is not proof the copy still verifies, nor a saved check: only the
+    plan's own preview, or a saved check, says the files are ready. The pair
+    question's "its copies are recorded here" and the ring's "copies recorded
+    on" both mean this."""
     if not placement:
         return False
     views = [view for view in row.get("prepared_copies") or []
@@ -217,6 +218,17 @@ def ring_placements(row: dict, order: list[str], pairs: list[tuple[str, str]]) -
     return [placement for pair in pairs for placement in (tuple(pair), tuple(reversed(pair)))]
 
 
+def offered_order(row: dict, pair, topology_id: str | None) -> tuple[str, ...]:
+    """The order the pair question offers one cable in: the order whose copies
+    this saved cluster's records show complete when exactly one order has
+    them (it is the order Prepare used, so Start finds each rank's copy),
+    else ring_pairs' order, its lower saved rank first."""
+    pair, reverse = tuple(pair), tuple(reversed(pair))
+    if topology_id and copies_recorded(row, reverse, topology_id) and not copies_recorded(row, pair, topology_id):
+        return reverse
+    return pair
+
+
 def asks_for_a_pair(row: dict, names: NodeNames) -> bool:
     """Whether Serve a model… asks which two neighbours serve ROW: a two-node
     recipe Start can run, on a saved ring, that does not pass data around a
@@ -228,15 +240,19 @@ def asks_for_a_pair(row: dict, names: NodeNames) -> bool:
 def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, width: int,
                inventory: dict | None = None, entries: list[dict] = (), topology_id: str | None = None) -> list[str]:
     """The pair question of a two-node recipe on a ring: a title, the pair the
-    cursor starts on (the default order), then one choice per neighbouring
-    pair, in ring_pairs' order. Each names both machines and the one that
-    serves the API, says what Start uses when no machines are named, and what
-    saved records and the captured service inventory already show there: the
-    recipe's files ready in this order, its model files on one of them, a
-    service running. A choice too wide goes on to "line" rows."""
+    cursor starts on (the first choice), then one choice per neighbouring
+    pair, in ring_pairs' order, each cable in offered_order: the order its
+    copies are recorded in, when only one is. Each names both machines and
+    the one that serves the API, says which is what Start uses when no
+    machines are named, and what saved records and the captured service
+    inventory already show there: the recipe's copies recorded in this
+    order, its model files on one of them, a service running. A choice too
+    wide goes on to "line" rows."""
     import textwrap
     model = clean(row["model_id"])
     lines = [f"title\tWhich two neighbouring machines should serve {model}?"]
+    pairs = [offered_order(row, pair, topology_id) for pair in pairs]
+    default = tuple(names.order[:2])
     if pairs:
         lines.append(f"default\t{','.join(pairs[0])}")
     homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
@@ -253,10 +269,10 @@ def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, wid
     for index, pair in enumerate(pairs):
         hosts = [names(node) for node in pair]
         hints = [f"{hosts[0]} and {hosts[1]}, API on {hosts[0]}"]
-        if index == 0:
+        if pair == default:
             hints.append("what Start uses when no machines are named")
-        if files_ready(row, pair, topology_id):
-            hints.append("its files are ready here")
+        if copies_recorded(row, pair, topology_id):
+            hints.append("its copies are recorded here")
         else:
             hints += [f"its model files are on {names(node)}" for node in pair if node in homes][:1]
         for service in services:
@@ -370,16 +386,17 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
     can serve on several placements. It names the default placement
     (serving_nodes: a one-node recipe's machine its saved records name, where
     the machine question starts; a pair's ranks 0 and 1, which Start uses when
-    no machines are named) and, when that is not ready to
-    start, the first other placement whose files saved records of this saved
-    cluster show ready, in ring_placements' order, with how many more there
-    are. Files are never "ready" from records of an earlier saved cluster or
-    without the saved cluster's topology_id."""
+    no machines are named) and, when that is not ready to start, the first
+    other placement whose copies this saved cluster's records show complete,
+    in ring_placements' order, with how many more there are. Records alone
+    never make files "ready": only the saved check does. Copies recorded for
+    an earlier saved cluster, or without the saved cluster's topology_id,
+    never count."""
     default = serving_nodes(row, order, recorded_node(row))
     if row.get("checked_at") and row.get("local_state") == "ready":
         # The saved check does not record which nodes it covered: name them
         # only when this cluster's records show the default placement complete.
-        if topology_id and files_ready(row, default, topology_id):
+        if topology_id and copies_recorded(row, default, topology_id):
             return READINESS["ready-on"].format(hosts=placement_words(host, default))
         return READINESS["ready"]
     count = copies_needed(row, default)
@@ -396,19 +413,19 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
         phrase = READINESS["copy-to"].format(hosts=_list([host(node) for node in targets]), size=size)
     if not topology_id:
         return phrase
-    ready = [placement for placement in ring_placements(row, order, pairs)
-             if list(placement) != list(default) and files_ready(row, placement, topology_id)]
-    if not ready:
+    recorded = [placement for placement in ring_placements(row, order, pairs)
+                if list(placement) != list(default) and copies_recorded(row, placement, topology_id)]
+    if not recorded:
         return phrase
     if row["geometry"]["nodes"] == 1:
         # One-node placements are short: up to two by name, then how many more.
-        names = [host(placement[0]) for placement in ready]
+        names = [host(placement[0]) for placement in recorded]
         hosts = _list(names) if len(names) <= 2 else f"{', '.join(names[:2])} and {len(names) - 2} more"
     else:
-        hosts = placement_words(host, ready[0])
-        if len(ready) > 1:
-            hosts += f" and {_count(len(ready) - 1, 'more pair', 'more pairs')}"
-    return f"{phrase} · {READINESS['files-ready'].format(hosts=hosts)}"
+        hosts = placement_words(host, recorded[0])
+        if len(recorded) > 1:
+            hosts += f" and {_count(len(recorded) - 1, 'more pair', 'more pairs')}"
+    return f"{phrase} · {READINESS['copies-recorded'].format(hosts=hosts)}"
 
 
 def copies_needed(row: dict, serving: list[str]) -> int:
