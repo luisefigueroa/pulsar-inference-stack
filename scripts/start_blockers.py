@@ -80,6 +80,11 @@ BLOCKERS = {
                                        "./pulsar stop {spec} {candidate}",
                                        note="A spec runs as one service. Stop it first; stop also clears a record "
                                             "whose containers are gone."),
+    # The launcher found another Start of the same service (spec, saved
+    # cluster and nodes) still running; that Start reports its own outcome.
+    "start_in_progress": Kind("another start of this service is running", "./pulsar status {spec} {candidate}",
+                              note="Wait for that start to finish; it reports whether the service is ready. If it "
+                                   "is no longer needed, interrupt it in its terminal."),
     "port_in_use": Kind("the service port is already in use", "./pulsar inventory",
                         note="Free the port, or change the deployment port."),
     "preflight_failed": Kind("the multi-node preflight failed", START, adds="--verbose"),

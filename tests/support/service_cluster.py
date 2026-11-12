@@ -160,6 +160,19 @@ if args[:1] == ["run"]:
         trace("docker run fails")
         print("docker: Error response from daemon: fixture failure", file=sys.stderr)
         sys.exit(125)
+    # SERVICE_RUN_PAUSE lists node IDs whose docker run waits, before it
+    # creates the container, until the file run-resume exists; it writes
+    # run-paused first. A test runs another Start in that window.
+    if node in os.environ.get("SERVICE_RUN_PAUSE", "").split(","):
+        import time
+        open(os.path.join(root, "run-paused"), "w").close()
+        for _ in range(3600):
+            if os.path.exists(os.path.join(root, "run-resume")):
+                break
+            time.sleep(0.05)
+        else:
+            sys.exit(124)
+        everything = json.load(open(state)) if os.path.exists(state) else []
     import hashlib
     labels, name, i = {}, None, 1
     while i < len(args):
@@ -636,6 +649,21 @@ class ServiceCluster:
                        str(self.root / 'blockers.jsonl'), **env}
         return subprocess.run([str(stack / 'pulsar'), 'start', spec_id, *args], env=environment, text=True,
                               capture_output=True, timeout=180, cwd=self.root)
+
+    def start_in_background(self, spec_id, *args, **env):
+        """`./pulsar start SPEC_ID ARGS` as start() runs it, without waiting:
+        returns the process, whose output goes to start-output.log."""
+        stack = self.install()
+        environment = {**self.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(self.root / 'start-env.sh'),
+                       'WAIT_ATTEMPTS': '2', 'WAIT_SECONDS': '0', 'VLLM_IMAGE_MAINLINE': 'example/image',
+                       'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '', 'PULSAR_START_BLOCKERS_FILE':
+                       str(self.root / 'background-blockers.jsonl'), **env}
+        output = open(self.root / 'start-output.log', 'w')
+        try:
+            return subprocess.Popen([str(stack / 'pulsar'), 'start', spec_id, *args], env=environment, text=True,
+                                    stdout=output, stderr=subprocess.STDOUT, cwd=self.root)
+        finally:
+            output.close()
 
     def status(self, spec_id, *args, **env):
         """`./pulsar status SPEC_ID ARGS` from the installation copy, with the

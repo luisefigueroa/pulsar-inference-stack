@@ -199,6 +199,9 @@ launch_exit() {
         failed_launch_record "$(launch_containers_left)" ;;
     esac
   fi
+  # After the clean-up and record retirement above: a child that outlives this
+  # launcher must not hold the service (hold_service_start_lock).
+  [ -z "${SERVICE_START_LOCK_FD:-}" ] || flock -u "$SERVICE_START_LOCK_FD" 2>/dev/null || true
   return "$rc"
 }
 trap launch_exit EXIT
@@ -333,6 +336,28 @@ failed_launch_record() {
     log "The service record this start saved could not be retired. Next: $stop"
   fi
 }
+
+# hold_service_start_lock — one launcher at a time per service: the same spec,
+# saved cluster and nodes in role order, so the same record and container
+# name. Taken without waiting and held until this launcher exits, it covers the
+# container probe, --replace, the record save, every docker run, the health
+# wait and a failed launch's removal and record retirement, so another Start of
+# the service cannot save the same record, or retire it, in between. A second
+# Start is refused before it probes or saves, and the line names the Start that
+# holds the service. The exit trap (launch_exit) releases it last.
+hold_service_start_lock() {
+  local service_id lock_dir lock_path
+  service_id=$(launch_plan_service_id "$PLAN_FILE")
+  [[ "$service_id" =~ ^[0-9a-f]{64}$ ]] || die "the launch plan names no service; nothing was started"
+  lock_dir="$PULSAR_MODEL_LIBRARY_DIR/start-locks"
+  mkdir -p "$lock_dir" || die "cannot create the start lock directory: $lock_dir"
+  lock_path="$lock_dir/$service_id.lock"
+  exec {SERVICE_START_LOCK_FD}>"$lock_path" || die "cannot open the start lock: $lock_path"
+  flock -x -n "$SERVICE_START_LOCK_FD" && return 0
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker start_in_progress
+  die "$(_lock_busy_message "$lock_path" "another start of this service is running")"
+}
+hold_service_start_lock
 
 existing=0
 existing_nodes=()

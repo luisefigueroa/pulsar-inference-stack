@@ -1185,8 +1185,9 @@ START_CHOICES = {
 # have no menu operation that resolves them. service_recorded_elsewhere names
 # ./pulsar stop SPEC, which also clears a record with no container; the menu's
 # Stop is offered only for containers the inventory sees, so it is not offered.
+# start_in_progress waits on the other Start, which reports its own outcome.
 START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
-                             "service_stopped", "service_recorded_elsewhere"})
+                             "service_stopped", "service_recorded_elsewhere", "start_in_progress"})
 START_CHOICE_LABELS = {
     "topology-menu": "Open Cluster topology (membership)",
     "topology-check": "Check saved nodes and fabric (checks nodes now)",

@@ -6,9 +6,11 @@ post-health checks are doubles that pass; these pins record where Start acts
 and in which order, so that Start on named nodes leaves the default order
 unchanged.
 """
+import fcntl
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -216,6 +218,96 @@ class DefaultOrder(Scenario):
         self.assertIn('No container this start launched is left on its nodes; retired its service record.',
                       self.lines(result, spec))
         self.assertEqual((len(c.store.records('services')), len(c.remaining())), (0, 0))
+
+
+class ConcurrentStart(Scenario):
+    """Two Starts of one service at once: the same spec, saved cluster and
+    nodes, so the same record and container name. One launcher at a time
+    holds the service; another is refused before it probes or saves."""
+
+    STARTING = ['BLOCKED start_in_progress: another start of this service is running. Next: ./pulsar status '
+                'e51939b8d97d', 'Wait for that start to finish; it reports whether the service is ready. If it is '
+                'no longer needed, interrupt it in its terminal.']
+
+    def assert_refused(self, lines):
+        index = lines.index(self.STARTING[0])
+        self.assertEqual(lines[index:index + 2], self.STARTING)
+        # The error line names the Start that holds the service.
+        self.assertRegex(lines[index + 2], r'^error: another start of this service is running: .+ \(pid \d+, '
+                                           r'started less than a minute ago\)\. Wait for it to finish')
+
+    def wait_for(self, path, process):
+        for _ in range(1200):
+            if path.exists() or process.poll() is not None:
+                break
+            time.sleep(0.05)
+        self.assertTrue(path.exists(), (self.cluster.root / 'start-output.log').read_text())
+
+    def test_a_failed_second_start_cannot_retire_the_record_the_first_start_launches_on(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        # The first Start saved its record and pauses at its first docker run.
+        first = c.start_in_background(spec['spec_id'], '--skip-preflight', SERVICE_RUN_PAUSE=c.node_id(1))
+        self.addCleanup(lambda: first.poll() is not None or first.kill())
+        # A failed test leaves no paused double behind.
+        self.addCleanup((c.root / 'run-resume').touch)
+        self.wait_for(c.root / 'run-paused', first)
+        # The second Start's docker run would fail; without the lock it saved
+        # the same record, then retired it as its own containers were gone.
+        second = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(1))
+        (c.root / 'run-resume').touch()
+        self.assertEqual(first.wait(timeout=180), 0, (c.root / 'start-output.log').read_text())
+        self.assertEqual(second.returncode, 1)
+        lines = self.lines(second, spec)
+        self.assert_refused(lines)
+        self.assertIn('pulsar start <spec> --skip-preflight (pid', lines[lines.index(self.STARTING[0]) + 2])
+        # Only the first Start ran containers.
+        self.assertEqual([line for line in self.trace() if 'docker run' in line], LAUNCH)
+        (record,) = c.store.records('services')
+        self.assertEqual(len(c.remaining()), 2)
+        self.assertEqual({container['labels']['io.pulsar.gb10.launch-plan'] for container in c.remaining()},
+                         {record['plan_id']})
+
+    def test_a_held_service_refuses_the_launch_before_it_probes_or_saves(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        service_id = c.plan(spec, manifest, [0, 1], record=False)['service_id']
+        locks = c.root / 'model-library' / 'start-locks'
+        locks.mkdir(parents=True)
+        with open(locks / f'{service_id}.lock', 'w') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 1)
+        self.assert_refused(self.lines(result, spec))
+        # Start's own checks ran; the launcher stopped before its probes.
+        self.assertEqual(self.trace(), CHECKED)
+        self.assertEqual(c.store.records('services'), [])
+        self.assertFalse((c.root / 'containers.json').exists())
+        # Released, the same Start launches.
+        c.forget_calls()
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual((result.returncode, len(c.store.records('services')), len(c.remaining())), (0, 1, 2))
+
+    def test_replace_removes_nothing_while_another_start_holds_the_service(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # The service's containers run while the Start that launched them
+        # still waits for health and holds the service.
+        plan = c.plan(spec, manifest, [0, 1])
+        running = c.run(plan)
+        c.forget_calls()
+        locks = c.root / 'model-library' / 'start-locks'
+        locks.mkdir(parents=True)
+        with open(locks / f"{plan['service_id']}.lock", 'w') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            result = c.start(spec['spec_id'], '--skip-preflight', '--replace')
+        self.assertEqual(result.returncode, 1)
+        self.assert_refused(self.lines(result, spec))
+        # Start's checks saw the service; the launcher removed nothing.
+        self.assertEqual(self.trace(), PROBES)
+        self.assertEqual(c.removed(), [])
+        self.assertTrue(c.recorded(plan))
+        self.assertEqual(c.remaining(), running)
 
 
 if __name__ == '__main__':

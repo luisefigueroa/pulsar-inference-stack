@@ -1560,6 +1560,21 @@ kept, and the line says so. When a node could not be checked or a container
 remains, the record is kept, and one line says so, why, and names `./pulsar
 stop <spec-id>`, which clears it. An interrupted start removes nothing and keeps its record.
 
+One multi-node start at a time launches a service: the same spec, saved
+cluster and nodes in role order, which share one record and one container
+name. Its launcher holds the service from the container check until it exits,
+through the record save, every rank's start, the health wait and a failed
+launch's clean-up. A second start of the same service at the same time is
+refused before it checks containers or saves anything, with `BLOCKED
+start_in_progress` and `./pulsar status <spec-id>`, and an error line that
+names the start that holds the service. Wait for that start to finish, as it
+reports whether the service is ready, or interrupt it in its terminal if it is
+no longer needed. A start that comes after the service's containers exist is
+refused by its checks as `service_exists`, as before. `--replace` also waits
+for the start that holds the service: while that start still waits for its
+service to become healthy, `--replace` is refused with `start_in_progress` and
+removes nothing.
+
 When a failed rank's container log (its last 400 lines, read once before the
 clean-up removes the container; the last 80 or 120 are shown, as before) holds
 the engine's own refusal for free GPU memory at its startup

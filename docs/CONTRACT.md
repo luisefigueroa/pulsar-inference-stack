@@ -714,6 +714,12 @@ output shape changed.
 Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
 Earlier records lack it, which reads as null.
 
+Change note, 2026-11-11: new code `start_in_progress`, a check-stage blocker:
+another multi-node start of the same service (spec, saved cluster and nodes in
+role order) is still running, so this one was refused before it checked
+containers or saved a record. Its `fix` is `./pulsar status SPEC`; its `note`
+says to wait for that start or interrupt it. Nothing was removed or renamed.
+
 Change note, 2026-11-10: new code `service_recorded_elsewhere`, a check-stage
 blocker: an active service record of the same multi-node spec names other
 nodes, another order or an earlier saved cluster. Its `fix` is `./pulsar stop
