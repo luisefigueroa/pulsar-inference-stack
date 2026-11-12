@@ -133,8 +133,12 @@ class Cluster:
     """The catalog joined to one files scan and one storage budget."""
 
     def __init__(self, entries: list[dict], files: dict, budget: list[dict] | None, *,
-                 names: NodeNames | None = None, archive_location: str = "not-configured", now=None):
+                 names: NodeNames | None = None, archive_location: str = "not-configured", now=None,
+                 pairs: list[tuple[str, str]] = (), topology_id: str | None = None):
         from model_library.file_inventory import _unread
+        # A saved ring's neighbouring pairs (serve_plan.ring_pairs) and the saved
+        # cluster's topology_id: with them, readiness names a ring's placements.
+        self.pairs, self.topology_id = list(pairs), topology_id
         self.entries = [row for row in entries if not row.get("historical")]
         self.catalog = {row["spec_id"]: row for row in self.entries}
         self.files = files
@@ -253,8 +257,9 @@ class Cluster:
         from scripts.serve_plan import readiness
         sizes = {name: (self.entry(manifest) or {}).get("payload_bytes")
                  for name, manifest in self.manifests(spec).items()}
+        ring = {"host": self.host, "pairs": self.pairs, "topology_id": self.topology_id} if self.names.ring else {}
         return readiness(self.catalog[spec], order=self.names.order, archive_location=self.archive_location,
-                         sizes=sizes, service=None, ring=self.names.ring)
+                         sizes=sizes, service=None, ring=self.names.ring, **ring)
 
     # -- containers that use files --------------------------------------------
 
@@ -304,8 +309,12 @@ def room_lines(cluster: Cluster) -> list[tuple[str, str, str | None]]:
     return lines
 
 
-def model_lines(cluster: Cluster, spec: str) -> list[str]:
-    """One recipe's facts: size and where its files are, then ready, kept and archived."""
+def model_lines(cluster: Cluster, spec: str, room: int | None = None) -> list[str]:
+    """One recipe's facts: size and where its files are, then ready, kept and archived.
+
+    On a saved ring, where the readiness phrase names placements, each part of
+    the second line that fits in ROOM columns with its " ·" is kept whole, so
+    the line breaks only between parts."""
     homes = {name: location for name, location in cluster.homes(spec).items() if location}
     where = [_size(cluster.size(spec))]
     bound = cluster.bound(spec)
@@ -318,6 +327,9 @@ def model_lines(cluster: Cluster, spec: str) -> list[str]:
     if copies or not bound:
         where.append(f"{STATUS_WORDS['copies-on']} {cluster.hosts(copies)}" if copies else STATUS_WORDS["no-copies"])
     state = [cluster.readiness(spec)]
+    ring = bool(cluster.names.ring and room)
+    if ring:
+        state = state[0].split(" · ")
     pinned, loose = cluster.kept(spec)
     if pinned or loose:
         state.append(STATUS_WORDS["kept"] if pinned and not loose else
@@ -326,6 +338,10 @@ def model_lines(cluster: Cluster, spec: str) -> list[str]:
     used = cluster.users([location for _, location in cluster.bound(spec)] + list(homes.values()))
     if used:
         state.append(f"{STATUS_WORDS['in-use']} on {cluster.hosts(item['node'] for item in used)}")
+    if ring:
+        # Each part that fits keeps its " ·", so a line never starts with one.
+        return [" · ".join(where), f"{KEEP}· ".join(_kept(part) if len(part) + 2 <= room else part
+                                                     for part in state)]
     return [" · ".join(where), " · ".join(state)]
 
 
@@ -354,7 +370,7 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         text, first = (f"{'Models':<{LABEL_WIDTH}}" if first else indent), False
         return text
     for spec in shown_specs:
-        lines = model_lines(cluster, spec)
+        lines = model_lines(cluster, spec, out.width - len(more))
         out.emit(f"{cluster.name(spec)} · {lines[0]}", label(), more)
         out.emit(lines[1], more, more)
     for entry in cluster.snapshots:
@@ -1541,8 +1557,12 @@ def _cluster(args, entries: list[dict]) -> Cluster:
     if location is None:
         from scripts.serve_plan import _archive_location
         location = _archive_location(args.repo_root)
-    return Cluster(entries, files, budget_nodes(args.budget), names=NodeNames.saved(args.repo_root),
-                   archive_location=location)
+    names = NodeNames.saved(args.repo_root)
+    ring = {}
+    if names.ring:
+        from scripts.serve_plan import _saved_topology, _topology_id, ring_pairs
+        ring = {"pairs": ring_pairs(_saved_topology(args.repo_root)), "topology_id": _topology_id(args.repo_root)}
+    return Cluster(entries, files, budget_nodes(args.budget), names=names, archive_location=location, **ring)
 
 
 def main(argv: list[str] | None = None) -> int:

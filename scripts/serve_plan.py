@@ -81,6 +81,13 @@ READINESS = {
     "loop": "needs {needed} cabled in a closed loop; the ring has {have}",
     "unsupported": "start unsupported",
     "unknown": "size unknown",
+    # On a saved ring a one- or two-node recipe can serve on several
+    # placements, so its phrase names the nodes it is about; a pair is named
+    # in role order, "first + second", and the first serves the API.
+    "ready-on": "ready to start on {hosts}",
+    "verify-on": "needs its files checked on {hosts}",
+    "copy-to": "needs copying to {hosts} · {size}",
+    "files-ready": "files ready on {hosts}",
 }
 # The plan screen's choices, in order; the cursor starts on Cancel (D1).
 CHOICES = (("cancel", "Cancel"), ("go", "Go ahead"), ("ready", "Get it ready, but do not start"),
@@ -180,6 +187,36 @@ def ring_pairs(topology: dict | None) -> list[tuple[str, str]]:
     return [(ids[first], ids[second]) for first, second in mine + rest]
 
 
+def files_ready(row: dict, placement, topology_id: str | None) -> bool:
+    """Whether saved records hold a prepared copy of every required snapshot
+    on every node of PLACEMENT in that role order: role rank r on its r-th
+    node, recorded under TOPOLOGY_ID (any saved cluster when None). A saved
+    record is not proof the copy still verifies; the plan's own preview says.
+    The pair question's "its files are ready here" and the ring's "files
+    ready on" both mean this."""
+    if not placement:
+        return False
+    views = [view for view in row.get("prepared_copies") or []
+             if topology_id is None or view.get("topology_id") in (None, topology_id)]
+    # Each required snapshot by its manifest; schema 2 has one, unnamed.
+    manifests = {member.get("snapshot_manifest_id") for member in members(row).values()} \
+        if isinstance(row.get("snapshots"), dict) else {None}
+    return all(any(view.get("rank") == rank and view.get("node_id") == node
+                   and (manifest is None or view.get("snapshot_manifest_id") == manifest) for view in views)
+               for manifest in manifests for rank, node in enumerate(placement))
+
+
+def ring_placements(row: dict, order: list[str], pairs: list[tuple[str, str]]) -> list[tuple[str, ...]]:
+    """Where a recipe can serve on a saved ring, in the order the readiness
+    phrase names them: each saved node, in saved order, for a one-node
+    recipe; for a two-node recipe each pair of neighbours in ring_pairs'
+    order, each followed by its reverse (role order matters: the first node
+    serves the API)."""
+    if row["geometry"]["nodes"] == 1:
+        return [(node,) for node in order]
+    return [placement for pair in pairs for placement in (tuple(pair), tuple(reversed(pair)))]
+
+
 def asks_for_a_pair(row: dict, names: NodeNames) -> bool:
     """Whether Serve a model… asks which two neighbours serve ROW: a two-node
     recipe Start can run, on a saved ring, that does not pass data around a
@@ -203,8 +240,6 @@ def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, wid
     if pairs:
         lines.append(f"default\t{','.join(pairs[0])}")
     homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
-    views = [view for view in row.get("prepared_copies") or []
-             if topology_id is None or view.get("topology_id") in (None, topology_id)]
     services = []
     if inventory:
         from scripts.inventory_menu import project, project_others
@@ -220,8 +255,7 @@ def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, wid
         hints = [f"{hosts[0]} and {hosts[1]}, API on {hosts[0]}"]
         if index == 0:
             hints.append("what Start uses when no machines are named")
-        if all(any(view.get("rank") == rank and view.get("node_id") == node for view in views)
-               for rank, node in enumerate(pair)):
+        if files_ready(row, pair, topology_id):
             hints.append("its files are ready here")
         else:
             hints += [f"its model files are on {names(node)}" for node in pair if node in homes][:1]
@@ -276,13 +310,20 @@ def ring_pattern(row: dict) -> bool:
 
 
 def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict,
-              service: dict | None, ring: bool = False) -> str:
+              service: dict | None, ring: bool = False, host=None, pairs: list[tuple[str, str]] = (),
+              topology_id: str | None = None) -> str:
     """One phrase for where the recipe stands, from saved records and the inventory.
 
     RING: the saved cluster is a ring. Its ranks 0 and 1 are neighbours, so a
     two-node recipe fits; three or more nodes always include two that are not.
     A recipe that passes data around a loop of its nodes fits on the whole ring,
-    whose saved order follows the cables, and on no fewer nodes than that."""
+    whose saved order follows the cables, and on no fewer nodes than that.
+
+    HOST names a node_id for people. With it, on a ring, a one-node recipe and
+    a two-node recipe that does not pass data around a loop name the nodes the
+    phrase is about (see ring_readiness); PAIRS are ring_pairs' and
+    TOPOLOGY_ID the saved cluster's. Without it, or on a full mesh, the phrase
+    is the default placement's alone."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -304,6 +345,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         size = [sizes.get(name) for name in missing]
         text = short_size(sum(size)) if size and all(value is not None for value in size) else READINESS["unknown"]
         return READINESS["download"].format(size=text)
+    if ring and host is not None and (nodes == 1 or not ring_pattern(row)):
+        return ring_readiness(row, order=order, sizes=sizes, host=host, pairs=pairs, topology_id=topology_id)
     if row.get("checked_at") and row.get("local_state") == "ready":
         return READINESS["ready"]
     count = copies_needed(row, serving_nodes(row, order, recorded_node(row)))
@@ -313,6 +356,57 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     text = (short_size(sum(total) * count) if total and all(value is not None for value in total)
             else READINESS["unknown"])
     return READINESS["copy"].format(count=node_count(count), size=text)
+
+
+def placement_words(host, placement) -> str:
+    """A placement for people: one node by its name; a pair in role order,
+    "first + second", where the first serves the API."""
+    return " + ".join(host(node) for node in placement)
+
+
+def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: list[tuple[str, str]],
+                   topology_id: str | None) -> str:
+    """The readiness phrase on a saved ring, where a recipe on one or two nodes
+    can serve on several placements. It names the default placement (the one
+    Start uses when no machines are named) and, when that is not ready to
+    start, the first other placement whose files saved records of this saved
+    cluster show ready, in ring_placements' order, with how many more there
+    are. Files are never "ready" from records of an earlier saved cluster or
+    without the saved cluster's topology_id."""
+    default = serving_nodes(row, order, recorded_node(row))
+    if row.get("checked_at") and row.get("local_state") == "ready":
+        # The saved check does not record which nodes it covered: name them
+        # only when this cluster's records show the default placement complete.
+        if topology_id and files_ready(row, default, topology_id):
+            return READINESS["ready-on"].format(hosts=placement_words(host, default))
+        return READINESS["ready"]
+    count = copies_needed(row, default)
+    if not count:
+        phrase = (READINESS["verify-on"].format(hosts=placement_words(host, default)) if default
+                  else READINESS["verify"])
+    else:
+        homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
+        copied = {view.get("node_id") for view in row.get("prepared_copies") or []}
+        targets = [node for node in default if node not in homes and node not in copied]
+        total = [sizes.get(name) for name in members(row)]
+        size = (short_size(sum(total) * count) if total and all(value is not None for value in total)
+                else READINESS["unknown"])
+        phrase = READINESS["copy-to"].format(hosts=_list([host(node) for node in targets]), size=size)
+    if not topology_id:
+        return phrase
+    ready = [placement for placement in ring_placements(row, order, pairs)
+             if list(placement) != list(default) and files_ready(row, placement, topology_id)]
+    if not ready:
+        return phrase
+    if row["geometry"]["nodes"] == 1:
+        # One-node placements are short: up to two by name, then how many more.
+        names = [host(placement[0]) for placement in ready]
+        hosts = _list(names) if len(names) <= 2 else f"{', '.join(names[:2])} and {len(names) - 2} more"
+    else:
+        hosts = placement_words(host, ready[0])
+        if len(ready) > 1:
+            hosts += f" and {_count(len(ready) - 1, 'more pair', 'more pairs')}"
+    return f"{phrase} · {READINESS['files-ready'].format(hosts=hosts)}"
 
 
 def copies_needed(row: dict, serving: list[str]) -> int:
@@ -350,12 +444,15 @@ def _facts(rows: list[dict]) -> dict[str, list[str]]:
 
 def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archive_location: str,
                order: list[str], repo: Path, writer: TerminalWriter | None = None,
-               leave_out: frozenset = frozenset(), ring: bool = False) -> list[str]:
+               leave_out: frozenset = frozenset(), ring: bool = False, host=None,
+               pairs: list[tuple[str, str]] = (), topology_id: str | None = None) -> list[str]:
     """The Serve list: a card per recipe grouped by model, each line the facts
     that tell it apart, its node count and one readiness phrase. Lines are
     KIND<TAB>TEXT, as the catalog list's cards: heading, spec, line, gap.
     LEAVE_OUT names recipes not to list, as Compare with another recipe
-    leaves out the one it compares."""
+    leaves out the one it compares. HOST, PAIRS and TOPOLOGY_ID let a ring's
+    phrases name their nodes (see readiness); on a ring each part of the
+    phrase is a card part of its own, so a line breaks only between them."""
     width = max(MIN_WIDTH, min(MAX_WIDTH, width))
     facts, names = _facts(entries), short_model_names(entries)
     shown = [row for row in entries if not row.get("historical") and row["spec_id"] not in leave_out]
@@ -370,14 +467,18 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
         parts = list(facts.get(row["spec_id"]) or [])
         phrase = readiness(row, order=order, archive_location=archive_location,
                            sizes=snapshot_sizes(repo, row["spec_id"]),
-                           service=own_service(row, inventory, entries), ring=ring)
+                           service=own_service(row, inventory, entries), ring=ring, host=host, pairs=pairs,
+                           topology_id=topology_id)
         # The node count, unless a fact or the phrase already names it.
         count = node_count(row["geometry"]["nodes"])
         if count not in parts and not phrase.startswith(f"needs {count}"):
             parts.append(count)
         if (row.get("review") or {}).get("status") == "withdrawn":
             parts.insert(0, "withdrawn")
-        parts.append(phrase)
+        if ring and host is not None:
+            parts += phrase.split(" · ")
+        else:
+            parts.append(phrase)
         text = _card(parts, width)
         lines.append(f"spec\t{row['spec_id']}\t{text[0]}")
         lines += [f"line\t{line}" for line in text[1:]]
@@ -1494,11 +1595,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "list":
             entries = _entries(sys.stdin)
             inventory = load_json(args.inventory)
+            # On a ring the phrases name their nodes and the placements whose files are ready.
+            context = ({"host": names, "pairs": ring_pairs(_saved_topology(args.repo_root)),
+                        "topology_id": _topology_id(args.repo_root)} if names.ring else {})
             for line in list_lines(entries, width=width - 2, inventory=inventory if isinstance(inventory, dict)
                                    else None, archive_location=location,
                                    order=names.order, repo=args.repo_root,
                                    writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out),
-                                   ring=names.ring):
+                                   ring=names.ring, **context):
                 print(line)
             return 0
         if args.command == "nodes":
