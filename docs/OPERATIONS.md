@@ -203,11 +203,11 @@ below are for reading.
 | Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
 | Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do. |
 | Serve: ready to start | The last saved check found its files prepared on every serving node. Its plan is Start alone, after whatever is in the way is stopped. |
-| Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. |
+| Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. On a *ring* it names the machines a copy goes to instead of counting them. |
 | Serve: needs its files checked | Its files are where it serves, but no saved check has found them prepared. The plan checks and records them; nothing is copied. |
-| Serve: ready to start on … | On a saved *ring*, a recipe on one or two nodes can serve on several machines, so its phrase names them: here, the machines Start uses when none are named, whose copies this saved cluster's records show complete, and the last saved check found ready. A pair is named in role order, `first + second`: the first serves the API. |
-| Serve: needs its files checked on … | On a *ring*: the machines Start uses when none are named hold its files, but no saved check has found them prepared, or the copies there were recorded for an earlier saved cluster and must be taken over. The plan checks and records them; nothing is copied. `needs copying to … · …` on a ring names the machines a copy goes to. |
-| Serve: files ready on … | On a *ring*, when the machines Start uses by default are not ready: saved records of this saved cluster show a complete copy of its files on these other machines, in this role order, and the first of a pair serves the API. `and N more` counts the other machines or pairs. Records are not proof that the copies still verify; a plan that serves there checks them first. Copies recorded for an earlier saved cluster never count. |
+| Serve: ready to start on … | On a saved *ring*, a recipe on one or two nodes can serve on several machines, so its phrase names the ones it is about: for a one-node recipe the machine saved records name (its home, else a prepared copy), where **Serve a model…** starts its machine question; for a two-node recipe this machine and its neighbour at rank 1, which Start uses when no machines are named. Here this saved cluster's records show their copies complete and the last saved check found the files ready. A pair is named in role order, `first + second`: the first serves the API. |
+| Serve: needs its files checked on … | On a *ring*: the machines named, chosen as for `ready to start on …`, hold its files, but no saved check has found them prepared, or the copies there were recorded for an earlier saved cluster and must be taken over. The plan checks and records them; nothing is copied. |
+| Serve: files ready on … | On a *ring*, when the machines named first are not ready: saved records of this saved cluster show a complete copy of its files on these other machines, in this role order, and the first of a pair serves the API. `and N more` counts the other machines or pairs. Records are not proof that the copies still verify; a plan that serves there checks them first. Copies recorded for an earlier saved cluster never count. |
 | Serve: needs restoring from its archive | No home (the copy Pulsar keeps) is recorded, and its archive is there: the plan restores the files from it, without the internet. |
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
@@ -1684,7 +1684,9 @@ needs, which the operator approves once.
    nothing differs), with one readiness phrase: `running on …`, `ready to
    start`, `needs copying to … · …`, `needs its files checked`, `needs
    restoring from its archive`, `needs downloading · …` or `needs …; the
-   cluster has …` (see the [Serve labels](#catalog-labels)). The phrases come
+   cluster has …` (see the [Serve labels](#catalog-labels)). On a saved ring
+   a recipe on one or two nodes names its machines, such as `needs its files
+   checked on … · files ready on …`. The phrases come
    from saved records and one service inventory, which the menu reuses while
    it is under a minute old.
 3. **The machine.** A one-node recipe asks which machine serves it, starting

@@ -367,8 +367,10 @@ def placement_words(host, placement) -> str:
 def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: list[tuple[str, str]],
                    topology_id: str | None) -> str:
     """The readiness phrase on a saved ring, where a recipe on one or two nodes
-    can serve on several placements. It names the default placement (the one
-    Start uses when no machines are named) and, when that is not ready to
+    can serve on several placements. It names the default placement
+    (serving_nodes: a one-node recipe's machine its saved records name, where
+    the machine question starts; a pair's ranks 0 and 1, which Start uses when
+    no machines are named) and, when that is not ready to
     start, the first other placement whose files saved records of this saved
     cluster show ready, in ring_placements' order, with how many more there
     are. Files are never "ready" from records of an earlier saved cluster or

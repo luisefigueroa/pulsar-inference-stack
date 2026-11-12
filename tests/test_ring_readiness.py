@@ -3,9 +3,15 @@ on several placements, so the phrase names the nodes it is about and, when the
 default placement is not ready, a placement whose files this saved cluster's
 records show ready. On a full mesh nothing changes. Synthetic records only;
 nothing here runs a command or probes a node."""
+import contextlib
+import io
+import json
+import os
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -217,6 +223,50 @@ class Screens(unittest.TestCase):
             self.assertTrue(all(len(line) <= 60 for line in text), text)
             self.assertFalse(any(line.lstrip().startswith("·") for line in text), text)
             self.assertIn("node-d-with-a-long-hostname + node-c-with-a-long-hostname", " ".join(" ".join(text).split()))
+
+
+class Commands(unittest.TestCase):
+    """The menus' commands read the saved ring themselves: its pairs and its
+    topology_id reach the phrase, or the clause silently disappears."""
+
+    def setUp(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.repo = directory
+        self.topology = directory / "topology.json"
+        self.topology.write_text(json.dumps(TOPOLOGY))
+        document, rows = models_scan()
+        self.catalog = directory / "catalog.json"
+        self.catalog.write_text(json.dumps({"entries": rows}))
+        self.files = directory / "files.json"
+        self.files.write_text(json.dumps(document))
+        self.budget = directory / "budget.json"
+        self.budget.write_text(json.dumps(budget()))
+
+    def run_main(self, main, argv, stdin=""):
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLUSTER_TOPOLOGY_FILE": str(self.topology)}), \
+                mock.patch("sys.stdin", io.StringIO(stdin)), contextlib.redirect_stdout(output):
+            self.assertEqual(main([*argv, "--archive-location", "disabled", "--width", "80",
+                                   "--repo-root", str(self.repo)]), 0)
+        # The list's KIND<TAB>…<TAB>TEXT lines by their text; the page as printed.
+        return " ".join(" ".join(line.split("\t")[-1] for line in output.getvalue().splitlines()
+                                 if line != "gap").split())
+
+    def test_the_serve_list_command_names_the_ready_pair(self):
+        text = self.run_main(serve.main, ["list"], self.catalog.read_text())
+        self.assertIn("needs its files checked on node-a + node-b files ready on node-d + node-c", text)
+        self.assertIn("needs its files checked on node-a files ready on node-c and node-d", text)
+
+    def test_the_models_page_command_names_the_ready_pair(self):
+        text = self.run_main(mp.main, ["page", "--files", str(self.files), "--budget", str(self.budget),
+                                       "--catalog", str(self.catalog)])
+        self.assertIn("needs its files checked on node-a + node-b · files ready on node-d + node-c", text)
+
+    def test_on_a_full_mesh_the_commands_name_nothing(self):
+        self.topology.write_text(json.dumps({**TOPOLOGY, "validation": {"class": "roce-full-mesh"}}))
+        text = self.run_main(serve.main, ["list"], self.catalog.read_text())
+        self.assertNotIn("files ready on", text)
+        self.assertNotIn("checked on", text)
 
 
 if __name__ == "__main__":
