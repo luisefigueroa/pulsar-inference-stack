@@ -1970,9 +1970,11 @@ when a saved record changed. Its choices:
   `Checked   16:13:05 · no blocking issue · 4 of 4 answered · 3 warnings`:
   when it started and what the verdict counts, with the nodes that did not
   answer named. Blocking issues, nodes that did not answer or were not
-  observed, and checks not observed come first, so the frame above, which
-  still shows the check saved before, is not the only result in view. **Show
-  the report again** and **Check again** print it again. Its findings are
+  observed, and checks not observed come first, and when a node or a check
+  was not observed the line does not say "no blocking issue". So the frame
+  above, which still shows the check saved before, is not the only result in
+  view. **Check again** prints a new line; **Show the report again** does
+  not, because the line is still on screen when the pager closes. Its findings are
   saved beside the changes noticed, so home and this frame show them later.
   Under the report: **Review what changed…** when
   discovery noticed a change, **Show the report again**, **Check again** and

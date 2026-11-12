@@ -352,29 +352,75 @@ class Summary(unittest.TestCase):
         self.assertIn("\x1b[33mChecked\x1b[0m   ", self.summary(directory, terminal=True))
 
     def test_a_source_that_failed_is_not_summarised_as_fine(self):
-        # Unknown is not absent: what was not observed comes before "no blocking issue".
+        # Unknown is not absent: what was not observed comes first, and the
+        # line never says "no blocking issue" while a node or a check was not observed.
         doctor = self.sources(diagnostics=("", 3, ""))
         self.assertEqual(self.summary(doctor),
-                         f"Checked   {self.WHEN} · 1 check not observed · no blocking issue · 3 of 3 answered\n")
+                         f"Checked   {self.WHEN} · 1 check not observed · 3 of 3 answered\n")
         self.assertIn("\x1b[33mChecked\x1b[0m   ", self.summary(doctor, terminal=True))
         membership = self.sources(topology=("", 1, "error: no confirmed topology\n"))
         self.assertEqual(" ".join(self.summary(membership).split()),
-                         f"Checked {self.WHEN} · 3 nodes not observed · 1 check not observed · no blocking issue · "
-                         "2 warnings")
+                         f"Checked {self.WHEN} · 3 nodes not observed · 1 check not observed · 2 warnings")
         nothing = self.sources(topology=("", 1, ""), inventory=("", 1, ""), budget=("", 1, ""))
-        self.assertTrue(" ".join(self.summary(nothing).split()).startswith(
-            f"Checked {self.WHEN} · no node observed · 3 checks not observed · no blocking issue"))
+        self.assertEqual(" ".join(self.summary(nothing).split()),
+                         # Only the API key's warning: no node's rows show.
+                         f"Checked {self.WHEN} · no node observed · 3 checks not observed · 1 warning")
+
+    def test_no_blocking_issue_is_said_only_when_everything_was_observed(self):
+        noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
+        partly = topology()
+        for node in partly["nodes"][1:]:
+            node["status"] = None
+        cases = (
+            ({}, True),
+            # A node that did not answer was observed: its answer is known.
+            ({"discovery": (noticed, 1, "")}, True),
+            ({"budget": ("", 1, "")}, False),
+            ({"topology": (partly, 0, "")}, False),
+            ({"topology": ("", 1, "")}, False),
+            ({"topology": ("", 1, ""), "inventory": ("", 1, ""), "budget": ("", 1, "")}, False),
+        )
+        for overrides, said in cases:
+            with self.subTest(overrides=sorted(overrides)):
+                directory = self.sources(**overrides)
+                self.assertEqual("no blocking issue" in self.summary(directory, width=200), said)
+                # The report's Result line keeps its words.
+                self.assertIn("no blocking issue", self.result_parts(directory))
+        partial = " ".join(self.summary(self.sources(topology=(partly, 0, ""))).split())
+        self.assertEqual(partial, f"Checked {self.WHEN} · 1 of 3 answered, 2 not observed · 2 warnings")
+        # A blocking issue that was found always shows, whatever was not observed.
+        found = self.sources(diagnostics=(diagnostics(), 1, ""), budget=("", 1, ""))
+        self.assertEqual(self.summary(found, width=200),
+                         f"Checked   {self.WHEN} · 1 blocking issue · 1 check not observed · 3 of 3 answered · "
+                         "2 warnings\n")
+
+    @staticmethod
+    def counted(text):
+        """The blocking issues (None when not said), warnings and checks not observed in TEXT."""
+        def number(pattern):
+            match = re.search(pattern, text)
+            return int(match.group(1)) if match else 0
+        blocking = re.search(r"(\d+) blocking issues?", text)
+        return ((int(blocking.group(1)) if blocking else 0 if "no blocking issue" in text else None),
+                number(r"(\d+) warnings?"), number(r"(\d+) checks? not observed"))
 
     def test_it_counts_what_the_result_line_counts(self):
         noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
         for overrides in ({}, {"diagnostics": (diagnostics(), 1, "")}, {"diagnostics": ("", 3, "")},
                           {"identities": (identities(failed=(2,)), 1, "")}, {"discovery": (noticed, 1, "")},
+                          {"diagnostics": (diagnostics(), 1, ""), "budget": ("", 1, "")},
                           {"topology": ("", 1, ""), "inventory": ("", 1, ""), "budget": ("", 1, "")}):
             with self.subTest(overrides=sorted(overrides)):
                 directory = self.sources(**overrides)
-                text = " ".join(self.summary(directory).split())
-                for part in self.result_parts(directory):
-                    self.assertIn(f" · {part}", text)
+                summary = self.counted(" ".join(self.summary(directory).split()))
+                result = self.counted(" · ".join(self.result_parts(directory)))
+                self.assertEqual(summary[1:], result[1:])
+                # Left out only where the Result line says none and something was not observed.
+                if summary[0] is None:
+                    self.assertEqual(result[0], 0)
+                    self.assertIn("not observed", self.summary(directory))
+                else:
+                    self.assertEqual(summary[0], result[0])
 
     def test_it_fits_the_width_and_breaks_only_between_parts(self):
         noticed = discovery(missing=[{"hostname": "rank-2", "node_id": "node-2", "position": 2, "answered": False}])
@@ -564,16 +610,17 @@ choose_index() {
 
     SUMMARY = re.compile(r"(?m)^Checked   \d\d:\d\d:\d\d · .*$")
 
-    def test_this_checks_summary_follows_every_showing_of_the_report(self):
+    def test_this_checks_summary_follows_each_check_but_not_show_the_report_again(self):
         # First check, Show the report again, Check again, Back.
         result = self.run_overview(["0", "1", "2"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        summaries = self.SUMMARY.findall(result.stdout)
-        self.assertEqual(len(summaries), 3, result.stdout)
-        # Show the report again shows the same check, so the same line.
-        self.assertEqual(summaries[0], summaries[1])
-        # Each one sits under its report's last line, after a blank line.
-        self.assertEqual(result.stdout.count("inventory and model budget\n\nChecked   "), 3)
+        self.assertEqual(result.stdout.count("Cluster check\n"), 3)
+        self.assertEqual(len(self.SUMMARY.findall(result.stdout)), 2, result.stdout)
+        # Each check's line sits under its report's last line, after a blank
+        # line; the report shown again is followed directly by the next check.
+        reports = result.stdout.split("Cluster check\n")[1:]
+        self.assertEqual([bool(self.SUMMARY.search(report)) for report in reports], [True, False, True])
+        self.assertEqual(result.stdout.count("inventory and model budget\n\nChecked   "), 2)
         self.assertIn(" · 1 blocking issue · 3 of 3 answered · 2 warnings\n", result.stdout)
 
     def test_after_a_review_the_check_again_has_its_summary(self):
@@ -626,9 +673,13 @@ class BundledGumCheck(test_ui_confirm.BundledGum):
     LEAVE_PAGER = "\x1b[?1049l"
 
     def setUp(self):
-        # A tree whose scripts are this checkout's, with a pulsar that prints fixtures.
+        # A tree with copies of the check's scripts and a pulsar that prints
+        # fixtures, so nothing can reach this checkout's ./pulsar; Python
+        # modules come from this checkout through PYTHONPATH.
         self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        (self.root / "scripts").symlink_to(ROOT / "scripts")
+        (self.root / "scripts").mkdir()
+        for name in ("cluster-overview.sh", "cluster_overview.py", "ui.sh"):
+            shutil.copy2(ROOT / "scripts" / name, self.root / "scripts" / name)
         fixtures = self.root / "fixtures"
         fixtures.mkdir()
         for command, name in (("topology detect", "discovery"), ("topology check", "topology"),
@@ -639,32 +690,38 @@ class BundledGumCheck(test_ui_confirm.BundledGum):
         pulsar.write_text('#!/usr/bin/env bash\nargs="$*"; cat "$FIXTURES/${args% --json}"\n')
         pulsar.chmod(0o755)
         # PULSAR_SELFTEST without a changes file: nothing is saved.
-        self.script = (f"export PULSAR_SELFTEST=1 FIXTURES={shlex.quote(str(fixtures))} PYTHONDONTWRITEBYTECODE=1\n"
+        self.script = (f"export PULSAR_SELFTEST=1 FIXTURES={shlex.quote(str(fixtures))} PYTHONDONTWRITEBYTECODE=1 "
+                       f"PYTHONPATH={shlex.quote(str(ROOT))}\n"
                        f'exec "{self.root}/scripts/cluster-overview.sh"\n')
 
     def summaries(self, output, columns):
-        """Each summary drawn after the pager closed, and where the next menu starts."""
+        """The summary drawn after each pager closed and before the next menu, or None."""
         found = []
         for closed in [match.end() for match in re.finditer(re.escape(self.LEAVE_PAGER), output)]:
             after = ANSI.sub("", output[closed:]).replace("\r", "")
             menu = after.index("Show the report again")
             line = re.search(r"Checked   \d\d:\d\d:\d\d · [^\n]*(?:\n {10}[^\n]*)*", after[:menu])
-            self.assertIsNotNone(line, f"no summary under the closed pager at {columns} columns: {after[:menu]!r}")
-            self.assertTrue(all(len(row) <= columns for row in line.group().splitlines()), line.group())
-            found.append(" ".join(line.group().split()))
+            if line:
+                self.assertTrue(all(len(row) <= columns for row in line.group().splitlines()), line.group())
+            found.append(" ".join(line.group().split()) if line else None)
         return found
 
     def test_this_checks_line_stays_under_the_closed_pager_and_after_check_again(self):
+        # The first check, Show the report again, Check again, then Esc.
         for columns in (80, 60):
             with self.subTest(columns=columns):
                 code, output = self.drive(self.script, b"q", ready=b"Changes noticed", columns=columns,
-                                          then=[(b"Show the report again", b"\x1b[B\r"),
+                                          then=[(b"Show the report again", b"\r"),
+                                                (b"Changes noticed", b"q"),
+                                                (b"Show the report again", b"\x1b[B\r"),
                                                 (b"Changes noticed", b"q"),
                                                 (b"Show the report again", b"\x1b")])
                 self.assertEqual(code, 0, output)
                 summaries = self.summaries(output, columns)
-                self.assertEqual(len(summaries), 2, output)
-                for summary in summaries:
+                self.assertEqual(len(summaries), 3, output)
+                # The report shown again adds no line: the first is still on screen.
+                self.assertIsNone(summaries[1], output)
+                for summary in (summaries[0], summaries[2]):
                     self.assertRegex(summary, r"^Checked \d\d:\d\d:\d\d · 1 blocking issue · 3 of 3 answered · "
                                               r"2 warnings$")
 

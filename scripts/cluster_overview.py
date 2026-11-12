@@ -249,18 +249,19 @@ def verdict_parts(counts: dict[str, int], missing: int) -> dict[str, str | None]
             "not_observed": f"{plural(missing, 'check')} not observed" if missing else None}
 
 
-def answered_words(report: Report) -> tuple[str, bool]:
-    """How many nodes answered this check, and whether every one did.
+def answered_words(report: Report) -> tuple[str, bool, bool]:
+    """How many nodes answered this check, whether every one did, and whether
+    any node was not observed.
 
     Unknown is not absent: a node the check could not observe is counted
     apart, never as one that answered or one that did not."""
     if not report.nodes:
-        return "no node observed", False
+        return "no node observed", False, True
     answers = [(node, report.answered(node)) for node in report.nodes]
     total = len(answers)
     unknown = sum(1 for _, answer in answers if answer is None)
     if unknown == total:
-        return f"{plural(total, 'node')} not observed", False
+        return f"{plural(total, 'node')} not observed", False, True
     answered = sum(1 for _, answer in answers if answer is True)
     silent = [str(node["hostname"]) for node, answer in answers if answer is False]
     text = f"{answered} of {total} answered"
@@ -269,7 +270,7 @@ def answered_words(report: Report) -> tuple[str, bool]:
     if silent:
         names = silent[0] if len(silent) == 1 else ", ".join(silent[:-1]) + " and " + silent[-1]
         text += f" ({names} did not answer)"
-    return text, answered == total
+    return text, answered == total, bool(unknown)
 
 
 def summary(directory: Path, started: float, writer: TerminalWriter | None = None) -> None:
@@ -278,24 +279,27 @@ def summary(directory: Path, started: float, writer: TerminalWriter | None = Non
     It counts what the report's Result line counts, from the same sources, and
     leads with what needs attention: blocking issues, nodes that did not answer
     or were not observed, and checks not observed come before anything that
-    reads as fine."""
+    reads as fine. Unknown is not absent: when a node or a check was not
+    observed, it does not say "no blocking issue"; a blocking issue that was
+    found is always counted."""
     out = writer or TerminalWriter()
     report = Report(directory)
     counts = render(directory, started, started, TerminalWriter(width=out.width, stream=io.StringIO()))
     verdict = verdict_parts(counts, len(report.missing))
-    answers, everyone = answered_words(report)
+    answers, everyone, unobserved = answered_words(report)
+    unobserved = unobserved or bool(report.missing)
     parts = [datetime.fromtimestamp(started).strftime("%H:%M:%S")]
     if counts["fail"]:
         parts.append(verdict["blocking"])
     if not everyone:
         parts.append(answers)
     parts.append(verdict["not_observed"])
-    if not counts["fail"]:
+    if not counts["fail"] and not unobserved:
         parts.append(verdict["blocking"])
     if everyone:
         parts.append(answers)
     parts.append(verdict["warnings"])
-    attention = "fail" if counts["fail"] else "warn" if not everyone or report.missing else None
+    attention = "fail" if counts["fail"] else "warn" if not everyone or unobserved else None
     # Lines break only between parts, unless a part with its " ·" is wider than the line.
     room = out.width - LABEL_WIDTH
     kept = [part.replace(" ", KEEP) if len(part) + 2 <= room else part for part in parts if part]
