@@ -1169,7 +1169,7 @@ def memory_warning_only(records: list[dict]) -> bool:
 # and confirmation; none adds --replace or --pull-image.
 START_CHOICES = {
     "topology_incomplete": ("topology-menu",), "fabric_incomplete": ("topology-check",),
-    "node_unreachable": ("topology-check",),
+    "node_unreachable": ("topology-check",), "port_check_failed": ("topology-check",),
     "docker_unavailable": ("doctor",), "container_start_failed": ("doctor",),
     "image_missing": ("image-stage",),
     "model_files_not_ready": ("files",),

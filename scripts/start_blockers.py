@@ -87,6 +87,9 @@ BLOCKERS = {
                                    "is no longer needed, interrupt it in its terminal."),
     "port_in_use": Kind("the service port is already in use", "./pulsar inventory",
                         note="Free the port, or change the deployment port."),
+    # Unknown is not in use: SSH or the probe failed, so the port's state is not known.
+    "port_check_failed": Kind("the port check could not complete on the node", "./pulsar topology check",
+                              note="Whether the port is free is not known; start again once the node answers."),
     "preflight_failed": Kind("the multi-node preflight failed", START, adds="--verbose"),
     # Ordinary start cannot resolve these; the note explains the supported path.
     "guard_unsupported": Kind("this spec requires serving-guard enforcement (recipe.container.guard), "

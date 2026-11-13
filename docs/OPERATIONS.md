@@ -1543,6 +1543,11 @@ from this machine on the same nodes: `./pulsar image stage <spec-id>
 
 With `--replace`, start rechecks the image, removes the previous service
 (ownership still proven), then rechecks memory and the port before launching.
+Start's port check binds the port as the service does: a port held only by
+connections that are still closing after a stop, for about a minute, counts as
+free, and one a program still listens on counts as `port_in_use`. A node where
+the check cannot run, for example because SSH fails, is `port_check_failed`:
+whether its port is free is not known.
 If a recheck or the launch then fails, nothing is running for the spec, and
 start says so. After launch, start releases its locks while the service loads,
 so `stop`, `status` and model-file work are not blocked; the containers'
@@ -2290,7 +2295,7 @@ lead to it:
 | Blocker | Choice |
 | --- | --- |
 | `topology_incomplete` | Open Cluster topology, where membership can be set up or changed |
-| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric; none when two of the chosen nodes of a ring share no cable, which no check or menu operation changes |
+| `fabric_incomplete`, `node_unreachable`, `port_check_failed` | Check saved nodes and fabric; none when two of the chosen nodes of a ring share no cable, which no check or menu operation changes |
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |

@@ -3839,16 +3839,35 @@ require_launch_memory_check() {
   resolve_library_hot_for_profile "$CONF_NAME"
 }
 
-# port_free PORT [SSH_HOST] — 0 when PORT can be bound on the node.
+# port_free PORT [SSH_HOST] — whether the service could bind PORT on the
+# node: 0 free, 1 in use, 2 not checked (SSH or the probe failed; unknown is
+# not in use). The probe binds as the engine and its API server do, with
+# SO_REUSEADDR: a port whose last connections are only closing (TIME_WAIT,
+# for about a minute after a Stop) is free, as it is for them; a live
+# listener still holds it on Linux. Local and remote probes are the same.
 port_free() {
-  local port="${1:?}" host="${2:-}"
-  local probe='import socket,sys; s=socket.socket(); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()'
+  local port="${1:?}" host="${2:-}" rc=0
+  local probe='import errno,socket,sys
+s=socket.socket()
+s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+try:
+    s.bind(("0.0.0.0",int(sys.argv[1])))
+except OSError as error:
+    sys.exit(10 if error.errno==errno.EADDRINUSE else 3)
+s.close()'
   if [ -n "$host" ]; then
     "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-      "python3 -c $(printf '%q' "$probe") $(printf '%q' "$port")" >/dev/null 2>&1
+      "python3 -c $(printf '%q' "$probe") $(printf '%q' "$port")" >/dev/null 2>&1 || rc=$?
   else
-    python3 -c "$probe" "$port" >/dev/null 2>&1
+    python3 -c "$probe" "$port" >/dev/null 2>&1 || rc=$?
   fi
+  # Only the probe's own 10 means in use: Python's uncaught errors exit 1 and
+  # SSH's own failures 255, and neither says anything about the port.
+  case "$rc" in
+    0) return 0 ;;
+    10) return 1 ;;
+    *) return 2 ;;
+  esac
 }
 
 # container_state_exact NAME [SSH_HOST] — prints running, exited, absent, or

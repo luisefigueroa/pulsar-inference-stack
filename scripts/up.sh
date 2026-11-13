@@ -605,16 +605,23 @@ else
     port_rows=("$head_index:$PORT" "$head_index:${MASTER_PORT:-29500}")
   fi
   for row in "${port_rows[@]}"; do
-    index="${row%%:*}" checked_port="${row#*:}" port_host=""
+    index="${row%%:*}" checked_port="${row#*:}" port_host="" port_rc=0
     if [ "$index" -gt 0 ]; then port_host="${CLUSTER_NODE_SSH_HOSTS[$index]}"; fi
-    if port_free "$checked_port" ${port_host:+"$port_host"}; then
-      continue
-    fi
-    status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
-    start_check fail port "$checked_port is in use" --node "$(human_node_name "$index")"
+    port_free "$checked_port" ${port_host:+"$port_host"} || port_rc=$?
+    [ "$port_rc" != 0 ] || continue
     ports_busy=1
-    blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
-      --detail "port $checked_port"
+    if [ "$port_rc" = 1 ]; then
+      status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
+      start_check fail port "$checked_port is in use" --node "$(human_node_name "$index")"
+      blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
+        --detail "port $checked_port"
+    else
+      # Unknown is not in use: the node did not answer the check.
+      status_line "FAIL  port      $checked_port could not be checked on $(human_node_name "$index")"
+      start_check fail port "$checked_port could not be checked" --node "$(human_node_name "$index")"
+      blocked port_check_failed --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
+        --detail "port $checked_port"
+    fi
   done
   if [ "$ports_busy" = 0 ]; then
     ports=$(printf '%s, ' "${port_rows[@]##*:}")

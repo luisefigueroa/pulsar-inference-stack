@@ -67,7 +67,8 @@ require_profile_topology() { CLUSTER_TOPOLOGY_REFUSAL="${FIXTURE_REFUSAL:-}"; [ 
 container_name_for() { echo fixture-container; }
 container_ownership_inspect_local() { return "${FIXTURE_EXISTING:-3}"; }
 container_ownership_inspect_remote() { return "${FIXTURE_EXISTING:-3}"; }
-port_free() { [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
+# As scripts/lib.sh: 0 free, 1 in use, 2 not checked.
+port_free() { [ "$1" != "${FIXTURE_UNCHECKED_PORT:-}" ] || return 2; [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
 resolve_library_hot_for_profile() { :; }
 # Every plan has an ID; a multi-node Start hands it to the launcher.
 write_launch_plan_file() { printf '{"schema_version": 5, "plan_id": "%s", "service_id": "%s"%s}\n' "${FIXTURE_PLAN_ID:-7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a}" "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
@@ -635,6 +636,17 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--skip-preflight", image="ok", nodes=2, busy_port=29500)
         self.assertEqual(codes, ["port_in_use", "port_in_use"])
         self.assertIn("(port 29500)", self.records[1]["message"])
+
+    def test_a_port_that_could_not_be_checked_is_not_said_to_be_in_use(self):
+        result, codes = self.start(image="ok", unchecked_port=8000)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(codes, ["port_check_failed"])
+        self.assertIn("FAIL  port      8000 could not be checked on fixture-host-0\n", result.stdout)
+        self.assertIn("BLOCKED port_check_failed: fixture-host-0: the port check could not complete on the node "
+                      "(port 8000). Next: ./pulsar topology check\n  Whether the port is free is not known; start "
+                      "again once the node answers.", result.stdout)
+        self.assertNotIn("in use", result.stdout)
+        self.assertFalse(self.ran("launched"))
 
     def test_ready_only_after_the_test_completion_answers(self):
         result, codes = self.start(image="ok")

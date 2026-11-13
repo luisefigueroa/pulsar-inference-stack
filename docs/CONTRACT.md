@@ -714,6 +714,15 @@ output shape changed.
 Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
 Earlier records lack it, which reads as null.
 
+Change note, 2026-11-12: new code `port_check_failed`, a check-stage blocker
+(also from the launcher's recheck): the port probe could not run on the node,
+for example because SSH failed, so whether the port is free is not known.
+Before, such a node was reported as `port_in_use`. Its `fix` is `./pulsar
+topology check`. The port probe also binds as the service does, with
+`SO_REUSEADDR`, so a port held only by connections that are closing after a
+stop is no longer `port_in_use`; a live listener still is. Nothing was removed
+or renamed.
+
 Change note, 2026-11-11: new code `start_in_progress`, a check-stage blocker:
 another multi-node start of the same service (spec, saved cluster and nodes in
 role order) is still running, so this one was refused before it checked

@@ -56,6 +56,8 @@ REASONS = {
     "topology_incomplete": ("The cluster has fewer nodes than this recipe needs.", "cluster"),
     "fabric_incomplete": ("The links between the nodes do not meet this recipe's needs.", "cluster"),
     "node_unreachable": ("A serving node did not answer over SSH.", "cluster"),
+    "port_check_failed": ("The port check could not finish on a serving node, so whether its port is free is "
+                          "not known.", "cluster"),
     "docker_unavailable": ("Docker is unavailable on a serving node, or could not confirm the serving image.",
                            "diagnostics"),
     "image_check_failed": ("The serving image check could not finish.", "diagnostics"),

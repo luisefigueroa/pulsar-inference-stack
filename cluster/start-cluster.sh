@@ -437,10 +437,16 @@ build_docker_cmd 0
 HEAD_CMD=("${_DOCKER_CMD[@]}")
 first_host=$(role_host 0)
 for cluster_port in "$PORT" "${MASTER_PORT:-29500}"; do
-  if ! port_free "$cluster_port" ${first_host:+"$first_host"}; then
+  port_rc=0
+  port_free "$cluster_port" ${first_host:+"$first_host"} || port_rc=$?
+  if [ "$port_rc" = 1 ]; then
     START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "$(role_name 0)" \
       --node-id "$(role_id 0)" --detail "port $cluster_port"
     refuse_launch "port $cluster_port is unavailable on $(role_name 0) (rank 0); refusing launch"
+  elif [ "$port_rc" != 0 ]; then
+    START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_check_failed --node "$(role_name 0)" \
+      --node-id "$(role_id 0)" --detail "port $cluster_port"
+    refuse_launch "port $cluster_port could not be checked on $(role_name 0) (rank 0); refusing launch"
   fi
 done
 
