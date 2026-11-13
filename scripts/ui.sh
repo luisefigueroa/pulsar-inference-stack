@@ -235,6 +235,12 @@ _ui_gum_pager_style_args() {
   fi
 }
 
+# Without colour Gum draws an input's placeholder exactly like typed text and
+# its cursor not at all (under NO_COLOR it drops every attribute). So plain
+# mode clears every colour Gum would use and runs it without NO_COLOR: the
+# cursor is then a reverse-video block, the placeholder moves to the header as
+# "Example: …", and Gum's coloured key hint is hidden for _UI_INPUT_HINT.
+_UI_INPUT_HINT="enter submit · esc cancel"
 _ui_gum_input_style_args() {
   GUM_INPUT_STYLE_ARGS=()
   if pulsar_color_enabled; then
@@ -242,6 +248,11 @@ _ui_gum_input_style_args() {
       --prompt.foreground="$PULSAR_ACCENT"
       --header.foreground="$PULSAR_ACCENT"
       --placeholder.foreground="8"
+    )
+  else
+    GUM_INPUT_STYLE_ARGS+=(
+      --prompt.foreground= --header.foreground= --placeholder.foreground= --cursor.foreground=
+      --cursor.mode=static --no-show-help
     )
   fi
   GUM_INPUT_STYLE_ARGS+=(--padding "1 0")
@@ -271,14 +282,23 @@ emit_error() {
 # Prints the entered line on stdout. Returns 1 on Esc/empty input, 130 on Ctrl-C.
 prompt_input() {
   local header="$1" placeholder="${2:-}" out rc columns
+  local -a gum=(_ui_gum)
   _ui_require_gum || return
+  if ! pulsar_color_enabled; then
+    # Plain mode (see _ui_gum_input_style_args): the example is said above the
+    # field, never drawn in it, so it cannot be read as typed text.
+    [ -z "$placeholder" ] || header+=$'\n'"Example: $placeholder"
+    header+=$'\n'"$_UI_INPUT_HINT"
+    placeholder=""
+    gum=(env -u NO_COLOR "$GUM_CMD")
+  fi
   # Gum cuts a header line wider than the terminal: it wraps between words.
   if columns=$(_ui_terminal_columns); then
     header=$(_ui_wrap "$columns" "$header")
   fi
   _ui_gum_input_style_args
   set +e
-  out=$(_ui_gum input \
+  out=$("${gum[@]}" input \
     "${GUM_INPUT_STYLE_ARGS[@]}" \
     --header "$header" \
     --placeholder "$placeholder")

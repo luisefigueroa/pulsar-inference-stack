@@ -111,7 +111,10 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   `PULSAR_COLOR=never`) `confirm` runs Gum with every colour cleared and marks
   the selected answer bold and underlined, with its key hint under the
   question. Anything the operator selects must be marked without colour: a
-  menu's `>` cursor is.
+  menu's `>` cursor is. `prompt_input` does the same in plain mode: its
+  cursor is a reverse-video block and its placeholder moves above the field
+  as `Example: …`, where it cannot be read as typed text; so a placeholder
+  is an example, not a description.
 - Gum cuts a menu title, a question or an input header wider than the
   terminal at its edge. `choose_index`, `confirm` and `prompt_input` wrap them
   between words to the terminal's width; a word wider than the terminal gets

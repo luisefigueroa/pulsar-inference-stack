@@ -151,6 +151,16 @@ class UiFrame(unittest.TestCase):
                             self.assertIn(f"{flag} ", call)
                         self.assertIn("Sure? ←/→ move · enter choose · y yes · n no", call)
                         continue
+                    if call.startswith("input "):
+                        # The same for a text prompt: its cursor is a reverse-video block,
+                        # and its example (none here) is said in the header, not drawn as input.
+                        self.assertTrue(call.endswith("NO_COLOR="), call)
+                        self.assertEqual(re.findall(r"--[a-z.]*(?:fore|back)ground=\S+", call), [], call)
+                        for flag in ("--prompt.foreground=", "--header.foreground=", "--placeholder.foreground=",
+                                     "--cursor.foreground=", "--cursor.mode=static", "--no-show-help"):
+                            self.assertIn(f"{flag} ", call)
+                        self.assertIn("--header Path: enter submit · esc cancel --placeholder ", call)
+                        continue
                     self.assertNotIn("foreground", call)
                     self.assertNotIn("background", call)
                     # Gum's own defaults are colored; NO_COLOR=1 turns them off.

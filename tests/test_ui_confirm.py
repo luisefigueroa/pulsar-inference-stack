@@ -169,6 +169,31 @@ fi
                     # Enter submits the marked answer: the one moved to.
                     self.assertIn("RC=0" if default == "no" else "RC=1", output)
 
+    def test_without_colour_a_text_prompt_shows_its_example_apart_and_its_cursor(self):
+        # Gum alone draws the placeholder like typed text and no cursor without colour.
+        example = "/existing/absolute/directory"
+        script = ('{setting}\n. "$REPO_DIR/scripts/ui.sh"\nrc=0\n'
+                  f'out=$(prompt_input "Existing absolute directory:" "{example}") || rc=$?\n'
+                  'printf "\\nRC=%s OUT=[%s]\\n" "$rc" "$out"\n')
+        for setting in ("", "unset NO_COLOR; export PULSAR_COLOR=never"):
+            for columns in (80, 60):
+                for keys, expected in ((b"\r", "RC=1 OUT=[]"), (b"ab\r", "RC=0 OUT=[ab]"), (b"\x1b", "RC=1 OUT=[]")):
+                    with self.subTest(setting=setting or "NO_COLOR=1", columns=columns, keys=keys):
+                        code, output = self.drive(script.format(setting=setting), keys, ready=b"esc cancel",
+                                                  columns=columns)
+                        self.assertEqual(code, 0, output)
+                        # Enter on an untouched prompt submits nothing: never the example.
+                        self.assertIn(expected, output)
+                        first = views(output, 24, columns)[0]
+                        field = next(row for row in first if row.startswith(">"))
+                        self.assertEqual(field, ">", first)  # the example is not in the field
+                        self.assertIn(f"Example: {example}", first)
+                        self.assertIn("enter submit · esc cancel", first)
+                        # Typing goes where the reverse-video cursor block is.
+                        self.assertRegex(output, r"> \x1b\[7m \x1b\[0m")
+                        self.assertNotRegex(output, r"\x1b\[[0-9;]*(3[0-9]|4[0-9]|9[0-7])[0-9;]*m")
+                        self.assertNotIn("not submitted", views(output, 24, columns)[-1])
+
     def test_answer_shortcuts_override_default(self):
         for keys, expected, default in ((b"y", 0, "no"), (b"n", 1, "yes")):
             with self.subTest(keys=keys):
