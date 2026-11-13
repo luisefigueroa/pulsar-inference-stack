@@ -16,6 +16,7 @@ import termios
 import time
 import unittest
 
+
 ROOT = Path(__file__).resolve().parents[1]
 GUM = ROOT / "third_party/gum/linux-arm64/gum"
 
@@ -207,6 +208,8 @@ if index=$(choose_index "Pick fixture option" "$@"); then printf '\\nPICKED=%s\\
 
 
 ESCAPE = re.compile(r"\x1b\[([?0-9;]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^\[\]]")
+# How scripts/ui.sh erases the line Gum prints after Esc.
+ESC_LINE_ERASE = "\x1b[1A\r\x1b[2K"
 
 
 def views(output, rows, columns):
@@ -214,7 +217,9 @@ def views(output, rows, columns):
     when each view after the first starts, then the final screen. Enough of a
     terminal for Gum's inline renderer, which redraws in place after moving
     the cursor up to its view's first line; a line feed on the last row
-    scrolls. Styles are dropped. The last view before Gum exits is [-2]."""
+    scrolls. Styles are dropped. The last view before Gum exits is [-2].
+    The move up with which Pulsar erases the line Gum prints after Esc
+    (scripts/ui.sh _ui_gum_esc_line) starts no view."""
     screen = [[" "] * columns for _ in range(rows)]
     row = column = 0
     shots = []
@@ -235,7 +240,9 @@ def views(output, rows, columns):
             params, final = match.group(1) or "", match.group(2)
             count = int(params) if params.isdigit() else 1
             if final == "A":
-                shots.append(["".join(line).rstrip() for line in screen])
+                if not output.startswith(ESC_LINE_ERASE, match.start()) \
+                        or not output[:match.start()].endswith(("nothing selected\r\n", "not submitted\r\n")):
+                    shots.append(["".join(line).rstrip() for line in screen])
                 row = max(0, row - count)
             elif final == "B":
                 row = min(rows - 1, row + count)
@@ -461,6 +468,84 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
 
 @unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
                      "the bundled Gum requires Linux arm64")
+class BundledGumEscape(BundledGum):
+    """Esc leaves no line of Gum's own on screen: Gum 0.17 prints "nothing selected"
+    (choose) or "not submitted" (input) on stderr after it clears its menu."""
+    PROMPTS = {
+        "choose": ('choose_index "Pick" "One" "Two"', b"Two", "nothing selected"),
+        "input": ('prompt_input "Name" "here"', b"Name", "not submitted"),
+    }
+
+    def run_prompt(self, prompt, keys, *, columns=80, before=""):
+        call, ready, _ = self.PROMPTS[prompt]
+        script = (f'{before}. "$REPO_DIR/scripts/ui.sh"\nprintf "line above the menu\\n"\nrc=0\n'
+                  f'out=$({call}) || rc=$?\nprintf "AFTER rc=%s out=%s\\n" "$rc" "$out"\n')
+        code, output = self.drive(script, keys, ready=ready, columns=columns)
+        return code, output, views(output, 24, columns)[-1]
+
+    def test_esc_leaves_no_gum_line_and_the_line_above_stays(self):
+        for prompt, (_, _, message) in self.PROMPTS.items():
+            for columns in (80, 60):
+                with self.subTest(prompt=prompt, columns=columns):
+                    code, output, lines = self.run_prompt(prompt, b"\x1b", columns=columns)
+                    self.assertEqual(code, 0, output)
+                    # Gum printed its line, and the screen no longer shows it.
+                    self.assertIn(message, output)
+                    self.assertNotIn(message, "\n".join(lines))
+                    above = lines.index("line above the menu")
+                    self.assertEqual(lines[above + 1], "AFTER rc=1 out=", lines)
+
+    def test_ctrl_c_and_enter_are_unchanged(self):
+        for prompt, keys, expected in (("choose", b"\x03", "AFTER rc=130 out="), ("choose", b"\r", "AFTER rc=0 out=0"),
+                                       ("input", b"\x03", "AFTER rc=130 out="),
+                                       ("input", b"abc\r", "AFTER rc=0 out=abc")):
+            for columns in (80, 60):
+                with self.subTest(prompt=prompt, keys=keys, columns=columns):
+                    code, output, lines = self.run_prompt(prompt, keys, columns=columns)
+                    self.assertEqual(code, 0, output)
+                    self.assertNotIn(ESC_LINE_ERASE, output)
+                    self.assertIn("line above the menu", lines)
+                    self.assertIn(expected, lines)
+
+    def gum_double(self, body):
+        """A Gum double: --version says VERSION; anything else runs BODY."""
+        path = Path(self.enterContext(tempfile.TemporaryDirectory())) / "gum"
+        path.write_text(f'#!/usr/bin/env bash\nif [ "$1" = --version ]; then echo "gum version $VERSION"; '
+                        f'exit 0; fi\n{body}\n')
+        path.chmod(0o755)
+        return path
+
+    def test_only_a_gum_release_known_to_print_the_line_has_it_erased(self):
+        # The bundled Gum behind a later version number: its line is left as it is.
+        later = self.gum_double(f'exec "{GUM}" "$@"')
+        code, output, lines = self.run_prompt("choose", b"\x1b", before=f"export GUM_BIN={later} VERSION=v0.18.0\n")
+        self.assertEqual(code, 0, output)
+        self.assertNotIn(ESC_LINE_ERASE, output)
+        self.assertIn("nothing selected", lines)
+
+    def test_real_gum_errors_and_output_off_a_terminal_are_kept(self):
+        # Another error on a terminal: its line stays and nothing is erased.
+        failing = self.gum_double('cat >/dev/null; echo "gum: error: unknown flag --bogus" >&2; exit 80')
+        script = (f'export GUM_BIN={failing} VERSION=v0.17.0\n. "$REPO_DIR/scripts/ui.sh"\nprintf "line above\\n"\n'
+                  'rc=0; choose_index "Pick" "One" "Two" || rc=$?; printf "AFTER rc=%s\\n" "$rc"\n')
+        code, output = self.drive(script, b"", ready=b"AFTER rc=")
+        lines = views(output, 24, 80)[-1]
+        self.assertNotIn(ESC_LINE_ERASE, output)
+        self.assertEqual(lines[lines.index("line above") + 1:][:2], ["gum: error: unknown flag --bogus", "AFTER rc=1"])
+        # Off a terminal the line Gum printed is kept byte for byte.
+        escaped = self.gum_double('cat >/dev/null; echo "nothing selected" >&2; exit 1')
+        log = Path(self.enterContext(tempfile.TemporaryDirectory())) / "stderr"
+        with log.open("w") as stderr:
+            result = subprocess.run(["bash", "-c", '. "$REPO_DIR/scripts/ui.sh"; choose_index "Pick" "One" "Two"'],
+                                    env={**os.environ, "REPO_DIR": str(ROOT), "GUM_BIN": str(escaped),
+                                         "VERSION": "v0.17.0", "PULSAR_FORCE_GUM": "1", "TERM": "xterm-256color"},
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=stderr, timeout=30)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(log.read_text(), "nothing selected\n")
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
 class BundledGumReview(BundledGum):
     """A storage question: No first, Yes only when chosen, and the full preview on request."""
     SCRIPT = '''
@@ -552,6 +637,26 @@ class BundledGumIntentHome(BundledGum):
                              "fixture-node-3 did not answer", "Pulsar Inference Stack", "esc exit",
                              "Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"):
                     self.assertIn(text, plain)
+
+    def test_esc_from_a_submenu_and_home_leaves_the_status_and_frame_and_no_gum_line(self):
+        # Home → Cluster… → Esc back home → Esc out; the status and the frame stay on screen.
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.drive(self.fixture() + '"$REPO_DIR/scripts/home.sh"; echo "HOME rc=$?"\n',
+                                          b"\x1b[B\x1b[B\x1b[B\r", ready=b"Help and troubleshooting",
+                                          columns=columns, rows=60,
+                                          then=[(b"Start over: forget this cluster", b"\x1b"),
+                                                (b"Help and troubleshooting", b"\x1b")])
+                self.assertEqual(code, 0, output)
+                self.assertEqual(output.count("nothing selected"), 2, output)
+                lines = views(output, 60, columns)[-1]
+                screen = "\n".join(lines)
+                self.assertNotIn("nothing selected", screen)
+                for text in ("Cluster    3 nodes · 2 of 3 answered", "Attention",
+                             "Nodes      3 · fixture-node-1", "Changes    fixture-node-3 did not answer"):
+                    self.assertIn(text, screen)
+                # Nothing extra after the last Esc: the next line is the shell's own.
+                self.assertEqual([line for line in lines if line][-1], "HOME rc=0")
 
     def test_the_cluster_menu_draws_its_frame_and_offers_review(self):
         code, output = self.drive(self.fixture() + 'exec "$REPO_DIR/scripts/cluster-menu.sh"\n', b"\x1b",

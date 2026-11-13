@@ -156,6 +156,27 @@ _ui_gum() {
   fi
 }
 
+# _ui_gum_esc_line LINE: removes the line Gum printed on stderr after Esc.
+# Gum 0.17 ends a choose or input left with Esc by printing "nothing
+# selected" or "not submitted" on stderr, after it has cleared its menu, and
+# exits 1. The menu is drawn on stderr too, so the line cannot be filtered
+# without losing the terminal (colors and width), and Gum has no setting to
+# leave it out. Call this only after that exit with nothing chosen: it moves
+# up one line and clears it, and only where the line is known to be there:
+# stderr is a terminal at least as wide as LINE, so it took one line, and
+# Gum is a 0.17 release, whose Esc line was observed. Other Gum releases,
+# output off a terminal and every other Gum message are left as they are.
+_ui_gum_esc_line() {
+  local line="$1" version columns
+  [ -t 2 ] || return 0
+  version=$("$GUM_CMD" --version 2>/dev/null) || return 0
+  [[ "$version" =~ ^gum\ version\ v0\.17\. ]] || return 0
+  if columns=$(_ui_terminal_columns) && [ "$columns" -le "${#line}" ]; then
+    return 0
+  fi
+  printf '\033[1A\r\033[2K' >&2
+}
+
 # Style flags: layout always; color only when color is enabled, and then the
 # complete palette.
 _ui_gum_choose_style_args() {
@@ -250,6 +271,8 @@ prompt_input() {
   if [ "$rc" -eq 130 ]; then
     return 130
   fi
+  # Esc: Gum's "not submitted" line goes, so the screen keeps what was there.
+  [ "$rc" -ne 1 ] || [ -n "${out:-}" ] || _ui_gum_esc_line "not submitted"
   if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
@@ -413,6 +436,8 @@ choose_index() {
   if [ "$rc" -eq 130 ]; then
     return 130
   fi
+  # Esc: Gum's "nothing selected" line goes, so the screen keeps what was there.
+  [ "$rc" -ne 1 ] || [ -n "${out:-}" ] || _ui_gum_esc_line "nothing selected"
   if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
