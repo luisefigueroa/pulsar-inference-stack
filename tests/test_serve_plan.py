@@ -595,6 +595,25 @@ class ForeignContainers(unittest.TestCase):
         state = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
         return self.plan(state, node=node, live=document)
 
+    def test_a_plan_that_only_gets_the_model_ready_names_none_of_them_and_is_not_blocked(self):
+        # Nothing starts, so neither exited nor running containers on its node matter to it.
+        state = checked(home=HOME, local_state="missing", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        prepare = {"prepare": envelope(prepare_plan(("n1", "copy")))}
+        for service in (foreign("w1"), foreign("w1", state="running", running=True)):
+            with self.subTest(state=service["state"]):
+                document = inventory()
+                document["services"] = [service]
+                document["unmanaged_gpu_processes"] = [{"node": "w1", "pid": 7, "process_name": "p",
+                                                        "used_memory_mib": 512}]
+                plan = self.plan(state, node="n1", live=document, ready_only=True, previews=prepare)
+                self.assertEqual([step["kind"] for step in plan["steps"]], ["prepare"])
+                self.assertEqual(plan["blocked"], [])
+                self.assertFalse(any("not started by Pulsar" in note for note in plan["notes"]), plan["notes"])
+                self.assertIn(("ready", "Go ahead"), serve.choices(plan))
+                # The plan that also starts it still names them.
+                full = self.plan(state, node="n1", live=document, previews=prepare)
+                self.assertTrue(any("vllm-port80" in line for line in full["notes"] + full["blocked"]))
+
     def test_exited_containers_on_the_serving_node_are_a_note_and_the_plan_runs(self):
         plan = self.one_node(foreign("head"))
         self.assertEqual(plan["blocked"], [])

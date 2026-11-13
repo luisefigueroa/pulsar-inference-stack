@@ -818,7 +818,10 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     # What this plan cannot stop. GPU processes are notes: Start measures the
     # memory. So are containers Pulsar did not start that have all exited:
     # they hold no port or memory. Anything else on a serving node blocks.
-    for note in notes:
+    # A plan that only gets the model ready starts nothing, so what runs on
+    # its nodes neither blocks it nor needs a note: Prepare's own preview
+    # says what keeps it from writing a copy.
+    for note in [] if ready_only else notes:
         if getattr(note, "exited", False):
             plan["notes"].append(f"{note}. The plan leaves them alone; Start checks the port and memory itself.")
         elif not getattr(note, "blocks", True):

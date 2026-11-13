@@ -1738,7 +1738,9 @@ needs, which the operator approves once.
    Containers Pulsar did not start that have all exited hold no port and no
    GPU memory, so the plan names them in a note, leaves them alone and stays
    runnable; Start checks the port and memory itself. GPU processes Pulsar did
-   not start are notes too.
+   not start are notes too. A plan that only gets the model ready (**Get it
+   ready, but do not start**, or **Get a model ready ahead of time…**) starts
+   nothing, so none of these block it or are named in it.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
    after a blocking check) are named as estimates. A memory warning that
    Start's dry run accepted is shown before approval: Start itself refuses on
