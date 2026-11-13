@@ -192,8 +192,11 @@ class PairQuestion(RingHarness):
                       f"Copies to {HOSTS[2]} pass through {HOSTS[1]}.", text)
         self.assertIn(f"2. Pull the serving image on {HOSTS[3]} (exact digest, from its registry).", text)
         self.assertIn(f"✓ Serving: org/model started on {HOSTS[2]} and {HOSTS[3]}.", text)
+        # A command too long for the line breaks between arguments, each line but
+        # the last ending in " \"; joined again, the commands are whole.
         self.assertIn(f"Same as: ./pulsar model prepare abababababab {placement} --yes ./pulsar image stage "
-                      f"{SPEC} {placement} --pull --yes ./pulsar start abababababab {placement}", text)
+                      f"{SPEC} {placement} --pull --yes ./pulsar start abababababab {placement}",
+                      text.replace(" \\ ", " "))
         self.assert_no_unapproved_authority()
 
     def test_a_cable_recorded_only_in_reverse_is_offered_and_started_in_that_order(self):
@@ -217,7 +220,7 @@ class PairQuestion(RingHarness):
         self.assertEqual(commands[-1], f"start {SPEC} {placement}")
         text = " ".join(result.stdout.split())
         self.assertIn(f"Serve org/model on {HOSTS[3]} and {HOSTS[2]}", text)
-        self.assertIn(f"./pulsar start abababababab {placement}", text)
+        self.assertIn(f"./pulsar start abababababab {placement}", text.replace(" \\ ", " "))
         self.assert_no_unapproved_authority()
 
     def test_change_never_offers_another_machine_for_a_pair(self):
@@ -264,7 +267,7 @@ class RunningServices(RingHarness):
         self.assertNotIn(QUESTION, " ".join(" ".join(menu) for menu in self.menus()))
         self.assertEqual(self.ran(), [f"stop {SPEC}", f"start {SPEC} --placement-nodes {HOSTS[2]},{HOSTS[3]}"])
         self.assertIn(f"Same as: ./pulsar stop abababababab ./pulsar start abababababab --placement-nodes "
-                      f"{HOSTS[2]},{HOSTS[3]}", text)
+                      f"{HOSTS[2]},{HOSTS[3]}", text.replace(" \\ ", " "))
         self.assert_no_unapproved_authority()
         self.assert_plain_choices()
 

@@ -1561,7 +1561,7 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
         out.blank()
         out.emit("Same as:")
         for command in ran:
-            out.emit(command, "  ", "    ", role="command")
+            out.emit_command(command, "  ", "    ")
     return output.getvalue().replace(KEEP, " ")
 
 

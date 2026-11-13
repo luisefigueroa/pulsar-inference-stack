@@ -2222,7 +2222,16 @@ Every outcome ends with the command that does the same, such as `Same as:
 repeated or scripted. It is the command the menu ran, in its operator form:
 the spec as a 12-character prefix where the command accepts one, and nodes by
 hostname. `--yes` and `--accept-memory-warn` appear only when the menu passed
-them; a failed preview names its `--plan` command.
+them; a failed preview names its `--plan` command. A command that fits the
+line stays on one line. A longer command breaks only between its arguments,
+never between an option and its value, and every line but the last ends with
+` \`, so the lines paste as one command:
+
+```text
+Same as:
+  ./pulsar start 139908cf23bb \
+    --placement-nodes node-a,node-b,node-c,node-d
+```
 
 ### Interruptions and recorded checks
 

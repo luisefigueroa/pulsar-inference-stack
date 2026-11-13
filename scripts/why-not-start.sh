@@ -28,6 +28,7 @@ COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 serve_plan() { python3 -m scripts.serve_plan "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 reasons() { python3 -m scripts.start_reasons "$@" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 text() { python3 -m scripts.terminal_format --text; }
+same_as() { python3 -m scripts.terminal_format --same-as "$1"; }
 TITLE="Why will a model not start?"
 
 if ! CATALOG=$(python3 -m model_library.catalog list --json); then
@@ -84,7 +85,7 @@ check() {
     while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
       < <(reasons choices --document "$WORK/start.json" --rc "$rc")
     screen=$(printf '%s' "$CATALOG" | reasons screen --document "$WORK/start.json" --rc "$rc" --spec-id "$spec")
-    screen+=$'\n\n'$(printf 'Same as: ./pulsar start %s%s --dry-run\n' "${spec:0:12}" "${host:+ --node $host}" | text)
+    screen+=$'\n\n'$(same_as "./pulsar start ${spec:0:12}${host:+ --node $host} --dry-run")
     # Above its choices when both fit the terminal's rows, as a plan is; else in the pager.
     if rows=$(_ui_terminal_rows) && [ $(($(printf '%s\n' "$screen" | wc -l) + 1 + ${#labels[@]} + 5)) -gt "$rows" ]; then
       page_output "" bash -c 'printf "%s\n" "$1"' _ "$screen" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }

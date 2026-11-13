@@ -80,6 +80,11 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
 - With `markup=True`, write `` `literal` ``, `**choice**` and `*term*` marks.
   Use `role="command"` for a usage line or option term, and `role="option"` for
   an aligned `  TERM  DESCRIPTION` row.
+- Print a command a person may paste, such as one under `Same as:`, with
+  `emit_command` (from Bash, `terminal_format --same-as COMMAND`). A command
+  that fits stays one line. A longer one breaks only between arguments, never
+  between an option and its value, and every line but the last ends with ` \`.
+  Never wrap a command as prose: a break inside it pastes as two commands.
 - Help screens use `emit_help`'s layout: a usage line, one sentence, then
   option rows with at least two spaces between a term and its description.
   Only a text with a usage line is styled. Questions and the SSH help also pass

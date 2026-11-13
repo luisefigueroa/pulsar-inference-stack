@@ -90,6 +90,7 @@ trap 'rm -rf -- "$WORK"; [ -z "$SHARED" ] || printf "%s\n" "$INVENTORY_AT" >"$SH
 COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 serve_plan() { python3 -m scripts.serve_plan "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 text() { python3 -m scripts.terminal_format --text; }
+same_as() { python3 -m scripts.terminal_format --same-as "$1"; }
 
 # resolve COMMAND...: prints the composed command one argument per line, with
 # ./pulsar as this checkout's.
@@ -602,7 +603,8 @@ run_plan() {
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       forget_inventory
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)" | text
+      echo
+      same_as "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)"
       wait_continue "Start again" || return $? ;;
     memory)
       # Start's own acknowledgement of its memory warning, chosen here by name;
@@ -613,12 +615,14 @@ run_plan() {
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       forget_inventory
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --accept-memory-warning --shown)" | text
+      echo
+      same_as "$(serve_plan command --plan "$PLAN" --accept-memory-warning --shown)"
       wait_continue "Start" || return $? ;;
     inspect)
       "$REPO_DIR/pulsar" models check "${SPEC:0:12}" || rc=$?
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: ./pulsar models check %s\n' "${SPEC:0:12}" | text
+      echo
+      same_as "./pulsar models check ${SPEC:0:12}"
       wait_continue "Files checked" || return $? ;;
     status)
       page_output "Checking the service…" "$REPO_DIR/pulsar" status "${SPEC:0:12}" || rc=$?

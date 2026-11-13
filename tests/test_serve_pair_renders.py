@@ -151,8 +151,10 @@ class PairRenders(test_ui_confirm.BundledGum):
                 self.assertTrue(any(line.startswith(f"org/model running on {HOSTS[2]}") for line in card),
                                 "\n".join(card))
                 self.assertIn(f"Restart org/model on {HOSTS[2]} and {HOSTS[3]}", " ".join(" ".join(plan).split()))
-                self.assertIn(f"./pulsar start abababababab --placement-nodes {HOSTS[2]},{HOSTS[3]}",
-                              " ".join(" ".join(outcome).split()))
+                # Too long for the line, the command breaks before the option, never
+                # between the option and its value, and the line before ends in " \".
+                start = outcome.index("  ./pulsar start abababababab \\")
+                self.assertEqual(outcome[start + 1], f"    --placement-nodes {HOSTS[2]},{HOSTS[3]}")
                 for screen in (card, plan, outcome):
                     self.assertTrue(all(len(line) <= columns for line in screen))
                 self.assertEqual([line for line in (root / "pulsar.log").read_text().splitlines()

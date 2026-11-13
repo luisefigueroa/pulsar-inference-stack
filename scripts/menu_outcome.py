@@ -18,7 +18,7 @@ import re
 import shlex
 import sys
 
-from scripts.terminal_format import TerminalWriter
+from scripts.terminal_format import TerminalWriter, command_lines
 
 INSPECTIONS = {"status", "check", "readiness", "image-check", "verify"}
 # The inspection that establishes an action's effect when its outcome is unknown.
@@ -188,15 +188,20 @@ def main(argv: list[str] | None = None) -> int:
         same = operator_command(args.command, NodeNames.saved().hostnames)
         if same:
             # Every menu action is also a command: name it so it can be repeated or
-            # scripted. It is never hard-wrapped, since an inserted break would paste
-            # into it (a 64-character spec ID cannot fit a narrow line): it moves whole
-            # to its own line, which the terminal wraps on its own if it must.
-            command = writer.paint(same, ["literal"] * len(same))
+            # scripted. When it does not fit beside the label it moves to its own
+            # line; when it does not fit there either it breaks between arguments,
+            # each line but the last ending in " \\", so it still pastes as one
+            # command (a 64-character spec ID stays whole for the terminal to wrap).
             if len(f"  Same as: {same}") <= writer.width:
-                print(f"  Same as: {command}", file=writer.stream)
+                print("  Same as: " + writer.paint(same, ["literal"] * len(same)), file=writer.stream)
             else:
                 print("  Same as:", file=writer.stream)
-                print(f"    {command}", file=writer.stream)
+                lines = command_lines(same, writer.width, "    ", "      ")
+                for number, line in enumerate(lines):
+                    indent = "    " if number == 0 else "      "
+                    tail = " \\" if number < len(lines) - 1 else ""
+                    body = line[len(indent):len(line) - len(tail)]
+                    print(indent + writer.paint(body, ["literal"] * len(body)) + tail, file=writer.stream)
     return 0
 
 

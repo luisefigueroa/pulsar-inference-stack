@@ -47,6 +47,7 @@ trap 'rm -rf -- "$WORK"' EXIT
 COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 page() { python3 -m scripts.services_page "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 text() { python3 -m scripts.terminal_format --text; }
+same_as() { python3 -m scripts.terminal_format --same-as "$1"; }
 CHANGED=4
 
 COMMAND=()
@@ -106,7 +107,7 @@ check_now() {
   page_output "Checking the service now…" env PULSAR_SERVICE_RESULT_FILE="$STATUS_FILE" "${COMMAND[@]}" || rc=$?
   [ "$rc" -ne 130 ] || return 130
   STATUS_CONF=$conf STATUS_RC=$rc STATUS_AT=$(date +%s)
-  printf 'Same as: %s\n' "$(view command --conf "$conf" --action check --shown)" | text
+  same_as "$(view command --conf "$conf" --action check --shown)"
 }
 
 # connect CONF: the Connect card from this page's last check of it, checking first when there is none.
@@ -130,7 +131,7 @@ logs() {
   resolve "${COMMAND[@]}"
   page_output "Reading its logs…" "${COMMAND[@]}" || rc=$?
   [ "$rc" -ne 130 ] || return 130
-  printf 'Same as: %s\n' "$(view command --conf "$conf" --action logs --shown)" | text
+  same_as "$(view command --conf "$conf" --action logs --shown)"
   # A failed read is held on screen until Continue.
   [ "$rc" -eq 0 ] || wait_continue "Logs" || return $?
 }

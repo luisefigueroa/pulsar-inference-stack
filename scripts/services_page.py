@@ -483,7 +483,7 @@ def outcome(action: str, rc: int, name: str, shown: str, *, width: int | None = 
     else:
         out.emit(f"Stop was refused or failed for {subject}; the reason is above. Nothing else was changed.",
                  "✗ ", "  ", prefix_role="fail")
-    out.emit(shown, "Same as: ", "  ", role="command")
+    out.emit_command(shown, "Same as: ", "  ")
     return output.getvalue()
 
 
