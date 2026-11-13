@@ -512,7 +512,7 @@ CLUSTER_PHASE=loading
 # Every rank's container exists; its references protect its files from here.
 release_model_library_locks
 
-WAIT_LIMIT="${WAIT_ATTEMPTS:-120}" WAIT_STARTED=$SECONDS
+WAIT_LIMIT="${WAIT_ATTEMPTS:-$((START_HEALTH_WAIT_SECONDS / 10))}" WAIT_STARTED=$SECONDS
 # Health comes from the first node's own address: the loopback address only
 # when that node is this machine, so another service listening here on the
 # same port can never answer for it.

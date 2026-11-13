@@ -136,6 +136,13 @@ error_line() {
   printf '%s%s %s\n' "$(_message_tag)" "$label" "$*" >&2
 }
 
+# START_HEALTH_WAIT_SECONDS — how long Start waits by default for a launched
+# service to answer /health, one node or several: a first load on a node reads
+# every model file and compiles, which can take most of it. A one-node Start
+# checks every 5 s (240 checks) and a multi-node Start every 10 s (120
+# checks); WAIT_ATTEMPTS and WAIT_SECONDS set the count and the spacing
+# instead. A healthy service, or a container that exits, ends the wait early.
+START_HEALTH_WAIT_SECONDS=1200
 # load_progress STARTED CHECK LIMIT [STATE] — health-wait progress on stderr.
 # On a terminal one line is rewritten on every check: elapsed time, which
 # health check of the limit, and the observed container state. Otherwise a

@@ -797,7 +797,9 @@ else
       "$PULSAR_DOCKER" logs --tail "$1" "$CONTAINER" >&2 || true
     fi
   }
-  wait_attempts="${WAIT_ATTEMPTS:-90}" wait_started=$SECONDS
+  # As long as a multi-node Start's wait (START_HEALTH_WAIT_SECONDS), checked
+  # every 5 s so an exited container is seen as soon as before.
+  wait_attempts="${WAIT_ATTEMPTS:-$((START_HEALTH_WAIT_SECONDS / 5))}" wait_started=$SECONDS
   log "waiting for ${SERVICE_API_BASE}/health on $(single_node_display) (cold load can take minutes;" \
     "up to $wait_attempts health checks, ${WAIT_SECONDS:-5} s apart)"
   ok=0 container_state=""

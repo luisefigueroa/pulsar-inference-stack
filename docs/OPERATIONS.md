@@ -2469,9 +2469,12 @@ Long storage operations report each phase on stderr, such as
 and stdout, including `--json` results, is unchanged.
 
 While a started service loads, Start says how many health checks it allows
-and how far apart they are. On a terminal, one stderr line then updates after
-each check, for example `loading: 2:14 elapsed · health check 14 of 90 ·
-container running`. For a multi-node service it shows each rank's container
+and how far apart they are: by default 240 checks 5 s apart on one node and
+120 checks 10 s apart on several, about 20 minutes either way, since a first
+load on a node reads every model file. A service that answers, or a container
+that exits, ends the wait at once. On a terminal, one stderr line then updates
+after each check, for example `loading: 2:14 elapsed · health check 14 of
+240 · container running`. For a multi-node service it shows each rank's container
 state, or `all 3 ranks running` when they agree. Each check also waits for its
 probes, so the limit is a number of checks, not a time. The line is cleared
 before any later message. Captured or piped output gets the same text as a

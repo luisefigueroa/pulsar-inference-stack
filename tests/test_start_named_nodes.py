@@ -230,6 +230,18 @@ class StatusOnNamedNodes(Cluster):
             'node-2 docker inspect by name over ssh', 'node-3 docker inspect by name over ssh'])
 
 
+class HealthWait(Cluster):
+    """A multi-node Start's wait keeps its 120 checks 10 s apart: the 20 minutes a one-node Start now allows too."""
+
+    def test_the_default_wait_and_an_early_answer(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32', WAIT_ATTEMPTS='', WAIT_SECONDS='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('up to 120 health checks, 10 s apart)', result.stdout + result.stderr)
+
+
 class OneServicePerSpec(Cluster):
     """Start reads the saved records: a spec runs as one service."""
 

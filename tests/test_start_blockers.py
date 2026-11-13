@@ -82,7 +82,7 @@ LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
                    _source_lib.index('resolve_single_node_placement() {')]
 # The real health-wait progress helpers, so up.sh's loading phase keeps its wiring.
 LOAD_PROGRESS = _source_lib[_source_lib.index('_message_tag() {'):_source_lib.index('\nlog()')] + "\n" + \
-    _source_lib[_source_lib.index('# load_progress STARTED'):_source_lib.index('die()  {')]
+    _source_lib[_source_lib.index('# START_HEALTH_WAIT_SECONDS'):_source_lib.index('die()  {')]
 LIB += LOAD_PROGRESS
 # The real status-word helpers, so up.sh's check rows keep their wiring.
 LIB += _source_lib[_source_lib.index('# Status words in check rows take'):_source_lib.index('print_hanging() {')]
@@ -740,6 +740,33 @@ class StartScenarios(unittest.TestCase):
         self.reset()
         result, _ = self.start(image="ok", health="fail", container="exited")
         self.assertNotIn("engine on", result.stderr)
+
+    # The one-node wait is as long as a multi-node Start's: 240 checks 5 s apart, 20 minutes.
+    def test_the_one_node_wait_allows_240_checks_5_s_apart_and_ends_early(self):
+        defaults = {"WAIT_ATTEMPTS": "", "WAIT_SECONDS": ""}
+        started = time.monotonic()
+        result, codes = self.start(image="ok", extra_env=defaults)
+        self.assertEqual((result.returncode, codes), (0, []), result.stderr)
+        self.assertIn("up to 240 health checks, 5 s apart)", result.stdout)
+        self.assertIn("\nREADY\n", result.stdout)
+        # A container that exits ends the wait at its first check, as before.
+        self.reset()
+        result, codes = self.start(image="ok", health="fail", container="exited",
+                                   extra_env={**defaults, "LOAD_PROGRESS_LOG_SECONDS": "0"})
+        self.assertEqual((result.returncode, codes), (1, ["container_exited"]))
+        self.assertIn("up to 240 health checks, 5 s apart)", result.stdout)
+        self.assertNotIn("health check 1 of 240", result.stderr)
+        # Neither waited for a single 5-second interval.
+        self.assertLess(time.monotonic() - started, 5 * 2)
+
+    def test_wait_attempts_and_wait_seconds_still_set_the_wait(self):
+        result, codes = self.start(image="ok", health="fail",
+                                   extra_env={"WAIT_ATTEMPTS": "3", "WAIT_SECONDS": "0",
+                                              "LOAD_PROGRESS_LOG_SECONDS": "0"})
+        self.assertEqual(codes, ["health_timeout"])
+        self.assertIn("up to 3 health checks, 0 s apart)", result.stdout)
+        self.assertIn("health check 3 of 3 · container running\n", result.stderr)
+        self.assertNotIn("health check 4", result.stderr)
 
     # TUI-31: the wait reports elapsed time, the check count and the container state.
     def test_captured_wait_progress_is_plain_lines_on_stderr(self):
