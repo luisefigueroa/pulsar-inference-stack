@@ -470,7 +470,7 @@ details_menu() {
 RAN=4
 serve_recipe() {
   SPEC="$1" NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE="" NOT_FOUND=()
-  local rc=0 action label choice
+  local rc=0 action label choice rebuild=1
   local -a actions=() labels=()
   if [ "$MODE" = restart ]; then
     # The node it runs on, as Running services… saw it; Start uses the saved order otherwise.
@@ -479,7 +479,12 @@ serve_recipe() {
     NODE=$(choose_node "$SPEC") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   fi
   while true; do
-    build_plan "$SPEC" || { rc=$?; [ "$rc" -ne 130 ] || return 130; wait_continue "Plan not made" || return $?; return 0; }
+    # Details changes nothing, so the plan already made shows again without
+    # its previews; Change… and a run plan again from the state as it is now.
+    if [ "$rebuild" = 1 ]; then
+      build_plan "$SPEC" || { rc=$?; [ "$rc" -ne 130 ] || return 130; wait_continue "Plan not made" || return $?; return 0; }
+    fi
+    rebuild=1
     actions=() labels=()
     while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
       < <(serve_plan choices --plan "$PLAN")
@@ -495,7 +500,7 @@ serve_recipe() {
         printf '%s' "$CATALOG" | serve_plan compose "${COMPOSE_ARGS[@]}" --ready-only --out "$PLAN" || return 0
         run_plan || rc=$?; [ "$rc" -ne 5 ] || continue; return "$rc" ;;
       change) change_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
-      details) details_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      details) details_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; }; rebuild=0 ;;
       *) return 0 ;;
     esac
   done

@@ -632,6 +632,21 @@ class NeedsEverything(Harness):
         self.run_menu(["0", "Go ahead", "Back"])
         self.assert_plain_choices()
 
+    def test_back_from_details_shows_the_same_plan_without_running_its_previews_again(self):
+        result = self.run_menu(["0", "Details", "Back", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # One inventory and one round of previews; Details changes nothing.
+        self.assertEqual(self.commands(), ["inventory --json", "model files --json", "prerequisites n0",
+                                           f"image stage {SPEC} --plan --json", f"start {SPEC} --dry-run --json"])
+        # The plan is shown again above its choices, as it was.
+        self.assertEqual(result.stdout.count("Pulsar will:"), 2)
+        self.assertEqual(self.menus()[1], self.menus()[3])
+        # Change… still plans again.
+        self.log.unlink()
+        self.answers.with_suffix(".n").unlink()
+        self.run_menu(["0", "Change…", "Back", "Cancel", "Back"])
+        self.assertEqual(self.commands().count(f"start {SPEC} --dry-run --json"), 2)
+
     def test_details_compares_with_another_recipe_from_the_lists_cards(self):
         result = self.run_menu(["0", "Details", "Compare with another recipe", "0", "Back", "Cancel", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
