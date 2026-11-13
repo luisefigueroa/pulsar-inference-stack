@@ -108,6 +108,19 @@ def _count(number: int, one: str, many: str | None = None) -> str:
     return f"{number} {one if number == 1 else (many or one + 's')}"
 
 
+def recipe_names(cluster: "Cluster", specs) -> str:
+    """SPECS for people: each catalog recipe by its name, then the recipes
+    outside this catalog counted once ("a recipe outside this catalog", "5
+    recipes outside this catalog"), joined as a list."""
+    specs = list(dict.fromkeys(specs))
+    named = [cluster.name(spec) for spec in specs if spec in cluster.catalog]
+    outside = len(specs) - len(named)
+    if outside:
+        named.append("a recipe outside this catalog" if outside == 1 else
+                     f"{outside} recipes outside this catalog")
+    return _list(named)
+
+
 # ---------------------------------------------------------------------------
 # What one files scan, one storage budget and the catalog say
 # ---------------------------------------------------------------------------
@@ -463,11 +476,21 @@ def _users_text(cluster: Cluster, spec: str, users: list[dict]) -> list[tuple[st
     others = {}
     for item in users:
         if item["managed"] and item["owner"] != spec:
-            others.setdefault(item["owner"], []).append(item["node"])
-    for owner, nodes in others.items():
-        who = cluster.name(owner) if owner in cluster.catalog else "a Pulsar service started outside this catalog"
-        lines.append((f"{who} uses the files of {name} on {cluster.hosts(nodes)}. Stop it through Running "
-                      "services… first.", None))
+            # Services started outside this catalog are counted together, not repeated.
+            key = item["owner"] if item["owner"] in cluster.catalog else None
+            others.setdefault(key, {"owners": set(), "nodes": []})
+            others[key]["owners"].add(item["owner"])
+            others[key]["nodes"].append(item["node"])
+    for owner, found in sorted(others.items(), key=lambda pair: pair[0] is None):
+        count = len(found["owners"])
+        if owner is not None:
+            who, verb, it = cluster.name(owner), "uses", "it"
+        else:
+            who = ("a Pulsar service started outside this catalog" if count == 1 else
+                   f"{count} Pulsar services started outside this catalog")
+            verb, it = ("uses", "it") if count == 1 else ("use", "them")
+        lines.append((f"{who} {verb} the files of {name} on {cluster.hosts(found['nodes'])}. "
+                      f"Stop {it} through Running services… first.", None))
     for item in users:
         if not item["managed"]:
             lines.append((f"{item['name']}, a container Pulsar did not start, mounts the files of {name} on "
@@ -527,8 +550,7 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
         if fact["shared"] and not fact["freed"]:
             nodes = list(fact["shared"])
             others = sorted({other for value in fact["shared"].values() for other in value})
-            who = _list([cluster.name(other) if other in cluster.catalog else "a recipe outside this catalog"
-                         for other in others])
+            who = recipe_names(cluster, others)
             blocked.append((f"The copies of {name} on {cluster.hosts(nodes)} are shared with {who}; their files stay, "
                             "so removing them frees nothing.", None))
     removable += cluster_options(cluster, facts, blocked)
