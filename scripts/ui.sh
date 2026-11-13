@@ -258,8 +258,12 @@ emit_error() {
 # prompt_input HEADER [PLACEHOLDER]
 # Prints the entered line on stdout. Returns 1 on Esc/empty input, 130 on Ctrl-C.
 prompt_input() {
-  local header="$1" placeholder="${2:-}" out rc
+  local header="$1" placeholder="${2:-}" out rc columns
   _ui_require_gum || return
+  # Gum cuts a header line wider than the terminal: it wraps between words.
+  if columns=$(_ui_terminal_columns); then
+    header=$(_ui_wrap "$columns" "$header")
+  fi
   _ui_gum_input_style_args
   set +e
   out=$(_ui_gum input \
@@ -353,6 +357,32 @@ _ui_card_page() {
   printf '%s\n' "$((best > 0 ? best : largest))"
 }
 
+# _ui_wrap WIDTH TEXT
+# TEXT with each of its lines wrapped between words to WIDTH columns. A word
+# wider than WIDTH, such as a long unbroken name, gets a row of its own and is
+# not split there, so the words around it stay whole. Characters are counted,
+# not their display width.
+_ui_wrap() {
+  local width="$1" text="$2" part word row out=""
+  local -a words
+  while IFS= read -r part || [ -n "$part" ]; do
+    read -r -a words <<<"$part"
+    row=""
+    for word in "${words[@]}"; do
+      if [ -z "$row" ]; then
+        row=$word
+      elif [ $((${#row} + 1 + ${#word})) -le "$width" ]; then
+        row+=" $word"
+      else
+        out+="${out:+$'\n'}$row"
+        row=$word
+      fi
+    done
+    out+="${out:+$'\n'}$row"
+  done <<<"$text"
+  printf '%s\n' "$out"
+}
+
 # choose_index HEADER OPTION...
 # Prints the selected zero-based option index. Gum shows each label and
 # returns its hidden index, so a label's whole row is available to its text.
@@ -404,7 +434,14 @@ choose_index() {
   done
   # Gum's own key hint names neither Esc nor what it does, so it is replaced by
   # Pulsar's under the title. PULSAR_CHOOSE_ESC says what Esc does (default back).
-  local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}"
+  local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}" title=$header columns extra=0
+  # Gum cuts a header line wider than the terminal at its edge, so the title
+  # wraps between words to the terminal's width; each row it adds takes one
+  # row from the list. The hint stays one line.
+  if columns=$(_ui_terminal_columns); then
+    title=$(_ui_wrap "$columns" "$header")
+    extra=$(($(printf '%s\n' "$title" | wc -l) - 1))
+  fi
   if [ "$cards" = 1 ]; then
     # Options are separated by the record separator, so they may hold
     # newlines; a trailing separator would be an empty option, which Gum
@@ -412,16 +449,20 @@ choose_index() {
     card_args=(--input-delimiter=$'\x1e' --no-strip-ansi)
     for option in "${entries[@]}"; do input+="${input:+$'\x1e'}$option"; done
     if rows=$(_ui_terminal_rows); then
-      height=$(_ui_card_page "$rows" "${labels[@]}")
+      height=$(_ui_card_page "$((rows - extra))" "${labels[@]}")
     fi
   else
     if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
       # Gum splits --selected at commas; a backslash keeps one in the label.
       initial=(--selected="${labels[$default]//,/\\,}")
     fi
-    # Gum adds 5 rows around the list: padding and the two-line header.
-    if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
-      height=$((rows - 5))
+    # Gum adds 5 rows around the list: padding and the two-line header, and
+    # one more for each row the title wrapped onto.
+    if rows=$(_ui_terminal_rows); then
+      rows=$((rows - extra))
+      if [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
+        height=$((rows - 5))
+      fi
     fi
   fi
   _ui_gum_choose_style_args
@@ -430,7 +471,7 @@ choose_index() {
   # interactive TUI is drawn on stderr; silencing it makes the menu invisible.
   out=$(if [ "$cards" = 1 ]; then printf '%s' "$input"; else printf '%s\n' "${entries[@]}"; fi | _ui_gum choose \
     "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" "${card_args[@]}" \
-    --label-delimiter=$'\t' --height="$height" --no-show-help --header "$header"$'\n'"$hint")
+    --label-delimiter=$'\t' --height="$height" --no-show-help --header "$title"$'\n'"$hint")
   rc=$?
   set -e
   if [ "$rc" -eq 130 ]; then
@@ -454,8 +495,13 @@ choose_index() {
 # Returns 0 if affirmed, 1 if declined, 130 on Ctrl-C.
 confirm() {
   local msg="$1"
-  local default="${2:-no}" rc
+  local default="${2:-no}" rc columns
   _ui_require_gum || return
+  # Gum cuts a prompt line wider than the terminal, and draws the prompt one
+  # column in: it wraps between words, a column short of the edge on each side.
+  if columns=$(_ui_terminal_columns) && [ "$columns" -gt 4 ]; then
+    msg=$(_ui_wrap "$((columns - 2))" "$msg")
+  fi
   _ui_gum_confirm_style_args
   set +e
   # Leave stderr open — Gum confirm draws its TUI on stderr.

@@ -106,6 +106,11 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   option row.
 - `gum style` strips escape codes, so the recipe frame's text stays plain; only
   its border takes the accent.
+- Gum cuts a menu title, a question or an input header wider than the
+  terminal at its edge. `choose_index`, `confirm` and `prompt_input` wrap them
+  between words to the terminal's width; a word wider than the terminal gets
+  its own row, which Gum still cuts. Text passed to Gum some other way must
+  fit by itself.
 - `spin` draws on stderr. Capture a spun command's stderr inside the command
   (`spin TITLE bash -c '"$@" 2>FILE' _ CMD...`), never `spin`'s own, or the
   spinner disappears and its frames land in the captured error.

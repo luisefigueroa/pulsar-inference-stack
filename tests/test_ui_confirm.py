@@ -8,6 +8,7 @@ import platform
 import pty
 import re
 import select
+import shlex
 import signal
 import struct
 import subprocess
@@ -205,6 +206,112 @@ if index=$(choose_index "Pick fixture option" "$@"); then printf '\\nPICKED=%s\\
         self.assertEqual(code, 0, output)
         self.assertIn("Same (2)", output)
         self.assertIn("PICKED=1", output)
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumLongTitle(BundledGum):
+    """Gum cuts a header line wider than the terminal at its edge; choose_index
+    wraps a long title between words so all of it shows above the hint."""
+    MODEL = "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-FP8"
+    TITLE = f"Which two neighbouring machines should serve {MODEL}?"
+    SCRIPT = '''
+. "$REPO_DIR/scripts/ui.sh"
+if index=$(choose_index "$TITLE" "$@"); then printf '\\nPICKED=%s\\n' "$index"; else exit "$?"; fi
+'''
+
+    def choose(self, options, keys, *, columns, rows=24, then=(), title=None):
+        script = f"export TITLE={shlex.quote(title or self.TITLE)}\n" + self.SCRIPT
+        return self.drive(script, keys, ready=b"esc back", args=options, columns=columns, rows=rows, then=then)
+
+    def title_rows(self, screen):
+        """The screen's rows from the title down to the hint, joined."""
+        start = next(index for index, line in enumerate(screen) if line.startswith("Which two"))
+        end = next(index for index, line in enumerate(screen) if line.startswith("↑/↓ move"))
+        return screen[start:end], screen[end]
+
+    def test_raw_gum_cuts_a_header_wider_than_the_terminal(self):
+        # The cause, with Gum alone: the header's end is lost at the terminal's edge.
+        script = f'printf "One\\nTwo\\n" | "$GUM_BIN" choose --header {shlex.quote(self.TITLE)}\n'
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.drive(script, b"\x1b", ready=b"Two", columns=columns)
+                screen = views(output, 24, columns)[-2]
+                header = next(line for line in screen if line.startswith("Which two"))
+                self.assertEqual(len(header), columns)
+                self.assertNotIn(self.MODEL + "?", "\n".join(screen))
+
+    def test_the_title_wraps_between_words_and_shows_whole(self):
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.choose(["One", "Two", "Back"], b"\x1b", columns=columns)
+                self.assertEqual(code, 1, output)
+                screen = views(output, 24, columns)[-2]
+                title, hint = self.title_rows(screen)
+                self.assertEqual(" ".join(title), self.TITLE)
+                self.assertTrue(all(len(line) <= columns for line in title), title)
+                # The model name is not split: it is whole on one row.
+                self.assertIn(self.MODEL + "?", title)
+                self.assertEqual(hint, "↑/↓ move · enter choose · esc back")
+                self.assertEqual(screen[screen.index(hint) + 1], "> One")
+
+    def test_a_word_wider_than_the_terminal_gets_its_own_row_which_gum_cuts(self):
+        # Not split: Gum cuts that one row at the edge, as it did; the words around it stay whole.
+        word = "x" * 70
+        code, output = self.choose(["One", "Back"], b"\x1b", columns=60, title=f"Pick {word} now")
+        self.assertEqual(code, 1, output)
+        screen = views(output, 24, 60)[-2]
+        start = screen.index("Pick")
+        self.assertEqual(screen[start:start + 4], ["Pick", word[:60], "now", "↑/↓ move · enter choose · esc back"])
+
+    def test_a_long_question_and_input_header_show_whole(self):
+        # Gum cuts these too; confirm draws its prompt one column in.
+        text = f"Purge {self.MODEL}: delete 2 prepared copies on two nodes?"
+        for name, call, ready in (("confirm", "confirm", b"No"), ("input", "prompt_input", b"here")):
+            for columns in (80, 60):
+                with self.subTest(prompt=name, columns=columns):
+                    script = (f'. "$REPO_DIR/scripts/ui.sh"\nrc=0\n{call} {shlex.quote(text)} '
+                              f'{"no" if call == "confirm" else "here"} || rc=$?\necho "RC=$rc"\n')
+                    code, output = self.drive(script, b"\x1b", ready=ready, columns=columns)
+                    self.assertIn("RC=1", output)
+                    screen = views(output, 24, columns)[-2]
+                    rows = [line.strip() for line in screen if line.strip()]
+                    start = next(index for index, line in enumerate(rows) if line.startswith("Purge"))
+                    shown = []
+                    for line in rows[start:]:
+                        shown.append(line)
+                        if line.endswith("?"):
+                            break
+                    self.assertEqual(" ".join(shown), text)
+                    self.assertTrue(all(len(line) <= columns for line in screen), screen)
+
+    def test_a_long_list_under_a_wrapped_title_still_fits_and_scrolls(self):
+        options = [f"Fixture option {number:02d}" for number in range(1, 31)]
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.choose(options, b"\x1b[A", columns=columns,
+                                           then=[(b"Fixture option 30", b"\x1b")])
+                self.assertEqual(code, 1, output)
+                first, last = views(output, 24, columns)[0], views(output, 24, columns)[-2]
+                for screen in (first, last):
+                    title, hint = self.title_rows(screen)
+                    self.assertEqual(" ".join(title), self.TITLE)
+                    self.assertTrue(any(line.startswith("> ") for line in screen), screen)
+                self.assertIn("> Fixture option 01", first)
+                self.assertIn("> Fixture option 30", last)
+
+    def test_cards_under_a_wrapped_title_keep_the_title_on_screen(self):
+        options = [f"  fixture/model-{number:02d}\n    spec-{number:02d} · 3 nodes\n" for number in range(1, 13)]
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.choose(options + ["Back"], b"\x1b[B" * 5, columns=columns,
+                                           then=[(b"> fixture/model-06", b"\x1b")])
+                self.assertEqual(code, 1, output)
+                shots = views(output, 24, columns)
+                for screen in (shots[0], shots[-2]):
+                    title, hint = self.title_rows(screen)
+                    self.assertEqual(" ".join(title), self.TITLE)
+                    self.assertTrue(any(line.startswith("> ") for line in screen), screen)
 
 
 ESCAPE = re.compile(r"\x1b\[([?0-9;]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[^\[\]]")
