@@ -509,7 +509,7 @@ serve_recipe() {
 # when it ran (the outcome was shown), 5 to plan again, 130 on Ctrl-C.
 run_plan() {
   local index kind preview snapshot sentence verdict reason rc interrupted done=0 total
-  local failed="" halted="" choice action label
+  local failed="" halted="" choice action label name
   local -a indexes=() kinds=() previews=() snapshots=() sentences=() ran=() actions=() labels=()
   while IFS=$'\t' read -r index kind _ preview snapshot sentence; do
     indexes+=("$index"); kinds+=("$kind"); previews+=("$preview"); snapshots+=("$snapshot")
@@ -591,7 +591,9 @@ run_plan() {
     restart:*)
       mapfile -t COMMAND < <(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}")
       resolve "${COMMAND[@]}"
-      printf '\n→ Starting %s again.\n' "${labels[$choice]#Start }" | text
+      # The label is "Start MODEL again": the sentence names the model once, with one "again".
+      name=${labels[$choice]#Start } name=${name% again}
+      printf '\n→ Starting %s again.\n' "$name" | text
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       forget_inventory
       [ "$rc" -ne 130 ] || return 130

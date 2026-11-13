@@ -441,6 +441,9 @@ class Switch(Harness):
         self.assertIn("Same as: ./pulsar stop cdcdcdcdcdcd ./pulsar start abababababab", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
         self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {OTHER}"])
+        # One "again", after the model it starts.
+        self.assertIn("→ Starting org/other again.", text)
+        self.assertNotIn("again again", text)
 
     def test_change_offers_a_pull_where_a_copy_from_this_machine_is_possible_too(self):
         self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "missing"), (2, "ok"))))
