@@ -86,6 +86,9 @@ READINESS = {
     # in role order, "first + second", and the first serves the API.
     "ready-on": "ready to start on {hosts}",
     "verify-on": "needs its files checked on {hosts}",
+    # Placements in the same state, the default first: each has its copies
+    # recorded under this saved cluster and none has a saved check.
+    "verify-or": "needs its files checked on {hosts} or {others}",
     "copy-to": "needs copying to {hosts} · {size}",
     "copies-recorded": "copies recorded on {hosts}",
 }
@@ -374,6 +377,14 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     return READINESS["copy"].format(count=node_count(count), size=text)
 
 
+def keep_pairs(text: str, room: int) -> str:
+    """TEXT with each pair "first + second" that fits in ROOM columns held
+    together by no-break spaces, so a wrapped line never splits a pair or
+    starts with "+". Hostnames hold no spaces."""
+    return re.sub(r"\S+ \+ \S+", lambda pair: pair.group().replace(" ", KEEP) if len(pair.group()) <= room
+                  else pair.group(), text)
+
+
 def placement_words(host, placement) -> str:
     """A placement for people: one node by its name; a pair in role order,
     "first + second", where the first serves the API."""
@@ -388,10 +399,13 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
     the machine question starts; a pair's ranks 0 and 1, which Start uses when
     no machines are named) and, when that is not ready to start, the first
     other placement whose copies this saved cluster's records show complete,
-    in ring_placements' order, with how many more there are. Records alone
-    never make files "ready": only the saved check does. Copies recorded for
-    an earlier saved cluster, or without the saved cluster's topology_id,
-    never count."""
+    in ring_placements' order, with how many more there are. When the
+    default's own copies are recorded too and it needs only a check, those
+    placements are in the same state, so one phrase names them all:
+    "needs its files checked on DEFAULT or OTHER". Records alone never make
+    files "ready": only the saved check does. Copies recorded for an earlier
+    saved cluster, or without the saved cluster's topology_id, never
+    count."""
     default = serving_nodes(row, order, recorded_node(row))
     if row.get("checked_at") and row.get("local_state") == "ready":
         # The saved check does not record which nodes it covered: name them
@@ -417,6 +431,8 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
                 if list(placement) != list(default) and copies_recorded(row, placement, topology_id)]
     if not recorded:
         return phrase
+    if not count and copies_recorded(row, default, topology_id):
+        return same_state(row, default, recorded, host)
     if row["geometry"]["nodes"] == 1:
         # One-node placements are short: up to two by name, then how many more.
         names = [host(placement[0]) for placement in recorded]
@@ -426,6 +442,22 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
         if len(recorded) > 1:
             hosts += f" and {_count(len(recorded) - 1, 'more pair', 'more pairs')}"
     return f"{phrase} · {READINESS['copies-recorded'].format(hosts=hosts)}"
+
+
+def same_state(row: dict, default: list[str], recorded: list[tuple[str, ...]], host) -> str:
+    """One phrase for placements in the same state: the default and every
+    other placement whose copies are recorded, none checked. One-node: the
+    default and up to two others by name, then how many more nodes; a pair:
+    the default and the first other pair, then how many more pairs. The
+    last alternative follows "or"."""
+    one = row["geometry"]["nodes"] == 1
+    named = [placement_words(host, placement) for placement in recorded[:2 if one else 1]]
+    rest = len(recorded) - len(named)
+    if rest:
+        others = _count(rest, "more node" if one else "more pair", "more nodes" if one else "more pairs")
+    else:
+        others = named.pop()
+    return READINESS["verify-or"].format(hosts=", ".join([placement_words(host, default), *named]), others=others)
 
 
 def copies_needed(row: dict, serving: list[str]) -> int:
@@ -495,7 +527,7 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
         if (row.get("review") or {}).get("status") == "withdrawn":
             parts.insert(0, "withdrawn")
         if ring and host is not None:
-            parts += phrase.split(" · ")
+            parts += [keep_pairs(part, width - CARD_WRAP_COLUMN) for part in phrase.split(" · ")]
         else:
             parts.append(phrase)
         text = _card(parts, width)
@@ -507,17 +539,19 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
 
 
 def _card(parts: list[str], width: int) -> list[str]:
+    """PARTS on card lines, " · " between parts that share a line. A no-break
+    space (KEEP) in a part holds its words on one line; it prints as a space."""
     import textwrap
     hang = " " * CARD_WRAP_COLUMN
     lines = [" " * CARD_SPEC_COLUMN + clean(parts[0])]
     for part in parts[1:]:
-        part = clean(part)
+        part = KEEP.join(clean(piece) for piece in part.split(KEEP))
         if len(lines[-1]) + 3 + len(part) <= width:
             lines[-1] += " · " + part
         else:
             lines.extend(textwrap.wrap(part, width, initial_indent=hang, subsequent_indent=hang,
                                        break_long_words=True, break_on_hyphens=False))
-    return lines
+    return [line.replace(KEEP, " ") for line in lines]
 
 
 def node_lines(row: dict, order: list[str], names: NodeNames, *, width: int) -> list[str]:

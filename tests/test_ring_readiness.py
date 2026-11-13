@@ -140,16 +140,85 @@ class RingPhrase(unittest.TestCase):
         self.assertNotIn("ready", phrase(PAIR))
 
     def test_the_trial_pair_with_both_orders_recorded_and_no_check(self):
-        # Both pairs have the same evidence: complete records, no saved check.
+        # Both pairs have the same evidence: complete records, no saved check. One phrase names both.
         state = recipe(2, view(0, "n0"), view(1, "n1"), view(0, "n3"), view(1, "n2"), state="unknown")
-        self.assertEqual(phrase(state), "needs its files checked on node-a + node-b · copies recorded on "
-                                        "node-d + node-c")
+        self.assertEqual(phrase(state), "needs its files checked on node-a + node-b or node-d + node-c")
+        self.assertEqual(phrase(state), serve.READINESS["verify-or"].format(hosts="node-a + node-b",
+                                                                           others="node-d + node-c"))
+
+
+# The default placement's own copies are recorded under this saved cluster.
+DEFAULT_PAIR = (view(0, "n0"), view(1, "n1"))
+
+
+class SameState(unittest.TestCase):
+    """Placements in the same state (copies recorded, no saved check) share one phrase;
+    where the default differs, the separate "copies recorded on" clause stays."""
+
+    def test_two_node_placements_in_the_same_state(self):
+        cases = (
+            ((view(0, "n3"), view(1, "n2")), "needs its files checked on node-a + node-b or node-d + node-c"),
+            # ring_placements' order: node-b + node-c comes before node-d + node-c.
+            ((view(0, "n3"), view(1, "n2"), view(0, "n1"), view(1, "n2")),
+             "needs its files checked on node-a + node-b, node-b + node-c or 1 more pair"),
+            ((view(0, "n3"), view(1, "n2"), view(0, "n1"), view(1, "n2"), view(1, "n3")),
+             "needs its files checked on node-a + node-b, node-a + node-d or 2 more pairs"),
+            # Nothing else recorded: the default alone, as before.
+            ((), "needs its files checked on node-a + node-b"),
+        )
+        for copies, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(phrase(recipe(2, *DEFAULT_PAIR, *copies, state="unknown")), expected)
+
+    def test_one_node_placements_in_the_same_state(self):
+        cases = (
+            ((view(0, "n2"),), "needs its files checked on node-a or node-c"),
+            ((view(0, "n2"), view(0, "n3")), "needs its files checked on node-a, node-c or node-d"),
+            ((view(0, "n1"), view(0, "n2"), view(0, "n3")),
+             "needs its files checked on node-a, node-b, node-c or 1 more node"),
+        )
+        for copies, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(phrase(recipe(1, view(0, "n0"), *copies)), expected)
+        five = ["node-a", "node-b", "node-c", "node-d", "node-e"]
+        topology = {"topology_id": CURRENT, "validation": {"class": "roce-ring"},
+                    "nodes": [{"node_id": f"n{rank}", "hostname": host, "rank": rank} for rank, host in enumerate(five)],
+                    "links": [{"ranks": [rank, (rank + 1) % 5]} for rank in range(5)]}
+        names = NodeNames({f"n{rank}": host for rank, host in enumerate(five)}, [f"n{rank}" for rank in range(5)],
+                          "roce-ring")
+        state = recipe(1, *(view(0, f"n{rank}") for rank in range(5)))
+        self.assertEqual(serve.readiness(state, order=names.order, archive_location="disabled", sizes=SIZES,
+                                         service=None, ring=True, host=names, pairs=serve.ring_pairs(topology),
+                                         topology_id=CURRENT),
+                         "needs its files checked on node-a, node-b, node-c or 2 more nodes")
+
+    def test_a_default_in_another_state_keeps_the_separate_clause(self):
+        cases = (
+            # A copy of an earlier saved cluster on the default.
+            (ONE_NODE, "needs its files checked on node-a · copies recorded on node-c and node-d"),
+            (PAIR, "needs its files checked on node-a + node-b · copies recorded on node-d + node-c"),
+            # The home alone, with no copy recorded on the default.
+            (recipe(1, view(0, "n2")), "needs its files checked on node-a · copies recorded on node-c"),
+            # The default needs a copy.
+            (recipe(2, view(0, "n0"), view(0, "n3"), view(1, "n2"), state="missing"),
+             "needs copying to node-b · 212 GiB · copies recorded on node-d + node-c"),
+        )
+        for state, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(phrase(state), expected)
+
+    def test_a_ready_default_is_unchanged(self):
+        state = recipe(2, *DEFAULT_PAIR, view(0, "n3"), view(1, "n2"), state="ready")
+        self.assertEqual(phrase(state), "ready to start on node-a + node-b")
 
 
 class Mesh(unittest.TestCase):
     """A full mesh has one placement: every phrase and both screens are as before."""
     STATES = (ONE_NODE, PAIR, recipe(1, view(0, "n0"), state="ready"), recipe(2, state="missing"), recipe(3),
-              row(geometry={"nodes": 1, "tp": 1, "pp": 1}))
+              row(geometry={"nodes": 1, "tp": 1, "pp": 1}),
+              # Placements in the same state on a ring.
+              recipe(2, *DEFAULT_PAIR, view(0, "n3"), view(1, "n2"), state="unknown"),
+              recipe(1, view(0, "n0"), view(0, "n2"), view(0, "n3")))
 
     def test_the_phrase_is_unchanged_with_or_without_the_ring_context(self):
         for state in self.STATES:
@@ -174,11 +243,17 @@ class Mesh(unittest.TestCase):
             self.assertEqual(context, plain)
 
 
-def models_scan(hosts=HOSTS):
+def models_scan(hosts=HOSTS, same_state=False):
     """The trial's two recipes on the Models page: homes on node-a, copies of an earlier
-    cluster on node-a and node-b, and copies prepared under the ring on node-c and node-d."""
-    pair = dict(PAIR, spec_id="cd" * 32, model_id="org/pair-model", snapshot_manifest_id="33" * 32)
-    one = dict(ONE_NODE, spec_id="ab" * 32, model_id="org/one-model")
+    cluster on node-a and node-b, and copies prepared under the ring on node-c and node-d.
+    SAME_STATE: the copies on node-a and node-b are recorded under this ring too."""
+    if same_state:
+        pair = recipe(2, *DEFAULT_PAIR, view(0, "n3"), view(1, "n2"), state="unknown")
+        one = recipe(1, view(0, "n0"), view(0, "n2"), view(0, "n3"))
+    else:
+        pair, one = PAIR, ONE_NODE
+    pair = dict(pair, spec_id="cd" * 32, model_id="org/pair-model", snapshot_manifest_id="33" * 32)
+    one = dict(one, spec_id="ab" * 32, model_id="org/one-model")
     document = files([entry(MODEL, "org/one-model", [home("n0", binding(one["spec_id"])),
                                                       location("n2", "prepared", binding(one["spec_id"])),
                                                       location("n3", "prepared", binding(one["spec_id"]))],
@@ -195,15 +270,15 @@ def models_scan(hosts=HOSTS):
 class Screens(unittest.TestCase):
     """Both screens name the placements at 80 and 60 columns, breaking only between parts."""
 
-    def serve_list(self, columns, names=NAMES):
-        document, rows = models_scan()
+    def serve_list(self, columns, names=NAMES, same_state=False):
+        document, rows = models_scan(same_state=same_state)
         lines = serve.list_lines(rows, width=columns - 2, inventory=None, archive_location="disabled",
                                  order=list(names.order), repo=ROOT, ring=True, host=names, pairs=PAIRS,
                                  topology_id=CURRENT)
         return [line.split("\t")[-1] for line in lines if line != "gap"]
 
-    def models(self, columns, hosts=HOSTS, names=NAMES):
-        document, rows = models_scan(hosts)
+    def models(self, columns, hosts=HOSTS, names=NAMES, same_state=False):
+        document, rows = models_scan(hosts, same_state)
         cluster = mp.Cluster(rows, document, budget()["nodes"], names=names, pairs=PAIRS, topology_id=CURRENT)
         return mp.page(cluster, width=columns)
 
@@ -226,6 +301,24 @@ class Screens(unittest.TestCase):
                              "needs its files checked on node-a + node-b", "copies recorded on node-d + node-c"):
                     self.assertTrue(any(part in line for line in text.splitlines()), (part, text))
                 self.assertFalse(any(line.lstrip().startswith("·") for line in text.splitlines()), text)
+
+    def test_placements_in_the_same_state_fit_both_screens(self):
+        # The phrase is one part: where it is wider than the line it wraps
+        # between words, but never inside a pair.
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                for text in (self.serve_list(columns, same_state=True),
+                             self.models(columns, same_state=True).splitlines()):
+                    self.assertTrue(all(len(line) <= columns for line in text), text)
+                    self.assertFalse(any(line.lstrip().startswith(("·", "+")) for line in text), text)
+                    self.assertFalse(any(line.rstrip().endswith("+") for line in text), text)
+                    self.assertNotIn(" ", "\n".join(text))
+                    for pair in ("node-a + node-b", "node-d + node-c"):
+                        self.assertTrue(any(pair in line for line in text), (pair, text))
+                    flat = " ".join(" ".join(text).split())
+                    self.assertIn("needs its files checked on node-a + node-b or node-d + node-c", flat)
+                    self.assertIn("needs its files checked on node-a, node-c or node-d", flat)
+                    self.assertNotIn("copies recorded on", flat)
 
     def test_long_hostnames_still_fit_at_60_columns(self):
         hosts = [f"{name}-with-a-long-hostname" for name in HOSTS]

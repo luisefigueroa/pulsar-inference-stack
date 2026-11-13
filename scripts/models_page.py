@@ -314,7 +314,8 @@ def model_lines(cluster: Cluster, spec: str, room: int | None = None) -> list[st
 
     On a saved ring, where the readiness phrase names placements, each part of
     the second line that fits in ROOM columns with its " ·" is kept whole, so
-    the line breaks only between parts."""
+    the line breaks only between parts; a longer part breaks between words,
+    never inside a pair "first + second"."""
     homes = {name: location for name, location in cluster.homes(spec).items() if location}
     where = [_size(cluster.size(spec))]
     bound = cluster.bound(spec)
@@ -340,8 +341,9 @@ def model_lines(cluster: Cluster, spec: str, room: int | None = None) -> list[st
         state.append(f"{STATUS_WORDS['in-use']} on {cluster.hosts(item['node'] for item in used)}")
     if ring:
         # Each part that fits keeps its " ·", so a line never starts with one.
-        return [" · ".join(where), f"{KEEP}· ".join(_kept(part) if len(part) + 2 <= room else part
-                                                     for part in state)]
+        from scripts.serve_plan import keep_pairs
+        return [" · ".join(where), f"{KEEP}· ".join(_kept(part) if len(part) + 2 <= room
+                                                     else keep_pairs(part, room) for part in state)]
     return [" · ".join(where), " · ".join(state)]
 
 
