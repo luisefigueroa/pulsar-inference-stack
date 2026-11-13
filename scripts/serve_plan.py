@@ -894,16 +894,28 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             takeover = (f" It takes over {_count(taken, 'copy', 'copies')} "
                         f"{taken_over_reason(taken, effect['taken_over_reordered'])}, whose files still verify; "
                         "they are not copied again." if taken else "")
+            # A bind records, for this recipe, files another recipe's prepared
+            # copy already holds on that node; the two recipes then share it.
+            bound = sorted({str(action["node_id"]) for action in _plan_actions(document)
+                            if action.get("action") == "bind"}, key=lambda item: order.index(item)
+                           if item in order else len(order))
+            shared = (f" {_list([names(item) for item in bound])} already "
+                      f"{'holds' if len(bound) == 1 else 'hold'} them as another recipe's prepared copy, which "
+                      "this recipe will share." if bound else "")
             if copied:
                 # A copy to a node that shares no cable with this one says what it passes through.
                 route = "".join(" " + line for line in copy_route_sentences(document, names))
-                step["sentence"] = copy_sentence(copied, "." + route + takeover)
+                step["sentence"] = copy_sentence(copied, "." + route + takeover + shared)
                 step["changes"] = f"writes a prepared copy on {_list([names(item) for item in copied])}"
             else:
                 step["sentence"] = (f"Check the files on {_list(hosts)} and record them for this recipe; nothing "
-                                    "is copied." + takeover)
+                                    "is copied." + takeover + shared)
                 step["changes"] = "records only"
-                if effect["nothing"] and not taken and row.get("local_state") == "ready" and not sources:
+                # Only "reuse" writes nothing: every other action (home-view,
+                # bind, rebind, adopt, copy) records a prepared copy for this
+                # recipe, which Start needs, so its step stays.
+                writes = [action for action in _plan_actions(document) if action.get("action") != "reuse"]
+                if not writes and row.get("local_state") == "ready" and not sources:
                     step = None
         elif prepare is not None:
             error = error or {"message": "its preview did not return a plan"}

@@ -1719,7 +1719,11 @@ needs, which the operator approves once.
    files come from files found on a node that no record names, then the
    archive, then a download to the first serving node. The steps follow in a
    fixed order: files, copies (Prepare takes over copies that still verify and
-   counts them as not copied), the serving image, then **Stop** of whatever is
+   counts them as not copied; where another recipe's prepared copy already
+   holds the same files on a serving node, Prepare records it for this recipe
+   too, nothing is copied, and the two recipes share it; the step is left out
+   only when every copy is already recorded for this recipe), the serving
+   image, then **Stop** of whatever is
    in the way, then **Start**, so a failed download or copy leaves the running
    service running. Stopping a service and pulling an image from its registry
    are always their own steps; nothing passes `--replace` or `--pull-image`.

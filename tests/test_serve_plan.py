@@ -495,6 +495,59 @@ class Compose(unittest.TestCase):
         self.assertLessEqual(len(serve.render(plan, width=80).splitlines()) + 1 + len(serve.choices(plan)) + 5, 34)
 
 
+class PrepareThatOnlyRecords(unittest.TestCase):
+    """A Prepare whose preview copies nothing still runs when it would record a copy for this recipe."""
+    plan = Compose.plan
+    BIND = ("Check the files on spark-2 and record them for this recipe; nothing is copied. spark-2 already holds "
+            "them as another recipe's prepared copy, which this recipe will share.")
+
+    def one_node(self, *actions, set_plan=False, start=None):
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        document = prepare_plan(*actions)
+        if set_plan:
+            document = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [document]}
+        previews = {"prepare": envelope(document), "image": envelope(image_plan((1, "ok")))}
+        if start is not None:
+            previews["start"] = start
+        return self.plan(state, node="n1", previews=previews)
+
+    def test_a_bind_keeps_the_step_and_says_the_copy_is_shared(self):
+        for set_plan in (False, True):
+            with self.subTest(set_plan=set_plan):
+                plan = self.one_node(("n1", "bind"), set_plan=set_plan)
+                self.assertEqual([step["kind"] for step in plan["steps"]], ["prepare", "start"])
+                prepare = plan["steps"][0]
+                self.assertEqual(prepare["sentence"], self.BIND)
+                self.assertEqual(prepare["changes"], "records only")
+                self.assertEqual(prepare["command"][-1], "--yes")
+
+    def test_start_refused_until_prepare_records_the_copy_is_not_a_blocker(self):
+        plan = self.one_node(("n1", "bind"), start=start_blocked("model_files_not_ready"))
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(("go", "Go ahead"), serve.choices(plan))
+        # Without the Prepare step that refusal would be the plan's blocker.
+        dropped = self.one_node(("n1", "reuse"), start=start_blocked("model_files_not_ready"))
+        self.assertEqual(dropped["blocked"], ["model_files_not_ready found."])
+
+    def test_every_action_that_writes_a_record_keeps_the_step(self):
+        for action in ("home-view", "bind", "rebind", "adopt", "copy"):
+            with self.subTest(action=action):
+                plan = self.one_node(("n1", action))
+                self.assertEqual(plan["steps"][0]["kind"], "prepare")
+
+    def test_only_reuse_writes_nothing_so_its_step_goes(self):
+        plan = self.one_node(("n1", "reuse"))
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["start"])
+
+    def test_the_bind_sentence_renders_at_80_and_60_columns(self):
+        plan = self.one_node(("n1", "bind"))
+        for width in (80, 60):
+            with self.subTest(width=width):
+                text = serve.render(plan, width=width)
+                self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                self.assertIn(f"1. {self.BIND}", " ".join(text.split()))
+
+
 def foreign(key, state="stale", running=False, name="vllm-port80"):
     """A container Pulsar did not start on node KEY, as the inventory reports one; RUNNING is
     what the inventory observed for its rank (left out when None)."""
