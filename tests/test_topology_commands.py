@@ -201,8 +201,12 @@ class TopologyCommands(unittest.TestCase):
         self.fixture.env.update(TERM='xterm-256color', GUM_BIN=str(self.fixture.root/'bin/gum'), **answers)
 
     def gum_prompts(self, kind):
-        """Headers of Gum menus or questions of Gum confirmations, in order."""
-        return [args[args.index('--header')+1].split('\n')[0] if kind == 'choose' else args[-1]
+        """Headers of Gum menus or questions of Gum confirmations, in order, each as one line.
+
+        The fixture's terminal is COLUMNS=48 wide (its pty reports no size), and
+        scripts/ui.sh wraps a title or question wider than that between words, so
+        the rows are joined again; a menu header's last row is the key hint."""
+        return [' '.join((args[args.index('--header')+1].rsplit('\n', 1)[0] if kind == 'choose' else args[-1]).split())
                 for tool, args in self.fixture.calls() if tool == 'gum' and args[:1] == [kind]]
 
     def probes(self):

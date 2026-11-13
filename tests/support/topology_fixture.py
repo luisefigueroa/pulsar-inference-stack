@@ -236,8 +236,11 @@ def double_main():
         calls = [json.loads(line) for line in (root/'calls.jsonl').read_text().splitlines()]
         if args[:1] == ['choose']:
             lines = sys.stdin.read().splitlines()
-            # The header's first line is the title; the second is the key hint.
-            header = args[args.index('--header')+1].split('\n')[0]
+            # The header's last line is the key hint; the rows above it are the
+            # title, which scripts/ui.sh wraps to the terminal's width.
+            def title(logged):
+                return ' '.join(logged[logged.index('--header')+1].rsplit('\n', 1)[0].split())
+            header = title(args)
             # A comma-separated choice list answers successive visits to one menu.
             choice_env = {'Pulsar Inference Stack': 'TOPOLOGY_GUM_HOME',
                           'Cluster': 'TOPOLOGY_GUM_CLUSTER',
@@ -249,7 +252,7 @@ def double_main():
             with (root/'menus.jsonl').open('a') as stream:
                 stream.write(json.dumps([header, lines])+'\n')
             visits = sum(1 for name, logged in calls if name == 'gum' and logged[:1] == ['choose']
-                         and logged[logged.index('--header')+1].split('\n')[0] == header) - 1
+                         and title(logged) == header) - 1
             answer = choices[min(visits, len(choices)-1)]
             if answer in ('esc', 'ctrl-c'):
                 return 130 if answer == 'ctrl-c' else 1
