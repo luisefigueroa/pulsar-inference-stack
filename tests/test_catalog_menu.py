@@ -2474,6 +2474,28 @@ class ServicesInTheWay(unittest.TestCase):
         self.assertEqual(notes[0], "On spark-2: GPU process p (PID 1) · 0.5 GiB · not started by Pulsar · read-only")
         self.assertEqual(notes[-1], "and 2 more GPU processes not started by Pulsar")
 
+    def test_exited_containers_pulsar_did_not_start_are_named_as_holding_nothing(self):
+        exited = running(None, ["w1"], ownership="unknown", container_name="vllm-port80", safe_to_stop=False,
+                         state="stale")
+        exited["ranks"][0]["running"] = False
+        busy = running(None, ["w1"], ownership="unknown", container_name="someone-else", safe_to_stop=False)
+        busy["ranks"][0]["running"] = True
+        stops, notes = self.way(crowded(exited, busy, processes=[
+            {"node": "w1", "pid": 7, "process_name": "p", "used_memory_mib": 512}]))
+        self.assertEqual(stops, [])
+        # The refused-start menu shows the same lines; only a plan reads BLOCKS.
+        self.assertEqual(notes, [
+            "On spark-2: vllm-port80 · exited containers · not started by Pulsar · read-only; they hold no port or "
+            "GPU memory",
+            "On spark-2: someone-else · running · not started by Pulsar · read-only",
+            "On spark-2: GPU process p (PID 7) · 0.5 GiB · not started by Pulsar · read-only"])
+        self.assertEqual([note.blocks for note in notes], [False, True, False])
+        # Exited, but one container was not observed: unknown is not absent.
+        del exited["ranks"][0]["running"]
+        _, notes = self.way(crowded(exited))
+        self.assertEqual((notes, [note.blocks for note in notes]),
+                         (["On spark-2: vllm-port80 · exited containers · not started by Pulsar · read-only"], [True]))
+
     def test_a_service_on_the_busy_port_comes_first_then_the_most_memory(self):
         third = "01" * 32
         document = crowded(running(OUTSIDE_CONF, ["w1"], served="small", mib=2048, port=8001),

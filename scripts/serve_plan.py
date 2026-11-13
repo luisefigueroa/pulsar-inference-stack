@@ -795,9 +795,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         return _restart(plan, row, entries, inventory, service, stops, hosts, placement, ref)
     if stop and stop != spec:
         _switch_from(plan, stop, stops, inventory, catalog)
+    # What this plan cannot stop. GPU processes are notes: Start measures the
+    # memory. So are containers Pulsar did not start that have all exited:
+    # they hold no port or memory. Anything else on a serving node blocks.
     for note in notes:
-        if "GPU process" in note or "more GPU processes" in note:
-            plan["notes"].append(note)
+        if getattr(note, "exited", False):
+            plan["notes"].append(f"{note}. The plan leaves them alone; Start checks the port and memory itself.")
+        elif not getattr(note, "blocks", True):
+            plan["notes"].append(str(note))
         else:
             blocked.append(f"{note}. Pulsar cannot stop it from this plan.")
 

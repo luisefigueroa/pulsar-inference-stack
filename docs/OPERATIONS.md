@@ -1723,6 +1723,13 @@ needs, which the operator approves once.
    in the way, then **Start**, so a failed download or copy leaves the running
    service running. Stopping a service and pulling an image from its registry
    are always their own steps; nothing passes `--replace` or `--pull-image`.
+   On a serving node, a service this plan cannot stop (containers Pulsar did
+   not start, or a Pulsar service the inventory found unsafe to stop) blocks
+   the plan while any of its containers runs or the inventory could not say.
+   Containers Pulsar did not start that have all exited hold no port and no
+   GPU memory, so the plan names them in a note, leaves them alone and stays
+   runnable; Start checks the port and memory itself. GPU processes Pulsar did
+   not start are notes too.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
    after a blocking check) are named as estimates. A memory warning that
    Start's dry run accepted is shown before approval: Start itself refuses on
@@ -2305,7 +2312,9 @@ the service's containers on every node; for a service outside the catalog,
 the question says so. The refused spec's own service is `service_exists`,
 with its own choices. Containers Pulsar does not manage, managed services the
 inventory could not establish as safe to stop, and GPU processes Pulsar did
-not start are named above the choices, read-only, with no choice. When the
+not start are named above the choices, read-only, with no choice. Containers
+Pulsar did not start that have all exited are named with `they hold no port
+or GPU memory`, since they cannot be what refused the start. When the
 inventory cannot be taken or read, the choices are the ones in the table.
 
 Each choice runs the existing operation with its own selections, preview and

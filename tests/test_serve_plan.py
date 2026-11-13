@@ -495,6 +495,77 @@ class Compose(unittest.TestCase):
         self.assertLessEqual(len(serve.render(plan, width=80).splitlines()) + 1 + len(serve.choices(plan)) + 5, 34)
 
 
+def foreign(key, state="stale", running=False, name="vllm-port80"):
+    """A container Pulsar did not start on node KEY, as the inventory reports one; RUNNING is
+    what the inventory observed for its rank (left out when None)."""
+    rank = {"rank": None, "node": key, "container_name": name, "stale": state == "stale",
+            **({"running": running} if running is not None else {})}
+    return {"service_id": f"unknown:{key}:{name}", "conf": None, "profile": None, "state": state,
+            "ownership": "unknown", "safe_to_stop": False, "container_name": name, "ranks": [rank],
+            "reasons": ["unknown vLLM container (read-only)"]}
+
+
+class ForeignContainers(unittest.TestCase):
+    """A container Pulsar did not start on a serving node blocks the plan unless all of it has exited."""
+    NOTE = ("On spark-1: vllm-port80 · exited containers · not started by Pulsar · read-only; they hold no port or "
+            "GPU memory. The plan leaves them alone; Start checks the port and memory itself.")
+    plan = Compose.plan
+
+    def one_node(self, *services, node="n0"):
+        document = inventory()
+        document["services"] = list(services)
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        return self.plan(state, node=node, live=document)
+
+    def test_exited_containers_on_the_serving_node_are_a_note_and_the_plan_runs(self):
+        plan = self.one_node(foreign("head"))
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(self.NOTE, plan["notes"])
+        self.assertIn(("go", "Go ahead"), serve.choices(plan))
+        # A stopped state with every container observed not running is the same.
+        self.assertEqual(self.one_node(foreign("head", state="stopped"))["blocked"], [])
+
+    def test_a_running_container_blocks_as_before(self):
+        plan = self.one_node(foreign("head", state="running", running=True))
+        self.assertEqual(plan["blocked"], ["On spark-1: vllm-port80 · running · not started by Pulsar · read-only. "
+                                           "Pulsar cannot stop it from this plan."])
+        self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
+
+    def test_unknown_is_not_exited_so_it_blocks(self):
+        for service in (foreign("head", state="unknown"), foreign("head", running=None),
+                        foreign("head", state="degraded"), {**foreign("head"), "ranks": []},
+                        # The inventory's state says exited, but a container was seen running.
+                        foreign("head", running=True)):
+            with self.subTest(state=service["state"], ranks=service["ranks"]):
+                plan = self.one_node(service)
+                self.assertEqual(len(plan["blocked"]), 1 if service["ranks"] else 0, plan["blocked"])
+                self.assertFalse(any("leaves them alone" in note for note in plan["notes"]))
+
+    def test_containers_on_a_node_the_plan_does_not_use_are_not_named(self):
+        plan = self.one_node(foreign("w1"), foreign("w2", state="running", running=True))
+        self.assertEqual(plan["blocked"], [])
+        self.assertFalse(any("vllm-port80" in note for note in plan["notes"]))
+
+    def test_a_two_node_plan_names_the_node_it_shares_with_them(self):
+        document = inventory()
+        document["services"] = [foreign("w1")]
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 2, "tp": 2, "pp": 1})
+        plan = self.plan(state, live=document)
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(self.NOTE.replace("spark-1", "spark-2"), plan["notes"])
+        document["services"] = [foreign("w1", state="running", running=True)]
+        self.assertEqual(len(self.plan(state, live=document)["blocked"]), 1)
+
+    def test_the_note_renders_at_80_and_60_columns(self):
+        plan = self.one_node(foreign("head"))
+        for width in (80, 60):
+            with self.subTest(width=width):
+                text = serve.render(plan, width=width)
+                self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                self.assertIn(self.NOTE, " ".join(text.split()))
+                self.assertNotIn("Blocked", text)
+
+
 class CheckStep(unittest.TestCase):
     """A step's own preview, run when its turn comes, against the approved plan."""
 

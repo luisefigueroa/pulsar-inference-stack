@@ -1286,6 +1286,30 @@ def gib_text(mib: int | float) -> str:
     return f"{gib:.0f} GiB" if gib >= 10 else f"{gib:.1f} GiB"
 
 
+class Note(str):
+    """A note on something this menu cannot stop on a serving node. BLOCKS
+    says whether it stands in the way of a plan: true unless it is certain
+    that it holds no port and no GPU memory Start needs. EXITED marks
+    containers Pulsar did not start that have all exited."""
+    blocks: bool
+    exited: bool
+
+    def __new__(cls, text: str, *, blocks: bool = True, exited: bool = False) -> "Note":
+        note = super().__new__(cls, text)
+        note.blocks, note.exited = blocks, exited
+        return note
+
+
+def all_exited(service: dict) -> bool:
+    """Whether every container of an inventory service has exited: the
+    inventory's exited (stale) or stopped state, and each rank observed not
+    running. A rank whose running state was not observed, another state or
+    any running container is not certain, so it is not exited."""
+    ranks = [rank for rank in service.get("ranks") or [] if isinstance(rank, dict)]
+    return (service.get("state") in ("stale", "stopped") and bool(ranks)
+            and all(rank.get("running") is False for rank in ranks))
+
+
 def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog: list[dict],
                         ports: list[int] = ()) -> tuple[list[dict], list[str]]:
     """Services on the refused spec's serving nodes, from a service inventory taken just now.
@@ -1298,8 +1322,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
     measured. Services on a busy port come first, then the most memory.
     Notes name, with no choice, what this menu cannot stop there: managed
     services without safe ownership, containers Pulsar does not manage and
-    GPU processes Pulsar did not start. CATALOG rows hold spec_id, model_id
-    and nodes; nothing here probes.
+    GPU processes Pulsar did not start. Each is a Note whose BLOCKS says
+    whether a plan must wait for it: GPU processes do not (Start measures the
+    memory), nor do containers Pulsar does not manage that have all exited
+    (all_exited), which hold no port and no GPU memory; every other note
+    does. CATALOG rows hold spec_id, model_id and nodes; nothing here probes.
     """
     from scripts.inventory_menu import SPEC_ID, project, project_others, read_only_line
     services = project(inventory, catalog)
@@ -1321,7 +1348,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
             continue
         where = ", ".join(dict.fromkeys(host(rank.get("node")) for rank in here))
         if service.get("ownership") != "managed" or not (isinstance(conf, str) and SPEC_ID.fullmatch(conf)):
-            notes.append(f"On {where}: {read_only_line(service)}")
+            if all_exited(service):
+                notes.append(Note(f"On {where}: {read_only_line(service)}; they hold no port or GPU memory",
+                                  blocks=False, exited=True))
+            else:
+                notes.append(Note(f"On {where}: {read_only_line(service)}"))
             continue
         projected = services.get(conf) or others.get(conf)
         if projected is None:
@@ -1330,8 +1361,8 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
             # Inventory's own reason when it found ownership unsafe; else the menu's.
             reasons = service.get("reasons") if service.get("safe_to_stop") is not True else None
             reason = clean(reasons[0]) if isinstance(reasons, list) and reasons and reasons[0] else projected["stop_reason"]
-            notes.append(f"On {where}: {clean(projected['model_id'])} [{conf[:12]}] · no Stop offered: "
-                         f"{reason.rstrip('.')}")
+            notes.append(Note(f"On {where}: {clean(projected['model_id'])} [{conf[:12]}] · no Stop offered: "
+                              f"{reason.rstrip('.')}"))
             continue
         measured = [(rank.get("gpu_memory") if isinstance(rank.get("gpu_memory"), dict) else {}).get("measured_mib")
                     for rank in ranks]
@@ -1345,10 +1376,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
         name = str(process.get("process_name") or "?").rstrip("/").rpartition("/")[2] or "?"
         mib = process.get("used_memory_mib")
         size = f" · {gib_text(mib)}" if type(mib) is int and mib >= 0 else ""
-        notes.append(f"On {host(process.get('node'))}: GPU process {clean(name)} (PID {process.get('pid') or '?'})"
-                     f"{size} · not started by Pulsar · read-only")
+        notes.append(Note(f"On {host(process.get('node'))}: GPU process {clean(name)} "
+                          f"(PID {process.get('pid') or '?'}){size} · not started by Pulsar · read-only",
+                          blocks=False))
     if len(processes) > 3:
-        notes.append(f"and {len(processes) - 3} more GPU processes not started by Pulsar")
+        notes.append(Note(f"and {len(processes) - 3} more GPU processes not started by Pulsar", blocks=False))
     return stops, notes
 
 
