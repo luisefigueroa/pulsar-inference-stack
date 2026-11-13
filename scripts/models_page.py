@@ -992,7 +992,8 @@ def find_items(cluster: Cluster) -> dict:
         loose = [item for item in node.get("unidentified") or []
                  if item.get("kind") == "incomplete" and not item.get("preparation_spec_id")]
         if loose and node["node_id"] not in cluster.unread:
-            cannot.append(f"{_count(len(loose), 'unfinished download or copy', 'unfinished downloads or copies')} on "
+            # "Never finished" says it once; "unfinished" before it would say it twice.
+            cannot.append(f"{_count(len(loose), 'download or copy', 'downloads or copies')} on "
                           f"{cluster.host(node['node_id'])} never finished, so there is nothing complete to record. "
                           "Pulsar never deletes files it has no record of.")
     return {"register": register, "adopt": list(adopt.values()), "cannot": cannot, "unknown": list(cluster.unread)}

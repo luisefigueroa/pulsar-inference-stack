@@ -481,6 +481,18 @@ def prepare_preview(*actions):
 class LookForFiles(unittest.TestCase):
     """Look for model files Pulsar has no record of…: one plan from the page's scan."""
 
+    def test_downloads_or_copies_that_never_finished_are_said_to_once(self):
+        loose = {"path": "/fixture/homes/.pending-y", "kind": "incomplete", "reason": "incomplete staging"}
+        for count, words in ((1, "1 download or copy on spark-2 never finished"),
+                             (2, "2 downloads or copies on spark-2 never finished")):
+            with self.subTest(count=count):
+                nodes = [node("n0", "spark-1"), node("n1", "spark-2", unfinished=[loose] * count),
+                         node("n2", "spark-3")]
+                found = mp.find_items(mp.Cluster([recipe()], files([ready_model()], nodes=nodes),
+                                                 budget()["nodes"], names=NAMES))
+                self.assertEqual(found["cannot"], [f"{words}, so there is nothing complete to record. Pulsar never "
+                                                   "deletes files it has no record of."])
+
     def test_the_page_offers_it_and_says_where_files_with_no_record_are(self):
         found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")], specs=[SPEC])]))
         self.assertIn(("find", "Look for model files Pulsar has no record of…"), mp.page_choices(found))
