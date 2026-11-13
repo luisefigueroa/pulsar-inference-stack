@@ -323,7 +323,10 @@ build_plan() {
   rm -f -- "$WORK"/preview-*.json "$WORK/hf.json"
   while [ "$again" = 1 ]; do
     again=0
-    while IFS= read -r line; do
+    # The list arrives on descriptor 3 and each preview reads /dev/null: a
+    # preview that reads its standard input (ssh to a remote node does) must
+    # not take the previews still to run. Gum's spinner keeps the terminal.
+    while IFS= read -r -u 3 line; do
       name=${line%%$'\t'*} rest=${line#*$'\t'}
       IFS=$'\t' read -r -a command <<<"$rest"
       rc=0
@@ -331,26 +334,26 @@ build_plan() {
         files)
           # The sources depend on it: run it, then ask again which previews to run.
           resolve "${command[@]}"
-          spin "$(preview_title files)" bash -c '"$@" 2>"$0"' "$WORK/files.err" "${COMMAND[@]}" \
+          spin "$(preview_title files)" bash -c '"$@" 2>"$0" </dev/null' "$WORK/files.err" "${COMMAND[@]}" \
             >"$WORK/files.json" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           args+=(--files "$WORK/files.json")
           again=1
           break ;;
         hf)
-          spin "$(preview_title hf)" bash -c '"$@" 2>"$0"' "$WORK/hf.err" \
+          spin "$(preview_title hf)" bash -c '"$@" 2>"$0" </dev/null' "$WORK/hf.err" \
             "$REPO_DIR/scripts/node-prerequisites.sh" "${command[0]}" >"$WORK/hf.json" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           hf=(--hf "$WORK/hf.json") ;;
         *)
           file="$WORK/preview-${name//[^A-Za-z0-9_-]/_}.json"
           resolve "${command[@]}"
-          spin "$(preview_title "$name")" bash -c '"$@" 2>"$0"' "$WORK/preview.err" "${COMMAND[@]}" \
+          spin "$(preview_title "$name")" bash -c '"$@" 2>"$0" </dev/null' "$WORK/preview.err" "${COMMAND[@]}" \
             >"$file" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           previews+=(--preview "$name=$file") ;;
       esac
-    done < <(printf '%s' "$CATALOG" | serve_plan previews "${args[@]}")
+    done 3< <(printf '%s' "$CATALOG" | serve_plan previews "${args[@]}")
   done
   mapfile -t inventory < <(inventory_args)
   COMPOSE_ARGS=("${args[@]}" "${previews[@]}" "${hf[@]}" "${inventory[@]}")

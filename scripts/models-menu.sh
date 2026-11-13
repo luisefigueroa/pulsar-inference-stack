@@ -130,16 +130,19 @@ build_plan() {
   shift
   local -a extra=("$@") previews=() command=()
   rm -f -- "$WORK"/preview-*.json
-  while IFS= read -r line; do
+  # The list arrives on descriptor 3 and each preview reads /dev/null: a
+  # preview that reads its standard input (ssh to a remote node does) must
+  # not take the previews still to run. Gum's spinner keeps the terminal.
+  while IFS= read -r -u 3 line; do
     index=${line%%$'\t'*} rest=${line#*$'\t'}
     IFS=$'\t' read -r -a command <<<"$rest"
     resolve "${command[@]}"
     rc=0
-    spin "Checking what step $((index + 1)) would do…" bash -c '"$@" 2>"$0"' "$WORK/preview.err" \
+    spin "Checking what step $((index + 1)) would do…" bash -c '"$@" 2>"$0" </dev/null' "$WORK/preview.err" \
       "${COMMAND[@]}" >"$WORK/preview-$index.json" || rc=$?
     [ "$rc" -ne 130 ] || return 130
     previews+=(--preview "$index=$WORK/preview-$index.json" --preview-rc "$index=$rc")
-  done < <(view previews --target "$target" "${extra[@]}")
+  done 3< <(view previews --target "$target" "${extra[@]}")
   view compose --target "$target" "${extra[@]}" "${previews[@]}" --out "$PLAN"
 }
 

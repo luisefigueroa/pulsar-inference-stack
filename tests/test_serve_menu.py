@@ -139,6 +139,9 @@ case "$*" in
   "models check "*) key=check ;;
   *) key=other ;;
 esac
+# KEY.reads-stdin: the command reads its standard input to the end, as ssh
+# without -n does (scripts/check-image.sh on a remote node).
+[ ! -e "$FIXTURES/$key.reads-stdin" ] || cat >/dev/null
 echo >> "$FIXTURES/$key.count"
 n=$(wc -l < "$FIXTURES/$key.count")
 file="$FIXTURES/$key.$n.json"; [ -e "$file" ] || file="$FIXTURES/$key.json"
@@ -523,6 +526,38 @@ class Switch(Harness):
         self.assertIn("✗ Step 2 did not run: served name not recorded now runs on a serving node too, and the plan "
                       "did not say to stop it.", text)
         self.assertIn("Still serving: org/other.", text)
+
+
+class PreviewsThatReadStdin(Harness):
+    """A preview that reads its standard input (ssh to a remote node does) must not take the
+    list of previews still to run: Prepare's, the image's and Start's previews all run, in order."""
+
+    def setUp(self):
+        super().setUp()
+        self.entries(checked(home=HOME, local_state="missing"),
+                     checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready"))
+        self.fixture("prepare-plan", envelope(prepare_plan(("n0", "home-view"), ("n1", "copy"), ("n2", "copy"))))
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "ok"), (2, "ok"))))
+        self.fixture("start-plan", start_blocked("model_files_not_ready"), rc=1)
+
+    def test_every_preview_runs_when_one_reads_stdin(self):
+        for key in ("prepare-plan", "image-plan"):
+            with self.subTest(reads=key):
+                for path in self.fixtures.glob("*.count"):
+                    path.unlink()
+                for path in self.fixtures.glob("*.reads-stdin"):
+                    path.unlink()
+                self.log.unlink(missing_ok=True)
+                self.answers.with_suffix(".n").unlink(missing_ok=True)
+                (self.fixtures / f"{key}.reads-stdin").touch()
+                result = self.run_menu(["0", "Cancel", "Back"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.commands(), ["inventory --json", f"model prepare {SPEC} --plan --json",
+                                                   f"image stage {SPEC} --plan --json",
+                                                   f"start {SPEC} --dry-run --json"])
+                # Start refused only because Prepare has not run: the plan's own step covers it.
+                self.assertNotIn("Start's checks were not run yet", result.stdout)
+                self.assertNotIn("Blocked", result.stdout)
 
 
 class NeedsEverything(Harness):

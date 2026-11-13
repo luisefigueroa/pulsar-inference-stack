@@ -147,6 +147,30 @@ class FreeUpSpace(Menu):
                       f"--yes ./pulsar model remove {SPEC[:12]} --yes", text)
         self.assert_plain_choices()
 
+    def test_a_preview_that_reads_stdin_does_not_take_the_previews_after_it(self):
+        # ssh to a remote node reads its standard input; the plan's later previews still run.
+        self.fixture("archive-plan", envelope({"kind": "pulsar-archive-plan", "home": {"node_id": "n0"},
+                                               "archive_root": str(self.archive)}))
+        self.fixture("remove-plan", envelope({"kind": "pulsar-home-removal-plan", "eligible": True,
+                                              "home": {"node_id": "n0"}, "blockers": []}))
+        answers = ["Free up space…", "Remove org/model from the cluster: frees 636 GiB",
+                   "Back it up first, then remove it", "Cancel", "Back", "Back"]
+        expected = self.run_menu(answers, **self.with_archive())
+        self.assertEqual(expected.returncode, 0, expected.stderr)
+        previews = [command for command in self.commands() if command.endswith("--plan --json")]
+        self.assertGreater(len(previews), 1, self.commands())
+        self.log.unlink()
+        self.answers.with_suffix(".n").unlink(missing_ok=True)
+        for path in self.fixtures.glob("*.count"):
+            path.unlink()
+        # Backing it up first previews the archive, then the purge, before the plan shows.
+        self.assertLess(previews.index(f"model archive create {SPEC} --plan --json"),
+                        previews.index(f"model purge {SPEC} --plan --json", 1))
+        (self.fixtures / "archive-plan.reads-stdin").touch()
+        result = self.run_menu(answers, **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([command for command in self.commands() if command.endswith("--plan --json")], previews)
+
     def test_a_step_whose_own_preview_deletes_more_stops_before_it_changes_anything(self):
         self.fixture("purge-plan", purge_plan("n0", "n1", "n2"), nth=2)
         result = self.run_menu(["Free up space…", "Remove org/model from spark-2 and spark-3: frees 424 GiB",

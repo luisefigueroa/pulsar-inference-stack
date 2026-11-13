@@ -457,6 +457,20 @@ page_output "" bash -c 'for i in $(seq 1 12); do echo "color=${{PULSAR_COLOR-uns
         self.assertNotIn("esc quit", output)
         self.assertNotIn("\x1b[?1049h", output)
 
+    def test_spin_hands_its_standard_input_to_the_command(self):
+        # Why the menus' preview loops read their list on descriptor 3 and give
+        # each preview /dev/null: Gum's spinner passes its stdin to the command,
+        # so one that reads it (ssh to a remote node does) takes the rest of the
+        # list. Gum itself reads none of it.
+        script = ('. "$REPO_DIR/scripts/ui.sh"\n'
+                  'printf "one\\ntwo\\n" | { spin "Fixture" bash -c "cat >/dev/null"; echo "LEFT=$(cat | tr -d "\\n")"; }\n'
+                  'printf "one\\ntwo\\n" | { spin "Fixture" sleep 0.2; echo "KEPT=$(cat | tr -d "\\n")"; }\n'
+                  'echo END\n')
+        code, output = self.drive(script, b"", ready=b"END")
+        self.assertEqual(code, 0, output)
+        self.assertIn("LEFT=\r\n", output)
+        self.assertIn("KEPT=onetwo", output)
+
     def test_continue_returns_on_enter_or_esc_and_keeps_ctrl_c(self):
         for keys, expected in ((b"\r", 0), (b"\x1b", 0), (b"\x03", 130)):
             with self.subTest(keys=keys):
