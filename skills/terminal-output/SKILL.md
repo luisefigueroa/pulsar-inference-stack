@@ -106,6 +106,12 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   option row.
 - `gum style` strips escape codes, so the recipe frame's text stays plain; only
   its border takes the accent.
+- Without colour Gum marks a question's selected answer with nothing, and under
+  `NO_COLOR` it drops every attribute. So in plain mode (`NO_COLOR` or
+  `PULSAR_COLOR=never`) `confirm` runs Gum with every colour cleared and marks
+  the selected answer bold and underlined, with its key hint under the
+  question. Anything the operator selects must be marked without colour: a
+  menu's `>` cursor is.
 - Gum cuts a menu title, a question or an input header wider than the
   terminal at its edge. `choose_index`, `confirm` and `prompt_input` wrap them
   between words to the terminal's width; a word wider than the terminal gets

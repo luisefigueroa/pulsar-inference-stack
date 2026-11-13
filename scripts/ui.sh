@@ -191,6 +191,12 @@ _ui_gum_choose_style_args() {
   GUM_CHOOSE_STYLE_ARGS+=(--padding "1 0")
 }
 
+# Without colour Gum's confirm marks the selected answer with nothing at all
+# (under NO_COLOR it drops every attribute), so plain mode clears every colour
+# Gum would use, runs it without NO_COLOR, and marks the selected answer bold
+# and underlined. Gum's own key hint is coloured, so it is hidden there and
+# confirm says the keys under the question instead (_UI_CONFIRM_HINT).
+_UI_CONFIRM_HINT="←/→ move · enter choose · y yes · n no"
 _ui_gum_confirm_style_args() {
   GUM_CONFIRM_STYLE_ARGS=()
   if pulsar_color_enabled; then
@@ -198,6 +204,12 @@ _ui_gum_confirm_style_args() {
       --prompt.foreground="$PULSAR_ACCENT"
       --selected.foreground="$_PULSAR_CONFIRM_SELECTED_FG"
       --selected.background="$_PULSAR_CONFIRM_SELECTED_BG"
+    )
+  else
+    GUM_CONFIRM_STYLE_ARGS+=(
+      --prompt.foreground= --selected.foreground= --selected.background=
+      --unselected.foreground= --unselected.background=
+      --selected.bold --selected.underline --no-show-help
     )
   fi
   GUM_CONFIRM_STYLE_ARGS+=(--padding "1 0")
@@ -503,15 +515,22 @@ confirm() {
     msg=$(_ui_wrap "$((columns - 2))" "$msg")
   fi
   _ui_gum_confirm_style_args
+  local -a gum=(_ui_gum)
+  if ! pulsar_color_enabled; then
+    # Plain mode: no colour flag is passed (see _ui_gum_confirm_style_args),
+    # and the selected answer keeps its bold and underline.
+    msg+=$'\n'"$_UI_CONFIRM_HINT"
+    gum=(env -u NO_COLOR "$GUM_CMD")
+  fi
   set +e
   # Leave stderr open — Gum confirm draws its TUI on stderr.
   # Gum defaults to Yes when --default is omitted; pass both values explicitly.
   if [ "$default" = yes ]; then
-    _ui_gum confirm \
+    "${gum[@]}" confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
       --default=true "$msg"
   else
-    _ui_gum confirm \
+    "${gum[@]}" confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
       --default=false "$msg"
   fi

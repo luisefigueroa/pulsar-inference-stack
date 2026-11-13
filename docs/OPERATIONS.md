@@ -2460,7 +2460,10 @@ without that grouping. Each node's section ends with its
 [prerequisites](#installation-prerequisites). Every
 styled part also reads without color. `NO_COLOR` removes the colors and keeps
 bold and underline; `PULSAR_COLOR=never` prints no styles;
-`PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's
+`PULSAR_COLOR=always` keeps them in output that is not a terminal. With either
+setting that turns colors off, a yes/no question still marks the answer Enter
+gives: it is bold and underlined, and the keys are named under the question;
+a menu marks its choice with `>`. The menu's
 pager runs its pages with `always`, so they keep their styles there. Without
 `always`, piped output stays plain; `--json` output never carries styles.
 Menus set `PULSAR_COLOR=always` for the commands they run, unless it is

@@ -20,6 +20,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 GUM = ROOT / "third_party/gum/linux-arm64/gum"
+# Escape sequences, removed to read a row's text.
+ANSI_TEXT = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 class BundledGum(unittest.TestCase):
@@ -133,6 +135,39 @@ fi
 
     def test_selecting_no_overrides_yes_default(self):
         self.assert_confirmation(b"\x1b[C\r", 1, "yes")
+
+    @staticmethod
+    def marked(row):
+        """The text of ROW drawn bold and underlined: the selected answer."""
+        found, attributes = "", set()
+        for match in re.finditer(r"\x1b\[([0-9;]*)m|([^\x1b]+)", row):
+            if match.group(2) is None:
+                attributes = set() if match.group(1) in ("", "0") else attributes | set(match.group(1).split(";"))
+            elif {"1", "4"} <= attributes:
+                found += match.group(2)
+        return found.strip()
+
+    def test_without_colour_the_selected_answer_is_marked_and_the_mark_moves(self):
+        # Gum alone marks nothing without colour; ui.sh marks it bold and underlined.
+        for setting in ("", "unset NO_COLOR; export PULSAR_COLOR=never"):
+            for default, first in (("no", "No"), ("yes", "Yes")):
+                with self.subTest(setting=setting or "NO_COLOR=1", default=default):
+                    script = (f'{setting}\n. "$REPO_DIR/scripts/ui.sh"\nrc=0\n'
+                              f'confirm "Proceed with the synthetic test?" {default} || rc=$?\necho "RC=$rc"\n')
+                    move = b"\x1b[D" if default == "no" else b"\x1b[C"
+                    code, output = self.drive(script, move, ready=b"y yes \xc2\xb7 n no",
+                                              then=[(b"\x1b[0m", b"\r")])
+                    rows = [row for row in re.split(r"\r\n|\x1b\[\d+A|\n", output) if "Yes" in ANSI_TEXT.sub("", row)
+                            or "No" in ANSI_TEXT.sub("", row)]
+                    rows = [row for row in rows if "Yes" in ANSI_TEXT.sub("", row) and "No" in ANSI_TEXT.sub("", row)
+                            and "←" not in row]
+                    self.assertEqual(self.marked(rows[0]), first, rows)
+                    self.assertEqual(self.marked(rows[-1]), "Yes" if first == "No" else "No", rows)
+                    # No colour reaches the screen; the key hint stays.
+                    self.assertNotRegex(output, r"\x1b\[[0-9;]*(3[0-9]|4[0-9]|9[0-7])[0-9;]*m")
+                    self.assertIn("←/→ move · enter choose · y yes · n no", ANSI_TEXT.sub("", output))
+                    # Enter submits the marked answer: the one moved to.
+                    self.assertIn("RC=0" if default == "no" else "RC=1", output)
 
     def test_answer_shortcuts_override_default(self):
         for keys, expected, default in ((b"y", 0, "no"), (b"n", 1, "yes")):
@@ -267,7 +302,7 @@ if index=$(choose_index "$TITLE" "$@"); then printf '\\nPICKED=%s\\n' "$index"; 
     def test_a_long_question_and_input_header_show_whole(self):
         # Gum cuts these too; confirm draws its prompt one column in.
         text = f"Purge {self.MODEL}: delete 2 prepared copies on two nodes?"
-        for name, call, ready in (("confirm", "confirm", b"No"), ("input", "prompt_input", b"here")):
+        for name, call, ready in (("confirm", "confirm", b"y yes"), ("input", "prompt_input", b"here")):
             for columns in (80, 60):
                 with self.subTest(prompt=name, columns=columns):
                     script = (f'. "$REPO_DIR/scripts/ui.sh"\nrc=0\n{call} {shlex.quote(text)} '
