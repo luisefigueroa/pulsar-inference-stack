@@ -304,6 +304,18 @@ def archive_available(row: dict, name, archive_location: str) -> bool:
     return kind in ("present", "verified")
 
 
+def running_nodes(inventory: dict | None, spec_id: str) -> list[str]:
+    """The node_ids SPEC_ID's service runs on in the inventory, in role order
+    (rank 0 first); empty when the inventory does not say."""
+    from scripts.inventory_menu import rank_order
+    for service in (inventory or {}).get("services") or []:
+        if isinstance(service, dict) and service.get("conf") == spec_id:
+            ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)), key=rank_order)
+            nodes = [((inventory.get("nodes") or {}).get(rank.get("node")) or {}).get("node_id") for rank in ranks]
+            return [str(node) for node in nodes] if nodes and all(nodes) else []
+    return []
+
+
 def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict | None:
     """This recipe's service in the inventory, projected (state, hosts, node_id), or None."""
     if not inventory:
@@ -770,6 +782,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     service = own_service(row, inventory, entries)
     if service and service["state"] == "running" and not ready_only and not restart:
         plan["already"] = f"{model} is already running on {_list(service['hosts'])}."
+        running = running_nodes(inventory, spec)
+        if running and running != list(serving):
+            # The operator chose other machines: there is something to do, but not here.
+            chosen = _list(plan["hosts"])
+            plan["already"] = (f"{model} already runs on {_list(service['hosts'])}, not on {chosen}. A recipe runs "
+                               f"as one service: to serve it on {chosen}, stop it first with Running services… → "
+                               "Stop…, then serve it again. Restart… there starts it again where it runs.")
+            plan["elsewhere"] = True
         return plan
     from scripts.service_status import unobserved_nodes
     # A node the inventory did not observe matters when it serves, or when it cannot be identified.
@@ -1149,7 +1169,8 @@ def render(plan: dict, *, width: int | None = None) -> str:
     out.emit(plan["title"], role="heading")
     out.blank()
     if plan.get("already"):
-        out.emit(plan["already"] + " Nothing to do.")
+        # "Nothing to do" only when it runs on the machines chosen.
+        out.emit(plan["already"] + ("" if plan.get("elsewhere") else " Nothing to do."))
         return output.getvalue()
     steps = plan["steps"]
     if not steps:

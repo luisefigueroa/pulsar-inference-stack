@@ -201,7 +201,7 @@ below are for reading.
 | Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. Exited or stopped containers that remain are named after it. |
 | Serving: unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. |
 | Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
-| Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do. |
+| Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do when the machines chosen are the ones it runs on, in that role order. For other machines it says that a recipe runs as one service: **Running services…** → **Stop…** first, then serve it there; **Restart…** starts it again where it runs. |
 | Serve: ready to start | The last saved check found its files prepared on every serving node. Its plan is Start alone, after whatever is in the way is stopped. |
 | Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. On a *ring* it names the machines a copy goes to instead of counting them. |
 | Serve: needs its files checked | Its files are where it serves, but no saved check has found them prepared. The plan checks and records them; nothing is copied. |

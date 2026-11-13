@@ -401,6 +401,31 @@ class Compose(unittest.TestCase):
         self.assertTrue(plan["blocked"][0].startswith("spark-3 did not answer the last cluster check"))
         self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
 
+    def test_a_recipe_running_on_other_machines_than_the_ones_chosen_says_so(self):
+        elsewhere = ("org/model already runs on {running}, not on {chosen}. A recipe runs as one service: to serve "
+                     "it on {chosen}, stop it first with Running services… → Stop…, then serve it again. Restart… "
+                     "there starts it again where it runs.")
+        one = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        two = checked(home=HOME, local_state="ready", geometry={"nodes": 2, "tp": 2, "pp": 1})
+        cases = (
+            # One node: another machine, then the one it runs on.
+            (one, ["w1"], "n2", elsewhere.format(running="spark-2", chosen="spark-3")),
+            (one, ["w1"], "n1", "org/model is already running on spark-2."),
+            # A pair: other machines, the same machines in the other role order, then the same order.
+            (two, ["w1", "w2"], "n0,n2", elsewhere.format(running="spark-2 and spark-3", chosen="spark-1 and spark-3")),
+            (two, ["w1", "w2"], "n2,n1", elsewhere.format(running="spark-2 and spark-3", chosen="spark-3 and spark-2")),
+            (two, ["w1", "w2"], "n1,n2", "org/model is already running on spark-2 and spark-3."),
+        )
+        for state, keys, node, expected in cases:
+            with self.subTest(node=node):
+                plan = self.plan(state, node=node, live=inventory((SPEC, "running", keys)))
+                self.assertEqual(plan["already"], expected)
+                self.assertEqual(serve.choices(plan), [("cancel", "Cancel"), ("details", "Details")])
+                for width in (80, 60):
+                    text = serve.render(plan, width=width)
+                    self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                    self.assertEqual("Nothing to do." in " ".join(text.split()), not plan.get("elsewhere"), text)
+
     def test_a_running_recipe_has_nothing_to_do_and_leftovers_are_their_own_step(self):
         state = checked(home=HOME, local_state="ready")
         plan = self.plan(state, live=inventory((SPEC, "running", ["head", "w1", "w2"])))
