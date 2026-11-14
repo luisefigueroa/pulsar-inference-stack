@@ -676,6 +676,21 @@ _KEY_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?(VLLM_API_KEY|API_KEY)\s*=(.*)$
 _KEY_ELSEWHERE = re.compile(r"(?<![\w$])(VLLM_API_KEY|API_KEY)=")
 
 
+def _before_comment(line: str) -> str:
+    """LINE up to its shell comment: a `#` that starts a word outside quotes."""
+    quote, escaped = None, False
+    for index, char in enumerate(line):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif char in "'\"" and quote in (None, char):
+            quote = None if quote else char
+        elif char == "#" and quote is None and (index == 0 or line[index - 1] in " \t;&|()"):
+            return line[:index]
+    return line
+
+
 def api_key_source(repo: Path, environ: dict | None = None) -> tuple[str | None, str | None]:
     """Where the API key start uses is configured: (variable, "process" | "dotenv" | "expression"),
     or (None, None).
@@ -703,8 +718,8 @@ def api_key_source(repo: Path, environ: dict | None = None) -> tuple[str | None,
                 assigned[match.group(1)] = bool(_decode(match.group(2)))
             except StorageError:
                 assigned[match.group(1)] = None
-        elif not line.lstrip().startswith("#"):
-            for name in _KEY_ELSEWHERE.findall(line):
+        else:
+            for name in _KEY_ELSEWHERE.findall(_before_comment(line)):
                 assigned[name] = None
     for name in ("VLLM_API_KEY", "API_KEY"):
         if name in assigned:

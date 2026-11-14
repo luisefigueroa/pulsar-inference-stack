@@ -532,8 +532,11 @@ class ApiKey(unittest.TestCase):
                 self.assertEqual(cluster_status.api_key_source(repo, {"API_KEY": "x"}),
                                  ("VLLM_API_KEY", "expression"), line)
             # A literal value, a quoted '$' and a comment that names the key stay literal.
-            (repo / ".env").write_text("# VLLM_API_KEY=$(cat key-file)\nVLLM_API_KEY='fixture-$secret'\n")
+            (repo / ".env").write_text("# VLLM_API_KEY=$(cat key-file)\nVLLM_API_KEY='fixture-$secret'\n"
+                                       "PULSAR_COLD_ROOT=/var/tmp/archives # not VLLM_API_KEY=$(cat key-file)\n")
             self.assertEqual(cluster_status.api_key_source(repo, {}), ("VLLM_API_KEY", "dotenv"))
+            (repo / ".env").write_text("NOTE='#' && VLLM_API_KEY=fixture-secret\n")
+            self.assertEqual(cluster_status.api_key_source(repo, {}), ("VLLM_API_KEY", "expression"))
             (repo / ".env").write_text("API_KEY=${SERVICE_API_KEY:-}\n")
             self.assertEqual(cluster_status.api_key_source(repo, {"VLLM_API_KEY": "x"}), ("VLLM_API_KEY", "process"))
             self.assertEqual(cluster_status.api_key_source(repo, {}), ("API_KEY", "expression"))

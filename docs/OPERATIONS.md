@@ -1782,7 +1782,9 @@ when a saved record changed. Its choices:
   archive menu (`./pulsar configure archive-root menu`); **API key** says
   whether `VLLM_API_KEY` (or `API_KEY`) is configured and where: this
   checkout's `.env` file or the environment that started Pulsar. The menu
-  never reads out or takes the key.
+  reads `.env` as data and never runs it, so a key that `.env` sets with a
+  shell expression is not known there; start, which sources the file, reads
+  its value. The menu never reads out or takes the key.
 - **Start over: forget this cluster…** runs `./pulsar topology forget`: its
   plan of what is removed and kept, then a question that starts on No. After a
   forget, the menu returns home, which offers setup again.
