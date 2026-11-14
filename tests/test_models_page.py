@@ -112,6 +112,15 @@ def ready_model(*, pinned=False, users_on=None, archive=None):
         location("n2", "prepared", binding(pinned=pinned))], specs=[SPEC], archive=archive)
 
 
+def purge_preview(*actions):
+    """Purge's own plan, a (node, action) per copy of the recipe: "release-binding" where the files
+    stay (the home, or a copy another recipe still uses) and "remove-copy" where they are deleted."""
+    return {"ok": True, "result": {"plan": {"kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
+                                            "actions": [{"rank": rank, "node_id": node, "action": action}
+                                                        for rank, (node, action) in enumerate(actions)]},
+                                   "incomplete_preparations": []}}
+
+
 def cluster(rows, document, budget_document=None, *, archive_location="configured"):
     return mp.Cluster(rows, document, (budget_document or budget())["nodes"], names=NAMES,
                       archive_location=archive_location)
@@ -356,6 +365,44 @@ class Plans(unittest.TestCase):
         line = next(option for option in removable if option["target"].startswith("cluster:"))
         self.assertTrue(flat(line["text"]).startswith("Remove org/model from the cluster: frees at least 212 GiB. It "
                                                       "deletes its copies, then its home"), line)
+
+    def test_a_copy_two_recipes_share_is_deleted_by_the_purge_that_releases_it_last(self):
+        rows = [recipe(), recipe(OTHER, "org/model", MODEL, nodes=2, engine_args=["--max-model-len", "8192"])]
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding(), binding(OTHER)), location("n1", "prepared", binding(), binding(OTHER))],
+            specs=[SPEC, OTHER])])
+        # Before anything runs, each recipe's own preview only releases the copy: the other still uses it.
+        released = purge_preview(("n0", "release-binding"), ("n1", "release-binding"))
+        plan = mp.compose(cluster(rows, document), f"cluster:{SPEC}", previews={"0": (released, 0), "1": (released, 0)})
+        self.assertEqual([(step["kind"], step["facts"]["spec"]) for step in plan["steps"]],
+                         [("purge", SPEC), ("purge", OTHER), ("remove", SPEC)])
+        self.assertEqual(plan["blocked"], [])
+        first, second = plan["steps"][:2]
+        self.assertEqual(first["facts"]["nodes"], [])
+        self.assertEqual(flat(first["sentence"]), "Release the copies of org/model (3 nodes); their files stay for "
+                                                  "the steps after it, and this step deletes none.")
+        # Once the first Purge ran, the copy is the second recipe's alone, so its Purge deletes it: the
+        # plan says so, and that step's own preview at its turn is what the plan said.
+        self.assertEqual(second["facts"]["nodes"], ["n1"])
+        self.assertEqual(flat(second["sentence"]), "Delete the copies of org/model (2 nodes) on spark-2 (212 GiB).")
+        last = purge_preview(("n0", "release-binding"), ("n1", "remove-copy"))
+        self.assertEqual(mp.assess(second, last, 0, NAMES), ("same", ""))
+        # The first step approved no deletion: the same preview for it still stops the run.
+        self.assertEqual(mp.assess(first, last, 0, NAMES), ("differs", "it would also delete copies on spark-2"))
+
+    def test_each_purge_of_a_cluster_plan_deletes_only_what_the_steps_before_it_leave_to_it(self):
+        rows = [recipe(), recipe(OTHER, "org/model", MODEL, nodes=2, engine_args=["--max-model-len", "8192"])]
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding(), binding(OTHER)), location("n1", "prepared", binding(), binding(OTHER)),
+            location("n2", "prepared", binding())], specs=[SPEC, OTHER])])
+        found = cluster(rows, document)
+        first, second = mp.compose(found, f"cluster:{SPEC}")["steps"][:2]
+        # The first recipe's own copy goes with it; the copy it shares waits for the second recipe's Purge.
+        self.assertEqual((first["facts"]["spec"], first["facts"]["nodes"]), (SPEC, ["n2"]))
+        self.assertEqual(flat(first["sentence"]), "Delete the copies of org/model (3 nodes) on spark-3 (212 GiB).")
+        self.assertEqual((second["facts"]["spec"], second["facts"]["nodes"]), (OTHER, ["n1"]))
+        # The scan the page shows is not changed by planning from it.
+        self.assertEqual(mp.purge_facts(found, OTHER)["freed"], {})
 
     def test_a_preview_that_refuses_blocks_the_plan_and_one_with_nothing_left_drops_its_step(self):
         found = cluster([recipe()], files([ready_model()]))

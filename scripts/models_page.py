@@ -43,6 +43,7 @@ Download's own reuse (it holds only if `model acquire … --plan --json` answers
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import json
 from pathlib import Path
@@ -1077,6 +1078,28 @@ def _purge_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     plan["done"] = (f"the unfinished copies of {name} are cleared" if clear else f"{name} is removed from {where}")
 
 
+def _after_purges(cluster: Cluster, specs: list[str]) -> Cluster:
+    """CLUSTER as the scan would read once Purge ran for SPECS: their bindings are gone, and so is
+    each prepared copy only they used. A copy another recipe shared with them alone is then that
+    recipe's own, which its Purge deletes. CLUSTER itself is not changed."""
+    if not specs:
+        return cluster
+    snapshots = []
+    for entry in cluster.snapshots:
+        locations = []
+        for location in entry.get("locations") or []:
+            bindings = location.get("bindings") or []
+            left = [binding for binding in bindings if binding.get("spec_id") not in specs]
+            if bindings and not left and location.get("kind") == "prepared":
+                continue
+            locations.append({**location, "bindings": left})
+        snapshots.append({**entry, "locations": locations})
+    later = copy.copy(cluster)
+    later.snapshots = snapshots
+    later.by_manifest = {entry["snapshot_manifest_id"]: entry for entry in snapshots}
+    return later
+
+
 def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     row = _spec(cluster, spec)
     facts = {other: purge_facts(cluster, other) for other in cluster.catalog}
@@ -1110,8 +1133,10 @@ def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
                 ["./pulsar", "model", "archive", "create", spec, *args, "--plan", "--json"],
                 {"spec": spec, "snapshot": snapshot, "node": location["node_id"], "changes": "writes the archive"},
                 authority=False, entries=cluster.entries))
-    for other in purged:
-        fact = facts.get(other)
+    for index, other in enumerate(purged):
+        # Each Purge finds the bindings the steps before it left. A copy two of these recipes share
+        # is released by the first and deleted by the last, so the last one's step names that node.
+        fact = purge_facts(_after_purges(cluster, purged[:index]), other)
         if not fact:
             continue
         where = cluster.hosts(fact["freed"]) if fact["freed"] else "its nodes"

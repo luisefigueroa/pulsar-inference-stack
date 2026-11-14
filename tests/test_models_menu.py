@@ -12,8 +12,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from tests.test_models_page import (DRAFT, G, MODEL, OTHER, OTHER_FILES, SPEC, archived, binding, budget,  # noqa: E402
-                                    entry, files, found_home, home, lost_copy, node, prepare_preview, ready_model,
-                                    recipe)
+                                    entry, files, found_home, home, location, lost_copy, node, prepare_preview,
+                                    purge_preview, ready_model, recipe)
 from tests.test_serve_menu import Harness, build_root, root_environment  # noqa: E402
 from tests.test_serve_plan import envelope  # noqa: E402
 
@@ -155,6 +155,29 @@ class FreeUpSpace(Menu):
         self.assertEqual(self.ran(), [])
         self.assertIn("✗ Step 1 did not run: it would also delete copies on spark-1. Pulsar stopped before it, so it "
                       "can ask again.", self.text(result))
+
+    def test_removing_a_model_whose_copy_two_recipes_share_runs_through_to_its_home(self):
+        self.entries(recipe(), recipe(OTHER, "org/model", MODEL, nodes=2, engine_args=["--max-model-len", "8192"]))
+        self.fixture("files", envelope(files([entry(MODEL, "org/model", [
+            home("n0", binding(), binding(OTHER)), location("n1", "prepared", binding(), binding(OTHER))],
+            specs=[SPEC, OTHER])])))
+        # While both recipes use the copy, each one's Purge only releases it. The fourth preview is the
+        # second recipe's own at its turn, after the first Purge ran: the copy is then its alone to delete.
+        self.fixture("purge-plan", purge_preview(("n0", "release-binding"), ("n1", "release-binding")))
+        self.fixture("purge-plan", purge_preview(("n0", "release-binding"), ("n1", "remove-copy")), nth=4)
+        self.fixture("remove-plan", envelope({"kind": "pulsar-home-removal-plan", "eligible": True,
+                                              "home": {"node_id": "n0"}, "blockers": []}))
+        result = self.run_menu(["Free up space…", "Remove org/model from the cluster: frees at least 212 GiB",
+                                "Go ahead", "Continue", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.text(result)
+        self.assertIn("1. Release the copies of org/model (3 nodes); their files stay for the steps after it, and "
+                      "this step deletes none.", text)
+        self.assertIn("2. Delete the copies of org/model (2 nodes) on spark-2 (212 GiB).", text)
+        self.assertEqual(self.ran(), [f"model purge {SPEC} --yes", f"model purge {OTHER} --yes",
+                                      f"model remove {SPEC} --yes"])
+        self.assertIn("✓ Done: org/model is removed from the cluster.", text)
+        self.assert_plain_choices()
 
     def test_a_kept_model_offers_only_to_stop_keeping_it_which_is_its_own_plan(self):
         self.fixture("files", envelope(files([ready_model(pinned=True)])))
