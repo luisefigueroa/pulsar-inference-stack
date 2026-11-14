@@ -84,6 +84,16 @@ class RingPhrase(unittest.TestCase):
         self.assertEqual(phrase(both), "needs its files checked on node-a + node-b · copies recorded on node-b + node-c "
                                        "and 1 more pair")
 
+    def test_a_pair_whose_snapshots_have_homes_on_both_machines_names_both_for_a_copy(self):
+        # The target's home is on node-a and the draft's on node-b. Each machine needs the other
+        # snapshot, so the phrase names both machines, as the count of copies does.
+        member = {"model_id": "org/model", "model_commit": "c" * 40, "archive": None}
+        state = recipe(2, state="missing", snapshots={
+            "target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
+            "draft": {**member, "home": {**HOME, "node_id": "n1"}, "snapshot_manifest_id": "2" * 64}})
+        self.assertEqual(serve.copies_needed(state, ["n0", "n1"]), 2)
+        self.assertTrue(phrase(state).startswith("needs copying to node-a and node-b · "), phrase(state))
+
     def test_a_pair_that_needs_a_copy_names_the_machine_it_goes_to(self):
         state = recipe(2, view(0, "n3"), view(1, "n2"), state="missing")
         self.assertEqual(phrase(state), "needs copying to node-b · 212 GiB · copies recorded on node-d + node-c")

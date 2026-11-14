@@ -430,9 +430,8 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
         phrase = (READINESS["verify-on"].format(hosts=placement_words(host, default)) if default
                   else READINESS["verify"])
     else:
-        homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
-        copied = {view.get("node_id") for view in row.get("prepared_copies") or []}
-        targets = [node for node in default if node not in homes and node not in copied]
+        # The same rule as the count: a node with one snapshot's home still needs the others.
+        targets = nodes_needing_copies(row, default)
         total = [sizes.get(name) for name in members(row)]
         size = (short_size(sum(total) * count) if total and all(value is not None for value in total)
                 else READINESS["unknown"])
