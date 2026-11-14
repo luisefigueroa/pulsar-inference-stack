@@ -14,6 +14,9 @@ export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
+# The locations its Python helpers read, as ./pulsar commands read them (.env included).
+# shellcheck source=menu-settings.sh
+. "$REPO_DIR/scripts/menu-settings.sh"
 require_gum "Why will a model not start?" \
   "./pulsar models list" "the recipes and their saved state" \
   "./pulsar start SPEC --dry-run" "Start's checks without starting; each blocker names its fix" \

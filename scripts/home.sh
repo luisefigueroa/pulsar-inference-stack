@@ -20,6 +20,9 @@ export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
+# The locations its Python helpers read, as ./pulsar commands read them (.env included).
+# shellcheck source=menu-settings.sh
+. "$REPO_DIR/scripts/menu-settings.sh"
 
 review_catalog_error() {
   printf '\n✗ The catalog could not be displayed; review the error above.\n  exit %s\n' "$1"

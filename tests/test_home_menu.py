@@ -73,6 +73,7 @@ class MenuHarness(unittest.TestCase):
         scripts.mkdir()
         (self.root / "releases").mkdir()
         shutil.copyfile(ROOT / "scripts/home.sh", scripts / "home.sh")
+        shutil.copyfile(ROOT / "scripts/menu-settings.sh", scripts / "menu-settings.sh")
         os.chmod(scripts / "home.sh", 0o755)
         self.choose_log = self.root / "choose.log"
         self.answers = self.root / "answers"
