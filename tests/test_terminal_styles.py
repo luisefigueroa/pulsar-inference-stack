@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -125,6 +126,12 @@ class SameAsCommands(unittest.TestCase):
         # A "#" is part of its argument, not the start of a comment.
         self.assertEqual(command_lines("./pulsar start abababababab --label a#b --node node-a", 40, "  ", "    "),
                          ["  ./pulsar start abababababab \\", "    --label a#b --node node-a"])
+        # shlex.join writes /mnt/Bob's models as adjacent quoted parts: they stay one argument.
+        argv = ["./pulsar", "model", "move", "abababababab", "--to", "/mnt/Bob's models", "--yes"]
+        lines = command_lines(shlex.join(argv), 40, "  ", "    ")
+        self.assertEqual(lines, ["  ./pulsar model move abababababab \\",
+                                 "    --to '/mnt/Bob'\"'\"'s models' --yes"])
+        self.assertEqual(shlex.split(" ".join(line.removesuffix(" \\") for line in lines)), argv)
 
     def test_the_shell_menus_print_it_the_same_way_styled_or_plain(self):
         command = "./pulsar start abababababab --placement-nodes node-a,node-b,node-c,node-d --dry-run"

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import sys
 import textwrap
@@ -304,6 +303,32 @@ class TerminalWriter:
             print(indent + self.command_line(body) + tail, file=self.stream)
 
 
+def _shell_words(command: str) -> list[str]:
+    """COMMAND split at unquoted blanks, each word as written. A word made of
+    adjacent quoted parts, such as shlex.join's '/a'"'"'b' for /a'b, stays one
+    word, and a "#" inside a word is part of it. ValueError for an open quote."""
+    words, word, quote, escaped = [], "", None, False
+    for char in command:
+        if escaped:
+            word, escaped = word + char, False
+        elif char == "\\" and quote != "'":
+            word, escaped = word + char, True
+        elif quote:
+            word += char
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            word, quote = word + char, char
+        elif char.isspace():
+            if word:
+                words.append(word)
+            word = ""
+        else:
+            word += char
+    if quote or escaped:
+        raise ValueError("unfinished quote")
+    return words + ([word] if word else [])
+
+
 def command_lines(command: str, width: int, initial_indent: str = "", subsequent_indent: str = "") -> list[str]:
     """COMMAND as plain lines for WIDTH columns. A command that fits is one
     line. A longer one breaks only between arguments, never between an option
@@ -313,10 +338,7 @@ def command_lines(command: str, width: int, initial_indent: str = "", subsequent
     if len(initial_indent) + len(command) <= width:
         return [initial_indent + command]
     try:
-        lexer = shlex.shlex(command, posix=False)
-        lexer.whitespace_split = True
-        lexer.commenters = ""  # a "#" inside an argument is part of it
-        words = list(lexer)
+        words = _shell_words(command)
     except ValueError:
         words = command.split()
     units: list[str] = []
