@@ -46,6 +46,8 @@ MEMORY_FIELDS = (
     "overhead_gib_default",
     "preflight_warn_available_gib",
     "cold_start_footprint_slack",
+    "engine_startup_margin_first_rank_gib",
+    "engine_startup_margin_other_rank_gib",
 )
 EXPORT_KEYS = (
     "PULSAR_PLATFORM_ID",
@@ -62,6 +64,8 @@ EXPORT_KEYS = (
     "PULSAR_OVERHEAD_GIB_DEFAULT",
     "PULSAR_PREFLIGHT_WARN_AVAILABLE_GIB",
     "PULSAR_COLD_START_FOOTPRINT_SLACK",
+    "PULSAR_ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB",
+    "PULSAR_ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB",
 )
 
 
@@ -196,6 +200,17 @@ def validate_platform_reference(value: Any) -> dict[str, Any]:
         fail("memory.cold_start_footprint_slack: expected a number")
     if not 0 < float(slack) <= 1:
         fail("memory.cold_start_footprint_slack must be in (0, 1]")
+    # What Start's own processes take on a rank before the engine reads free
+    # memory at its startup: the first rank also runs the API server and the
+    # engine core. Measured values, not an allocation cap.
+    first_margin = _require_nonneg_number(
+        memory.get("engine_startup_margin_first_rank_gib"),
+        "memory.engine_startup_margin_first_rank_gib",
+    )
+    other_margin = _require_nonneg_number(
+        memory.get("engine_startup_margin_other_rank_gib"),
+        "memory.engine_startup_margin_other_rank_gib",
+    )
     return {
         "schema_version": version,
         "kind": kind,
@@ -216,6 +231,8 @@ def validate_platform_reference(value: Any) -> dict[str, Any]:
             "overhead_gib_default": overhead,
             "preflight_warn_available_gib": warn_gib,
             "cold_start_footprint_slack": slack,
+            "engine_startup_margin_first_rank_gib": first_margin,
+            "engine_startup_margin_other_rank_gib": other_margin,
         },
     }
 
@@ -292,6 +309,12 @@ def export_shell(document: dict[str, Any] | None = None) -> str:
         ),
         "PULSAR_COLD_START_FOOTPRINT_SLACK": _shell_number(
             memory["cold_start_footprint_slack"]
+        ),
+        "PULSAR_ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB": _shell_number(
+            memory["engine_startup_margin_first_rank_gib"]
+        ),
+        "PULSAR_ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB": _shell_number(
+            memory["engine_startup_margin_other_rank_gib"]
         ),
     }
     lines = [

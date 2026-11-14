@@ -26,7 +26,7 @@ health answer different questions; a catalog entry does not establish local read
 
 - [Catalog and evidence](../README.md#catalog-and-evidence): spec identity and saved results.
 - [Guarded serving](GUARDED_SERVING.md): recipes that require a bounded trial.
-- [Memory estimates](MEMORY_ESTIMATES.md): reviewed estimates of resident weights.
+- [Memory estimates](MEMORY_ESTIMATES.md): reviewed estimates of resident weights, and the engine's own startup memory check.
 
 ## Contribute and get help
 
