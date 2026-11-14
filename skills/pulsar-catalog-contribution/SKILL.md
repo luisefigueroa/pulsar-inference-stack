@@ -1,5 +1,5 @@
 ---
-name: catalog-contribution
+name: pulsar-catalog-contribution
 description: Review a maintainer-selected Pulsar catalog spec, validate its schema and publication safety, and optionally assess evidence or current launch compatibility without turning those assessments into catalog gates.
 ---
 

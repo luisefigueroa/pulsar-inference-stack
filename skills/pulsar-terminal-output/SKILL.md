@@ -1,5 +1,5 @@
 ---
-name: terminal-output
+name: pulsar-terminal-output
 description: Word, build or change what a Pulsar operator reads in a terminal (status words, menu frames, help screens, check lines, previews and pages) with plain words explained in place, the shared TerminalWriter styles, narrow-width layout and unchanged plain output. Use when adding, rewording or editing human output, menus or help in the public stack.
 ---
 

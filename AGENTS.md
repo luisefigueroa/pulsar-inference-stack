@@ -106,6 +106,11 @@ do not rewrite historical evidence merely to improve its terminology. Avoid
 unrelated rename sweeps and do not introduce multiple aliases without a defined
 compatibility purpose and retirement condition.
 
+Name every skill created for this repository with `pulsar` as its first word,
+then a descriptive name: `pulsar-<descriptive-name>`. Use that one name for the
+skill's directory under `skills/`, the `name` in its `SKILL.md`, and its link
+under `.claude/skills/`.
+
 ## Verification and operator experience
 
 Run directly affected tests while iterating and relevant subsystem checks after
@@ -138,4 +143,4 @@ Lead human output with the action, affected object, and blocker. Keep JSON
 separate and stable, use hanging indentation for long paths, and check narrow
 terminal output. Saved catalog observations show their age; unknown is not
 absent, and prepared files do not imply a running or guaranteed launch.
-Word, lay out and style terminal output with the [terminal-output skill](skills/terminal-output/SKILL.md).
+Word, lay out and style terminal output with the [pulsar-terminal-output skill](skills/pulsar-terminal-output/SKILL.md).
