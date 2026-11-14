@@ -47,6 +47,6 @@ health answer different questions; a catalog entry does not establish local read
 ## Provenance and design history
 
 - [Third-party software, images, and credits](../THIRD_PARTY_NOTICES.md): the image index, upstream contributors, and license notices.
-- Image details: [official vLLM for Nemotron](IMAGE_PROVENANCE_VLLM_0_29.md), [DeepSeek](IMAGE_PROVENANCE_DEEPSEEK_V4_1_FLASH.md), [MiMo](IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md), and [GLM](IMAGE_PROVENANCE_GLM_5_3_FLASH.md).
+- Image details: [official vLLM 0.29.0 for Nemotron 3.5 Lightning](IMAGE_PROVENANCE_VLLM_0_29.md), [official vLLM 0.32.0 for Nemotron 3.5 Super VL](IMAGE_PROVENANCE_VLLM_0_32.md), [DeepSeek](IMAGE_PROVENANCE_DEEPSEEK_V4_1_FLASH.md), [MiMo](IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md), and [GLM](IMAGE_PROVENANCE_GLM_5_3_FLASH.md).
 - [Pulsar source license](../LICENSE).
 - [Decision references](DECISIONS.md): design rationale and links to historical plans. Use the current contract for supported interfaces.

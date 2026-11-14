@@ -41,7 +41,7 @@ Meaning never rests on color or dim text
 ([WCAG 1.4.1](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html),
 [1.4.3](https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum.html)).
 Rewording changes only human output; JSON fields and values stay stable. The
-[terminal-output skill](../skills/terminal-output/SKILL.md#words) holds the
+[pulsar-terminal-output skill](../skills/pulsar-terminal-output/SKILL.md#words) holds the
 working rules, and a test fails when a printable status word has no legend row.
 
 ## Spec-contract refactor
