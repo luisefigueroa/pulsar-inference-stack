@@ -243,6 +243,10 @@ class Compose(unittest.TestCase):
                                             "in_catalog": True, "node": None,
                                             "restart": ["./pulsar", "start", OTHER],
                                             "restart_shown": f"./pulsar start {OTHER[:12]}"}])
+        # Off the saved order, it starts again on the nodes it ran on, in role order.
+        moved = self.plan(state, live=other_running(("w2", "w1", "head")), previews={"start": start_blocked("port_in_use")})
+        self.assertEqual(moved["stopped"][0]["restart"],
+                         ["./pulsar", "start", OTHER, "--placement-nodes", "spark-3,spark-2,spark-1"])
         # A modified recipe, or one outside the catalog, is not offered to start again.
         live = other_running()
         live["services"][0]["matches_selected_spec"] = False

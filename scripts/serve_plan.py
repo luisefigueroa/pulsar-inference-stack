@@ -1068,8 +1068,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                 again = service_node(inventory, stop["conf"]) if single else None
                 modified = any(item.get("conf") == stop["conf"] and item.get("matches_selected_spec") is False
                                for item in inventory.get("services") or [] if isinstance(item, dict))
-                restart = (["./pulsar", "start", stop["conf"], *(["--node", names(again)] if again else [])]
-                           if own is not None and not modified and (again or not single) else None)
+                # A multi-node service starts again on the nodes it ran on, in role
+                # order, named as Start names them; unknown nodes offer no restart.
+                ran_on = service_nodes(inventory, stop["conf"]) if own is not None and not single else []
+                known = single or len(ran_on) == (own or {}).get("geometry", {}).get("nodes")
+                where_again = (["--node", names(again)] if again else
+                               placement_args(own, names, ran_on, ",".join(ran_on)) if not single and known else [])
+                restart = (["./pulsar", "start", stop["conf"], *where_again]
+                           if own is not None and not modified and (again or (not single and known)) else None)
                 plan["stopped"].append({"conf": stop["conf"], "name": stop["name"], "hosts": stop["hosts"],
                                         "in_catalog": restart is not None, "node": again, "restart": restart,
                                         "restart_shown": shown(restart, entries) if restart else None})
@@ -1187,6 +1193,18 @@ def _restart(plan: dict, row: dict, entries: list[dict], inventory: dict, servic
         step["shown"] = shown(step["command"], entries)
     plan["projected"] = [1]
     return plan
+
+
+def service_nodes(inventory: dict, conf: str) -> list[str]:
+    """The node_ids a service's ranks ran on, in role order; [] when a rank's
+    node is not identified."""
+    for service in inventory.get("services") or []:
+        if isinstance(service, dict) and service.get("conf") == conf:
+            ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)),
+                           key=lambda rank: int(rank.get("rank")) if str(rank.get("rank")).isdigit() else -1)
+            ids = [((inventory.get("nodes") or {}).get(rank.get("node")) or {}).get("node_id") for rank in ranks]
+            return ids if ids and all(isinstance(item, str) and item for item in ids) else []
+    return []
 
 
 def service_node(inventory: dict, conf: str) -> str | None:
