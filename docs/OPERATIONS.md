@@ -792,6 +792,33 @@ discovery has limits:
   `--node`; choose the node that holds it.
 - It stops when a second matching folder exists on any node.
 
+### Download a model before it has a spec
+
+Acquisition does not need a spec. Name the Hugging Face model and the exact
+commit instead, and the command runs the same flow as above (the complete
+upstream inventory, private staging, the SHA-256 of every file, the snapshot
+manifest and the home record), then stops. It prepares nothing, freezes no
+spec and starts nothing.
+
+```sh
+./pulsar model acquire --model-id <org>/<name> --model-commit <ref> --node <node> --plan
+./pulsar model acquire --model-id <org>/<name> --model-commit <commit> --node <node> \
+  --manifest-out <file> --yes
+```
+
+`--plan` accepts a branch or tag and prints the exact 40-character commit; `--yes`
+requires that exact commit. `--manifest-out` saves the verified snapshot manifest
+to a new file (it never replaces one); the model library also keeps the manifest
+and the home record, keyed by model and commit.
+
+The hand-off to a later spec is by identity, not by path. A spec whose snapshot
+names the same model and commit embeds the same manifest, so
+`./pulsar model acquire <spec-id> --snapshot target --node <node> --plan` then
+shows `reuse matching existing files` and `--yes` records the reuse without a
+download. The saved manifest file is the input for the spec's
+`snapshot_manifest`. A spec whose manifest differs from the verified files is
+refused rather than downloaded again.
+
 ### Prepare all serving nodes
 
 ```sh
