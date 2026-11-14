@@ -601,7 +601,7 @@ class BundledGumServe(BundledGum):
         self.assertIn("Serve a model", screen)
         self.assertIn("↑/↓ move · enter choose · esc back", screen)
         self.assertIn("> org/model", screen)
-        self.assertIn("    3 nodes · ready to start", screen)
+        self.assertIn("    3 nodes · ready to start (checked 2 hours ago)", screen)
         self.assertIn("  org/other", screen)
         self.assertIn("    3 nodes · running on spark-1, spark-2, spark-3", screen)
         self.assertTrue(all(len(line) <= 80 for line in screen))

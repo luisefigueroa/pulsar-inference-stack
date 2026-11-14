@@ -256,10 +256,9 @@ class Cluster:
         that "ready to start" is the result of the last saved check, which the scan does not repeat.
         Where the scan, which is newer, did not find a home or a copy the records name for SPEC, or
         could not check one, the page says that instead. A "ready to start" that stays carries the
-        saved check's own age, since the page's first line gives only the scan's. A record on a
-        node outside confirmed membership does not count: no scan reads that node, and Start does
-        not use it."""
-        from model_library.catalog import _checked
+        saved check's own age, as in Serve a model…, since the page's first line gives only the
+        scan's. A record on a node outside confirmed membership does not count: no scan reads that
+        node, and Start does not use it."""
         from model_library.file_inventory import OUTSIDE_MEMBERSHIP
         from scripts.serve_plan import READINESS
         phrase = self.saved_readiness(spec)
@@ -276,7 +275,7 @@ class Cluster:
             return f"{STATUS_WORDS['files-missing']} {self.hosts(missing)}"
         if unknown:
             return f"{STATUS_WORDS['files-unknown']} {self.hosts(unknown)}"
-        return f"{phrase} ({_checked(self.catalog[spec].get('observation_age_seconds'))})"
+        return phrase
 
     def saved_readiness(self, spec: str) -> str:
         """Serve a model…'s readiness phrase, from saved records, with the scan's sizes."""

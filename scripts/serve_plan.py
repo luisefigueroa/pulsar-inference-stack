@@ -171,7 +171,8 @@ def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict 
 
 def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict,
               service: dict | None) -> str:
-    """One phrase for where the recipe stands, from saved records and the inventory."""
+    """One phrase for where the recipe stands, from saved records and the inventory.
+    "ready to start" carries the age of the saved check it rests on."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -190,7 +191,9 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         text = short_size(sum(size)) if size and all(value is not None for value in size) else READINESS["unknown"]
         return READINESS["download"].format(size=text)
     if row.get("checked_at") and row.get("local_state") == "ready":
-        return READINESS["ready"]
+        # The last saved check found the files ready; the list repeats no check, so it says when that was.
+        from model_library.catalog import _checked
+        return f"{READINESS['ready']} ({_checked(row.get('observation_age_seconds'))})"
     count = copies_needed(row, serving_nodes(row, order, recorded_node(row)))
     if not count:
         return READINESS["verify"]
