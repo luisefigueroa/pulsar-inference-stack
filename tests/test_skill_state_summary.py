@@ -26,12 +26,24 @@ def inventory(*services, unobserved=(), gpu=()):
                                          "used_memory_mib": mib} for node, mib in gpu]}
 
 
-def service(state="running", observed=("0", "1", "2")):
-    return {"service_id": "a" * 64, "spec_id": "a" * 64, "served_name": "org/example-model", "state": state,
+def service(state="running", observed=("0", "1", "2"), *, runs_with=8000, matches=True):
+    return {"service_id": "a" * 64, "spec_id": "a" * 64, "selected_spec_id": "a" * 64 if matches else "b" * 64,
+            "served_name": "org/example-model", "state": state,
             "ownership": "managed", "safe_to_stop": state == "running", "api_port": 8000,
-            "matches_selected_spec": True, "expected_ranks": ["0", "1", "2"], "observed_ranks": list(observed),
+            "matches_selected_spec": matches, "expected_ranks": ["0", "1", "2"], "observed_ranks": list(observed),
             "reasons": [], "ranks": [{"rank": rank, "node": "head", "running": True,
+                                      "observed_api_port": runs_with if rank == "0" else None,
                                       "gpu_memory": {"measured_mib": 90000}} for rank in observed]}
+
+
+def one_node_inventory():
+    """A cluster of one node, as inventory writes it: the head, and a placeholder for no other node."""
+    document = inventory()
+    document["nodes"] = {"head": {**document["nodes"]["head"], "confirmed": True},
+                         "worker": {"hostname": None, "node_id": None, "confirmed": False, "probe_status": "unset",
+                                    "probe_reason": "no other nodes confirmed", "mem_available_gib": None,
+                                    "mem_total_gib": None}}
+    return document
 
 
 class Summary(unittest.TestCase):
@@ -56,15 +68,70 @@ class Summary(unittest.TestCase):
     def test_a_service_shows_its_state_ranks_and_stop_safety(self):
         text = self.lines(inventory(service("partial", observed=("0", "1")), gpu=(("worker", 2048),)))
         self.assertIn("service org/example-model: partial, managed, ranks 2/3 observed", text)
-        self.assertIn("port 8000 · safe to stop no · matches selected spec yes", text)
+        self.assertIn("API port: runs with 8000 · configured now 8000", text)
+        self.assertIn("safe to stop no · matches selected spec yes", text)
+        self.assertNotIn("selected spec a", text)
         self.assertIn("rank 1 on host-0: running, GPU memory 90000 MiB", text)
         self.assertIn("unmanaged GPU process on host-1: /usr/bin/trainer, 2048 MiB", text)
+
+    def test_the_placeholder_for_no_other_node_is_not_an_unobserved_node(self):
+        text = self.lines(one_node_inventory())
+        self.assertIn("node host-0: observed", text)
+        self.assertNotIn("worker", text)
+        self.assertNotIn("NOT OBSERVED", text)
+        self.assertIn("services: none observed on any node", text)
+
+    def test_an_unconfirmed_node_that_did_not_answer_still_limits_what_none_means(self):
+        document = one_node_inventory()
+        document["nodes"]["worker"].update(probe_status="unreachable", probe_reason="no answer")
+        text = self.lines(document)
+        self.assertIn("NOT OBSERVED: worker.", text)
+        self.assertIn("services: none observed on the nodes that answered", text)
+
+    def test_the_port_a_service_runs_with_is_apart_from_the_port_configured_now(self):
+        text = self.lines(inventory(service(runs_with=8010)))
+        self.assertIn("API port: runs with 8010 · configured now 8000", text)
+        text = self.lines(inventory(service(runs_with=None)))
+        self.assertIn("API port: runs with not observed · configured now 8000", text)
+
+    def test_a_service_of_another_spec_names_the_selected_spec(self):
+        text = self.lines(inventory(service(matches=False)))
+        self.assertIn("safe to stop yes · matches selected spec no", text)
+        self.assertIn("  effective spec " + "a" * 64, text)
+        self.assertIn("  selected spec " + "b" * 64, text)
 
     def test_status_that_could_not_tell_names_the_nodes(self):
         text = self.lines({"ok": False, "error": {"code": "service_state_unknown", "message": "a node did not answer",
                                                   "details": [{"node": "rank-2", "node_id": "node-2"}]}})
         self.assertEqual(text, "error service_state_unknown: a node did not answer\n"
                                "  not observed: node rank-2 (node-2)")
+
+    def test_a_node_that_status_could_not_name_keeps_its_message(self):
+        text = self.lines({"ok": False, "error": {"code": "service_state_unknown", "message": "state is unknown",
+                                                  "details": [{"field": "node", "node": None, "node_id": None,
+                                                               "message": "the service inventory could not run"},
+                                                              {"field": "node", "node": "host-2", "node_id": None,
+                                                               "message": "probe unreachable"}]}})
+        self.assertIn("  not observed: a node that the inventory could not name: "
+                      "the service inventory could not run", text)
+        self.assertIn("  not observed: node host-2 (node ID not known): probe unreachable", text)
+        self.assertNotIn("not observed (not observed)", text)
+
+    def test_a_verified_status_of_a_modified_recipe_says_so(self):
+        result = {"kind": "pulsar-serving-observation", "state": "running", "verified": True, "healthy": True,
+                  "reason": None, "api_url": "http://192.0.2.1:8000", "selected_spec_id": "a" * 64,
+                  "spec_id": "b" * 64, "matches_selected_spec": False}
+        text = self.lines({"ok": True, "result": result})
+        self.assertIn("  selected spec " + "a" * 64, text)
+        self.assertIn("  effective spec " + "b" * 64, text)
+        self.assertIn("  matches selected spec no", text)
+        self.assertIn("MODIFIED RECIPE", text)
+        text = self.lines({"ok": True, "result": {**result, "spec_id": "a" * 64, "matches_selected_spec": True}})
+        self.assertIn("  matches selected spec yes", text)
+        self.assertNotIn("MODIFIED RECIPE", text)
+        self.assertNotIn("effective spec", text)
+        del result["matches_selected_spec"]  # the two spec IDs alone are enough to say so
+        self.assertIn("MODIFIED RECIPE", self.lines({"ok": True, "result": result}))
 
     def test_a_verified_status_gives_state_health_and_no_reason(self):
         text = self.lines({"ok": True, "result": {"kind": "pulsar-serving-observation", "state": "running",
@@ -82,8 +149,15 @@ class Summary(unittest.TestCase):
         self.assertNotIn("python", text)
 
     def test_another_document_is_refused(self):
-        with self.assertRaises(ValueError):
-            summarize_state.summarize([1, 2], NOW)
+        for document in ([1, 2], {"ok": True, "result": None}, {"ok": True, "result": {"state": "running"}},
+                         {"ok": True, "result": {"kind": "pulsar-topology-observation", "result": "changed"}},
+                         {"ok": False}, {"ok": False, "error": {"message": "no code"}},
+                         {"ok": True, "result": {"kind": "pulsar-service-status", "services": ["text"]}},
+                         {"schema_version": 1, "nodes": {"head": "text"}, "services": []},
+                         {"schema_version": 1, "nodes": {}, "services": [{"ranks": "text"}]},
+                         {"kind": "pulsar-doctor", "checks": ["text"]}):
+            with self.subTest(document=document), self.assertRaises(ValueError):
+                summarize_state.summarize(document, NOW)
         self.assertEqual(summarize_state.main(["/nonexistent/state.json"]), 2)
 
 

@@ -6,7 +6,9 @@
 
 It reads one file and contacts nothing. Where the document does not establish
 a value it prints `not observed`: unknown is not absent. The output names
-nodes by hostname, so keep it out of tracked files.
+nodes by hostname, so keep it out of tracked files. An error envelope is
+shown by its code, whatever command wrote it; a successful result of any
+other command is refused.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import sys
 from datetime import datetime, timezone
 
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
+STATUS_KINDS = ("pulsar-serving-observation", "pulsar-service-status")
 
 
 def shown(value) -> str:
@@ -49,11 +52,16 @@ def service_lines(service: dict, names: dict | None = None) -> list[str]:
     observed, expected = service.get("observed_ranks"), service.get("expected_ranks")
     ranks = (f"ranks {len(observed)}/{len(expected)} observed"
              if isinstance(observed, list) and isinstance(expected, list) else "ranks not observed")
+    by_rank = sorted(service.get("ranks") or [], key=lambda rank: str(rank.get("rank") or "0"))
+    running_port = by_rank[0].get("observed_api_port") if by_rank else None
     lines = [f"service {name}: {shown(service.get('state'))}, {shown(service.get('ownership'))}, {ranks}",
-             f"  port {shown(service.get('api_port'))} · safe to stop {shown(service.get('safe_to_stop'))}"
+             f"  API port: runs with {shown(running_port)} · configured now {shown(service.get('api_port'))}",
+             f"  safe to stop {shown(service.get('safe_to_stop'))}"
              f" · matches selected spec {shown(service.get('matches_selected_spec'))}"]
     if service.get("spec_id"):
-        lines.append(f"  spec {service['spec_id']}")
+        lines.append(f"  effective spec {service['spec_id']}")
+    if service.get("matches_selected_spec") is False:
+        lines.append(f"  selected spec {shown(service.get('selected_spec_id'))}")
     for reason in (service.get("reasons") or [])[:3]:
         lines.append(f"  reason: {reason}")
     for rank in service.get("ranks") or []:
@@ -73,6 +81,8 @@ def inventory_lines(document: dict, now: datetime) -> list[str]:
     unobserved = []
     for key, node in nodes.items():
         probe = node.get("probe_status") or "unknown"
+        if probe == "unset" and not (node.get("confirmed") or node.get("node_id")):
+            continue  # the placeholder that inventory writes when no other node is confirmed
         if probe == "ok":
             observed = "observed"
         else:
@@ -112,22 +122,42 @@ def doctor_lines(document: dict) -> list[str]:
 
 def envelope_lines(document: dict, now: datetime) -> list[str]:
     if not document.get("ok"):
-        error = document.get("error") or {}
-        lines = [f"error {shown(error.get('code'))}: {shown(error.get('message'))}"]
+        error = document.get("error")
+        if not (isinstance(error, dict) and isinstance(error.get("code"), str)):
+            raise ValueError("the envelope has no error code")
+        lines = [f"error {error['code']}: {shown(error.get('message'))}"]
         for detail in error.get("details") or []:
-            if isinstance(detail, dict) and ("node" in detail or "node_id" in detail):
-                lines.append(f"  not observed: node {shown(detail.get('node'))} ({shown(detail.get('node_id'))})")
+            if not (isinstance(detail, dict) and ("node" in detail or "node_id" in detail)):
+                continue
+            if detail.get("node") or detail.get("node_id"):
+                who = f"node {detail.get('node') or 'with no name'} ({detail.get('node_id') or 'node ID not known'})"
+            else:
+                who = "a node that the inventory could not name"
+            message = f": {detail['message']}" if detail.get("message") else ""
+            lines.append(f"  not observed: {who}{message}")
         return lines
     result = document.get("result")
-    if not isinstance(result, dict):
-        return ["ok: the result is not an object"]
-    if result.get("kind") == "pulsar-doctor":
+    kind = result.get("kind") if isinstance(result, dict) else None
+    if kind == "pulsar-doctor":
         return doctor_lines(result)
-    lines = [f"{shown(result.get('kind'))}: state {shown(result.get('state'))} · verified "
+    if kind not in STATUS_KINDS:
+        raise ValueError("the result is not a status or doctor document")
+    lines = [f"{kind}: state {shown(result.get('state'))} · verified "
              f"{shown(result.get('verified'))} · healthy {shown(result.get('healthy'))}",
              f"  API {shown(result.get('api_url'))}"]
     if result.get("reason"):
         lines.append(f"  reason: {result['reason']}")
+    selected, effective = result.get("selected_spec_id"), result.get("spec_id")
+    if selected:
+        lines.append(f"  selected spec {selected}")
+    if effective and effective != selected:
+        lines.append(f"  effective spec {effective}")
+    if "matches_selected_spec" in result:
+        lines.append(f"  matches selected spec {shown(result.get('matches_selected_spec'))}")
+    matches = result.get("matches_selected_spec")
+    differs = matches is False or (matches is None and bool(selected and effective and effective != selected))
+    if result.get("verified") and differs:
+        lines.append("  MODIFIED RECIPE: the service runs with execution overrides, not the selected recipe")
     for service in result.get("services") or []:
         lines.extend(service_lines(service))
     return lines
@@ -136,13 +166,17 @@ def envelope_lines(document: dict, now: datetime) -> list[str]:
 def summarize(document, now: datetime | None = None) -> list[str]:
     """The summary lines of one saved document; ValueError when it is none of the three."""
     now = now or datetime.now(timezone.utc)
-    if isinstance(document, dict):
-        if "ok" in document:
-            return envelope_lines(document, now)
-        if document.get("kind") == "pulsar-doctor":
-            return doctor_lines(document)
-        if isinstance(document.get("nodes"), dict) and "services" in document:
-            return inventory_lines(document, now)
+    try:
+        if isinstance(document, dict):
+            if "ok" in document:
+                return envelope_lines(document, now)
+            if document.get("kind") == "pulsar-doctor":
+                return doctor_lines(document)
+            if isinstance(document.get("nodes"), dict) and "services" in document:
+                return inventory_lines(document, now)
+    except (AttributeError, KeyError, TypeError) as error:
+        # A part that must be an object or a list is something else: not one of the three documents.
+        raise ValueError(f"the document is malformed ({error})") from error
     raise ValueError("not an inventory, status or doctor document")
 
 

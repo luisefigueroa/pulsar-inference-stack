@@ -40,18 +40,19 @@ python3 skills/pulsar-cluster-state-summary/summarize_state.py "$OUT/inventory.j
 
 The script reads that one file and contacts nothing. It recognizes the three
 documents above. It exits 2 for a file that is none of them, so an error
-message in place of JSON does not pass as a summary. Read the saved exit
-status beside it; see
+message in place of JSON, or the successful result of another command, does
+not pass as a summary. It shows an error envelope by its code, whatever
+command wrote it. Read the saved exit status beside it; see
 [error codes and exit statuses](../../docs/CONTRACT.md#error-codes-and-exit-statuses).
 
 For an inventory it prints the time of the observation and its age, each
 node with whether it was observed and its available memory, each service
-with its state, its owner, the ranks observed, its port and whether a stop
-is safe, each rank with its node and its measured GPU memory, and each GPU
-process that Stack does not manage. For status it prints the state,
-`verified`, `healthy` and the API address, or the error code with the nodes
-that were not observed. For doctor it prints the result and each check that
-is not `ok`.
+with its state, its owner, the ranks observed, its API port and whether a
+stop is safe, each rank with its node and its measured GPU memory, and each
+GPU process that Stack does not manage. For status it prints the state,
+`verified`, `healthy`, the API address and the selected spec, or the error
+code with the nodes that were not observed. For doctor it prints the result
+and each check that is not `ok`.
 
 ## 3. Read the summary with these rules
 
@@ -61,6 +62,17 @@ is not `ok`.
   `NOT OBSERVED` line. Nothing is known about services or GPU processes on
   that node, and `none observed on the nodes that answered` does not mean
   that nothing runs.
+- **A cluster of one node has no second node to observe.** The inventory
+  then holds a placeholder entry named `worker` with the probe status
+  `unset`. It is not a node, and the summary leaves it out.
+- **The port that a service runs with can differ from the port configured
+  now.** `runs with` is the port of the running API container; use it to
+  reach the service. `configured now` is today's configuration.
+- **A verified service can run a modified recipe.** Status verifies the
+  service against its own launch record. When `matches selected spec` is
+  `no`, the summary gives the selected spec and the effective spec and says
+  `MODIFIED RECIPE`; measurements of the selected recipe are then reference
+  only.
 - **Status has two different answers of "no service".** `service_absent`
   (exit 1) means that every node was observed and none has the service.
   `service_state_unknown` (exit 3) means that Stack could not tell.
@@ -80,9 +92,9 @@ These are the names in the inventory document:
   `mem_total_gib`, `hostname`, `node_id`.
 - Each service: `state`, `ownership`, `safe_to_stop`, `complete`,
   `expected_ranks`, `observed_ranks`, `api_port`, `spec_id`,
-  `matches_selected_spec`, `reasons`, `ranks`.
-- Each rank: `rank`, `node`, `running`, `status`, and `measured_mib` in
-  `gpu_memory`.
+  `selected_spec_id`, `matches_selected_spec`, `reasons`, `ranks`.
+- Each rank: `rank`, `node`, `running`, `status`, `observed_api_port`, and
+  `measured_mib` in `gpu_memory`.
 
 The status result is described in
 [the contract](../../docs/CONTRACT.md#public-operations). The doctor document
