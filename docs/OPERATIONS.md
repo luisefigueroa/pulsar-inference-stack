@@ -1724,7 +1724,10 @@ needs, which the operator approves once.
    login warns, an unreachable Hub is not checked), the prepare plan once
    every snapshot has a home, the image plan and Start's dry run. Missing
    files come from files found on a node that no record names, then the
-   archive, then a download to the first serving node. The steps follow in a
+   archive, then a download to the first serving node. Download and Restore
+   take a multi-node recipe's home only on a saved rank below its node
+   count, so for a pair at other saved ranks of a ring the files go to the
+   first of those nodes and Prepare copies them to the pair. The steps follow in a
    fixed order: files, copies (Prepare takes over copies that still verify and
    counts them as not copied; where another recipe's prepared copy already
    holds the same files on a serving node, Prepare records it for this recipe
@@ -1928,7 +1931,8 @@ the page, and the page itself says on which nodes it found such files. Its plan:
   reuse (`model acquire SPEC [--snapshot NAME] --node NODE`). The step holds
   only if Download's preview answers `reuse` for that node; it never
   downloads. A recipe that serves on several nodes keeps its home on one of
-  them, so the folder must be on one of its serving nodes.
+  them that is on a saved rank below its node count (on a ring, a pair at
+  other ranks keeps it on such a node instead), so the folder must be there.
 - `Take over the copies of MODEL found on NODES after checking every file`, one
   step per recipe: `model prepare SPEC --adopt-unrecorded` (see [Prepare all
   serving nodes](#prepare-all-serving-nodes)), the only place the menu passes

@@ -316,6 +316,26 @@ class Pairs(unittest.TestCase):
         self.assertEqual(serve.ring_pairs(self.topology),
                          [(IDS[0], IDS[1]), (IDS[0], IDS[3]), (IDS[1], IDS[2]), (IDS[2], IDS[3])])
 
+    def test_files_without_a_home_go_where_acquire_and_restore_take_a_home(self):
+        # Acquire and Restore take a two-node recipe's home only on saved rank 0 or 1. A pair at
+        # ranks 2 and 3 gets its files there, and Prepare copies them to the pair.
+        order = [node["node_id"] for node in self.topology["nodes"]]
+        bare = recipe(2, home=None, local_state="missing", archive_state="verified")
+        for serving, expected in (([IDS[2], IDS[3]], IDS[0]), ([IDS[1], IDS[2]], IDS[1]),
+                                  ([IDS[0], IDS[1]], IDS[0]), ([IDS[3], IDS[0]], IDS[0])):
+            with self.subTest(serving=serving):
+                for archive in ("configured", "disabled"):
+                    sources = serve.file_sources(bare, serving=serving, order=order, archive_location=archive)
+                    self.assertEqual({item["node"] for item in sources}, {expected})
+                self.assertIn(expected, order[:2])
+        self.assertEqual(serve.home_nodes(2, [IDS[2], IDS[3]], order), order[:2])
+        self.assertEqual(serve.home_nodes(1, [IDS[3]], order), order)
+        # Files found on a pair's node cannot be registered as its home there.
+        manifest = next(iter(serve.members(bare).values())).get("snapshot_manifest_id")
+        found = serve.file_sources(bare, serving=[IDS[2], IDS[3]], order=order, archive_location="disabled",
+                                   files={str(manifest): [IDS[2]]})
+        self.assertEqual([(item["kind"], item["node"]) for item in found], [("download", IDS[0])])
+
     def test_start_accepts_every_pair_in_the_order_offered(self):
         from scripts.start_placement import ordinary_start_refusal
         for pair in serve.ring_pairs(self.topology):

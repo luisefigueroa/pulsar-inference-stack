@@ -605,6 +605,19 @@ def node_lines(row: dict, order: list[str], names: NodeNames, *, width: int) -> 
 # Where missing files come from
 # ---------------------------------------------------------------------------
 
+def home_nodes(count: int, serving: list[str], order: list[str]) -> list[str]:
+    """Where Download, Restore and Register may put the home of a recipe on
+    COUNT nodes. One node: any confirmed node. More: Acquire and Restore take
+    a home only on a saved rank below COUNT, so its serving nodes among those;
+    when the chosen nodes hold none of them, such as a pair at saved ranks 2
+    and 3 of a ring, those default nodes, and Prepare copies to the pair. The
+    home may be outside the nodes that serve."""
+    if count == 1:
+        return list(order)
+    default = list(order[:count])
+    return [node for node in serving if node in default] or default
+
+
 def file_sources(row: dict, *, serving: list[str], order: list[str], archive_location: str,
                  files: dict[str, list[str]] | None = None, source: str | None = None,
                  files_node: str | None = None, not_found: frozenset = frozenset()) -> list[dict]:
@@ -613,10 +626,12 @@ def file_sources(row: dict, *, serving: list[str], order: list[str], archive_loc
     a download. SOURCE (archive or download) is the operator's Change…, which
     skips found files. FILES_NODE is where restored or downloaded files go:
     the first serving node unless the operator changes it (D9); a multi-node
-    recipe keeps them on one of its serving nodes. NOT_FOUND names snapshots
-    whose found files Download's own plan did not take."""
-    allowed = serving if row["geometry"]["nodes"] > 1 else order
-    destination = files_node if files_node in allowed else (serving[0] if serving else None)
+    recipe keeps them on a node that home_nodes allows, one of its serving
+    nodes where it can. NOT_FOUND names snapshots whose found files
+    Download's own plan did not take."""
+    allowed = home_nodes(row["geometry"]["nodes"], serving, order)
+    first = serving[0] if serving and serving[0] in allowed else (allowed[0] if allowed else None)
+    destination = files_node if files_node in allowed else first
     result = []
     snapshots = members(row)
     for name in without_home(row):
@@ -1812,10 +1827,9 @@ def main(argv: list[str] | None = None) -> int:
             if image is not None:
                 facts = image.get("facts") or {}
                 print(f"image\t{facts.get('mode')}\t{int(bool(facts.get('copy_possible')))}")
-            # Where restored or downloaded files can go: a serving node of a
-            # multi-node recipe, any node of a one-node recipe.
+            # Where restored or downloaded files can go (home_nodes).
             if kinds & {"restore", "download"}:
-                allowed = plan["serving"] if len(plan["serving"]) > 1 else names.order
+                allowed = home_nodes(len(plan["serving"]), plan["serving"], names.order)
                 current = next(step["node"] for step in plan["steps"] if step["kind"] in ("restore", "download"))
                 for node_id in allowed:
                     print(f"destination\t{node_id}\t{names(node_id)}{' (now)' if node_id == current else ''}")
