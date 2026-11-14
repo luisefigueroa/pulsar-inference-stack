@@ -202,11 +202,14 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
 
 def copies_needed(row: dict, serving: list[str]) -> int:
     """Serving nodes still to receive a copy, from saved records: those that hold
-    neither a home nor a prepared copy recorded for this recipe. A saved record
-    is not proof the copy still verifies; the plan's own preview says."""
-    homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
+    neither the home of every required snapshot nor a prepared copy recorded
+    for this recipe. A node with one snapshot's home still needs a copy of a
+    snapshot whose home is elsewhere. A saved record is not proof the copy
+    still verifies; the plan's own preview says."""
+    homes = [(member.get("home") or {}).get("node_id") for member in members(row).values()]
     copied = {view.get("node_id") for view in row.get("prepared_copies") or []}
-    return len([node for node in serving if node not in homes and node not in copied])
+    return len([node for node in serving
+                if not (homes and all(home == node for home in homes)) and node not in copied])
 
 
 def _facts(rows: list[dict]) -> dict[str, list[str]]:
@@ -580,6 +583,16 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
     homes |= {found["node"] for found in sources or []}
     homes.discard(None)
+    # Where each required snapshot's files are, or will be after its files step.
+    placed = {name: (member.get("home") or {}).get("node_id") for name, member in members(row).items()}
+    placed.update({found["snapshot"]: found["node"] for found in sources or []})
+
+    def lacking(nodes: list[str]) -> list[str]:
+        """The serving nodes that lack a required snapshot. Each node needs every
+        snapshot, so a node that holds one snapshot's home still needs a copy of
+        a snapshot whose home is on another node."""
+        return [item for item in nodes if not placed or any(node != item for node in placed.values())]
+
     each = [sizes.get(name) for name in members(row)]
     amount = _kept(short_size(sum(each))) if each and all(value is not None for value in each) else None
 
@@ -588,7 +601,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         lead = "Copy them" if sources else (
             f"Copy the model files from {_list([names(item) for item in sorted(homes)])}" if homes
             else "Copy the model files")
-        size = f" ({amount}{' each' if len(targets) > 1 else ''})" if amount else ""
+        # A node that holds one snapshot's home needs the others only: the figure is a ceiling there.
+        most = "up to " if any(item in homes for item in targets) else ""
+        size = f" ({most}{amount}{' each' if len(targets) > 1 else ''})" if amount else ""
         return f"{lead} to {_list([names(item) for item in targets])}{size}{tail}"
 
     if prepare is not None or sources or row.get("local_state") != "ready" or not row.get("checked_at"):
@@ -621,12 +636,12 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         elif prepare is not None:
             error = error or {"message": "its preview did not return a plan"}
             blocked.append(f"Copying the files cannot be planned: {clean(error.get('message') or 'its preview failed')}.")
-            step["facts"] = {"copy_to": [item for item in serving if item not in homes]}
+            step["facts"] = {"copy_to": lacking(serving)}
             step["sentence"] = "Copy the model files to the serving nodes that lack them."
             step["changes"] = "writes prepared copies"
         else:
             # No home yet, or no preview: Prepare's own plan runs when its turn comes.
-            targets = [item for item in serving if item not in homes]
+            targets = lacking(serving)
             step["facts"] = {"copy_to": targets}
             if targets:
                 step["sentence"] = copy_sentence(targets, "; a copy there that still verifies is taken over, not "

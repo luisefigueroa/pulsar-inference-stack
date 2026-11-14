@@ -651,6 +651,30 @@ class NeedsEverything(Harness):
         self.assertEqual(self.menus()[2], ["Serve a model", "Plan again from the state as it is now", "Back"])
         self.assert_plain_choices()
 
+    def test_planning_again_reads_the_saved_records_again(self):
+        # The download ran, then step 2 stopped the run. The saved records now give the files a home,
+        # so the new plan must not download them a second time.
+        self.fixture("prepare-plan", envelope(prepare_plan(("n0", "copy"), ("n1", "copy"), ("n2", "copy"))))
+        after = self.root / "catalog-after.json"
+        after.write_text(json.dumps({"entries": [
+            checked(home=HOME, local_state="missing"),
+            checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready")]}))
+        # The catalog double answers from the later records once the download has run.
+        shim = self.root / "bin" / "python3"
+        shim.write_text('#!/usr/bin/env bash\n'
+                        'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ] && [ "${3:-}" = list ]; then\n'
+                        f'  if grep -q "^model acquire .* --yes$" "$PULSAR_LOG" 2>/dev/null; then exec cat "{after}"; fi\n'
+                        '  exec cat "$CATALOG_FILE"\n'
+                        f'fi\nexec {sys.executable} "$@"\n')
+        result = self.run_menu(["0", "Go ahead", "Plan again from the state as it is now", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [f"model acquire {SPEC} --node spark-1 --yes"])
+        # hf is checked on the node of a download. The first plan has a download and the second has none.
+        self.assertEqual(self.commands().count("prerequisites n0"), 1, self.commands())
+        # The second plan asks Prepare for its own plan, which a plan can do only for files with a home.
+        self.assertEqual(self.commands().count(f"model prepare {SPEC} --plan --json"), 2, self.commands())
+        self.assert_plain_choices()
+
     def test_an_interrupted_step_is_inspected_before_any_retry(self):
         self.fixture("acquire", rc=130)
         result = self.run_menu(["0", "Go ahead", "Check its files now (read-only)", "Continue"])

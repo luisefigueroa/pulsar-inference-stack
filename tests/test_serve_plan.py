@@ -306,6 +306,42 @@ class Compose(unittest.TestCase):
                                            "not copied again.")
         self.assertEqual(step["facts"], {"copy_to": ["n2"]})
 
+    def test_a_node_with_one_snapshots_home_still_gets_a_copy_of_the_other_snapshot(self):
+        # The target's home is on n0 and the draft's files were found on n1. Every serving node needs
+        # both snapshots, so n0 and n1 each get a copy too; Prepare's own plan would be refused as a
+        # copy to an unapproved node otherwise.
+        member = {"model_id": "org/model", "model_commit": "c" * 40, "archive": None}
+        state = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
+                               "draft": {**member, "home": None, "snapshot_manifest_id": "2" * 64}})
+        sources = serve.file_sources(state, serving=["n0", "n1", "n2"], order=NAMES.order,
+                                     archive_location="disabled", files={"2" * 64: ["n1"]})
+        self.assertEqual([(item["snapshot"], item["kind"], item["node"]) for item in sources],
+                         [("draft", "register", "n1")])
+        prepare = next(step for step in self.plan(state, sources=sources)["steps"] if step["kind"] == "prepare")
+        self.assertEqual(prepare["facts"], {"copy_to": ["n0", "n1", "n2"]})
+        # With sizes known, the figure is a ceiling: spark-1 and spark-2 each hold one snapshot already.
+        sized = serve.compose(state, everything(state), names=NAMES, inventory=inventory(), sources=sources,
+                              sizes={"target": 200 * GIB, "draft": 12 * GIB})
+        prepare = next(step for step in sized["steps"] if step["kind"] == "prepare")
+        self.assertEqual(prepare["sentence"].replace(serve.KEEP, " "),
+                         "Copy them to spark-1, spark-2 and spark-3 (up to 212 GiB each); a copy there that still "
+                         "verifies is taken over, not copied again.")
+        # The list's count of copies still needed says the same from saved records.
+        apart = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
+                               "draft": {**member, "home": {**HOME, "node_id": "n1"},
+                                         "snapshot_manifest_id": "2" * 64}})
+        self.assertEqual(serve.copies_needed(apart, ["n0", "n1", "n2"]), 3)
+        together = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
+                                  "draft": {**member, "home": HOME, "snapshot_manifest_id": "2" * 64}})
+        self.assertEqual(serve.copies_needed(together, ["n0", "n1", "n2"]), 2)
+        # With both snapshots on one node, only the other nodes get copies, as before.
+        state = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
+                               "draft": {**member, "home": None, "snapshot_manifest_id": "2" * 64}})
+        sources = serve.file_sources(state, serving=["n0", "n1", "n2"], order=NAMES.order,
+                                     archive_location="disabled", files={"2" * 64: ["n0"]})
+        prepare = next(step for step in self.plan(state, sources=sources)["steps"] if step["kind"] == "prepare")
+        self.assertEqual(prepare["facts"], {"copy_to": ["n1", "n2"]})
+
     def test_hf_on_the_download_node_blocks_warns_or_is_not_checked(self):
         state = row()
         sources = serve.file_sources(state, serving=["n0", "n1", "n2"], order=NAMES.order,

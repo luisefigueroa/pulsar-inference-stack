@@ -2162,7 +2162,10 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", mixed)[0], "Copy 2.00 GiB to spark-2 (1 new copy, 0 reused, 1 taken over).")
         self.assertEqual(menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES),
                          "Prepare org/model on spark-1, spark-2? 1 new copy, 0 reused, 1 taken over. It takes over "
-                         "1 copy made before the cluster's membership changed; nothing is copied or deleted.")
+                         "1 copy made before the cluster's membership changed; that copy is not copied again or "
+                         "deleted.")
+        # A plan that writes new copies never says that nothing is copied.
+        self.assertNotIn("nothing is copied", menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES))
         # The full preview names the action, and the estimate counts it as existing files.
         from model_library.render import preparation_estimate
         _, nodes = preparation_estimate([mixed])

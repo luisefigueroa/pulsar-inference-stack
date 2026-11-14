@@ -452,6 +452,19 @@ details_menu() {
 # serve_recipe SPEC: the machine question, then the plan until Cancel or a
 # run. Returns 0, or 4 after a run (home redraws), or 130.
 RAN=4
+# Plan again reads the saved records again: a step that ran, such as a download, changed them,
+# and a plan from the earlier records would list that step a second time.
+reload_catalog() {
+  local fresh rc=0
+  if ! fresh=$(python3 -m model_library.catalog list --json); then
+    printf '\n✗ The catalog could not be read; the reason is above.\n'
+    wait_continue "Catalog error" || rc=$?
+    [ "$rc" -ne 130 ] || return 130
+    return 1
+  fi
+  CATALOG=$fresh
+}
+
 serve_recipe() {
   SPEC="$1" NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE="" NOT_FOUND=()
   local rc=0 action label choice
@@ -473,11 +486,13 @@ serve_recipe() {
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "${actions[$choice]}" in
-      go) run_plan || rc=$?; [ "$rc" -ne 5 ] || continue; return "$rc" ;;
+      go) run_plan || rc=$?; [ "$rc" -eq 5 ] || return "$rc"
+        reload_catalog || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }; continue ;;
       ready)
         # The same previews without the Stop and the Start: its steps were shown above.
         printf '%s' "$CATALOG" | serve_plan compose "${COMPOSE_ARGS[@]}" --ready-only --out "$PLAN" || return 0
-        run_plan || rc=$?; [ "$rc" -ne 5 ] || continue; return "$rc" ;;
+        run_plan || rc=$?; [ "$rc" -eq 5 ] || return "$rc"
+        reload_catalog || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }; continue ;;
       change) change_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       details) details_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
       *) return 0 ;;

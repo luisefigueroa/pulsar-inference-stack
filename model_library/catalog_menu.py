@@ -1596,13 +1596,16 @@ def plan_effect(action: str, plan: dict) -> dict:
     return {"nothing": False}
 
 
-def _taken_over(count: int) -> str:
+def _taken_over(count: int, beside_copies: bool = False) -> str:
     """The sentence for Prepare's takeovers: copies made before the cluster's
     membership changed, whose files still verify, recorded for the current
-    membership without copying or deleting anything."""
+    membership without copying or deleting anything. With BESIDE_COPIES the
+    same plan also writes new copies, so the sentence speaks of the copies it
+    takes over and not of the whole plan."""
     copies = "copy" if count == 1 else "copies"
-    return (f"It takes over {count} {copies} made before the cluster's membership changed; "
-            "nothing is copied or deleted.")
+    kept = ("nothing is copied or deleted" if not beside_copies
+            else ("that copy is" if count == 1 else "those copies are") + " not copied again or deleted")
+    return f"It takes over {count} {copies} made before the cluster's membership changed; {kept}."
 
 
 def _adopted(count: int) -> str:
@@ -1854,9 +1857,10 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         if effect["nothing"]:
             return (f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files "
                     f"already there.{taken}")
+        beside = f" {_taken_over(effect['taken_over'], beside_copies=True)}" if effect["taken_over"] else ""
         return (f"Prepare {model} on {where}? {_count(effect['copied'], 'new copy', 'new copies')}, "
                 f"{effect['reused']} reused" + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
-                + f".{taken}")
+                + f".{beside}")
     if action in ("pin", "unpin"):
         effect = plan_effect(action, plan)
         verb = LABELS[action].split()[0]
