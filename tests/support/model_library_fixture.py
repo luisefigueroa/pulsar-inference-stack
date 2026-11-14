@@ -400,28 +400,7 @@ class Fixture:
         (hub / "__init__.py").write_text(imports)
         (hub / "hf_api.py").write_text('from . import RepoFile\n')
         envfile = self.root / "env.sh"
-        def array(values): return "(" + " ".join(shlex.quote(str(x)) for x in values) + ")"
-        envfile.write_text(f'''
-. {shlex.quote(str(self.repo/'scripts/lib.sh'))}
-export PULSAR_HOME_ROOT={shlex.quote(self.cfg['configured_home_root'])}
-export PULSAR_HOT_ROOT={shlex.quote(self.cfg['configured_view_root'])}
-load_cluster_topology() {{
-  CLUSTER_TOPOLOGY_COUNT={nodes}; CLUSTER_TOPOLOGY_ID={topology['topology_id']}; CLUSTER_TOPOLOGY_LOADED=1
-  CLUSTER_NODE_IDS={array(n['node_id'] for n in topology['nodes'])}
-  CLUSTER_NODE_HOSTNAMES={array(n['hostname'] for n in topology['nodes'])}
-  CLUSTER_NODE_SSH_HOSTS={array(n['ssh_host'] for n in topology['nodes'])}
-  CLUSTER_NODE_CONTROL_IPS={array(n['control']['ip'] for n in topology['nodes'])}
-  CLUSTER_NODE_CONTROL_IFS={array(n['control']['interface'] for n in topology['nodes'])}
-  CLUSTER_PROFILE_HCAS={array('roce0' for n in topology['nodes'])}
-}}
-require_cluster_nodes() {{ load_cluster_topology; [ "$CLUSTER_TOPOLOGY_COUNT" -ge "${{1:-1}}" ]; }}
-require_profile_topology() {{ require_cluster_nodes "$NODES"; }}
-require_topology_ssh_trust() {{ return 0; }}
-ssh_node() {{
-  local target_rank="$1"; shift
-  python3 {shlex.quote(str(support))} control "$target_rank" "$*"
-}}
-''')
+        self.write_env()
         self.env = {**os.environ, "MODEL_LIBRARY_FIXTURE": str(self.config_path), "MODEL_LIBRARY_FIXTURE_ROOT": str(self.root), "FIXTURE_RANK": "0",
             "BASH_ENV": str(envfile), "PYTHONPATH": str(module_root) + os.pathsep + str(self.repo),
             "PYTHONDONTWRITEBYTECODE": "1", "PULSAR_MODEL_LIBRARY_DIR": str(self.state),
@@ -443,6 +422,62 @@ ssh_node() {{
         self.manifest_path = self.root / "manifest.json"
         self.spec_path = self.root / "candidate.json"
         self.spec = None
+
+    def write_env(self):
+        """The shell environment: lib.sh with this fixture's confirmed topology."""
+        topology, nodes, support = self.topology, len(self.topology["nodes"]), Path(__file__).resolve()
+        def array(values): return "(" + " ".join(shlex.quote(str(x)) for x in values) + ")"
+        (self.root / "env.sh").write_text(f'''
+. {shlex.quote(str(self.repo/'scripts/lib.sh'))}
+export PULSAR_HOME_ROOT={shlex.quote(self.cfg['configured_home_root'])}
+export PULSAR_HOT_ROOT={shlex.quote(self.cfg['configured_view_root'])}
+load_cluster_topology() {{
+  CLUSTER_TOPOLOGY_COUNT={nodes}; CLUSTER_TOPOLOGY_ID={topology['topology_id']}; CLUSTER_TOPOLOGY_LOADED=1
+  CLUSTER_NODE_IDS={array(n['node_id'] for n in topology['nodes'])}
+  CLUSTER_NODE_HOSTNAMES={array(n['hostname'] for n in topology['nodes'])}
+  CLUSTER_NODE_SSH_HOSTS={array(n['ssh_host'] for n in topology['nodes'])}
+  CLUSTER_NODE_CONTROL_IPS={array(n['control']['ip'] for n in topology['nodes'])}
+  CLUSTER_NODE_CONTROL_IFS={array(n['control']['interface'] for n in topology['nodes'])}
+  CLUSTER_PROFILE_HCAS={array('roce0' for n in topology['nodes'])}
+}}
+require_cluster_nodes() {{ load_cluster_topology; [ "$CLUSTER_TOPOLOGY_COUNT" -ge "${{1:-1}}" ]; }}
+require_profile_topology() {{ require_cluster_nodes "$NODES"; }}
+require_topology_ssh_trust() {{ return 0; }}
+ssh_node() {{
+  local target_rank="$1"; shift
+  python3 {shlex.quote(str(support))} control "$target_rank" "$*"
+}}
+''')
+
+    def change_membership(self, order=None):
+        """A membership save: a new topology ID. ORDER lists the old positions in
+        their new order (this node stays first); without it, the same nodes keep
+        their positions and only re-recorded SSH identities change the ID."""
+        import itertools
+        from scripts import topology_manifest as tm
+        order = list(order or range(len(self.topology["nodes"])))
+        assert order[0] == 0 and sorted(order) == list(range(len(order)))
+        old = self.topology["nodes"]
+        nodes = [dict(old[index], rank=rank) for rank, index in enumerate(order)]
+        if order == sorted(order):
+            key = nodes[-1]["ssh_host_keys"][0]
+            public = base64.b64encode(base64.b64decode(key["public_key"]) + b"-re-enrolled").decode()
+            nodes[-1] = dict(nodes[-1], ssh_host_keys=[dict(key, public_key=public,
+                                                            fingerprint=tm.host_key_fingerprint(public))])
+        address = lambda node: node["rdma"][0]["cidrs"][0].split("/")[0]
+        links = [dict(ranks=[a, b], rails=[dict(network="198.51.100.0/24",
+                 a=dict(hca="roce0", netdev="fabric0", ip=address(nodes[a])),
+                 b=dict(hca="roce0", netdev="fabric0", ip=address(nodes[b])))])
+                 for a, b in itertools.combinations(range(len(nodes)), 2)]
+        topology = {**self.topology, "nodes": nodes, "links": links}
+        topology["topology_id"] = tm.topology_digest(topology)
+        tm.validate_manifest(topology, require_verified=True)
+        self.topology = topology
+        (self.root / "topology.json").write_text(json.dumps(topology))
+        self.cfg["nodes"] = [dict(self.cfg["nodes"][index], rank=rank) for rank, index in enumerate(order)]
+        self.save()
+        self.write_env()
+        return topology
 
     def save(self): self.config_path.write_text(json.dumps(self.cfg))
 

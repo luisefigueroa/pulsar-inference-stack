@@ -13,7 +13,8 @@ for command, description in [
     ("show [--json]", "Read saved membership; no live probes."),
     ("check [--json]", "Check all saved nodes and fabric without saving."),
     ("detect [--json] [--candidate HOST ...]", "Discover without changing membership or SSH trust."),
-    ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys]", "Review and explicitly save membership; no model actions."),
+    ("configure [--candidate HOST ...] [--yes] [--accept-new-host-keys] [--remove-missing]", "Review and explicitly save membership; no model actions. --remove-missing saves without confirmed nodes that did not answer; it never leaves out a node that answered."),
+    ("forget [--plan] [--yes] [--json]", "Start over: remove saved membership, the generated SSH configuration and the saved observations of the cluster, after a private backup copy. Refused while a Pulsar service runs on a node that answers; model files, archives and records are kept."),
     ("menu", "Open the topology menu without probing; it needs a terminal with Gum."),
 ]:
     writer.emit(command, initial_indent="  ", subsequent_indent="    ", role="command")
@@ -32,7 +33,8 @@ review_candidates() {
   local -a labels actions added kept
   while true; do
     # Detect names this review's choices instead of the CLI's next steps.
-    if _PULSAR_SETUP_REVIEW=1 "$0" detect "${REVIEW_CANDIDATES[@]}"; then
+    # Inside guided setup, discovery also leaves its document for step 3.
+    if _PULSAR_SETUP_REVIEW=1 _PULSAR_SETUP_DISCOVERY="${SETUP_DISCOVERY:-}" "$0" detect "${REVIEW_CANDIDATES[@]}"; then
       detected=1
     else
       rc=$?; [ "$rc" -ne 130 ] || return 130
@@ -175,7 +177,9 @@ case "$action" in
           verb=was; [ "${#rejected[@]}" -eq 1 ] || verb=were
           printf "error: setup doesn't add machines to saved membership; %s %s not added.\n" "$hosts" "$verb"
           printf '  To add a machine, run ./pulsar topology configure %s\n' "$candidate_args"
-          printf '  or choose Cluster topology → Change membership… →\n    Configure membership or add a machine.\n'
+          printf '  or in the menu choose Help and troubleshooting… → Advanced: single\n'
+          printf '    operations… → Cluster topology → Change membership… →\n'
+          printf '    Configure membership or add a machine.\n'
           printf '  To discover without saving, run ./pulsar topology detect %s\n' "$candidate_args"
         } >&2
         exit 2
@@ -188,16 +192,69 @@ case "$action" in
       "./pulsar ssh-trust enroll --yes" "then enroll SSH trust for it"
     ui_keep_styles
     . "$REPO_DIR/scripts/lib.sh"
+    STEPS_TOOL="$REPO_DIR/scripts/setup_steps.py"
+    SETUP_WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-setup.XXXXXX")
+    trap 'rm -rf -- "$SETUP_WORK"' EXIT
+    FINDINGS="$SETUP_WORK/findings"
+    : >"$FINDINGS"
+    step() { python3 "$STEPS_TOOL" step "$@"; }
+    # Step 1: this machine's platform (Docker, GPU, RoCE links) and its
+    # prerequisites, each with its fix. A missing prerequisite never blocks.
+    this_machine() {
+      probe_node_json_for_rank 0 >"$SETUP_WORK/local.json" 2>/dev/null || rm -f "$SETUP_WORK/local.json"
+      probe_node_json_for_rank 0 --prerequisites-only >"$SETUP_WORK/local-prerequisites.json" 2>/dev/null \
+        || rm -f "$SETUP_WORK/local-prerequisites.json"
+      # The probe names this machine as discovery does; the shell's name is the fallback.
+      python3 "$STEPS_TOOL" machine "$(hostname -s 2>/dev/null || hostname)" --this-machine \
+        --probe "$SETUP_WORK/local.json" --prerequisites "$SETUP_WORK/local-prerequisites.json" --findings "$FINDINGS"
+    }
+    # Step 3: each machine discovery found, with discovery's strict SSH
+    # policy. Discovery verified its Docker, GPU and links; this asks for its
+    # prerequisites, which never decide whether it can be a member.
+    each_machine() {
+      local discovery="$1" ssh_host name answer
+      : >"$FINDINGS.machines"
+      if [ ! -s "$discovery" ]; then
+        echo '  No other machine was found; this machine is checked in step 1.'
+        return 0
+      fi
+      while IFS=$'\t' read -r ssh_host name; do
+        [ -n "$ssh_host" ] || continue
+        answer="$SETUP_WORK/prerequisites-$ssh_host.json"
+        "$PULSAR_SSH" -o StrictHostKeyChecking=yes -o UpdateHostKeys=no "${PULSAR_SSH_OPTS[@]}" -- "$ssh_host" \
+          "$(probe_node_remote_python_command "$ssh_host" --prerequisites-only)" \
+          <"$REPO_DIR/scripts/probe-node.py" >"$answer" 2>/dev/null || rm -f "$answer"
+        python3 "$STEPS_TOOL" machine "$name" --discovered --prerequisites "$answer" --findings "$FINDINGS.machines"
+      done < <(python3 "$STEPS_TOOL" machines "$discovery")
+      [ -s "$FINDINGS.machines" ] || echo '  Every other machine has its prerequisites.'
+    }
+    finish() {
+      local rc="$1"
+      cat "$FINDINGS.machines" >>"$FINDINGS" 2>/dev/null || true
+      echo
+      python3 "$STEPS_TOOL" summary --findings "$FINDINGS"
+      exit "$rc"
+    }
+    python3 "$REPO_DIR/scripts/terminal_format.py" --text <<'INTRO'
+Set up this cluster: 1. this machine, 2. find the machines, 3. check each machine, 4. save, 5. identities. Pulsar checks every prerequisite and says how to fix it; it installs nothing.
+INTRO
     if [ ! -e "$CLUSTER_TOPOLOGY_FILE" ]; then
-      echo 'No saved membership. Detecting candidates without saving first.'
+      step 1 "This machine"
+      this_machine
       while true; do
+        step 2 "Find the machines"
+        echo 'No saved membership. Detecting candidates without saving first.'
         # Leaving the review ends setup without membership, which is not success.
-        review_candidates "${setup_detect_flags[@]}" || {
+        rm -f "$SETUP_WORK/discovery.json"
+        SETUP_DISCOVERY="$SETUP_WORK/discovery.json" review_candidates "${setup_detect_flags[@]}" || {
           rc=$?; [ "$rc" -ne 130 ] || exit 130
           echo 'Setup stopped before saving cluster membership.'
           exit 1
         }
         setup_detect_flags=("${REVIEW_CANDIDATES[@]}")
+        step 3 "Check each machine"
+        each_machine "$SETUP_WORK/discovery.json"
+        step 4 "Save"
         # Standalone configure keeps exit 0 for a declined save. Only this
         # coordinator requests a distinct cancellation result; file existence
         # cannot tell a save from a concurrent writer after a declined prompt.
@@ -213,17 +270,24 @@ case "$action" in
         fi
       done
     elif "$0" show >/dev/null 2>&1; then
-      :
+      step 1 "This machine"
+      this_machine
+      : >"$FINDINGS.machines"
+      python3 "$REPO_DIR/scripts/terminal_format.py" --text <<'SAVED'
+
+Steps 2 to 4: membership is already saved, so setup uses it and adds no machine. Check the cluster now, under Cluster…, checks every node's prerequisites.
+SAVED
     else
       rc=$?; [ "$rc" -ne 130 ] || exit 130
       "$0" show || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
       echo 'Saved membership is invalid. Running diagnostic discovery without replacing it.'
       "$0" detect "${setup_detect_flags[@]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
-      echo 'Saved membership was not changed. Inspect it before explicit topology configure.'
+      echo 'Saved membership was not changed. To start over, run ./pulsar topology forget; it keeps a private backup copy.'
       exit 1
     fi
     # A cancelled configuration, invalid membership or failed enrollment cannot
     # fall through to a success message or trigger a model operation.
+    step 5 "Identities"
     "$0" show || exit $?
     if "$REPO_DIR/scripts/topology-ssh-trust.sh" check; then
       :
@@ -234,7 +298,7 @@ case "$action" in
       "$REPO_DIR/scripts/topology-ssh-trust.sh" check || exit $?
     fi
     if "$0" check; then
-      exit 0
+      finish 0
     else
       rc=$?; [ "$rc" -ne 130 ] || exit 130
     fi
@@ -294,7 +358,7 @@ case "$action" in
       case "$1" in
         --candidate) [ -n "${2:-}" ] || { usage >&2; exit 2; }; flags+=("$1" "$2"); shift ;;
         --json) [ "$action" = detect ] || { usage >&2; exit 2; }; flags+=("$1") ;;
-        --yes|-y|--accept-new-host-keys) [ "$action" = configure ] || { usage >&2; exit 2; }; flags+=("$1") ;;
+        --yes|-y|--accept-new-host-keys|--remove-missing) [ "$action" = configure ] || { usage >&2; exit 2; }; flags+=("$1") ;;
         --help|-h) usage; exit 0 ;;
         *) usage >&2; exit 2 ;;
       esac
@@ -302,6 +366,7 @@ case "$action" in
     done
     [ "$action" != configure ] || flags+=(--write-topology)
     exec "$REPO_DIR/scripts/detect-fabric.sh" "${flags[@]}" ;;
+  forget) exec "$REPO_DIR/scripts/topology-forget.sh" "$@" ;;
   show|check) ;;
   *) exec python3 "$REPO_DIR/scripts/topology_manifest.py" "$action" "$@" ;;
 esac

@@ -97,16 +97,18 @@ These are the names in the inventory document:
   `measured_mib` in `gpu_memory`.
 
 The status result is described in
-[the contract](../../docs/CONTRACT.md#public-operations). The doctor document
-has `result`, the counts `fail` and `warn`, and `checks`; each check has
-`level` (`ok`, `warn` or `fail`), `id` and `message`.
+[the contract](../../docs/CONTRACT.md#public-operations), and the checks of
+the doctor document in
+[cluster readiness and membership](../../docs/CONTRACT.md#cluster-readiness-and-membership).
+The doctor document also has `result` and the counts `fail` and `warn`.
 
 ## Limits
 
-- The contract describes the status result. For the inventory document and
-  the doctor document it gives no field table. The script follows what
-  `scripts/inventory.sh` and `scripts/doctor.sh` write at schema version 1,
-  and `tests/test_skill_state_summary.py` covers it with synthetic documents.
+- The contract describes the status result and the checks of the doctor
+  document. For the inventory document it gives no field table. The script
+  follows what `scripts/inventory.sh` and `scripts/doctor.sh` write at schema
+  version 1, and `tests/test_skill_state_summary.py` covers it with synthetic
+  documents.
 - The script shows what a decision usually needs, not the whole document.
   Labels, container IDs, image names and model-file sources stay in the
   saved file.

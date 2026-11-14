@@ -42,14 +42,20 @@ cd pulsar-inference-stack
 
 The interactive menu offers read-only catalog browsing before cluster setup.
 Browsing reads saved information; it does not download files or check whether a
-model is running. When you are ready to operate a recipe, choose **Set up cluster
-membership and SSH trust**. After setup, the menu opens with what the last
-saved service inventory and storage budget observed on each node, with their
-ages, then offers **Cluster overview (checks nodes now)**, which checks what runs
-on each node now, and **Catalog and storage** for operating a recipe. Archive
-storage is optional.
-**Model files and disk space (checks nodes now)** on the home menu and in the
-catalog lists managed downloads and prepared copies across all confirmed nodes,
+model is running. When you are ready to operate a recipe, choose **Set up this
+cluster…**: it checks this machine, finds the others, checks each one's
+prerequisites, then saves the cluster and records its SSH identities, each with
+its own question. After setup, the menu opens with a short status from saved
+records, each with its age (the cluster, what is serving, disk room, and what
+needs attention), then offers what you came to do: **Serve a model…**, which
+shows the steps a model still needs as one plan to approve, **Running services…**, **Models and disk space…**, **Cluster…** (where **Check
+the cluster now** checks every node) and **Help and troubleshooting…**, whose
+**Advanced: single operations…** keeps each single operation. Archive storage
+is optional. After Pulsar's records were lost, **Models and disk space… → Look
+for model files Pulsar has no record of…** records the model files the nodes
+still hold, checking every file first.
+**Models and disk space…** on the home menu, and **Model files and disk space
+(checks nodes now)** in the catalog, list managed downloads and prepared copies across all confirmed nodes,
 including uncataloged downloads, with each node's storage budget and what each
 spec's Purge would free. Use `./pulsar model files` for the read-only report;
 cleanup keeps its existing previews and confirmations.

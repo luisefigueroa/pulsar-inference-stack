@@ -513,5 +513,210 @@ exit "$rc"
         self.assertIn("REVIEWED=130", output)
 
 
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumIntentHome(BundledGum):
+    """The intent home and the Cluster menu with real Gum over fixture records; Esc only, nothing runs."""
+
+    def fixture(self):
+        from datetime import datetime, timezone
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        nodes = [{"rank": index, "hostname": f"fixture-node-{index + 1}", "node_id": f"node-{index}"}
+                 for index in range(3)]
+        topology_id = "a" * 64
+        (root / "topology.json").write_text(json.dumps({
+            "schema_version": 2, "topology_id": topology_id, "nodes": nodes,
+            "validation": {"ssh_identity_enrolled": True}}))
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        (root / "changes.json").write_text(json.dumps({
+            "schema_version": 1, "kind": "pulsar-cluster-changes", "topology_id": topology_id,
+            "observed_at": now, "result": "changed", "issues": [], "found": [], "changed": [], "untrusted": [],
+            "missing": [{"hostname": "fixture-node-3", "node_id": "node-2", "position": 2, "answered": False}]}))
+        # Every record the menus read is the fixture's; nothing is read from or written to the checkout.
+        return (f'export PULSAR_FORCE_MENU=1 CLUSTER_TOPOLOGY_FILE={root}/topology.json '
+                f'PULSAR_CLUSTER_CHANGES_FILE={root}/changes.json '
+                f'PULSAR_SERVICE_INVENTORY_FILE={root}/inventory.json PULSAR_STORAGE_BUDGET_FILE={root}/budget.json '
+                f'PULSAR_MODEL_LIBRARY_DIR={root}/model-library PULSAR_COLD_ROOT=\n')
+
+    def test_the_home_draws_its_status_above_the_six_choices_at_80_by_24(self):
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                code, output = self.drive(self.fixture() + 'exec "$REPO_DIR/scripts/home.sh"\n', b"\x1b",
+                                          ready=b"Help and troubleshooting", columns=columns)
+                self.assertEqual(code, 0, output)
+                plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", output)
+                for text in ("Cluster    3 nodes · 2 of 3 answered", "Serving", "Disk", "Attention",
+                             "fixture-node-3 did not answer", "Pulsar Inference Stack", "esc exit",
+                             "Serve a model…", "Running services…", "Models and disk space…", "Cluster…", "Exit"):
+                    self.assertIn(text, plain)
+
+    def test_the_cluster_menu_draws_its_frame_and_offers_review(self):
+        code, output = self.drive(self.fixture() + 'exec "$REPO_DIR/scripts/cluster-menu.sh"\n', b"\x1b",
+                                  ready=b"Start over: forget this cluster")
+        self.assertEqual(code, 0, output)
+        plain = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", output)
+        for text in ("Nodes      3 · fixture-node-1, fixture-node-2, fixture-node-3",
+                     "Changes    fixture-node-3 did not answer", "Check the cluster now", "Review what changed…",
+                     "Settings… (archive location, API key)", "Back"):
+            self.assertIn(text, plain)
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumServe(BundledGum):
+    """Serve a model… with real Gum in a scratch checkout of doubles (tests/test_serve_menu.build_root):
+    every command the menu runs is the ./pulsar double over fixture records. Enter opens a fixture
+    recipe's plan; Esc leaves every screen, so nothing is approved."""
+
+    def fixture(self):
+        import shlex
+        from tests.test_serve_menu import (OTHER_RUNNING, build_root, changes, root_environment,  # noqa: PLC0415
+                                           NOW, utc)
+        from tests.test_serve_plan import OTHER, envelope, image_plan, prepare_plan, start_blocked  # noqa: PLC0415
+        from tests.test_catalog_menu import HOME, checked  # noqa: PLC0415
+        from scripts import saved_observations as saved  # noqa: PLC0415
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        build_root(root, gum=True)
+        fixtures = root / "fixtures"
+        (root / "catalog.json").write_text(json.dumps({"entries": [
+            checked(home=HOME, local_state="ready"),
+            checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready")]}))
+        saved.save_changes(changes()[0], root / "cluster-changes.json", clock=lambda: utc(NOW))
+        for key, document in (("inventory", OTHER_RUNNING),
+                              ("prepare-plan", envelope(prepare_plan(("n0", "reuse"), ("n1", "reuse"),
+                                                                     ("n2", "reuse")))),
+                              ("image-plan", envelope(image_plan((0, "ok"), (1, "ok"), (2, "ok")))),
+                              ("start-plan", start_blocked("port_in_use"))):
+            (fixtures / f"{key}.json").write_text(json.dumps(document))
+        (fixtures / "start-plan.rc").write_text("1")
+        exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
+        return root, exports + f'exec bash {shlex.quote(str(root / "scripts/serve-menu.sh"))}\n'
+
+    def test_the_serve_list_draws_its_cards_at_80_by_24(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\x1b", ready=b"running on spark-1")
+        self.assertEqual(code, 0, output)
+        screen = views(output, 24, 80)[-2]
+        self.assertIn("Serve a model", screen)
+        self.assertIn("↑/↓ move · enter choose · esc back", screen)
+        self.assertIn("> org/model", screen)
+        self.assertIn("    3 nodes · ready to start (checked 2 hours ago)", screen)
+        self.assertIn("  org/other", screen)
+        self.assertIn("    3 nodes · running on spark-1, spark-2, spark-3", screen)
+        self.assertTrue(all(len(line) <= 80 for line in screen))
+        # Only the inventory ran; nothing was approved.
+        self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["inventory --json"])
+
+    def test_a_plan_prints_above_its_choices_with_the_cursor_on_cancel_at_80_by_24(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\r", ready=b"running on spark-1",
+                                  then=[(b"Details", b"\x1b"), (b"running on spark-1", b"\x1b")])
+        self.assertEqual(code, 0, output)
+        plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
+        text = "\n".join(plan)
+        for line in ("Serve org/model on spark-1, spark-2 and spark-3", "Pulsar will:",
+                     "  1. Stop org/other on spark-1, spark-2 and spark-3. Its model files are kept.",
+                     "> Cancel", "  Go ahead", "  Details"):
+            self.assertIn(line, plan, text)
+        # The plan is printed in place, above the choices, not in the pager.
+        self.assertNotIn("\x1b[?1049h", output)
+        self.assertLess(plan.index("Pulsar will:"), plan.index("> Cancel"))
+        self.assertTrue(all(len(line) <= 80 for line in plan))
+        commands = (root / "pulsar.log").read_text().splitlines()
+        self.assertFalse([line for line in commands if "--json" not in line], commands)
+
+    def test_running_services_draws_its_card_above_its_choices_at_80_by_24(self):
+        import shlex
+        from tests.test_serve_menu import build_root, root_environment  # noqa: PLC0415
+        from tests.test_services_menu import inventory, service  # noqa: PLC0415
+        from tests.test_serve_plan import SPEC  # noqa: PLC0415
+        from tests.test_catalog_menu import HOME, checked  # noqa: PLC0415
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        build_root(root, ("services-menu.sh", "serve-menu.sh", "connect_card.py"), gum=True)
+        (root / "catalog.json").write_text(json.dumps({"entries": [checked(home=HOME, local_state="ready")]}))
+        container = {"service_id": "vllm-port80", "conf": None, "state": "running", "ownership": "unknown",
+                     "container_name": "vllm-port80", "ranks": [{"rank": "0", "node": "head"}]}
+        (root / "fixtures/inventory.json").write_text(json.dumps(
+            inventory(service(SPEC), container, gpu=(("head", 9216),), unobserved=())))
+        exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                (root / "pulsar.log").unlink(missing_ok=True)
+                code, output = self.drive(exports + f'exec bash {shlex.quote(str(root / "scripts/services-menu.sh"))}\n',
+                                          b"\x1b", ready=b"Stop every service", columns=columns)
+                self.assertEqual(code, 0, output)
+                screen = views(output, 24, columns)[-2]
+                text = "\n".join(screen)
+                for line in ("Seen      by the service inventory less than a minute ago",
+                             "Health    not checked here; choose Check it now", "Running services",
+                             "> Check it now", "  Stop every service…", "  Back"):
+                    self.assertIn(line, screen, text)
+                # The whole card stays on screen above its choices.
+                self.assertTrue(any(line.startswith("org/model running on") for line in screen), text)
+                self.assertTrue(all(len(line) <= columns for line in screen))
+                self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["inventory --json"])
+
+
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
+class BundledGumModels(BundledGum):
+    """Models and disk space… with real Gum over fixture records and the ./pulsar double: Esc leaves
+    every screen, so nothing is approved."""
+
+    def fixture(self):
+        import shlex
+        from tests.test_models_page import budget, files, ready_model, recipe  # noqa: PLC0415
+        from tests.test_serve_menu import build_root, root_environment  # noqa: PLC0415
+        from tests.test_serve_plan import envelope  # noqa: PLC0415
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        build_root(root, ("models-menu.sh", "serve-menu.sh"), gum=True)
+        (root / "catalog.json").write_text(json.dumps({"entries": [recipe()]}))
+        for key, document in (("files", envelope(files([ready_model()]))), ("budget", envelope(budget())),
+                              ("purge-plan", envelope({"plan": {
+                                  "kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
+                                  "actions": [{"node_id": "n1", "action": "remove-copy"},
+                                              {"node_id": "n2", "action": "remove-copy"}]},
+                                  "incomplete_preparations": []}))):
+            (root / "fixtures" / f"{key}.json").write_text(json.dumps(document))
+        exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
+        return root, exports + f'exec bash {shlex.quote(str(root / "scripts/models-menu.sh"))}\n'
+
+    def test_the_page_draws_room_and_models_above_its_choices_at_80_by_24(self):
+        root, script = self.fixture()
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                (root / "pulsar.log").unlink(missing_ok=True)
+                code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns)
+                self.assertEqual(code, 0, output)
+                screen = views(output, 24, columns)[-2]
+                text = "\n".join(screen)
+                for line in ("Models and disk space · checked less than a minute ago", "Models and disk space",
+                             "> Free up space…", "  Keep a model ready…", "  Back"):
+                    self.assertIn(line, screen, text)
+                self.assertTrue(any(line.startswith("Room      spark-1  2.00 TiB free") for line in screen), text)
+                self.assertTrue(any(line.startswith("Models    org/model · 212 GiB") for line in screen), text)
+                self.assertNotIn("\x1b[?1049h", output)
+                self.assertTrue(all(len(line) <= columns for line in screen))
+                self.assertEqual((root / "pulsar.log").read_text().splitlines(),
+                                 ["model files --json", "model budget --json"])
+
+    def test_a_free_up_space_plan_prints_above_its_choices_with_the_cursor_on_cancel(self):
+        root, script = self.fixture()
+        code, output = self.drive(script, b"\r", ready=b"Look again",
+                                  then=[(b"> Remove org/model from the cluster", b"\x1b[B\r"), (b"> Cancel", b"\x1b"),
+                                        (b"> Remove org/model from the cluster", b"\x1b"),
+                                        (b"> Free up space", b"\x1b")])
+        self.assertEqual(code, 0, output)
+        plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
+        text = "\n".join(plan)
+        for line in ("Remove org/model from spark-2 and spark-3", "Pulsar will:", "> Cancel", "  Go ahead"):
+            self.assertIn(line, plan, text)
+        self.assertLess(plan.index("Pulsar will:"), plan.index("> Cancel"))
+        self.assertTrue(all(len(line) <= 80 for line in plan))
+        commands = (root / "pulsar.log").read_text().splitlines()
+        self.assertFalse([line for line in commands if "--json" not in line], commands)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -16,7 +16,7 @@ LABELS = {
     "check": "Check now", "acquire": "Download", "restore": "Restore", "prepare": "Prepare",
     "start": "Start", "stop": "Stop", "status": "Live status",
     "readiness": "Check launch prerequisites", "image-check": "Check serving image",
-    "image-stage": "Stage serving image", "budget": "Inspect storage budget",
+    "image-stage": "Stage serving image",
     "move": "Move home", "archive": "Create archive", "verify": "Verify archive",
     "pin": "Pin prepared copies", "unpin": "Unpin prepared copies",
     "purge": "Purge prepared copies", "remove": "Remove home",
@@ -65,9 +65,12 @@ class OutcomeWording(unittest.TestCase):
                 headline, detail = outcome(action, 3)
                 self.assertTrue(headline.startswith("? The outcome of"), headline)
                 self.assertIn(f"{inspection} before retrying", detail)
-        for action in ("check", "readiness", "image-check", "verify", "budget"):
+        for action in ("check", "readiness", "image-check", "verify"):
             with self.subTest(action=action):
                 self.assertIn("result is unknown", outcome(action, 3)[0])
+        # Only inspections a menu still runs through report_outcome; the storage budget left the
+        # per-spec menu for the Models and disk space… page.
+        self.assertEqual(menu_outcome.INSPECTIONS, {"status", "check", "readiness", "image-check", "verify"})
 
     def test_rejected_requests_changed_nothing(self):
         headline, detail = outcome("prepare", 2)

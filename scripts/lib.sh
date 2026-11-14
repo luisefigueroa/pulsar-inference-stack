@@ -1569,13 +1569,16 @@ append_probe_node_platform_args() {
   done
 }
 
+# probe_node_remote_python_command HOST [PROBE_FLAG...]: extra flags such as
+# --prerequisites-only follow the platform flags.
 probe_node_remote_python_command() {
   local ssh_host="${1:?ssh host required}"
+  shift
   local -a flags=()
   local flag
   append_probe_node_platform_args flags
   printf 'python3 - --ssh-host %q' "$ssh_host"
-  for flag in "${flags[@]}"; do
+  for flag in "${flags[@]}" "$@"; do
     printf ' %q' "$flag"
   done
   printf '\n'
@@ -1583,21 +1586,24 @@ probe_node_remote_python_command() {
 
 # Run probe-node.py on a confirmed rank. Rank 0 is local; other ranks receive
 # the probe over SSH stdin so the remote host does not need a repo checkout.
+# probe_node_json_for_rank RANK [--prerequisites-only]: only doctor and guided setup ask for
+# the prerequisites, a separate answer that never decides membership.
 probe_node_json_for_rank() {
   local rank="${1:?rank required}"
+  shift
   local host
   local -a flags=()
   append_probe_node_platform_args flags
   if [ "$rank" = 0 ]; then
     python3 "$REPO_DIR/scripts/probe-node.py" --local --ssh-host local \
-      "${flags[@]}"
+      "${flags[@]}" "$@"
     return
   fi
   require_cluster_nodes "$((rank + 1))" \
     || die "rank $rank is not present in the confirmed topology"
   host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
   "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-    "$(probe_node_remote_python_command "$host")" \
+    "$(probe_node_remote_python_command "$host" "$@")" \
     <"$REPO_DIR/scripts/probe-node.py"
 }
 
@@ -1744,10 +1750,19 @@ runtime_context_for_rank() {
 }
 
 
+# require_topology_rewrite_idle MANIFEST [UNANSWERED_NODE_ID...]
+# Every node of MANIFEST must answer a Docker query and run no Pulsar
+# service. The only exception is a node named after MANIFEST: a confirmed
+# node that did not answer discovery, which `topology configure
+# --remove-missing` leaves out. It is still asked; it may fail to answer, but
+# if it answers now the rewrite is refused, so a node that answers is never
+# left out without being checked by discovery again.
 require_topology_rewrite_idle() {
   local manifest="${1:?topology manifest required}"
+  shift
+  local -a unanswered=("$@")
   local rows kind rank node_id hostname ssh_host control_ip control_if hcas rdma_ifs
-  local running remote_query
+  local running remote_query skip item identity answered_id
 
   if ! rows=$(python3 "$REPO_DIR/scripts/topology_manifest.py" rows "$manifest"); then
     warn "cannot validate topology membership before rewrite: $manifest"
@@ -1757,6 +1772,28 @@ require_topology_rewrite_idle() {
       control_ip control_if hcas rdma_ifs; do
     [ "$kind" = NODE ] || continue
     running=""
+    skip=0
+    for item in "${unanswered[@]}"; do
+      [ "$item" != "$node_id" ] || skip=1
+    done
+    if [ "$skip" = 1 ] && [ "$rank" != 0 ]; then
+      # Ask who answers at its saved address. No answer: it is left out.
+      # The same machine ID: it answers now, so it is not left out. Another
+      # machine (a reinstall, which Pulsar sees as a new node): that machine
+      # is checked for running services like any node.
+      if identity=$(ssh_control_endpoint "$ssh_host" "$control_ip" \
+          "python3 - --ssh-host $(printf '%q' "$ssh_host") --identity-only" \
+          <"$REPO_DIR/scripts/probe-node.py" 2>/dev/null); then
+        answered_id=$(printf '%s' "$identity" \
+          | python3 -c 'import json,sys; print(json.load(sys.stdin)["node_id"])' 2>/dev/null) || answered_id=""
+        if [ -z "$answered_id" ] || [ "$answered_id" = "$node_id" ]; then
+          warn "$hostname answers now; run discovery again before leaving it out of membership"
+          return 1
+        fi
+      else
+        continue
+      fi
+    fi
     if [ "$rank" = 0 ]; then
       if ! running=$("$PULSAR_DOCKER" ps -q \
           --filter "label=${PULSAR_MANAGED_LABEL}=true" 2>/dev/null); then

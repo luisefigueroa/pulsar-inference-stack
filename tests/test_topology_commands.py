@@ -1,19 +1,23 @@
 """Real command routing with synthetic nodes; never contacts serving hardware."""
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import pty
+import re
 from pathlib import Path
 import select
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
-from support.topology_fixture import Fixture, node_probe
+from support.topology_fixture import Fixture, node_probe, prerequisites_answer
 import topology_actions
 
 
@@ -246,12 +250,19 @@ class TopologyCommands(unittest.TestCase):
     def test_gum_root_entry_and_back_does_not_probe(self):
         f = self.fixture
         f.env.pop('NO_COLOR', None)
-        # Cluster topology, Back to the home menu, then Exit.
-        self.use_gum(TOPOLOGY_GUM_HOME='6,8', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
+        # Cluster… and Back; then Help and troubleshooting… → Advanced (after Why will a
+        # model not start?, which setup adds first) → Cluster
+        # topology, Back three times to the home menu, then Exit.
+        self.use_gum(TOPOLOGY_GUM_HOME='3,4,5', TOPOLOGY_GUM_CLUSTER='3', TOPOLOGY_GUM_HELP='6,7',
+                     TOPOLOGY_GUM_ADVANCED='3,5', TOPOLOGY_GUM_CHOICE='5', PULSAR_COLD_ROOT=str(f.root))
         result, output = self.interactive(['gum'], '', '')
         self.assertEqual(result, 0, output)
         self.assertEqual(self.gum_prompts('choose'),
-                         ['Pulsar Inference Stack', 'Cluster topology', 'Pulsar Inference Stack'])
+                         ['Pulsar Inference Stack', 'Cluster', 'Pulsar Inference Stack', 'Help and troubleshooting',
+                          'Advanced: single operations', 'Cluster topology', 'Advanced: single operations',
+                          'Help and troubleshooting', 'Pulsar Inference Stack'])
+        # The Cluster menu's frame comes from saved membership; opening it probes nothing.
+        self.assertIn('fixture-rank-0, fixture-rank-1', output)
         self.assertEqual(self.probes(), [])
 
     def summary(self, fixture):
@@ -276,11 +287,13 @@ class TopologyCommands(unittest.TestCase):
                 text = self.summary(Fixture(Path(temporary), nodes=nodes, enrolled=False))
                 self.assertIn('SSH trust not enrolled; choose Change membership… → Enroll SSH trust', text)
         f.path.write_text('{broken')
-        # Configure cannot replace invalid saved state, so it is not offered as the fix.
+        # Configure cannot replace invalid saved state, so it is not offered as the fix;
+        # forget is the way out.
         text = self.summary(f)
-        self.assertIn('Membership saved but invalid, and no menu choice replaces it; inspect it with '
-                      'Show saved membership and repair the saved file by hand', text)
+        self.assertIn('Membership saved but invalid, and setup cannot replace it; inspect it with '
+                      'Show saved membership, or start over with ./pulsar topology forget', text)
         self.assertNotIn('Configure', text)
+        self.assertNotIn('by hand', text)
         f.path.unlink()
         self.assertIn('Membership not saved; choose Change membership… → First-use setup', self.summary(f))
         self.assertEqual(f.calls(), [])
@@ -345,7 +358,7 @@ class TopologyCommands(unittest.TestCase):
         result, output = self.interactive(['topology', 'menu'], '', '')
         self.assertEqual(result, 0, output)
         self.assertIn('not enrolled; choose Change membership… → Enroll SSH trust', ' '.join(output.split()))
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
         self.assertEqual(f.path.read_bytes(), before)
 
     def test_service_started_during_confirmation_blocks_save(self):
@@ -389,7 +402,7 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='1')
         result, output = self.interactive(['topology', 'setup'], '', '')
         self.assertNotEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
         self.assertEqual(f.path.read_bytes(), before)
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup'], '', '')
@@ -403,10 +416,84 @@ class TopologyCommands(unittest.TestCase):
         self.use_gum(TOPOLOGY_CONFIRM_RC='0')
         result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
         self.assertEqual(result, 0, output)
-        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?', 'Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?', 'Record these SSH identities?'])
         self.assertEqual(json.loads(f.path.read_text())['schema_version'], 2)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
         self.assertTrue(f.config.is_file())
+
+    def test_setup_shows_its_steps_and_each_machines_prerequisites_without_blocking(self):
+        f = self.fixture
+        f.path.unlink(); f.config.unlink()
+        (f.root/'prerequisites-0.json').write_text(json.dumps(prerequisites_answer(0, login='missing')))
+        (f.root/'prerequisites-1.json').write_text(json.dumps(prerequisites_answer(1, hf='missing', login=None,
+                                                                                   rsync=False)))
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', COLUMNS='100')
+        result, output = self.interactive(['topology', 'setup', '--candidate', 'alias-1'], '', '')
+        self.assertEqual(result, 0, output)
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', output).split())
+        steps = ['Step 1 of 5 · This machine', 'Step 2 of 5 · Find the machines', 'Step 3 of 5 · Check each machine',
+                 'Step 4 of 5 · Save', 'Step 5 of 5 · Identities', 'Still to fix']
+        self.assertEqual([text.index(step) for step in steps], sorted(text.index(step) for step in steps))
+        step1 = text.split(steps[0], 1)[1].split(steps[1], 1)[0]
+        self.assertIn('fixture-rank-0 (this machine) Docker and GPU access ✓ · RoCE links ✓ Python 3.12.3 ✓ · flock ✓ · rsync ✓ · '
+                      'hf CLI ✓', step1)
+        self.assertIn('WARN hf is not logged in to the Hub on this machine; public models download without a login.', step1)
+        step3 = text.split(steps[2], 1)[1].split(steps[3], 1)[0]
+        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every other machine ✓', step3)
+        self.assertIn('FAIL rsync not found; install rsync on this machine', step3)
+        self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this machine; it can still serve.', step3)
+        # Before they are members they are machines; discovery's own output is unchanged.
+        self.assertNotIn('this node', step1 + step3)
+        # A missing prerequisite never blocks saving; the closing summary lists what is left.
+        self.assertEqual(self.gum_prompts('confirm'), ['Save cluster membership with 2 machines?',
+                                                       'Record these SSH identities?'])
+        self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 2)
+        summary = text.split('Still to fix', 1)[1]
+        self.assertIn('FAIL fixture-rank-1: rsync not found', summary)
+        self.assertIn('Warnings do not stop serving', summary)
+        # Design rule 1: the setup review's choices use no low-level term.
+        from tests.test_cluster_menu import FORBIDDEN
+        review = self.menu_choices()['Review discovered machines']
+        self.assertIn('Continue to membership review', review)
+        self.assertEqual([label for label in review if FORBIDDEN.search(label)], [])
+        # Step 3 asks with discovery's strict SSH policy, never accepting a host key.
+        asked = [args for tool, args in f.calls() if tool == 'ssh' and '--prerequisites-only' in args[-1]]
+        self.assertEqual(len(asked), 1)
+        self.assertIn('StrictHostKeyChecking=yes', asked[0])
+        self.assertNotIn('StrictHostKeyChecking=accept-new', asked[0])
+
+    def test_a_machine_that_cannot_be_a_member_or_did_not_answer_says_so_with_its_fix(self):
+        import io
+        sys.path.insert(0, str(ROOT))
+        from scripts import setup_steps
+        from scripts.terminal_format import TerminalWriter
+        findings = Path(self.fixture.root)/'findings'
+        out = io.StringIO()
+        probe = {**node_probe(0), 'qualified': False, 'reject_reasons': ['Docker NVIDIA runtime missing']}
+        setup_steps.machine('fallback-name', probe, None, discovered=False, findings=findings,
+                            out=TerminalWriter(width=60, stream=out), this_machine=True)
+        text = ' '.join(out.getvalue().split())
+        self.assertTrue(text.startswith('fixture-rank-0 (this machine) FAIL Docker NVIDIA runtime missing; this '
+                                        'machine cannot be a member until it is fixed'), text)
+        self.assertIn('WARN prerequisites not checked: the machine did not answer the check', text)
+        self.assertTrue(all(len(line) <= 60 for line in out.getvalue().splitlines()))
+        out = io.StringIO()
+        setup_steps.summary(findings, TerminalWriter(width=60, stream=out))
+        self.assertEqual(out.getvalue().count('fixture-rank-0:'), 2)
+
+    def test_setup_reuses_saved_membership_and_says_which_steps_it_skips(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', COLUMNS='100')
+        result, output = self.interactive(['topology', 'setup'], '', '')
+        self.assertEqual(result, 0, output)
+        text = ' '.join(re.sub(r'\x1b\[[0-9;]*m', '', output).split())
+        self.assertIn('Step 1 of 5 · This machine', text)
+        self.assertIn('Steps 2 to 4: membership is already saved, so setup uses it and adds no machine.', text)
+        self.assertNotIn('Step 3 of 5', text)
+        self.assertIn('Step 5 of 5 · Identities', text)
+        self.assertIn('Still to fix Nothing: every machine has its prerequisites.', text)
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
 
     def test_fresh_setup_cancel_never_reaches_enrollment(self):
         f = self.fixture
@@ -434,7 +521,7 @@ class TopologyCommands(unittest.TestCase):
         result, output = self.interactive(['ssh-trust', 'enroll'], '', '')
         self.assertEqual(result, 130, output)
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
-        self.assertEqual(self.gum_prompts('confirm'), ['Enroll these SSH identities?'])
+        self.assertEqual(self.gum_prompts('confirm'), ['Record these SSH identities?'])
 
     def test_fresh_setup_ctrl_c_never_reaches_enrollment(self):
         f = self.fixture
@@ -479,7 +566,8 @@ class TopologyCommands(unittest.TestCase):
                 candidates = ' '.join(args)
                 self.assertIn(f"error: setup doesn't add machines to saved membership; {hosts} not added.", text)
                 self.assertIn(f'To add a machine, run ./pulsar topology configure {candidates}', text)
-                self.assertIn('Cluster topology → Change membership… → Configure membership or add a machine', text)
+                self.assertIn('Help and troubleshooting… → Advanced: single operations… → Cluster topology → '
+                              'Change membership… → Configure membership or add a machine', text)
                 self.assertIn(f'To discover without saving, run ./pulsar topology detect {candidates}', text)
                 self.assertNotIn('interactive terminal', text)
         self.assertEqual(f.calls(), [])
@@ -527,7 +615,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(len(saved['nodes']), 3)
         self.assertEqual(saved['schema_version'], 2)
         self.assertEqual(self.gum_prompts('confirm'), [
-            'Save cluster membership with 3 machines?', 'Enroll these SSH identities?'])
+            'Save cluster membership with 3 machines?', 'Record these SSH identities?'])
         calls = f.calls()
         self.assertEqual(sum(tool == 'avahi-browse' for tool, _ in calls), 5)
         addresses = [args[args.index('--')+1] for tool, args in calls if tool == 'ssh']
@@ -543,7 +631,7 @@ class TopologyCommands(unittest.TestCase):
         self.assertEqual(result, 0, output)
         self.assertEqual(len(json.loads(f.path.read_text())['nodes']), 1)
         self.assertEqual(self.gum_prompts('confirm'), [
-            'Save cluster membership with 1 machine?', 'Enroll these SSH identities?'])
+            'Save cluster membership with 1 machine?', 'Record these SSH identities?'])
 
     def test_review_and_address_cancellation_do_not_save_or_enroll(self):
         cases = [('4', '', 1), ('esc', '', 1), ('ctrl-c', '', 130),
@@ -711,6 +799,639 @@ class TopologyCommands(unittest.TestCase):
                     self.assertEqual(frames, 1)
                 self.assertNotIn('topology-bound SSH identity enrolled', output)
                 self.assertFalse(any('--include-ssh-host-keys' in ' '.join(args) for _, args in f.calls()))
+
+    def test_only_doctor_asks_nodes_for_their_prerequisites(self):
+        # Discovery, the membership check and configure never ask for the
+        # prerequisites, so their Hub request never runs there.
+        f = self.fixture
+        for args in (('topology', 'check', '--json'), ('topology', 'detect', '--json'),
+                     ('topology', 'configure', '--yes')):
+            f.run(*args)
+        self.assertTrue(f.calls())
+        self.assertFalse(any('--prerequisites-only' in ' '.join(args) for _, args in f.calls()))
+        # The shared probe helper passes the flag to a confirmed node only when asked.
+        f.log.unlink()
+        script = (f'. {ROOT}/scripts/lib.sh; load_cluster_topology; '
+                  'probe_node_json_for_rank 1 --prerequisites-only >/dev/null; probe_node_json_for_rank 1 >/dev/null')
+        result = subprocess.run(['bash', '-c', script], env=f.env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [args[-1] for tool, args in f.calls() if tool == 'ssh']
+        self.assertEqual(len(commands), 2)
+        self.assertTrue(commands[0].startswith('python3 - --ssh-host alias-1 --expected-gpu'), commands[0])
+        self.assertTrue(commands[0].endswith(' --prerequisites-only'), commands[0])
+        self.assertEqual(commands[1], commands[0][:-len(' --prerequisites-only')])
+
+    def test_node_prerequisites_asks_only_the_named_node_with_the_shared_probe(self):
+        # Serve a model… runs it for the node a plan downloads to (D14).
+        f = self.fixture
+        home = f.root / 'home'
+        home.mkdir()
+        hf = Path(f.env['PATH'].split(os.pathsep)[0]) / 'hf'
+        hf.write_text('#!/usr/bin/env bash\necho "hf $*" >> "$TOPOLOGY_FIXTURE/hf.log"\nexit 1\n')
+        hf.chmod(0o755)
+        env = dict(f.env, HOME=str(home))
+        answer = prerequisites_answer(1, hf='missing', login='unknown')
+        (f.root / 'prerequisites-1.json').write_text(json.dumps(answer))
+        script = str(ROOT / 'scripts/node-prerequisites.sh')
+        nodes = {node['hostname']: node['node_id'] for node in f.topology['nodes']}
+        for selector in (nodes['fixture-rank-1'], 'fixture-rank-1'):
+            with self.subTest(selector=selector):
+                f.log.unlink(missing_ok=True)
+                result = subprocess.run(['bash', script, selector], env=env, text=True, capture_output=True,
+                                        timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), answer)
+                asked = [args for tool, args in f.calls() if tool == 'ssh']
+                self.assertEqual(len(asked), 1)
+                self.assertIn('alias-1', asked[0])
+                self.assertTrue(asked[0][-1].endswith(' --prerequisites-only'), asked[0][-1])
+        # This machine is asked locally, without SSH.
+        f.log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', script, 'fixture-rank-0'], env=env, text=True, capture_output=True,
+                                timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), prerequisites_answer(0))
+        self.assertEqual([tool for tool, _ in f.calls()], ['python3'])
+        self.assertIn('--prerequisites-only', f.calls()[0][1])
+        # A machine that is not a member is refused before anything is asked.
+        f.log.unlink(missing_ok=True)
+        result = subprocess.run(['bash', script, 'fixture-new'], env=env, text=True, capture_output=True,
+                                timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('fixture-new is not a node of saved membership', result.stderr)
+        self.assertEqual(f.calls(), [])
+        # The answers came from the probe doubles: hf itself never ran here.
+        self.assertFalse((f.root / 'hf.log').exists())
+
+    # Phase 1.2: every discovery against valid saved membership saves what it saw.
+    def changes(self):
+        path = self.fixture.root/'state/cluster-changes.json'
+        record = json.loads(path.read_text())
+        self.assertEqual((record['schema_version'], record['kind']), (1, 'pulsar-cluster-changes'))
+        self.assertIsNotNone(datetime.fromisoformat(record['observed_at'].replace('Z', '+00:00')).tzinfo)
+        return record
+
+    def add_machine(self, rank, alias=None, probe=None):
+        """A qualified machine discovery can reach at ALIAS that is not a member."""
+        f = self.fixture
+        probe = probe or node_probe(rank)
+        (f.root/f'probe-{rank}.json').write_text(json.dumps(probe))
+        mapping = json.loads((f.root/'map.json').read_text())
+        mapping[alias or f'alias-{rank}'] = rank
+        (f.root/'map.json').write_text(json.dumps(mapping))
+
+    def test_unchanged_discovery_saves_an_unchanged_record_without_changing_its_output(self):
+        f = self.fixture
+        before = f.path.read_bytes()
+        result = f.run('topology', 'detect', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'unchanged')
+        self.assertEqual(record['topology_id'], f.topology['topology_id'])
+        self.assertEqual([record[key] for key in ('issues', 'found', 'missing', 'changed', 'untrusted')], [[]] * 5)
+        # detect --json carries the same body; nothing else changed.
+        document = json.loads(result.stdout)
+        self.assertEqual(document['changes_noticed'], {key: value for key, value in record.items()
+                                                       if key not in ('schema_version', 'kind', 'observed_at')})
+        self.assertEqual(document['membership_changes'], {'added': [], 'removed': [], 'changed': []})
+        self.assertEqual(f.path.read_bytes(), before)
+        self.assertFalse((ROOT/'.pulsar/cluster-changes.json').exists())
+
+    def test_added_missing_changed_and_untrusted_machines_are_recorded(self):
+        f = self.fixture
+        self.add_machine(2)
+        result = f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual(record['found'], [{'hostname': 'fixture-rank-2', 'node_id': 'fixture-node-2',
+                                            'ssh_host': 'alias-2', 'possible_reinstall': False}])
+        # A member's control address and links changed: old against new.
+        probe = dict(f.probes[1], control=dict(interface='mgmt1', ip='192.0.2.99'),
+                     rdma=[dict(hca='roce1', netdev='fabric1', cidrs=['198.51.100.11/24'])])
+        Path(f.files[1]).write_text(json.dumps(probe))
+        f.run('topology', 'detect', '--json')
+        changed = self.changes()['changed']
+        self.assertEqual([row['hostname'] for row in changed], ['fixture-rank-1'])
+        self.assertEqual(changed[0]['changes']['control'], {'old': {'interface': 'mgmt0', 'ip': '192.0.2.11'},
+                                                            'new': {'interface': 'mgmt1', 'ip': '192.0.2.99'}})
+        self.assertEqual(changed[0]['changes']['links']['new'],
+                         [{'hca': 'roce1', 'netdev': 'fabric1', 'cidrs': ['198.51.100.11/24']}])
+        self.assertNotIn('position', changed[0]['changes'])
+        # A member that did not answer, and a candidate SSH does not trust.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_UNTRUSTED='host-9.local')
+        result = f.run('topology', 'detect', '--json', '--candidate', 'host-9.local')
+        self.assertNotEqual(result.returncode, 0)
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual(record['missing'], [{'hostname': 'fixture-rank-1', 'node_id': 'fixture-node-1',
+                                              'position': 1, 'answered': False}])
+        self.assertEqual(record['untrusted'], [{'address': 'host-9.local', 'possible_reinstall': False}])
+        self.assertEqual(json.loads(result.stdout)['saved_membership']['missing'][0]['answered'], False)
+
+    def test_untrusted_candidates_alone_do_not_make_a_change(self):
+        f = self.fixture
+        # A member that answered is never untrusted under its other mDNS names.
+        f.env['TOPOLOGY_UNTRUSTED'] = 'printer.local,fixture-rank-1.local,192.0.2.11'
+        result = f.run('topology', 'detect', '--candidate', 'printer.local', '--candidate', 'gone.local',
+                       '--candidate', 'fixture-rank-1.local', '--candidate', '192.0.2.11')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        self.assertEqual(record['result'], 'unchanged')
+        # An address that did not answer at all is not listed: it was never seen.
+        self.assertEqual(record['untrusted'], [{'address': 'printer.local', 'possible_reinstall': False}])
+        text = ' '.join(result.stdout.split())
+        self.assertIn('SSH 4 advertised addresses could not be checked with saved keys', text)
+        # The machine SSH here does not trust is listed with the check to run;
+        # a member's other names are not.
+        self.assertIn('Untrusted printer.local answers, but SSH on this machine does not trust it yet; verify its '
+                      'host key with ssh -o StrictHostKeyChecking=ask printer.local, then retry discovery.', text)
+        self.assertEqual(text.count('Untrusted '), 1)
+
+    def test_a_reinstalled_machine_is_one_node_gone_and_one_new(self):
+        f = self.fixture
+        # The member's machine ID changed: the old node did not answer, and a
+        # new node answers at its address with its hostname.
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        f.run('topology', 'detect', '--json')
+        record = self.changes()
+        self.assertEqual(record['result'], 'changed')
+        self.assertEqual([row['node_id'] for row in record['missing']], ['fixture-node-1'])
+        self.assertEqual(record['missing'][0]['answered'], False)
+        self.assertEqual(record['found'], [{'hostname': 'fixture-rank-1', 'node_id': 'fixture-node-1-reinstalled',
+                                            'ssh_host': 'alias-1', 'possible_reinstall': True}])
+        # Reinstalled with new host keys: SSH here refuses it under its mDNS name.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_UNTRUSTED='fixture-rank-1.local,192.0.2.11')
+        f.run('topology', 'detect', '--candidate', 'fixture-rank-1.local', '--candidate', '192.0.2.11')
+        self.assertEqual(self.changes()['untrusted'], [
+            {'address': '192.0.2.11', 'possible_reinstall': True},
+            {'address': 'fixture-rank-1.local', 'possible_reinstall': True}])
+
+    def test_failed_discovery_is_recorded_as_not_checked(self):
+        f = self.fixture
+        for mode in ('fabric', 'local', 'access'):
+            with self.subTest(mode=mode):
+                f.env.pop('TOPOLOGY_PING_RC', None)
+                Path(f.files[0]).write_text(json.dumps(f.probes[0]))
+                if mode == 'fabric':
+                    f.env['TOPOLOGY_PING_RC'] = '1'
+                    issue = 'Pairwise RoCE connectivity failed.'
+                elif mode == 'local':
+                    Path(f.files[0]).write_text(json.dumps(dict(f.probes[0], qualified=False,
+                                                                reject_reasons=['synthetic reason'])))
+                    issue = 'fixture-rank-0: synthetic reason'
+                else:
+                    f.config.write_text('# stale\n')
+                    issue = 'Saved SSH configuration is unusable.'
+                result = f.run('topology', 'detect', '--json')
+                self.assertNotEqual(result.returncode, 0)
+                record = self.changes()
+                self.assertEqual(record['result'], 'not-checked')
+                self.assertTrue(record['issues'][0].startswith(issue), record['issues'])
+                self.assertEqual(json.loads(result.stdout)['changes_noticed']['result'], 'not-checked')
+                if mode != 'fabric':
+                    # Nothing was compared, so no member is listed as missing.
+                    self.assertEqual(record['missing'], [])
+
+    def test_no_record_without_valid_saved_membership_and_a_save_rewrites_it_unchanged(self):
+        f = self.fixture
+        path = f.root/'state/cluster-changes.json'
+        for contents in (None, '{broken'):
+            if contents is None: f.path.unlink()
+            else: f.path.write_text(contents)
+            f.run('topology', 'detect', '--json')
+            self.assertFalse(path.exists())
+        f.path.write_text(json.dumps(f.topology))
+        self.add_machine(2)
+        f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(self.changes()['result'], 'changed')
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = self.changes()
+        saved = json.loads(f.path.read_text())
+        self.assertEqual((record['result'], record['topology_id']), ('unchanged', saved['topology_id']))
+        self.assertEqual(record['found'], [])
+        # A record that cannot be saved warns and changes nothing else.
+        path.unlink(); (f.root/'state/cluster-changes.json').mkdir()
+        result = f.run('topology', 'detect', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('the cluster changes noticed was not saved', result.stderr)
+        self.assertEqual(json.loads(result.stdout)['changes_noticed']['result'], 'unchanged')
+
+    # Phase 1.3: saving membership without a confirmed node that did not answer.
+    def three_nodes(self, enrolled=True):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.fixture = Fixture(Path(temporary.name), nodes=3, enrolled=enrolled)
+        return self.fixture
+
+    def saved_nodes(self):
+        return [(node['rank'], node['node_id']) for node in json.loads(self.fixture.path.read_text())['nodes']]
+
+    def test_without_the_flag_a_missing_node_still_blocks_and_the_refusal_names_it(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('Missing confirmed node: fixture-rank-1 (position 1)', text)
+        self.assertIn('To save membership without the nodes that did not answer, run '
+                      './pulsar topology configure --remove-missing.', text)
+        self.assertEqual(f.path.read_bytes(), before)
+        # Only configure takes the flag.
+        for action in ('detect', 'check', 'show', 'setup'):
+            self.assertEqual(f.run('topology', action, '--remove-missing').returncode, 2)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_drops_only_the_node_that_did_not_answer_and_keeps_the_order(self):
+        f = self.three_nodes()
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # The remaining nodes keep their relative order; positions close up.
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-2')])
+        text = ' '.join(result.stdout.split())
+        self.assertIn('Left out fixture-rank-1, which did not answer.', text)
+        self.assertIn('Pulsar cannot ask fixture-rank-1 whether a Pulsar service runs there. It saves without '
+                      'it only because --remove-missing was given.', text)
+        # The storage impact names the node that is left out, before the save.
+        self.assertIn('Removed nodes fixture-rank-1', text)
+        self.assertLess(text.index('Managed storage impact'), text.index('Left out'))
+        # The answering nodes were asked for running services, before and after
+        # the question; the node left out was asked who it is, and did not answer.
+        docker = [args[args.index('--')+1] for tool, args in f.calls()
+                  if tool == 'ssh' and args[-1].startswith('docker ps ')]
+        self.assertEqual(docker.count('alias-2'), 4)
+        self.assertEqual(docker.count('alias-1'), 0)
+        identity = [args[args.index('--')+1] for tool, args in f.calls()
+                    if tool == 'ssh' and '--identity-only' in args[-1]]
+        self.assertEqual(identity, ['alias-1', 'alias-1'])
+        self.assertEqual(self.changes()['result'], 'unchanged')
+
+    def test_remove_missing_asks_a_question_that_names_the_node_and_starts_on_no(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        self.use_gum(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_CONFIRM_RC='1')
+        result, output = self.interactive(['topology', 'configure', '--remove-missing'], '', '')
+        self.assertEqual(result, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'),
+                         ['Save cluster membership with 2 machines, without fixture-rank-1, which did not answer?'])
+        confirms = [args for tool, args in f.calls() if tool == 'gum' and args[:1] == ['confirm']]
+        self.assertIn('--default=false', confirms[0])
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_never_drops_a_node_that_answered(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        # The member answered, but no longer qualifies: it is missing from the
+        # proposed membership, yet the flag cannot leave it out.
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], qualified=False, reject_reasons=['GPU is missing'])))
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('fixture-rank-1 answered but cannot be a member: GPU is missing. --remove-missing leaves out '
+                      'only nodes that did not answer; fix it first.', text)
+        self.assertNotIn('run ./pulsar topology configure --remove-missing', text)
+        self.assertEqual(f.path.read_bytes(), before)
+        # A node that did not answer discovery but answers the service query is
+        # not left out either: discovery must see it again first.
+        Path(f.files[1]).write_text(json.dumps(f.probes[1]))
+        f.env['TOPOLOGY_PROBE_UNREACHABLE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('fixture-rank-1 answers now; run discovery again', result.stderr)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_saves_a_reinstalled_machine_as_one_node_gone_and_one_new(self):
+        # The machine at fixture-rank-1's address answers with a new machine ID.
+        # The old node did not answer; the machine that answers is checked for
+        # running services like any node, then joins as a new node.
+        f = self.three_nodes()
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        # A new node joins after the saved ones, as any added machine does.
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-2'),
+                                              (2, 'fixture-node-1-reinstalled')])
+        self.assertIn('Left out fixture-rank-1, which did not answer.', ' '.join(result.stdout.split()))
+        # A service running on the machine that answers there still blocks.
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        Path(f.files[1]).write_text(json.dumps(dict(f.probes[1], node_id='fixture-node-1-reinstalled')))
+        f.env['TOPOLOGY_ACTIVE'] = '1'
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_remove_missing_keeps_the_running_service_guard_on_nodes_that_answer(self):
+        f = self.three_nodes()
+        before = f.path.read_bytes()
+        f.env.update(TOPOLOGY_UNREACHABLE='1', TOPOLOGY_ACTIVE='2')
+        result = f.run('topology', 'configure', '--yes', '--remove-missing')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('has running stack-managed containers', result.stderr)
+        self.assertEqual(f.path.read_bytes(), before)
+        # A service started during the question still blocks the save.
+        f.env.pop('TOPOLOGY_ACTIVE')
+        (f.root/'docker-count').unlink(missing_ok=True)
+        self.use_gum(TOPOLOGY_ACTIVE_AFTER='4', TOPOLOGY_CONFIRM_RC='0')
+        result, output = self.interactive(['topology', 'configure', '--remove-missing'], '', '')
+        self.assertNotEqual(result, 0, output)
+        self.assertEqual(f.path.read_bytes(), before)
+
+    def test_adding_a_machine_and_a_changed_address_save_when_every_member_answers(self):
+        f = self.fixture
+        self.add_machine(2)
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.saved_nodes(), [(0, 'fixture-node-0'), (1, 'fixture-node-1'), (2, 'fixture-node-2')])
+        probe = dict(f.probes[1], control=dict(interface='mgmt0', ip='192.0.2.99'))
+        Path(f.files[1]).write_text(json.dumps(probe))
+        result = f.run('topology', 'configure', '--yes', '--candidate', 'alias-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(f.path.read_text())['nodes'][1]['control']['ip'], '192.0.2.99')
+
+    def test_a_membership_save_drops_every_recorded_ssh_identity(self):
+        # Find-out (1.3): a save writes membership without SSH identities, so
+        # every node, not only a new one, is enrolled again afterwards.
+        f = self.fixture
+        enrolled = json.loads(f.path.read_text())
+        self.assertTrue(all(node.get('ssh_host_keys') for node in enrolled['nodes']))
+        self.add_machine(2)
+        self.assertEqual(f.run('topology', 'configure', '--yes', '--candidate', 'alias-2').returncode, 0)
+        saved = json.loads(f.path.read_text())
+        self.assertEqual(saved['schema_version'], 1)
+        self.assertFalse(any(node.get('ssh_host_keys') for node in saved['nodes']))
+        result = f.run('ssh-trust', 'enroll', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        states = [line.split()[-1] for line in result.stdout.splitlines() if line.strip().startswith('State')]
+        self.assertEqual(states, ['new', 'new', 'new'])
+        # Enrollment changes the topology ID again (1.6.3: an unchanged changes
+        # record is carried forward to it; see the test below).
+        self.assertNotEqual(json.loads(f.path.read_text())['topology_id'], saved['topology_id'])
+
+    def test_recording_ssh_identities_keeps_an_unchanged_record_current(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        record = self.changes()
+        saved = json.loads(f.path.read_text())
+        self.assertEqual((record['result'], record['topology_id']), ('unchanged', saved['topology_id']))
+        result = f.run('ssh-trust', 'enroll', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        enrolled = json.loads(f.path.read_text())['topology_id']
+        self.assertNotEqual(enrolled, saved['topology_id'])
+        # Carried forward: the new ID, the same observation and time.
+        self.assertEqual(self.changes(), {**record, 'topology_id': enrolled})
+        self.assertFalse((ROOT/'.pulsar').exists())
+
+    def test_recording_ssh_identities_leaves_any_other_record_as_it_is(self):
+        f = self.fixture
+        self.assertEqual(f.run('topology', 'configure', '--yes').returncode, 0)
+        path = f.root/'state/cluster-changes.json'
+        # A change noticed after the save: a machine that is not a member.
+        self.add_machine(2)
+        f.run('topology', 'detect', '--json', '--candidate', 'alias-2')
+        self.assertEqual(self.changes()['result'], 'changed')
+        before = path.read_bytes()
+        self.assertEqual(f.run('ssh-trust', 'enroll', '--yes').returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+        # An unchanged record that names another membership is left too.
+        record = json.loads(before)
+        path.write_text(json.dumps({**record, 'result': 'unchanged', 'found': [], 'topology_id': 'a' * 64}))
+        before = path.read_bytes()
+        self.assertEqual(f.run('ssh-trust', 'enroll', '--yes').returncode, 0)
+        self.assertEqual(path.read_bytes(), before)
+        # Without the test override nothing is written into the checkout.
+        env = dict(f.env); env.pop('PULSAR_CLUSTER_CHANGES_FILE')
+        result = subprocess.run([str(ROOT/'pulsar'), 'ssh-trust', 'enroll', '--yes'], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((ROOT/'.pulsar').exists())
+
+    # Phase 1.4: forget this cluster.
+    def cluster_state(self):
+        """Saved observations beside the fixture's membership and SSH config."""
+        f = self.fixture
+        state = f.root/'state'; state.mkdir(exist_ok=True)
+        for name in ('service-inventory', 'storage-budget', 'cluster-changes'):
+            (state/f'{name}.json').write_text(json.dumps({'fixture': name}))
+        (f.root/'model-library').mkdir(exist_ok=True)
+        (f.root/'model-library/record.json').write_text('{"kept": true}')
+        (f.root/'overlay.json').write_text(json.dumps({'schema_version': 1, 'kind': 'pulsar-deployment-overlay',
+            'defaults': {'port': 8000, 'placement': {'node_id': 'fixture-node-1'}}, 'specs': {}}))
+        return {path: path.read_bytes() for path in (f.path, f.config, *sorted(state.glob('*.json')))}
+
+    def assert_kept(self, files):
+        for path, contents in files.items():
+            self.assertEqual(path.read_bytes(), contents, path)
+        self.assertFalse((self.fixture.root/'state/cluster-backups').exists())
+
+    def test_forget_plan_lists_what_is_removed_and_kept_and_changes_nothing(self):
+        f = self.fixture
+        files = self.cluster_state()
+        result = f.run('topology', 'forget', '--plan', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        plan = json.loads(result.stdout)
+        self.assertEqual((plan['kind'], plan['result'], plan['membership']), ('pulsar-topology-forget', 'planned', 'saved'))
+        self.assertEqual([item['name'] for item in plan['remove']],
+                         ['membership', 'ssh-config', 'service-inventory', 'storage-budget', 'cluster-changes'])
+        self.assertTrue(all(item['present'] for item in plan['remove']))
+        self.assertEqual([item['path'] for item in plan['remove']][:2], [str(f.path), str(f.config)])
+        self.assertEqual(plan['services'], [{'hostname': 'fixture-rank-0', 'state': 'none'},
+                                            {'hostname': 'fixture-rank-1', 'state': 'none'}])
+        # The site overlay can name a node for placement; the plan says which.
+        self.assertEqual(plan['overlay']['names'], [{'node_id': 'fixture-node-1', 'hostname': 'fixture-rank-1'}])
+        human = f.run('topology', 'forget', '--plan')
+        self.assertEqual(human.returncode, 0, human.stderr)
+        text = ' '.join(human.stdout.split())
+        for words in ('Membership saved: fixture-rank-0, fixture-rank-1',
+                      'Services none running on fixture-rank-0 and fixture-rank-1',
+                      'Removes Saved membership', 'Generated SSH configuration', 'Cluster changes noticed',
+                      "Keeps .env settings", "OpenSSH's own known_hosts",
+                      'The site overlay names fixture-rank-1 for placement; it still does after forgetting.',
+                      'Result Plan only. No files changed.'):
+            self.assertIn(words, text)
+        self.assertLessEqual(max(map(len, human.stdout.splitlines())), 48)
+        self.assert_kept(files)
+        self.assertEqual(set(tool for tool, _ in f.calls()), {'ssh', 'docker'})
+
+    def test_forget_refuses_while_a_service_runs_on_a_node_that_answers(self):
+        f = self.fixture
+        files = self.cluster_state()
+        f.env['TOPOLOGY_ACTIVE'] = '1'
+        result = f.run('topology', 'forget', '--yes')
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('a Pulsar service runs on fixture-rank-1; stop it first', ' '.join(result.stdout.split()))
+        self.assertIn('No files changed.', result.stderr)
+        self.assert_kept(files)
+        plan = f.run('topology', 'forget', '--plan')
+        self.assertEqual(plan.returncode, 0)
+        self.assertIn('Forget would refuse while a Pulsar service runs.', ' '.join(plan.stdout.split()))
+
+    def test_forget_backs_up_then_removes_and_setup_starts_again(self):
+        f = self.fixture
+        files = self.cluster_state()
+        # A member that cannot be asked is named and does not block.
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('topology', 'forget', '--yes')
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        text = ' '.join(result.stdout.split())
+        self.assertIn('fixture-rank-1 not observed: it could not be asked; it does not block forgetting', text)
+        for path in files:
+            self.assertFalse(path.exists(), path)
+        backups = list((f.root/'state/cluster-backups').iterdir())
+        self.assertEqual(len(backups), 1)
+        backup = backups[0]
+        self.assertRegex(backup.name, r'^forgotten-cluster-\d{8}T\d{6}Z$')
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
+        self.assertIn(f'Backup{backup}', ''.join(result.stdout.split()))
+        listed = json.loads((backup/'forgotten.json').read_text())
+        self.assertEqual({item['path'] for item in listed['files']}, {str(path) for path in files})
+        # Each copy is named by what the file is, and the list says which copy is which.
+        self.assertEqual([item['file'] for item in listed['files']],
+                         ['membership', 'ssh-config', 'service-inventory', 'storage-budget', 'cluster-changes'])
+        copies = {item['path']: backup/item['file'] for item in listed['files']}
+        for path, contents in files.items():
+            copy = copies[str(path)]
+            self.assertEqual(copy.read_bytes(), contents)
+            self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
+        # Kept: model-library records and the overlay.
+        self.assertEqual((f.root/'model-library/record.json').read_text(), '{"kept": true}')
+        self.assertTrue((f.root/'overlay.json').exists())
+        self.assertIn('Next ./pulsar topology setup', text)
+        # The setup status reads as before first use.
+        status = subprocess.run([sys.executable, str(ROOT/'scripts/setup_status.py'), '--format', 'json'],
+                                env=f.env, text=True, capture_output=True, timeout=30)
+        document = json.loads(status.stdout)
+        self.assertEqual((document['topology']['status'], document['next_action'], document['complete']),
+                         ('missing', 'set-up-topology', False))
+        # A second forget has nothing to do.
+        again = f.run('topology', 'forget', '--yes')
+        self.assertEqual(again.returncode, 0)
+        self.assertIn('Nothing to forget', again.stdout)
+        self.assertEqual(len(list((f.root/'state/cluster-backups').iterdir())), 1)
+
+    def test_forget_asks_on_a_terminal_and_needs_yes_off_one(self):
+        f = self.fixture
+        files = self.cluster_state()
+        result = f.run('topology', 'forget')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('./pulsar topology forget --yes', ' '.join(result.stderr.split()))
+        self.assertEqual(f.calls(), [])
+        self.assert_kept(files)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.gum_prompts('confirm'), ["Forget this cluster's saved membership and observations?"])
+        confirms = [args for tool, args in f.calls() if tool == 'gum' and args[:1] == ['confirm']]
+        self.assertIn('--default=false', confirms[0])
+        self.assert_kept(files)
+        self.use_gum(TOPOLOGY_CONFIRM_RC='1,0')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 0, output)
+        self.assertFalse(f.path.exists())
+
+    def test_forget_asks_the_nodes_again_after_its_question(self):
+        f = self.fixture
+        files = self.cluster_state()
+        # Two nodes are asked before the question; a service starts on the next ask.
+        self.use_gum(TOPOLOGY_CONFIRM_RC='0', TOPOLOGY_ACTIVE_AFTER='2')
+        code, output = self.interactive(['topology', 'forget'], '', '')
+        self.assertEqual(code, 1, output)
+        self.assertEqual(self.gum_prompts('confirm'), ["Forget this cluster's saved membership and observations?"])
+        self.assertIn('a Pulsar service started on a node that answered', ' '.join(output.split()))
+        self.assert_kept(files)
+        docker = [tool for tool, args in f.calls() if tool == 'docker' or (tool == 'ssh' and args[-1].startswith('docker ps '))]
+        self.assertGreaterEqual(len(docker), 3)
+
+    def test_forget_with_unusable_saved_state_checks_only_this_machine(self):
+        for broken in ('membership', 'ssh-config'):
+            with self.subTest(broken=broken):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.fixture = f = Fixture(Path(temporary.name))
+                self.cluster_state()
+                (f.path if broken == 'membership' else f.config).write_text('{broken')
+                result = f.run('topology', 'forget', '--plan', '--json')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                plan = json.loads(result.stdout)
+                self.assertEqual(plan['membership'], 'invalid' if broken == 'membership' else 'saved')
+                self.assertTrue(plan['checked_only_here'])
+                self.assertEqual(len(plan['services']), 1)
+                # Never another SSH trust: no node but this one is asked.
+                self.assertFalse(any(tool == 'ssh' for tool, _ in f.calls()))
+                human = f.run('topology', 'forget', '--yes')
+                self.assertEqual(human.returncode, 0, human.stderr + human.stdout)
+                self.assertIn('Only this machine was checked', ' '.join(human.stdout.split()))
+                self.assertFalse(f.path.exists()); self.assertFalse(f.config.exists())
+                self.assertEqual(f.run('topology', 'show', '--json').returncode, 1)
+
+    def test_invalid_membership_names_forget_instead_of_a_hand_repair(self):
+        f = self.fixture
+        f.path.write_text('{broken')
+        result = f.run('topology', 'show')
+        text = ' '.join(result.stdout.split())
+        self.assertIn('To start over, run ./pulsar topology forget; it keeps a private backup copy.', text)
+        self.assertNotIn('by hand', text)
+
+    def test_forget_in_a_test_needs_every_path_named_and_never_removes_a_changed_file(self):
+        f = self.fixture
+        files = self.cluster_state()
+        env = dict(f.env); env.pop('PULSAR_CLUSTER_BACKUP_DIR')
+        result = subprocess.run([str(ROOT/'pulsar'), 'topology', 'forget', '--yes'], env=env, text=True,
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assert_kept(files)
+        sys.path.insert(0, str(ROOT))
+        from scripts import topology_forget
+        with unittest.mock.patch.dict(os.environ, f.env):
+            plan = topology_forget.plan(ROOT, f.path, f.config, f.root/'overlay.json')
+            f.path.write_text(json.dumps(f.topology) + '\n')
+            with self.assertRaisesRegex(ValueError, 'changed since the plan'):
+                topology_forget.apply(plan, f.root/'state/cluster-backups')
+        self.assertTrue(f.config.exists())
+        self.assertFalse((f.root/'state/cluster-backups').exists())
+
+    def test_forget_gives_each_file_its_own_backup_copy(self):
+        # Configured state files can share a file name in different
+        # directories, and one can be named like the backup's own list.
+        sys.path.insert(0, str(ROOT))
+        from scripts import topology_forget
+        for membership, config in (('one/state', 'two/state'), ('one/forgotten.json', 'two/ssh-config')):
+            with self.subTest(membership=membership, config=config):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.fixture = f = Fixture(Path(temporary.name))
+                self.cluster_state()
+                moved = {f.path: f.root/membership, f.config: f.root/config}
+                for source, target in moved.items():
+                    target.parent.mkdir()
+                    source.rename(target)
+                files = {path: path.read_bytes()
+                         for path in (*moved.values(), *sorted((f.root/'state').glob('*.json')))}
+                self.assertEqual(len(set(files.values())), len(files))
+                with unittest.mock.patch.dict(os.environ, f.env):
+                    plan = topology_forget.plan(f.root, *moved.values(), f.root/'overlay.json')
+                    result = topology_forget.apply(plan, Path(plan['backup_root']))
+                backup = Path(result['backup'])
+                self.assertEqual(backup.parent, f.root/'state/cluster-backups')
+                self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
+                listed = {item['path']: item for item in json.loads((backup/'forgotten.json').read_text())['files']}
+                self.assertEqual(set(listed), {str(path) for path in files})
+                for path, contents in files.items():
+                    item = listed[str(path)]
+                    copy = backup/item['file']
+                    self.assertEqual(copy.read_bytes(), contents, f'{item["name"]} copy at {copy.name}')
+                    self.assertEqual(item['sha256'], hashlib.sha256(contents).hexdigest())
+                    self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
+                    self.assertFalse(path.exists(), path)
+                # One copy for each file, and the list beside them.
+                self.assertEqual(sorted(entry.name for entry in backup.iterdir()),
+                                 sorted(['forgotten.json', *(item['file'] for item in listed.values())]))
+                self.assertEqual(len({item['file'] for item in listed.values()}), len(files))
 
     def test_narrow_human_observation(self):
         f = self.fixture

@@ -386,8 +386,8 @@ class MenuEntries(unittest.TestCase):
         steps = "needs an interactive terminal with Gum. Run the same steps as commands:"
         entries = {
             # Before setup, the first step is setup itself.
-            (): f"error: the Pulsar menu {steps} ./pulsar topology setup # set up cluster membership "
-                "(next setup step) ./pulsar models list # browse the catalog",
+            (): f"error: the Pulsar menu {steps} ./pulsar topology setup # set up this cluster "
+                "(next step) ./pulsar models list # browse the catalog",
             ("models", "menu"): f"error: the catalog menu {steps} ./pulsar models list # browse the catalog "
                                 "./pulsar models show SPEC # one spec's saved details",
             ("inventory", "menu"): f"error: the inventory menu {steps} ./pulsar inventory",

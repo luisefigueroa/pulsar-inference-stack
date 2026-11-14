@@ -12,12 +12,14 @@ import unittest
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'tests'))
 from test_runtime_binding import fixture
+from support import hf_double
 
 
 class Diagnostics(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.root=Path(self.temp.name)
         self.spec,self.path,self.prepared,self.facts,self.plan,self.containers,self.images=fixture(self.root,3)
+        for rank in range(3):hf_double.install(self.root/f'hf-{rank}')
         (self.root/'releases').mkdir();(self.root/'homes').mkdir();(self.root/'views').mkdir()
         for image in self.images:image.update(Architecture='arm64',Os='linux')
         (self.root/'image.json').write_text(json.dumps(self.images[0]))
@@ -77,6 +79,17 @@ mem_available_gib_local() {{ if [ "$DIAG_MODE" = memory-low ]; then echo 0; else
 mem_available_gib_remote() {{ [ "$DIAG_MODE" != remote-memory-unreadable ] || return 1; echo 120; }}
 profile_service_is_proven_running() {{ return 1; }}
 probe_node_json_for_rank() {{
+ if [ "${{2:-}}" = --prerequisites-only ]; then
+  # The real probe, in a node's synthetic environment: only the hf double's
+  # PATH and HOME, so this machine's hf, login and the Hub are never reached.
+  local canned="DIAG_PREREQ_JSON_$1" mode="DIAG_HF_MODE_$1" hf="$DIAG_ROOT/hf-$1"
+  [ "$DIAG_MODE" != remote-prerequisites-fail ] || [ "$1" = 0 ] || return 255
+  if [ -n "${{!canned:-}}" ]; then printf '%s\\n' "${{!canned}}"; return 0; fi
+  env -i PATH="$hf/bin" HOME="$hf/node-home" PULSAR_TEST_HF_ROOT="$hf" PULSAR_TEST_HF_MODE="${{!mode:-accepted}}" \\
+   LANG=C.UTF-8 PYTHONDONTWRITEBYTECODE=1 {shlex.quote(sys.executable)} {shlex.quote(str(ROOT/'scripts/probe-node.py'))} \\
+   --local --ssh-host local --prerequisites-only
+  return
+ fi
  [ "$DIAG_MODE" != remote-probe-fail ] || return 1
  local docker=true; [ "$DIAG_MODE" != remote-docker-down ] || [ "$1" = 0 ] || docker=false
  printf '{{"gpu":"NVIDIA GB10","arch":"aarch64","docker_ok":%s,"docker_nvidia":%s,"qualified":true,"node_id":"node-%s"}}\\n' "$docker" "$docker" "$1"
@@ -563,6 +576,164 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertFalse(json.loads(result.stdout)['stale_managed']['nonblocking'])
         self.assertFalse((self.root/'mutations').exists())
+
+    # Phase 1.1: every node's operator prerequisites, with the hf double.
+    def doctor_rows(self, extra=None, mode='ok'):
+        result=self.run_tool('doctor.sh',['--json'],mode,extra)
+        self.assert_no_secret(result)
+        return result,{c['id']:c for c in json.loads(result.stdout)['checks']}
+
+    def assert_no_secret(self,result):
+        for text in (result.stdout,result.stderr):
+            self.assertNotIn(hf_double.TOKEN,text);self.assertNotIn(hf_double.ACCOUNT,text)
+        for rank in range(3):
+            # The fake hf is only read for its interpreter, never run.
+            self.assertFalse(any(call.startswith('executed') for call in hf_double.calls(self.root/f'hf-{rank}')))
+
+    def test_doctor_checks_prerequisites_on_this_node_and_every_other_node(self):
+        result,rows=self.doctor_rows()
+        self.assertEqual(result.returncode,0,result.stderr)
+        for prefix in ('','rank_1_','rank_2_'):
+            for check in ('python','flock','rsync','hf_cli','hf_login'):
+                with self.subTest(check=prefix+check):
+                    self.assertEqual(rows[prefix+check]['level'],'ok',rows[prefix+check])
+        self.assertEqual(rows['hf_cli']['message'],'hf CLI 9.9.0-fixture')
+        self.assertEqual(rows['rank_2_hf_login']['message'],'rank-2: hf logged in to the Hub')
+        # One whoami per node, with that node's own login.
+        for rank in range(3):
+            self.assertEqual(hf_double.calls(self.root/f'hf-{rank}'),['"get_token"','"whoami"'])
+        human=self.run_tool('doctor.sh');self.assert_no_secret(human)
+        section=human.stdout.split('\nrank-1\n')[1].split('\n\n')[0]
+        self.assertIn('  ok    hf logged in to the Hub',section)
+        self.assertTrue(all(len(line)<=48 for line in human.stdout.splitlines()),human.stdout)
+
+    def test_each_hf_login_outcome_is_a_warning_worded_by_what_it_affects(self):
+        # hf matters only on a node that receives a download; none blocks.
+        for mode,words in (('missing','hf is not logged in to the Hub on this node; public models download without '
+                                      'a login. To add one, run hf auth login on this node'),
+                           ('rejected','the Hub rejected the hf login saved on this node; downloads to this node may '
+                                       'fail until you run hf auth login there again'),
+                           ('unreachable','hf login not checked: the Hub could not be reached from this node'),
+                           ('server-error','hf login not checked: the Hub could not be reached from this node')):
+            with self.subTest(mode=mode):
+                result,rows=self.doctor_rows({'DIAG_HF_MODE_1':mode})
+                self.assertEqual(rows['rank_1_hf_login']['level'],'warn')
+                self.assertEqual(rows['rank_1_hf_login']['message'],'rank-1: '+words)
+                self.assertEqual(rows['hf_login']['level'],'ok')
+                self.assertEqual(result.returncode,0,result.stdout)
+                self.assertEqual(json.loads(result.stdout)['result'],'pass_with_warnings')
+        # The local login is classified the same way, in this node's section,
+        # and the verdict counts it as a warning, never as blocking serving.
+        human=self.run_tool('doctor.sh',extra={'DIAG_HF_MODE_0':'rejected'})
+        self.assert_no_secret(human)
+        self.assertEqual(human.returncode,0,human.stdout)
+        local=human.stdout.split('\n\n')[0]
+        self.assertIn('warn  the Hub rejected the hf login',local)
+        self.assertIn('READY — host checks passed',' '.join(human.stdout.split()))
+        self.assertNotIn('NOT READY',human.stdout)
+
+    def test_hf_cli_missing_unusable_or_too_old_is_a_warning_that_names_its_fix(self):
+        (self.root/'hf-2/bin/hf').unlink()
+        result,rows=self.doctor_rows({'DIAG_HF_MODE_1':'broken','DIAG_HF_MODE_0':'too-old'})
+        self.assertEqual(result.returncode,0,result.stdout)
+        self.assertEqual(json.loads(result.stdout)['result'],'pass_with_warnings')
+        affects='so models cannot be downloaded to this node; it can still serve. To download here, '
+        self.assertEqual(rows['rank_2_hf_cli']['level'],'warn')
+        self.assertIn('hf CLI not found, '+affects+'install the Hugging Face hf CLI on this node',
+                      rows['rank_2_hf_cli']['message'])
+        self.assertIn('(docs/OPERATIONS.md#installation-prerequisites)',rows['rank_2_hf_cli']['message'])
+        # Without hf the login cannot be checked: not observed, never failed.
+        self.assertEqual(rows['rank_2_hf_login']['level'],'warn')
+        self.assertEqual(rows['rank_2_hf_login']['message'],'rank-2: hf login not checked because the hf CLI is not usable')
+        self.assertEqual(rows['rank_1_hf_cli']['level'],'warn')
+        self.assertIn('its Python cannot load the Hugging Face library, '+affects+'install the hf CLI again',
+                      rows['rank_1_hf_cli']['message'])
+        self.assertEqual(rows['hf_cli']['level'],'warn')
+        self.assertIn('hf CLI 9.9.0-fixture lacks what Download uses, '+affects+'install a newer hf CLI',
+                      rows['hf_cli']['message'])
+        self.assertEqual(hf_double.calls(self.root/'hf-2'),[])
+        human=self.run_tool('doctor.sh',extra={'DIAG_HF_MODE_1':'broken'})
+        self.assertNotIn('before serving',human.stdout)
+        self.assertTrue(all(len(line)<=48 for line in human.stdout.splitlines()),human.stdout)
+        # Only the older huggingface-cli: named, with the same fix.
+        (self.root/'hf-2/bin/huggingface-cli').write_text('#!/bin/sh\n');(self.root/'hf-2/bin/huggingface-cli').chmod(0o755)
+        _,rows=self.doctor_rows()
+        self.assertIn('hf CLI not found, only the older huggingface-cli, '+affects+'install the current hf CLI',
+                      rows['rank_2_hf_cli']['message'])
+
+    def test_hf_is_found_where_download_finds_it(self):
+        # Not on PATH: the $HOME/.hf-cli installation Download falls back to.
+        hf=self.root/'hf-1/bin/hf';fallback=self.root/'hf-1/node-home/.hf-cli/venv/bin/hf'
+        fallback.parent.mkdir(parents=True);hf.rename(fallback)
+        _,rows=self.doctor_rows()
+        self.assertEqual(rows['rank_1_hf_cli']['level'],'ok');self.assertEqual(rows['rank_1_hf_login']['level'],'ok')
+        # A first line naming no Python is not guessed at.
+        fallback.write_text('#!/bin/sh\necho executed\n')
+        _,rows=self.doctor_rows()
+        self.assertEqual(rows['rank_1_hf_cli']['level'],'warn')
+        self.assertIn('its Python cannot load',rows['rank_1_hf_cli']['message'])
+
+    def test_python_flock_and_rsync_are_checked_on_every_node(self):
+        for tool in ('flock','rsync'):(self.root/f'hf-1/bin/{tool}').unlink()
+        old=json.dumps({'kind':'pulsar-node-prerequisites','prerequisites':{
+            'python':{'version':'3.10.12','ok':False},'flock':True,'rsync':True,
+            'hf':{'state':'ok','version':'1.0.0','login':'accepted','legacy_cli':False}}})
+        result,rows=self.doctor_rows({'DIAG_PREREQ_JSON_2':old})
+        self.assertEqual(result.returncode,1)
+        self.assertIn('flock not found; install util-linux on this node',rows['rank_1_flock']['message'])
+        self.assertIn('rsync not found; install rsync on this node',rows['rank_1_rsync']['message'])
+        self.assertIn('Python 3.10.12 is older than 3.11; install Python 3.11 or newer',rows['rank_2_python']['message'])
+        self.assertEqual(rows['python']['message'],'Python '+'.'.join(map(str,sys.version_info[:3])))
+        for message in (rows[key]['message'] for key in ('rank_1_flock','rank_1_rsync','rank_2_python')):
+            self.assertRegex(message,r'; (run|install|fix|free|inspect|start|this (host|node))')
+
+    def test_a_node_that_does_not_answer_the_prerequisite_check_is_not_observed(self):
+        result,rows=self.doctor_rows(mode='remote-prerequisites-fail')
+        self.assertEqual(result.returncode,0,result.stdout)
+        for rank in (1,2):
+            self.assertEqual(rows[f'rank_{rank}_prerequisites']['level'],'warn')
+            self.assertIn('prerequisites not checked',rows[f'rank_{rank}_prerequisites']['message'])
+            self.assertNotIn(f'rank_{rank}_hf_cli',rows)
+        self.assertEqual(rows['hf_cli']['level'],'ok')
+
+    def test_hub_request_has_a_short_timeout_and_never_prints_the_login(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('probe_node_under_test',ROOT/'scripts/probe-node.py')
+        probe=importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
+        for mode,login in (('timeout','not-reached'),('accepted','accepted')):
+            with self.subTest(mode=mode):
+                env=hf_double.install(self.root/f'direct-{mode}',mode)
+                saved=dict(os.environ)
+                try:
+                    os.environ.clear();os.environ.update(env)
+                    import time;started=time.monotonic()
+                    fact=probe.hf_prerequisite(timeout=1)
+                    self.assertLess(time.monotonic()-started,15)
+                finally:
+                    os.environ.clear();os.environ.update(saved)
+                self.assertEqual(fact['login'],login)
+                self.assertNotIn(hf_double.TOKEN,json.dumps(fact));self.assertNotIn(hf_double.ACCOUNT,json.dumps(fact))
+
+    def test_prerequisites_never_decide_membership(self):
+        # The platform probe, run where no platform tool exists (PATH holds only
+        # the hf double), answers the same with or without hf, and never lists it.
+        answers=[]
+        for tools in (('hf','flock','rsync'),()):
+            env=hf_double.probe_environment(self.root/f'membership-{len(tools)}',tools=tools)
+            result=subprocess.run([sys.executable,str(ROOT/'scripts/probe-node.py'),'--local'],env=env,
+                                  text=True,capture_output=True,timeout=60)
+            self.assertEqual(result.returncode,0,result.stderr)
+            answer=json.loads(result.stdout)
+            self.assertNotIn('prerequisites',answer)
+            answers.append((answer['qualified'],answer['reject_reasons']))
+        self.assertEqual(answers[0],answers[1])
+        self.assertFalse(any('hf' in reason or 'rsync' in reason or 'flock' in reason for reason in answers[0][1]))
+        # The prerequisite answer carries no membership facts.
+        env=hf_double.probe_environment(self.root/'membership-only')
+        answer=json.loads(subprocess.run([sys.executable,str(ROOT/'scripts/probe-node.py'),'--local','--prerequisites-only'],
+                                         env=env,text=True,capture_output=True,timeout=60).stdout)
+        self.assertEqual(answer['kind'],'pulsar-node-prerequisites')
+        for field in ('qualified','reject_reasons','node_id','rdma','control'):self.assertNotIn(field,answer)
 
 
 if __name__=='__main__':unittest.main()

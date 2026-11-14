@@ -68,6 +68,33 @@ doctor_ready_line() {
   python3 "$REPO_DIR/scripts/terminal_format.py" --status pass READY "$1"
 }
 
+# prerequisite_rows: probe-node.py --prerequisites-only JSON on stdin, one
+# LEVEL|ID|MESSAGE row per prerequisite out (scripts/prerequisites.py, which
+# guided setup also uses). The rows are state words; the probe never returns
+# a token or an account name, and every hf finding is a warning.
+prerequisite_rows() {
+  python3 "$REPO_DIR/scripts/prerequisites.py"
+}
+
+# record_prerequisites RANK: this node (0) or a confirmed node, in its section.
+record_prerequisites() {
+  local rank="$1" prefix="" name="" probe rows level id message
+  if [ "$rank" != 0 ]; then
+    prefix="rank_${rank}_"
+    name="$(human_node_name "$rank"): "
+  fi
+  if probe=$(probe_node_json_for_rank "$rank" --prerequisites-only 2>/dev/null) \
+      && rows=$(printf '%s' "$probe" | prerequisite_rows 2>/dev/null) && [ -n "$rows" ]; then
+    while IFS='|' read -r level id message; do
+      record "$level" "${prefix}${id}" "${name}${message}" "$message"
+    done <<<"$rows"
+  else
+    record warn "${prefix}prerequisites" \
+      "${name}prerequisites not checked: the node did not answer the check; run \`./pulsar doctor\` again" \
+      "prerequisites not checked: the node did not answer the check; run \`./pulsar doctor\` again"
+  fi
+}
+
 section "$(hostname -s 2>/dev/null || hostname) (this node)"
 
 arch=$(uname -m)
@@ -240,6 +267,7 @@ if awk -v a="$avail" -v f="$HARD_FLOOR_AVAILABLE_GIB" 'BEGIN{exit !(a+0 < f)}'; 
 else
   record ok memory "MemAvailable ${avail} GiB" "${avail} GiB memory available"
 fi
+record_prerequisites 0
 
 section "Cluster membership"
 if ! load_cluster_topology; then
@@ -290,6 +318,7 @@ print(("ok" if arch_ok else "fail")+"|arch|arch "+str(p.get("arch"))+("" if arch
         record fail "rank_${rank}_memory" "$node_name: memory unavailable or below the hard floor; run \`./pulsar inventory\`" \
           "memory unavailable or below the hard floor; run \`./pulsar inventory\`"
       fi
+      record_prerequisites "$rank"
     else
       record fail "rank_${rank}_probe" "$node_name cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`" \
         "cannot be inspected through its confirmed control endpoint; run \`./pulsar topology check\`"

@@ -3,8 +3,7 @@
 Decides which operations the catalog menu offers for one recipe, which it
 leaves out and why, one suggested next step (also as the command that runs
 it), the catalog list's cards, the required-snapshot choices, the summary that
-leads each storage preview, the wording of confirmation questions, and the
-home screen's Next line. Input
+leads each storage preview and the wording of confirmation questions. Input
 is the catalog projection (``pulsar models show --json``) and the
 archive-location status, plus what this menu session observed about services:
 a service inventory the menu captured on request and its own Live status, Start
@@ -303,9 +302,9 @@ def hidden_fix(reason: str, hidden: dict[str, str]) -> str | None:
     observations only, so it is never the fix: homes are recorded by Download
     and Restore, and the archive location is a setting."""
     if reason == _location_reason("not-configured"):
-        return "Set one in Archive storage configuration on the home menu."
+        return "Set one in Cluster… → Settings… on the home menu."
     if reason == _location_reason("disabled"):
-        return "Set a location in Archive storage configuration on the home menu."
+        return "Set a location in Cluster… → Settings… on the home menu."
     if reason.startswith("no home is recorded"):
         return "Download or Restore records a home." if "restore" not in hidden else "Download records a home."
     if reason == START_UNSUPPORTED["guard_unsupported"]:
@@ -1560,7 +1559,14 @@ def plan_effect(action: str, plan: dict) -> dict:
         copies = {(step.get("node_id"), member.get("snapshot_manifest_id") or index)
                   for index, member in enumerate(members) for step in member.get("actions") or []
                   if step.get("action") == "copy"}
-        return {"copied": len(copies), "reused": len(steps) - len(copies), "nothing": bool(steps) and not copies}
+        # A takeover (rebind) copies nothing: it records files made before the
+        # cluster's membership changed under the current membership.
+        taken = sum(1 for step in steps if step.get("action") == "rebind")
+        # An adoption (--adopt-unrecorded) copies nothing either: it records a
+        # folder no record named once every file matches (D7).
+        adopted = sum(1 for step in steps if step.get("action") == "adopt")
+        return {"copied": len(copies), "reused": len(steps) - len(copies) - taken - adopted, "taken_over": taken,
+                "adopted": adopted, "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -1588,6 +1594,27 @@ def plan_effect(action: str, plan: dict) -> dict:
     if action == "acquire":
         return {"nothing": document.get("action") == "reuse"}
     return {"nothing": False}
+
+
+def _taken_over(count: int, beside_copies: bool = False) -> str:
+    """The sentence for Prepare's takeovers: copies made before the cluster's
+    membership changed, whose files still verify, recorded for the current
+    membership without copying or deleting anything. With BESIDE_COPIES the
+    same plan also writes new copies, so the sentence speaks of the copies it
+    takes over and not of the whole plan."""
+    copies = "copy" if count == 1 else "copies"
+    kept = ("nothing is copied or deleted" if not beside_copies
+            else ("that copy is" if count == 1 else "those copies are") + " not copied again or deleted")
+    return f"It takes over {count} {copies} made before the cluster's membership changed; {kept}."
+
+
+def _adopted(count: int) -> str:
+    """The sentence for Prepare's adoptions (--adopt-unrecorded): folders no
+    record named, recorded once every file matches the manifest (D7)."""
+    folders = "folder" if count == 1 else "folders"
+    them = "it" if count == 1 else "them"
+    return (f"It takes over {count} {folders} no record names after checking every file, which can take a "
+            f"while, and records {them} only if every file matches; nothing is copied or deleted.")
 
 
 def _short_ids(text: str, keep: str | None = None) -> str:
@@ -1618,7 +1645,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     Live service inventory. A container that Pulsar did not start gets no
     choice: its fix is to remove it or its mount, which the menu never does.
     Neither does a folder at a prepared copy's path that no record names: the
-    operator inspects it and removes it outside Pulsar.
+    fix names Look for model files Pulsar has no record of…, which takes it
+    over after checking every file (D7), or the operator removes it outside
+    Pulsar.
     """
     specs: list[str] = []
     for item in _plan_document(plan).get("blocker_details") or []:
@@ -1640,6 +1669,22 @@ def _amount(size: object, count: object, unknown: str) -> str:
     return size_text(size) + (f" ({files})" if files else "")
 
 
+# Inside the menu, the fix for a folder no record names names the choice that
+# takes it over (D7), not Prepare's flag: no menu Prepare passes the flag
+# except that choice's own approved step.
+UNRECORDED_MENU_FIX = ("Pulsar has no record of this folder and never deletes files it did not record. Look for "
+                       "model files Pulsar has no record of… on Models and disk space… checks every file and takes "
+                       "it over if all of them match; if it is not needed, remove it outside Pulsar.")
+
+
+def menu_fix(detail: dict) -> str:
+    """A plan blocker's fix as a menu screen says it."""
+    from .node import UNRECORDED_DESTINATION_FIX
+    if detail.get("code") == "unrecorded-destination" and detail.get("fix") == UNRECORDED_DESTINATION_FIX:
+        return UNRECORDED_MENU_FIX
+    return str(detail.get("fix") or "")
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
@@ -1653,7 +1698,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
     if plan_blocked(plan):
         details = [item for item in document.get("blocker_details") or [] if isinstance(item, dict)]
         if details:
-            causes = [_short_ids(blocker_detail_text(item, names) + (f"; {item['fix']}" if item.get("fix") else ""),
+            causes = [_short_ids(blocker_detail_text(item, names) + (f"; {menu_fix(item)}" if item.get("fix") else ""),
                                  keep=item.get("path") if item.get("code") == "unrecorded-destination" else None)
                       for item in details]
         else:
@@ -1675,12 +1720,20 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         if effect["nothing"]:
             what = "the snapshot is" if len(plans) == 1 else ("both snapshots are" if len(plans) == 2
                                                            else f"all {len(plans)} snapshots are")
-            return [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
-                    "Prepare verifies the files and records them."]
+            lines = [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
+                     "Prepare verifies the files and records them."]
+            if effect["taken_over"]:
+                lines.append(_taken_over(effect["taken_over"]))
+            if effect["adopted"]:
+                lines.append(_adopted(effect["adopted"]))
+            return lines
         sizes = [nodes[node]["new_copy"] for node in copying]
         size = sum(sizes) if all(value is not None for value in sizes) else None
         lines = [f"Copy {size_text(size)} to {_node_list(copying, names)} "
-                 f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused)."]
+                 f"({_count(effect['copied'], 'new copy', 'new copies')}, {effect['reused']} reused"
+                 + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
+                 + (f", {_count(effect['adopted'], 'folder')} no record named taken over after checking every file"
+                    if effect["adopted"] else "") + ")."]
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])
@@ -1800,10 +1853,14 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         steps = _plan_actions(plan)
         effect = plan_effect(action, plan)
         where = _node_list([str(step["node_id"]) for step in steps if step.get("node_id")], names) or place or "its nodes"
+        taken = (f" {_taken_over(effect['taken_over'])}" if effect["taken_over"] else "")
         if effect["nothing"]:
-            return f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files already there."
+            return (f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files "
+                    f"already there.{taken}")
+        beside = f" {_taken_over(effect['taken_over'], beside_copies=True)}" if effect["taken_over"] else ""
         return (f"Prepare {model} on {where}? {_count(effect['copied'], 'new copy', 'new copies')}, "
-                f"{effect['reused']} reused.")
+                f"{effect['reused']} reused" + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
+                + f".{beside}")
     if action in ("pin", "unpin"):
         effect = plan_effect(action, plan)
         verb = LABELS[action].split()[0]
@@ -1887,55 +1944,6 @@ def inventory_line(live: dict) -> str:
     return line + "."
 
 
-# The home screen's Next line groups each spec's suggested step. Each entry is
-# (singular, plural) wording after the spec count, in display order.
-HOME_NEXT = {"not-checked": (NOT_CHECKED, NOT_CHECKED),
-             "check": ("needs a check", "need a check"),
-             "acquire": ("needs Download", "need Download"),
-             "restore": ("needs Restore", "need Restore"),
-             "prepare": ("needs Prepare", "need Prepare"),
-             "start": ("ready to Start", "ready to Start")}
-
-
-def home_next(rows: list[dict], archive_location: str, *, now=None, marked: bool = False) -> str | None:
-    """One line for the home screen: what the saved records suggest, and their age.
-
-    Uses the same suggestion as each recipe menu, without session outcomes or
-    service observations; nothing here probes nodes. When some spec has a
-    recorded home, the check counts cover only specs with one, so recipes
-    this cluster never downloaded are not counted. None when no spec has a
-    suggested step.
-    """
-    def has_home(row: dict) -> bool:
-        return any(member.get("home") for member in members(row).values())
-
-    any_home = any(has_home(row) for row in rows)
-    counts: dict[str, int] = {}
-    for row in rows:
-        offered, _, _ = operations(row, archive_location)
-        found = suggestion(row, offered, archive_location, now=now)
-        if not found or found[0] not in HOME_NEXT:
-            continue
-        key = "not-checked" if found[0] == "check" and row.get("checked_at") is None else found[0]
-        if key in ("not-checked", "check") and any_home and not has_home(row):
-            continue
-        counts[key] = counts.get(key, 0) + 1
-    if not counts:
-        return None
-    parts = []
-    for key, (one, many) in HOME_NEXT.items():
-        if key in counts:
-            count = counts[key]
-            parts.append(f"{count} spec{'' if count == 1 else 's'} {one if count == 1 else many}")
-    choice = "**Catalog and storage**" if marked else "Catalog and storage"
-    line = "Next: " + " · ".join(parts) + f" — open {choice}."
-    ages = [row["observation_age_seconds"] for row in rows
-            if row.get("checked_at") and type(row.get("observation_age_seconds")) is int]
-    if ages:
-        line += f" Newest saved check: {age_text(min(ages))}."
-    return line
-
-
 def read_row(stream, spec_id: str) -> tuple[dict, list[dict]]:
     """The selected recipe and every entry of the catalog document on STREAM."""
     entries = json.load(stream).get("entries") or []
@@ -2008,8 +2016,6 @@ def main(argv: list[str] | None = None) -> int:
     preview.add_argument("--plan-file", required=True)
     blocked = sub.add_parser("blocked-choices", help="choices for a blocked plan; catalog JSON on stdin")
     blocked.add_argument("--plan-file", required=True)
-    home = sub.add_parser("next", help="the home screen's Next line; catalog JSON on stdin")
-    home.add_argument("--archive-location", required=True, choices=sorted(ARCHIVE_LOCATION))
     confirm = sub.add_parser("confirm", help="confirmation question; catalog JSON on stdin")
     confirm.add_argument("--spec-id", required=True)
     confirm.add_argument("--action", required=True, choices=sorted(MUTATIONS | {"start", "stop", "start-memory"}))
@@ -2072,12 +2078,6 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("plan must be a JSON object")
             for choice in blocked_choices(plan, json.load(sys.stdin).get("entries") or []):
                 print("\t".join(clean(part) for part in choice))
-            return 0
-        if args.command == "next":
-            # The home screen renders the menu choice's mark (terminal_format.py --text).
-            line = home_next(json.load(sys.stdin).get("entries") or [], args.archive_location, marked=True)
-            if line:
-                print(clean(line))
             return 0
         row, entries = read_row(sys.stdin, args.spec_id)
         if args.command == "start-choices":
