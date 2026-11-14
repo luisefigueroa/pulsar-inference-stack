@@ -881,7 +881,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             if document and document.get("kind") == "pulsar-restore-plan":
                 if document.get("eligible") is False:
                     # Such as a copy route through the neighbours that cannot be proven.
-                    blocked.append(f"Restoring {what} to {host} cannot run: {_restore_blockers(document)}.")
+                    blocked.append(f"Restoring {what} to {host} cannot run: {_restore_blockers(document, names)}.")
                 space = (document.get("destination_space") or {}).get("available")
                 if type(space) is int and space >= 0:
                     free = f"; {_kept(short_size(space))} free there"
@@ -1309,9 +1309,11 @@ def choices(plan: dict) -> list[tuple[str, str]]:
 # Running a step
 # ---------------------------------------------------------------------------
 
-def _restore_blockers(document: dict) -> str:
-    """What a restore plan that is not eligible says is in the way."""
-    found = [clean(str(item)).rstrip(".") for item in document.get("blockers") or [] if item]
+def _restore_blockers(document: dict, names: NodeNames) -> str:
+    """What a restore plan that is not eligible says is in the way, each node
+    by its hostname, as Prepare's blockers are named."""
+    from model_library.render import blocker_message
+    found = [clean(blocker_message(str(item), names)).rstrip(".") for item in document.get("blockers") or [] if item]
     return "; ".join(found) or "its preview says it cannot run"
 
 
@@ -1372,7 +1374,7 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
         if document.get("kind") != "pulsar-restore-plan":
             return "blocked", "Restore's preview did not return its plan"
         if document.get("eligible") is False:
-            return "blocked", _restore_blockers(document)
+            return "blocked", _restore_blockers(document, names)
         if document.get("selected_node") != facts["node"]:
             return "differs", f"the files would go to {names(document.get('selected_node'))}"
         return "same", ""
