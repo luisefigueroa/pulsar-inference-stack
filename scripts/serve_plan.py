@@ -879,6 +879,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             document, error = envelope_result(preview)
             free = ""
             if document and document.get("kind") == "pulsar-restore-plan":
+                if document.get("eligible") is False:
+                    # Such as a copy route through the neighbours that cannot be proven.
+                    blocked.append(f"Restoring {what} to {host} cannot run: {_restore_blockers(document)}.")
                 space = (document.get("destination_space") or {}).get("available")
                 if type(space) is int and space >= 0:
                     free = f"; {_kept(short_size(space))} free there"
@@ -1306,6 +1309,12 @@ def choices(plan: dict) -> list[tuple[str, str]]:
 # Running a step
 # ---------------------------------------------------------------------------
 
+def _restore_blockers(document: dict) -> str:
+    """What a restore plan that is not eligible says is in the way."""
+    found = [clean(str(item)).rstrip(".") for item in document.get("blockers") or [] if item]
+    return "; ".join(found) or "its preview says it cannot run"
+
+
 def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: NodeNames | None = None,
                entries: list[dict] = ()) -> tuple[str, str]:
     """Whether a step's own preview, run when its turn came, still does what the
@@ -1362,6 +1371,8 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
     if kind == "restore":
         if document.get("kind") != "pulsar-restore-plan":
             return "blocked", "Restore's preview did not return its plan"
+        if document.get("eligible") is False:
+            return "blocked", _restore_blockers(document)
         if document.get("selected_node") != facts["node"]:
             return "differs", f"the files would go to {names(document.get('selected_node'))}"
         return "same", ""

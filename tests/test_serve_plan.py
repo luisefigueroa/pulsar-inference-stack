@@ -397,6 +397,12 @@ class Compose(unittest.TestCase):
         restore["destination_space"]["available"] = 100 * GIB
         plan = self.plan(state, sources=sources, previews={"restore:None": envelope(restore)})
         self.assertIn("spark-1 has 100 GiB free; restoring the model files needs 212 GiB.", plan["blocked"])
+        # A copy route that cannot be proven makes Restore's own plan ineligible: the plan says so.
+        route = "spark-3: no proven route through the neighbours"
+        restore.update(destination_space={"available": 1400 * GIB}, eligible=False, blockers=[route])
+        plan = self.plan(state, sources=sources, previews={"restore:None": envelope(restore)})
+        self.assertIn(f"Restoring the model files to spark-1 cannot run: {route}.", plan["blocked"])
+        self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
 
     def test_start_blockers_no_step_resolves_block_the_plan_and_unrun_checks_are_said(self):
         state = checked(home=HOME, local_state="ready")
@@ -758,6 +764,9 @@ class CheckStep(unittest.TestCase):
                          ("same", ""))
         self.assertEqual(self.check(plan, envelope({"kind": "pulsar-restore-plan", "selected_node": "n2"}))[0],
                          "differs")
+        blocked = {"kind": "pulsar-restore-plan", "selected_node": "n0", "eligible": False,
+                   "blockers": ["spark-1: no proven route"]}
+        self.assertEqual(self.check(plan, envelope(blocked)), ("blocked", "spark-1: no proven route"))
 
     def test_prepare_that_is_blocked_or_copies_to_an_unlisted_node_stops_the_run(self):
         plan = self.plan(self.step("prepare", copy_to=["n1"]))
