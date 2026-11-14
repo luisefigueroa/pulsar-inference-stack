@@ -116,7 +116,11 @@ wait_continue() {
         # Every menu action is a pulsar command or a menu script; the double
         # records it and exits with the next PULSAR_RC status (default 0).
         pulsar = self.root / "pulsar"
-        pulsar.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "$PULSAR_LOG"\n'
+        pulsar.write_text('#!/usr/bin/env bash\n'
+                          # The catalog is read as the real ./pulsar reads it, after .env is loaded.
+                          'case "${1:-} ${2:-}" in "models list"|"models show"|"models results")\n'
+                          '  shift; PULSAR_CATALOG_READ=pulsar exec python3 -m model_library.catalog "$@" ;; esac\n'
+                          'printf "%s\\n" "$*" >> "$PULSAR_LOG"\n'
                           'n=$(wc -l < "$PULSAR_LOG")\n'
                           'rc=$(printf "%s" "${PULSAR_RC:-0}" | cut -d, -f"$n")\n'
                           'case "$*" in "topology setup")\n'
@@ -167,6 +171,8 @@ wait_continue() {
         python = binary / "python3"
         python.write_text('#!/usr/bin/env bash\n'
                           'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
+                          '  [ "${PULSAR_CATALOG_READ:-}" = pulsar ] || { echo "home read the catalog without '
+                          './pulsar models, so without .env" >&2; exit 97; }\n'
                           '  shift 2; printf "%s\\n" "$*" >> "$CATALOG_LOG"\n'
                           '  [ "${CATALOG_RC:-0}" = 0 ] || { echo "error: fixture catalog" >&2; exit "$CATALOG_RC"; }\n'
                           '  exec cat "$CATALOG_FILE"\n'

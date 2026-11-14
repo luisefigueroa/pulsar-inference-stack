@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -162,6 +163,27 @@ exit "${FIXTURE_RC:-0}"
                 self.assertEqual(completed.returncode, rc)
                 self.assertEqual(completed.stdout, "command output\n")
                 self.assertFalse(path.exists())
+
+    def test_the_card_reads_the_library_where_dotenv_puts_it(self):
+        # Start and status read the model library where this checkout's .env says, over the
+        # process value; the card that follows them reads the launch record from the same place.
+        temporary = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        repo = temporary / "repo"
+        for name in ("scripts", "cluster", "platforms"):
+            shutil.copytree(ROOT / name, repo / name, ignore=shutil.ignore_patterns("__pycache__"))
+        library = temporary / "dotenv-library"
+        (repo / ".env").write_text(f"PULSAR_MODEL_LIBRARY_DIR={library}\n")
+        from model_library.state import Store
+        Store(library).put("services", SERVICE_ID, {"plan_id": PLAN_ID})
+        Store(library).put("service-plans", PLAN_ID, {"ranks": [], "api_auth": True})
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("PULSAR_") and key not in ("MODEL_LIBRARY_DIR", "VLLM_API_KEY", "API_KEY")}
+        env.update(FIXTURE_DIR=str(temporary), FIXTURE_RESULT=json.dumps(result()), PYTHONPATH=str(ROOT),
+                   PULSAR_MODEL_LIBRARY_DIR=str(temporary / "process-library"))
+        completed = subprocess.run(["bash", str(repo / "scripts/with-connect-card.sh"), "bash", "-c", self.COMMAND],
+                                   env=env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("  Auth:   API key required; the request reads it from VLLM_API_KEY", completed.stdout)
 
     def test_success_without_a_result_or_a_running_service_prints_no_card(self):
         for written in (None, result(state="stopped")):

@@ -436,6 +436,50 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertNotEqual(moved, ranks)
         self.assertIsNotNone(self.start_reads(f))
 
+    def record_ranks(self, f):
+        """Each node's rank for this spec: as the controller records it, then as the nodes do."""
+        nodes = [v for node in f.cfg['nodes']
+                 for v in Store(Path(node['view_root']) / '.pulsar-node').views(spec_id=f.spec['spec_id'])]
+        return tuple({v['node_id']: v['rank'] for v in records}
+                     for records in (Store(f.state).views(spec_id=f.spec['spec_id']), nodes))
+
+    def test_an_interrupted_takeover_at_another_position_is_finished_by_the_next_prepare(self):
+        # The membership does not change: --placement-nodes gives the same
+        # nodes another order, so a takeover changes only each copy's rank and
+        # both records of a copy keep naming the current membership.
+        f = self.fixture(nodes=3); self.acquire_candidate(f, nodes=3, home=0)
+        self.success(f.run('prepare', '--yes', spec=True))
+        ids = [node['node_id'] for node in f.cfg['nodes']]
+        first, moved = ({ids[index]: rank for rank, index in enumerate(order)} for order in ((0, 1, 2), (0, 2, 1)))
+        reordered = ('--placement-nodes', ','.join(sorted(moved, key=moved.get)))
+        files, transfers = self.file_state(f), f.events('transfer')
+
+        def interrupted(*placement):
+            """The nodes record the takeover; the controller's save is interrupted."""
+            f.cfg['controller_fault'] = 'save-views'; f.save()
+            self.failure(f.run('prepare', *placement, '--yes', spec=True))
+            f.cfg.pop('controller_fault'); f.save()
+
+        interrupted(*reordered)
+        self.assertEqual(self.record_ranks(f), (first, moved))
+        self.assertEqual(self.record_topologies(f), {f.topology['topology_id']})
+        # Other commands still refuse records that disagree.
+        self.failure(f.run('purge', '--plan', spec=True), 'disagree')
+        # The same Prepare again finds the nodes' records at the ranks it asks
+        # for and writes them to the controller.
+        self.success(f.run('prepare', *reordered, '--yes', spec=True))
+        self.assertEqual(self.record_ranks(f), (moved, moved))
+        # The other direction: a takeover back to the first order is
+        # interrupted, and the next Prepare asks for the controller's ranks.
+        # A reuse would leave the nodes' records behind; both are written.
+        interrupted()
+        self.assertEqual(self.record_ranks(f), (moved, first))
+        self.success(f.run('prepare', *reordered, '--yes', spec=True))
+        self.assertEqual(self.record_ranks(f), (moved, moved))
+        self.assertEqual(self.file_state(f), files)
+        self.assertEqual(f.events('transfer'), transfers)
+        self.success(f.run('purge', '--plan', spec=True))
+
     def test_a_copy_on_a_node_that_no_longer_serves_is_left_and_purge_removes_it(self):
         # Find-out (1.6.2): a two-node spec on three nodes. After the positions
         # shift, its copy on the node that no longer serves it is ignored by

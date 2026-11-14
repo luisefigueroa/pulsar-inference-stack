@@ -79,7 +79,7 @@ class Readiness(unittest.TestCase):
         return serve.readiness(state, order=list(order), archive_location=archive, sizes=SIZES, service=service)
 
     def test_one_phrase_per_recipe_from_saved_records(self):
-        self.assertEqual(self.phrase(checked(home=HOME, local_state="ready")), "ready to start")
+        self.assertEqual(self.phrase(checked(home=HOME, local_state="ready")), "ready to start (checked 2 hours ago)")
         self.assertEqual(self.phrase(checked(home=HOME, local_state="missing")), "needs copying to 2 nodes · 424 GiB")
         self.assertEqual(self.phrase(row()), "needs downloading · 212 GiB")
         self.assertEqual(self.phrase(checked(archive_state="verified")), "needs restoring from its archive")
@@ -95,6 +95,13 @@ class Readiness(unittest.TestCase):
         self.assertEqual(self.phrase(row(), service=running), "running on spark-1, spark-2, spark-3")
         self.assertEqual(self.phrase(row(), service={**running, "state": "partial"}),
                          "partly running on spark-1, spark-2, spark-3")
+
+    def test_ready_to_start_says_how_old_its_saved_check_is(self):
+        # The list repeats no check: a check 300 days old must not read as a fresh one.
+        old = {**checked(home=HOME, local_state="ready"), "observation_age_seconds": 300 * 86400}
+        self.assertEqual(self.phrase(old), "ready to start (checked 300 days ago)")
+        unknown = {**checked(home=HOME, local_state="ready"), "observation_age_seconds": None}
+        self.assertEqual(self.phrase(unknown), "ready to start (check time unknown)")
 
     def test_unknown_sizes_are_said_to_be_unknown(self):
         self.assertEqual(serve.readiness(row(), order=["n0", "n1", "n2"], archive_location="disabled", sizes={},
@@ -543,6 +550,11 @@ class Compose(unittest.TestCase):
         plan = self.plan(checked(home=HOME, local_state="ready"), api_key="this checkout's .env file")
         self.assertIn("The API will require the key set in this checkout's .env file.",
                       plan["steps"][-1]["sentence"].replace(serve.KEEP, " "))
+        unknown = self.plan(checked(home=HOME, local_state="ready"), api_key=serve.KEY_FROM_EXPRESSION)
+        sentence = unknown["steps"][-1]["sentence"].replace(serve.KEEP, " ")
+        self.assertIn("Whether the API will require a key is not known", sentence)
+        self.assertNotIn("without a key", sentence)
+        self.assertNotIn("will require the key set", sentence)
 
     def test_the_screen_fits_80_60_and_44_columns(self):
         state = row()

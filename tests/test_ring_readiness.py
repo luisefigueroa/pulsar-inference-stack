@@ -99,12 +99,12 @@ class RingPhrase(unittest.TestCase):
         self.assertEqual(phrase(state), "needs copying to node-b · 212 GiB · copies recorded on node-d + node-c")
 
     def test_a_ready_default_names_its_nodes_and_nothing_else(self):
-        self.assertEqual(phrase(recipe(1, view(0, "n0"), view(0, "n2"), state="ready")), "ready to start on node-a")
+        self.assertEqual(phrase(recipe(1, view(0, "n0"), view(0, "n2"), state="ready")), "ready to start on node-a (checked 2 hours ago)")
         self.assertEqual(phrase(recipe(2, view(0, "n0"), view(1, "n1"), view(0, "n3"), view(1, "n2"),
-                                       state="ready")), "ready to start on node-a + node-b")
+                                       state="ready")), "ready to start on node-a + node-b (checked 2 hours ago)")
         # The saved check does not say which nodes it covered: without this
         # cluster's records of the default placement, no nodes are named.
-        self.assertEqual(phrase(recipe(1, view(0, "n0", EARLIER), state="ready")), "ready to start")
+        self.assertEqual(phrase(recipe(1, view(0, "n0", EARLIER), state="ready")), "ready to start (checked 2 hours ago)")
 
     def test_copies_of_an_earlier_saved_cluster_never_count(self):
         state = recipe(2, view(0, "n0", EARLIER), view(1, "n1", EARLIER), view(0, "n3", EARLIER),
@@ -219,7 +219,7 @@ class SameState(unittest.TestCase):
 
     def test_a_ready_default_is_unchanged(self):
         state = recipe(2, *DEFAULT_PAIR, view(0, "n3"), view(1, "n2"), state="ready")
-        self.assertEqual(phrase(state), "ready to start on node-a + node-b")
+        self.assertEqual(phrase(state), "ready to start on node-a + node-b (checked 2 hours ago)")
 
 
 class Mesh(unittest.TestCase):

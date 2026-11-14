@@ -232,19 +232,31 @@ def shared_view(record: dict) -> dict:
 
 
 def _interrupted_takeover(previous: dict, record: dict, current_topology_id: str | None) -> dict | None:
-    """The record that does not name CURRENT_TOPOLOGY_ID, when two records of
-    one copy differ only in topology_id and rank and exactly one names it:
-    what a takeover (Prepare's rebind) interrupted between the node and
-    controller leaves. Both name the same files. Prepare then plans a rebind,
-    which verifies them and writes the node's record and the controller's
-    again, whichever side was left behind; taking the current one would plan
-    a reuse, which rewrites only the controller. Any other disagreement still
-    refuses."""
+    """The record whose topology_id and rank Prepare plans from, when two
+    records of one copy differ only in those: what a takeover (Prepare's
+    rebind) interrupted between the node and controller leaves. Both name the
+    same files. RECORD is the later of the two, which is the node's.
+
+    When exactly one names CURRENT_TOPOLOGY_ID, the other is taken. Prepare
+    then plans a rebind, which verifies the files and writes the node's record
+    and the controller's again, whichever side was left behind; taking the
+    current one would plan a reuse, which rewrites only the controller.
+
+    When both name it, only the rank differs: a takeover at another position
+    under one membership. No record is then the stale one, and the node's is
+    taken. A plan that asks for the node's rank is a reuse, which writes that
+    rank to the controller; any other plan is a rebind, which writes both
+    records. The controller's rank could plan a reuse that leaves the node's
+    record behind.
+
+    Any other disagreement still refuses."""
     if not current_topology_id:
         return None
     if any(previous[f] != record[f] for f in VIEW_IDENTITY_FIELDS if f not in ('topology_id', 'rank')):
         return None
     stale = [r for r in (previous, record) if r['topology_id'] != current_topology_id]
+    if not stale:
+        return record
     return stale[0] if len(stale) == 1 else None
 
 
@@ -252,6 +264,8 @@ def reconcile_views(records: list[dict], *, current_topology_id: str | None = No
     """Conservatively merge controller/node records, including partial upgrades.
 
     Only Prepare passes CURRENT_TOPOLOGY_ID, to resolve an interrupted takeover.
+    It lists the controller's records before the nodes': the order decides a
+    takeover interrupted at another position (see _interrupted_takeover).
     """
     result = {}
     for record in records:

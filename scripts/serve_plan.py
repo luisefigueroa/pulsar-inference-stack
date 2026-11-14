@@ -354,7 +354,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     a two-node recipe that does not pass data around a loop name the nodes the
     phrase is about (see ring_readiness); PAIRS are ring_pairs' and
     TOPOLOGY_ID the saved cluster's. Without it, or on a full mesh, the phrase
-    is the default placement's alone."""
+    is the default placement's alone. "ready to start" carries the age of the
+    saved check it rests on."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -379,7 +380,9 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     if ring and host is not None and (nodes == 1 or not ring_pattern(row)):
         return ring_readiness(row, order=order, sizes=sizes, host=host, pairs=pairs, topology_id=topology_id)
     if row.get("checked_at") and row.get("local_state") == "ready":
-        return READINESS["ready"]
+        # The last saved check found the files ready; the list repeats no check, so it says when that was.
+        from model_library.catalog import _checked
+        return f"{READINESS['ready']} ({_checked(row.get('observation_age_seconds'))})"
     count = copies_needed(row, serving_nodes(row, order, recorded_node(row)))
     if not count:
         return READINESS["verify"]
@@ -422,9 +425,12 @@ def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: lis
     if row.get("checked_at") and row.get("local_state") == "ready":
         # The saved check does not record which nodes it covered: name them
         # only when this cluster's records show the default placement complete.
+        # The list repeats no check, so it says when that check was.
+        from model_library.catalog import _checked
+        checked = f" ({_checked(row.get('observation_age_seconds'))})"
         if topology_id and copies_recorded(row, default, topology_id):
-            return READINESS["ready-on"].format(hosts=placement_words(host, default))
-        return READINESS["ready"]
+            return READINESS["ready-on"].format(hosts=placement_words(host, default)) + checked
+        return READINESS["ready"] + checked
     count = copies_needed(row, default)
     if not count:
         phrase = (READINESS["verify-on"].format(hosts=placement_words(host, default)) if default
@@ -1055,8 +1061,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
 
     # 5. Start, and what its dry run said.
     if not ready_only:
-        key = ("The API will require the key set in " + api_key + "." if api_key
-               else "The API will accept requests without a key.")
+        key = key_sentence(api_key)
         step = {"kind": "start", "authority": False, "projected": True, "node": None, "facts": {},
                 "sentence": f"Start the service and wait until it answers. This can take several minutes. {key}",
                 "changes": f"starts the service on {_list(hosts)}",
@@ -1158,8 +1163,7 @@ def _restart(plan: dict, row: dict, entries: list[dict], inventory: dict, servic
          "command": ["./pulsar", "stop", spec_ref(spec, entries)], "preview": None},
         {"kind": "start", "authority": False, "projected": True, "node": None, "facts": {},
          "sentence": ("Start it again on the same nodes and wait until it answers. This can take several "
-                      "minutes. " + ("The API will require the key set in " + plan["api_key"] + "."
-                                     if plan.get("api_key") else "The API will accept requests without a key.")),
+                      "minutes. " + key_sentence(plan.get("api_key"))),
          "changes": f"starts the service on {where}", "command": start, "preview": None}]
     plan["stopped"].append({"conf": spec, "name": model, "hosts": list(observed["hosts"]), "in_catalog": True,
                             "node": observed.get("node_id"), "restart": start,
@@ -1597,12 +1601,28 @@ def _topology_id(repo: Path) -> str | None:
     return topology["topology_id"] if state == "saved" else None
 
 
+# The plan's `api_key` when .env sets the key with a shell expression: only start knows its value.
+KEY_FROM_EXPRESSION = "expression"
+
+
 def _api_key(repo: Path) -> str | None:
     from scripts.cluster_status import api_key_source
     name, source = api_key_source(repo)
     if name in (None, "unreadable"):
         return None
+    if source == "expression":
+        return KEY_FROM_EXPRESSION
     return {"process": "the environment that started Pulsar", "dotenv": "this checkout's .env file"}[source]
+
+
+def key_sentence(api_key: str | None) -> str:
+    """What start does about a key: API_KEY is where it is set, KEY_FROM_EXPRESSION, or None."""
+    if api_key == KEY_FROM_EXPRESSION:
+        return ("Whether the API will require a key is not known: this checkout's .env file sets it with a "
+                "shell expression, which only start reads.")
+    if api_key:
+        return f"The API will require the key set in {api_key}."
+    return "The API will accept requests without a key."
 
 
 def _archive_location(repo: Path) -> str:

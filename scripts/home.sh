@@ -135,7 +135,7 @@ with_width() {
 if [ "$complete" = 1 ]; then
   # The catalog names the services' models; a catalog that cannot be read
   # leaves them by their served names, and Serve a model… reports the error.
-  catalog_json=$(python3 -m model_library.catalog list --json 2>/dev/null) || catalog_json='{"entries": []}'
+  catalog_json=$("$REPO_DIR/pulsar" models list --json 2>/dev/null) || catalog_json='{"entries": []}'
   now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   output=$(printf '%s' "$catalog_json" | with_width python3 -m scripts.cluster_status home \
     --now "$now" --repo-root "$REPO_DIR" 2>/dev/null) || output=""
