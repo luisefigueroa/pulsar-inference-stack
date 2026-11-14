@@ -126,6 +126,19 @@ class OneService(Page):
                 # Still one probe: the card reads the saved record, not the service.
                 self.assertEqual(self.commands(), ["inventory --json"])
 
+    def test_the_launch_record_is_read_where_dotenv_puts_the_model_library(self):
+        # Every ./pulsar command takes the library location from lib.sh, which reads this checkout's
+        # .env; the double stands in for it. The process value has no record of this service.
+        from model_library.state import Store
+        library = self.fixtures / "dotenv-library"
+        Store(library).put("service-plans", PLAN_ID, {"ranks": [], "api_auth": True})
+        (self.root / "scripts" / "lib.sh").write_text(f"PULSAR_MODEL_LIBRARY_DIR={library}\n")
+        self.inventory(inventory(service(SPEC, keys=("w1", "w2", "head"), plan=PLAN_ID)))
+        result = self.run_menu(["Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Key required: requests send the key the service was started with · from its launch record",
+                      self.text(result))
+
     def test_entering_takes_its_own_inventory_even_when_one_was_saved_just_now(self):
         # A Stop run elsewhere, such as Serve a model…'s before a refused Start, leaves the saved
         # record as it was: the service it shows may be gone.

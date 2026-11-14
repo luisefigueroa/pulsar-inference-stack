@@ -45,7 +45,14 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-services.XXXXXX")
 trap 'rm -rf -- "$WORK"' EXIT
 # The width is read once, before any capture: a captured stdout hides the terminal.
 COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
-page() { python3 -m scripts.services_page "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
+# The Key row and the Connect card read a service's launch record from the
+# model library. Those Python helpers get its location as every ./pulsar
+# command reads it: lib.sh, loaded in a subshell, gives the process value or
+# the one in this checkout's .env. The ./pulsar commands run from here read
+# .env themselves.
+LIBRARY_DIR=$(. "$REPO_DIR/scripts/lib.sh" >/dev/null 2>&1 && printf '%s' "$PULSAR_MODEL_LIBRARY_DIR") || LIBRARY_DIR=""
+with_library() { if [ -n "$LIBRARY_DIR" ]; then PULSAR_MODEL_LIBRARY_DIR=$LIBRARY_DIR "$@"; else "$@"; fi; }
+page() { with_library python3 -m scripts.services_page "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 text() { python3 -m scripts.terminal_format --text; }
 CHANGED=4
 
@@ -113,7 +120,8 @@ check_now() {
 connect() {
   local conf="$1" card=""
   if [ "$STATUS_CONF" != "$conf" ] || [ "$STATUS_RC" != 0 ]; then check_now "$conf" || return $?; fi
-  [ "$STATUS_RC" != 0 ] || card=$(python3 "$REPO_DIR/scripts/connect_card.py" --result "$STATUS_FILE" 2>/dev/null) || card=""
+  [ "$STATUS_RC" != 0 ] || card=$(with_library python3 "$REPO_DIR/scripts/connect_card.py" --result "$STATUS_FILE" 2>/dev/null) \
+    || card=""
   if [ -n "$card" ]; then
     printf '%s\n' "$card"
     printf '\nFrom Check it now, %s.\n' "$(python3 -c 'import sys; from model_library.catalog import age_text; print(age_text(int(sys.argv[1])))' \
