@@ -176,6 +176,8 @@ def build_root(root: Path, menus=("serve-menu.sh", "cluster-review.sh"), *, gum:
     for name in menus:
         shutil.copyfile(ROOT / "scripts" / name, scripts / name)
         (scripts / name).chmod(0o755)
+    # The menus load it; with no lib.sh here it keeps root_environment's locations.
+    shutil.copyfile(ROOT / "scripts" / "menu-settings.sh", scripts / "menu-settings.sh")
     fixtures = root / "fixtures"
     fixtures.mkdir()
     if gum:
@@ -319,6 +321,17 @@ class Entry(Harness):
         self.assertEqual(self.menus()[0][0], "Serve a model")
         self.assertIn("ready to start", " ".join(self.menus()[0]))
         self.assert_plain_choices()
+
+    def test_membership_saved_where_dotenv_says_is_the_one_the_plan_reads(self):
+        # Every ./pulsar command takes CLUSTER_TOPOLOGY_FILE from lib.sh, which reads this checkout's
+        # .env; the double stands in for it. The process value names no file.
+        (self.root / "topology.json").rename(self.root / "dotenv-topology.json")
+        (self.root / "scripts" / "lib.sh").write_text(f"CLUSTER_TOPOLOGY_FILE={self.root / 'dotenv-topology.json'}\n")
+        result = self.run_menu(["Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), ["inventory --json"])
+        self.assertEqual(self.menus()[0][0], "Serve a model")
+        self.assertIn("ready to start", " ".join(self.menus()[0]))
 
     def test_an_old_check_runs_one_discovery_first(self):
         self.save_changes(*changes(minutes=20))

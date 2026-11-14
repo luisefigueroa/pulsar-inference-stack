@@ -16,6 +16,9 @@ REPO_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
+# The locations its Python helpers read, as ./pulsar commands read them (.env included).
+# shellcheck source=menu-settings.sh
+. "$REPO_DIR/scripts/menu-settings.sh"
 require_gum "the Cluster menu" \
   "./pulsar topology show" "saved membership; no probes" \
   "./pulsar topology detect" "discover the machines and save the changes noticed" \

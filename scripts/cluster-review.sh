@@ -28,6 +28,9 @@ case "${1:-}" in
 esac
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
+# The locations its Python helpers read, as ./pulsar commands read them (.env included).
+# shellcheck source=menu-settings.sh
+. "$REPO_DIR/scripts/menu-settings.sh"
 require_gum "the review of cluster changes" \
   "./pulsar topology detect" "see what changed; saves nothing" \
   "./pulsar topology configure" "save the cluster as it is now; asks first" \

@@ -38,6 +38,9 @@ export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONDONTWRITEBYTECODE=1
 # shellcheck source=ui.sh
 . "$REPO_DIR/scripts/ui.sh"
+# The locations its Python helpers read, as ./pulsar commands read them (.env included).
+# shellcheck source=menu-settings.sh
+. "$REPO_DIR/scripts/menu-settings.sh"
 require_gum "Models and disk space…" \
   "./pulsar model files" "each model on every node: its size and where it is" \
   "./pulsar model budget" "room on each node" \

@@ -75,7 +75,7 @@ class Harness(unittest.TestCase):
         self.root = Path(self.tmp.name)
         scripts = self.root / "scripts"
         scripts.mkdir()
-        for name in ("cluster-menu.sh", "cluster-review.sh"):
+        for name in ("cluster-menu.sh", "cluster-review.sh", "menu-settings.sh"):
             shutil.copyfile(ROOT / "scripts" / name, scripts / name)
             (scripts / name).chmod(0o755)
         self.choose_log = self.root / "choose.log"
