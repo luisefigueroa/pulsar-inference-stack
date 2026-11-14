@@ -184,6 +184,22 @@ class PlanAndCopyAgree(unittest.TestCase):
         self.assertEqual(self.f.events('transfer'), [])
         self.assertNotIn('begin-home', [row['operation'] for row in self.f.events('node-operation')])
 
+    def test_a_move_retried_after_its_copy_finished_needs_no_route(self):
+        # The copy reached the opposite node, then the move stopped. Its retry verifies
+        # the files there and copies nothing, so a route that cannot be proven does not block it.
+        import shutil
+        shutil.copytree(self.root / "rank-0" / "homes", self.root / "rank-2" / "homes", symlinks=True,
+                        dirs_exist_ok=True)
+        self.f.cfg['wrong_route'] = True
+        self.f.save()
+        move = json.loads(self.f.run('move', '--node', self.opposite, '--plan', spec=True).stdout)
+        self.assertNotEqual(move.get('eligible'), False, move)
+        self.assertTrue(move['destination_present'])
+        self.assertNotIn('passes_through', move)
+        result = self.f.run('move', '--node', self.opposite, '--yes', spec=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.f.events('transfer'), [])
+
     def test_a_route_that_cannot_be_proven_blocks_the_plan_and_nothing_starts(self):
         self.f.cfg['wrong_route'] = True
         self.f.save()
