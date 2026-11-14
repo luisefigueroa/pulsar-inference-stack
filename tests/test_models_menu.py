@@ -68,7 +68,7 @@ class ThePage(Menu):
         text = self.text(result)
         self.assertIn("Room spark-1 2.00 TiB free · room for 1.00 TiB", text)
         self.assertIn("Models org/model · 212 GiB · home on spark-1 (also its copy there) · copies on spark-2 and "
-                      "spark-3 ready to start · not kept · no archive recorded", text)
+                      "spark-3 ready to start (checked 2 hours ago) · not kept · no archive recorded", text)
         self.assertIn("Backups need the archive location: Cluster… → Settings…", text)
         self.assert_plain_choices()
 
@@ -84,6 +84,19 @@ class ThePage(Menu):
         self.assertEqual(result.returncode, 0, result.stderr)
         # One scan for every screen and the Cancel; the plan's own preview runs once; Look again scans again.
         self.assertEqual(self.commands(), SCAN + [f"model purge {SPEC} --plan --json"] + SCAN)
+
+    def test_a_copy_the_scan_did_not_find_is_not_read_as_ready_and_look_again_says_so_again(self):
+        # The saved check found the files ready; since then the copy on spark-3 is gone.
+        self.fixture("files", envelope(files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding()),
+            location("n2", "prepared", binding(), state="missing")], specs=[SPEC])])))
+        result = self.run_menu(["Look again (checks nodes now)", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), SCAN + SCAN)
+        text = self.text(result)
+        self.assertEqual(text.count("Models and disk space · checked less than a minute ago"), 2)
+        self.assertEqual(text.count(" files not found on spark-3 · not kept · no archive recorded"), 2)
+        self.assertNotIn("ready to start", text)
 
     def test_a_node_that_did_not_answer_is_named_and_nothing_destructive_is_offered(self):
         nodes = [node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3", unread=True)]

@@ -139,10 +139,66 @@ class Page(unittest.TestCase):
         self.assertIn("Models and disk space · checked less than a minute ago", text)
         self.assertIn("Room spark-1 2.00 TiB free · room for 1.00 TiB", text)
         self.assertIn("Models org/model · 212 GiB · home on spark-1 (also its copy there) · copies on spark-2 and "
-                      "spark-3 ready to start · kept · archived, verified 4 days ago", text)
+                      "spark-3 ready to start (checked 2 hours ago) · kept · archived, verified 4 days ago", text)
         self.assertIn("org/other · 60.0 GiB · home on spark-2 · no copies on serving nodes", text)
         self.assertIn("no archive recorded", text)
         self.assertIn(mp.EXPLAIN, text)
+
+    def test_a_copy_the_scan_did_not_find_is_said_instead_of_the_saved_ready_to_start(self):
+        # The saved check found the files ready two hours ago; the scan is newer and did not find one copy.
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding()),
+            location("n2", "prepared", binding(), state="missing")], specs=[SPEC])])
+        text = flat(mp.page(cluster([recipe()], document), width=100))
+        self.assertIn("Models and disk space · checked less than a minute ago", text)
+        self.assertIn(" files not found on spark-3 · not kept · no archive recorded", text)
+        self.assertNotIn("ready to start", text)
+        # A home the scan did not find counts too, and a copy it could not check does not hide it.
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding(), state="missing"), location("n1", "prepared", binding(), state="unknown"),
+            location("n2", "prepared", binding())], specs=[SPEC])])
+        text = flat(mp.page(cluster([recipe()], document), width=100))
+        self.assertIn(" files not found on spark-1 · not kept", text)
+        self.assertNotIn("ready to start", text)
+
+    def test_a_copy_the_scan_could_not_check_is_unknown_not_ready_and_not_absent(self):
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding(), state="unknown"),
+            location("n2", "prepared", binding(), state="unknown")], specs=[SPEC])])
+        text = flat(mp.page(cluster([recipe()], document), width=100))
+        self.assertIn(" files could not be checked on spark-2 and spark-3 · not kept · no archive recorded", text)
+        self.assertNotIn("ready to start", text)
+        self.assertNotIn("not found", text)
+        narrow = mp.page(cluster([recipe()], document), width=44)
+        self.assertTrue(all(len(line) <= 44 for line in narrow.splitlines()), narrow)
+
+    def test_a_copy_recorded_on_a_node_outside_confirmed_membership_does_not_hide_ready_to_start(self):
+        from model_library.file_inventory import OUTSIDE_MEMBERSHIP
+        # No scan reads a node that left the membership, so its records are unknown on every scan.
+        gone = {**node("n9", "n9", unread=True), "error": OUTSIDE_MEMBERSHIP}
+        nodes = [node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3"), gone]
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding()), location("n2", "prepared", binding()),
+            location("n9", "prepared", binding(), state="unknown")], specs=[SPEC])], nodes=nodes)
+        text = flat(mp.page(cluster([recipe()], document), width=100))
+        self.assertIn(" ready to start (checked 2 hours ago) · not kept", text)
+        self.assertNotIn("could not be checked", text)
+
+    def test_a_retained_ready_to_start_carries_the_age_of_the_saved_check_not_of_the_scan(self):
+        text = flat(mp.page(cluster([recipe()], files([ready_model()])), width=100))
+        self.assertIn("Models and disk space · checked less than a minute ago", text)
+        self.assertIn(" ready to start (checked 2 hours ago) · not kept · no archive recorded", text)
+        row = recipe(observation_age_seconds=None)
+        self.assertIn(" ready to start (check time unknown) · not kept",
+                      flat(mp.page(cluster([row], files([ready_model()])), width=100)))
+
+    def test_what_the_saved_records_say_is_not_ready_stays_as_serve_says_it(self):
+        # Only the saved check's "ready to start" gives way to the scan; these phrases claim no readiness.
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding(), state="missing")], specs=[SPEC])])
+        row = {**recipe(), "local_state": "missing"}
+        text = flat(mp.page(cluster([row], document), width=100))
+        self.assertIn(" needs copying to 2 nodes · 424 GiB · not kept", text)
 
     def test_a_node_that_did_not_answer_is_unknown_not_absent(self):
         nodes = [node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3", unread=True)]

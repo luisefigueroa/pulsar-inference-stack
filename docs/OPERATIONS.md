@@ -229,6 +229,8 @@ below are for reading.
 | Models: not checked, so its files and room are unknown | The node did not answer the scan, so what is on it is unknown, not absent. Removing, moving or keeping files needs every node, so **Free up space…** offers nothing until it answers; choose **Look again**. |
 | Models: home on, (also its copy there) | Where the model's *home* is: the copy Pulsar downloaded or restored and keeps, from which serving nodes are given copies. *also its copy there* means that node serves straight from the home. |
 | Models: copies on, no copies on serving nodes | The serving nodes that hold a *prepared copy* of the model, the files a service reads there; or none yet. **Get a model ready ahead of time…** makes them. |
+| Models: ready to start (checked … ago) | **Serve a model…**'s *ready to start*, with the age of the saved check it comes from. The scan on this page lists the files and does not repeat that check, so the age in the page's first line is the scan's, not the check's. `./pulsar models check SPEC` (**Check now** in the catalog menu) saves a new check. `check time unknown` stands for the age when the saved check's time cannot be read. |
+| Models: files not found on …, files could not be checked on … | The last saved check found the model ready to start, but the scan on this page is newer. It did not find a home or a copy that Pulsar's records name on that node; or it could not check one there, because the node did not answer or the folder could not be read as a complete copy. The page says so instead of *ready to start*. A record on a machine outside the saved membership does not count. Could not be checked is unknown, not absent: choose **Look again** once the node answers. **Serve a model…** and **Get a model ready ahead of time…** check the files again when they make a plan, and the plan names what is in the way. |
 | Models: kept, not kept | Whether the model's copies are kept ready (pinned): **Free up space…** never offers a kept model and Purge refuses it. **Keep a model ready…** keeps it or stops keeping it. |
 | Models: archived, verified … ago | Every required set of the model's files has an archive, with the age of its last verification. A removed model comes back from it without the internet. |
 | Models: partly archived, archive seen, not verified, no archive recorded | Only some of its files have a verified archive; an archive was seen at the last check but not verified; or Pulsar has no record of an archive. **Back up a model…** makes the missing ones; **Check the archives…** verifies them. |
@@ -1602,19 +1604,24 @@ Room on each node
 Models on the cluster
   <model>
     212 GiB · home on <node-1> (also its copy there) · copies on <node-2>
-      ready to start · kept · archived, verified 4 days ago
+      ready to start (checked 2 hours ago) · kept · archived, verified 4 days ago
 ```
 
 A model's recipes are told apart by what differs, as the Serve list does. Its
 facts come from the scan and the catalog's saved records: its size, where its
 *home* is (the copy Pulsar downloaded or restored and keeps) and its *copies*
 (what each serving node loads), Serve's readiness phrase, whether it is kept,
-and its archive state (see the [Models labels](#catalog-labels)). Files no
-catalog recipe uses are named read-only. A node that did not answer is unknown,
-not absent, and since Purge, Remove home, Move home and Pin need every node,
-nothing that changes files is offered while one does not answer. Without an
-archive location the page says that **Cluster… → Settings…** sets it instead of
-offering **Back up a model…** and **Check the archives…**.
+and its archive state (see the [Models labels](#catalog-labels)). *ready to
+start* is the result of the last saved check, which the scan does not repeat,
+so it carries that check's own age. Where the scan, which is newer, did not
+find a home or a copy that the records name, or could not check one, the page
+says `files not found on NODE` or `files could not be checked on NODE`
+instead. Files no catalog recipe uses are named read-only. A node that did not
+answer is unknown, not absent, and since Purge, Remove home, Move home and Pin
+need every node, nothing that changes files is offered while one does not
+answer. Without an archive location the page says that **Cluster… →
+Settings…** sets it instead of offering **Back up a model…** and **Check the
+archives…**.
 
 | Choice | Does | Same as |
 | --- | --- | --- |
