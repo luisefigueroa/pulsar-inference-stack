@@ -309,6 +309,33 @@ class Preparation(Details):
             with self.subTest(other=other["path"][-10:]), self.assertRaisesRegex(StorageError, "disagree"):
                 reconcile_views([controller, other], current_topology_id=TOPOLOGY)
 
+    def test_prepare_resolves_an_interrupted_takeover_that_changed_only_the_position(self):
+        from model_library.integrity import StorageError
+        from model_library.state import reconcile_views
+        # Another order of the same nodes changes a copy's rank and not its
+        # topology ID. Interrupted, both records name the current membership,
+        # at different ranks. This plan asks for n1 at rank 1.
+        observations = observed("n0", "n1", n1={"view_verified": True})
+        for node_rank, controller_rank, action in ((1, 0, "reuse"), (0, 1, "rebind")):
+            with self.subTest(node_rank=node_rank, controller_rank=controller_rank):
+                controller = self.mine(rank=controller_rank)
+                node = {**controller, "rank": node_rank}
+                # Other readers still refuse records that disagree.
+                with self.assertRaisesRegex(StorageError, "disagree"):
+                    reconcile_views([controller, node])
+                # Prepare lists the controller's records first and takes the
+                # node's rank. A reuse writes that rank to the controller, and
+                # a takeover writes both records; a reuse of the controller's
+                # rank would leave the node's record behind.
+                merged = reconcile_views([controller, node], current_topology_id=TOPOLOGY)
+                self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [(TOPOLOGY, node_rank)])
+                plan = self.plan(views=merged, observations=observations)
+                self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", action])
+        # Two records that name the same earlier membership still refuse.
+        earlier = self.mine(topology="e" * 64, rank=0)
+        with self.assertRaisesRegex(StorageError, "disagree"):
+            reconcile_views([earlier, {**earlier, "rank": 1}], current_topology_id=TOPOLOGY)
+
     def test_a_pinned_and_mounted_copy_lists_both_causes_under_one_message(self):
         old = self.mine(topology="e" * 64, pinned=True)
         plan = self.plan(views=[old], containers=[container(old["hub_path"], {MANAGED: "true", CONF: "ef" * 32})])

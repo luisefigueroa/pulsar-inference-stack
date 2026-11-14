@@ -3,6 +3,8 @@
 
 # merged_views [SCOPE] [CURRENT_TOPOLOGY_ID]: controller and node records,
 # reconciled. Only Prepare passes CURRENT_TOPOLOGY_ID (see reconcile_views).
+# Keep the controller's records before the nodes': for a takeover interrupted
+# at another position, reconcile_views takes the rank of the later record.
 merged_views() {
   local controller node_records request scope="${1:-spec}" current="${2:-}"
   case "$scope" in
