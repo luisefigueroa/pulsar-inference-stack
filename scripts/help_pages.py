@@ -39,14 +39,22 @@ REFERENCE = [
         ("pulsar help labels", "What the catalog's status words mean, such as not checked yet, and what to do."),
         ("pulsar help workflow", "How serving works, from download to purge, one step at a time.")]),
     ("Set up this checkout", [
-        ("pulsar", "Open the menu on a terminal with Gum: cluster setup, read-only catalog details, "
-                   "diagnostics and **Help**. Full operations follow membership and SSH setup; archives are optional."),
-        ("pulsar topology setup", "First-use membership and SSH enrollment with separate confirmations."),
+        ("pulsar", "Open the menu on a terminal with Gum. Before setup: **Set up this cluster…**, read-only "
+                   "catalog details and **Help and troubleshooting…**. After it: **Serve a model…**, **Running "
+                   "services…**, **Models and disk space…**, **Cluster…** and **Help and troubleshooting…**, "
+                   "whose **Advanced: single operations…** keeps each single operation. Archives are optional."),
+        ("pulsar topology setup", "First-use setup in five steps: this machine, finding the machines, each "
+                                  "machine's prerequisites, then membership and SSH identities, each with its "
+                                  "own confirmation. It installs nothing."),
         ("pulsar topology show|check|detect|configure",
-         "Inspect saved membership, check nodes, discover or explicitly configure."),
+         "Inspect saved membership, check nodes, discover or explicitly configure; "
+         "`configure --remove-missing` saves without a node that did not answer."),
+        ("pulsar topology forget [--plan]",
+         "Start over: remove saved membership and cluster observations after a private backup copy."),
         ("pulsar ssh-trust --help", "Inspect or explicitly enroll SSH trust."),
         ("pulsar configure archive-root", "Select an existing archive location when archives are needed."),
-        ("pulsar doctor", "Run explicit host and topology diagnostics.")]),
+        ("pulsar doctor", "Run explicit host and topology diagnostics, with every node's prerequisites "
+                          "and its hf login.")]),
     ("Catalog and model files", [
         ("pulsar models", "Browse catalog and saved storage observations."),
         ("pulsar models menu --read-only",
@@ -57,7 +65,10 @@ REFERENCE = [
         ("pulsar models results SPEC", "Inspect published run dates, workloads and policy outcomes for this spec."),
         ("pulsar models check SPEC", "Explicitly check the selected managed files and archive."),
         ("pulsar release show|verify SPEC", "Print a catalog spec as JSON, or its state and review."),
-        ("pulsar model --help", "Acquire, restore, move, prepare, pin, purge and archive.")]),
+        ("pulsar model --help", "Acquire, restore, move, prepare, pin, purge and archive."),
+        ("pulsar model prepare SPEC --adopt-unrecorded",
+         "Take over a prepared copy's folder that no record names, only if every file hashes as expected; "
+         "nothing in it is deleted or changed.")]),
     ("Serve", [
         ("pulsar image check|stage SPEC", "Inspect or explicitly stage the exact image on selected serving ranks."),
         ("pulsar start SPEC", "Recheck prerequisites and start the exact selected spec."),
@@ -187,12 +198,17 @@ def workflow() -> list[tuple[str, str]]:
          "it is ready once it answers a test request."),
         ("Connect",
          "Send requests to the API URL with the served model name, both shown on the **Connect** card "
-         f"after **{LABELS['start']}** and in **{LABELS['status']}**."),
+         f"after **{LABELS['start']}** and under **Running services… → How to connect**."),
         (LABELS["stop"], "Remove the *service*'s containers from every node; model files, *pins* and "
                          "*archives* are kept."),
+        ("Back up",
+         "Copy each *home* of a model into the *archive* (**Models and disk space… → Back up a model…**), so "
+         "a model removed from the cluster comes back without the internet; **Check the archives…** verifies "
+         "them."),
         (LABELS["purge"],
-         "Remove the spec's *prepared copies* to free space; pinned or in-use copies are refused, "
-         "and the *home* and *archives* are kept."),
+         "Remove the spec's *prepared copies* to free space, keeping the *home* and *archives*; pinned or "
+         "in-use copies are refused, and **Models and disk space… → Free up space…** lists what can go, "
+         "largest gain first, with what each frees and what it costs to get back."),
     ]
 
 
@@ -241,15 +257,26 @@ def emit_labels(writer: TerminalWriter, rows: list[tuple[str, str]]) -> None:
 
 def emit_workflow(writer: TerminalWriter) -> None:
     writer.emit("How serving works", role="heading")
-    writer.emit("**Set up cluster membership and SSH trust** first. Then choose a spec in **Catalog and "
-                "storage**; the **Lifecycle** line in its frame marks the step it has reached.", markup=True)
+    writer.emit("**Set up this cluster…** first. Then choose **Serve a model…** and a model: Pulsar shows a plan "
+                "of the steps below that it still needs, with the *serving image* and a Stop of whatever is in "
+                "the way between Prepare and Start, and the cursor on **Cancel**. One **Go ahead** runs them in "
+                "order; each step checks first, and Pulsar stops and asks again if one would do more than the "
+                "plan says. **Running services…** shows what runs and how to connect to it, and restarts, switches "
+                "or stops it, after a plan that starts on Cancel or a question that starts on No. **Cluster…** checks the nodes and "
+                "saves a change to the cluster. After Pulsar's records were lost, **Models and disk space… → Look for "
+                "model files Pulsar has no record of…** records the files the nodes still hold, checking every file "
+                "first. **Help and troubleshooting… → Why will a model not start?** runs "
+                "Start's checks without starting and offers each fix. **Help and troubleshooting… → Advanced: "
+                "single operations…** runs each step on its own.", markup=True)
     writer.blank()
     for number, (step, sentence) in enumerate(workflow(), 1):
         writer.emit(f"{number}. {step}", initial_indent="  ", role="heading")
         writer.emit(sentence, initial_indent="     ", markup=True)
     writer.blank()
     writer.emit("The same steps as commands: `pulsar model acquire` or `model restore`, `model prepare`, "
-                "`start`, `status`, `stop` and `model purge`. Most commands accept `--help`.", markup=True)
+                "`image stage`, `start`, `status`, `stop`, `model archive create` and `model purge`. Most commands "
+                "accept `--help`. The outcome of **Serve a model…**, and of each plan under **Models and disk "
+                "space…**, lists the commands it ran under Same as.", markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:

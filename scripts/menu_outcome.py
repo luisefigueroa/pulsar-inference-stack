@@ -20,7 +20,7 @@ import sys
 
 from scripts.terminal_format import TerminalWriter
 
-INSPECTIONS = {"status", "check", "readiness", "image-check", "verify", "budget"}
+INSPECTIONS = {"status", "check", "readiness", "image-check", "verify"}
 # The inspection that establishes an action's effect when its outcome is unknown.
 RECHECK = {"start": "Live status", "stop": "Live status",
            "image-stage": "Launch options → Check serving image"}

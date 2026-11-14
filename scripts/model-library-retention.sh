@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Internal operation helpers; sourced by model-library.sh only.
 
+# merged_views [SCOPE] [CURRENT_TOPOLOGY_ID]: controller and node records,
+# reconciled. Only Prepare passes CURRENT_TOPOLOGY_ID (see reconcile_views).
+# Keep the controller's records before the nodes': for a takeover interrupted
+# at another position, reconcile_views takes the rank of the later record.
 merged_views() {
-  local controller node_records request scope="${1:-spec}"
+  local controller node_records request scope="${1:-spec}" current="${2:-}"
   case "$scope" in
     spec) request=$(model_json operation views spec_id "$SPEC_ID") ;;
     snapshot) request=$(model_json operation views snapshot_manifest_id "$MANIFEST_ID") ;;
@@ -15,8 +19,9 @@ merged_views() {
 import json,sys
 from model_library.state import reconcile_views
 controller,node=map(json.loads,sys.stdin.read().split("\0",1))
-print(json.dumps({"views":reconcile_views(controller+node["views"]),"transactions":node["transactions"]}))
-'
+views=reconcile_views(controller+node["views"],current_topology_id=sys.argv[1] or None)
+print(json.dumps({"views":views,"transactions":node["transactions"]}))
+' "$current"
 }
 
 retention_model() {

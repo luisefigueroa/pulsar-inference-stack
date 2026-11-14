@@ -561,12 +561,12 @@ class View(unittest.TestCase):
             "Download or Restore records a home."])
         self.assertEqual(shown(row(), "not-configured"), [
             "Not shown Restore, Verify archive (no archive location is configured). "
-            "Set one in Archive storage configuration on the home menu.",
+            "Set one in Cluster… → Settings… on the home menu.",
             "Not shown Prepare, Move home, Create archive, Remove home (no home is recorded). "
             "Download records a home."])
         self.assertEqual(shown(checked(home=HOME), "disabled"), [
             "Not shown Restore, Create archive, Verify archive (archives are disabled). "
-            "Set a location in Archive storage configuration on the home menu."])
+            "Set a location in Cluster… → Settings… on the home menu."])
         self.assertEqual(shown(row(snapshots=two_snapshots(HOME, None)), "configured"), [
             "Not shown Prepare (no home is recorded for snapshot draft). Download or Restore records a home."])
         for state, location in ((row(), "not-configured"), (checked(home=HOME, **GUARDED), "configured")):
@@ -2098,81 +2098,6 @@ class Question(unittest.TestCase):
                                         "--plan-file", "plan.json"]), 3)
 
 
-class HomeNext(unittest.TestCase):
-    """The home screen's Next line, from saved records only (TUI-26)."""
-    def specs(self):
-        return [row(spec_id="a" * 64, home=HOME), row(spec_id="b" * 64, home=HOME),
-                checked(spec_id="c" * 64, home=HOME, observation_age_seconds=3 * 86400),
-                checked(spec_id="d" * 64, local_state="missing"),
-                checked(spec_id="e" * 64, local_state="missing", archive_state="verified"),
-                checked(spec_id="f" * 64, home=HOME, local_state="changed", observation_age_seconds=600),
-                checked(spec_id="0" * 64, home=HOME, local_state="ready")]
-
-    def test_groups_suggestions_in_lifecycle_order_with_the_newest_check(self):
-        self.assertEqual(menu.home_next(self.specs(), "configured"),
-                         "Next: 2 specs not checked yet · 1 spec needs a check · 1 spec needs Download · "
-                         "1 spec needs Restore · 1 spec needs Prepare · 1 spec ready to Start — open Catalog "
-                         "and storage. Newest saved check: 10 minutes ago.")
-
-    def test_an_old_check_that_found_prepared_files_counts_as_ready_to_start(self):
-        old = [checked(spec_id="a" * 64, home=HOME, local_state="ready", observation_age_seconds=9 * 86400),
-               checked(spec_id="b" * 64, home=HOME, local_state="missing", observation_age_seconds=9 * 86400)]
-        self.assertEqual(menu.home_next(old, "configured"),
-                         "Next: 1 spec needs a check · 1 spec ready to Start — open Catalog and storage. "
-                         "Newest saved check: 9 days ago.")
-
-    def test_check_counts_cover_specs_with_a_home_once_any_spec_has_one(self):
-        # Specs this cluster never downloaded would otherwise fill the line.
-        specs = [row(spec_id="a" * 64), row(spec_id="b" * 64, home=HOME),
-                 checked(spec_id="c" * 64, observation_age_seconds=3 * 86400),
-                 checked(spec_id="d" * 64, local_state="missing"),
-                 checked(spec_id="0" * 64, home=HOME, local_state="ready")]
-        self.assertEqual(menu.home_next(specs, "configured"),
-                         "Next: 1 spec not checked yet · 1 spec needs Download · 1 spec ready to Start — open "
-                         "Catalog and storage. Newest saved check: 2 hours ago.")
-        # Without any home (a fresh checkout or lost records), every spec counts.
-        self.assertTrue(menu.home_next(specs[:1] + specs[2:4], "configured").startswith(
-            "Next: 1 spec not checked yet · 1 spec needs a check · 1 spec needs Download — "))
-
-    def test_counts_use_singular_and_plural_wording(self):
-        ready = [checked(spec_id=c * 64, home=HOME, local_state="ready") for c in "ab"]
-        self.assertEqual(menu.home_next(ready, "configured"),
-                         "Next: 2 specs ready to Start — open Catalog and storage. Newest saved check: 2 hours ago.")
-        stale = [checked(spec_id=c * 64, observation_age_seconds=3 * 86400) for c in "ab"]
-        self.assertTrue(menu.home_next(stale, "configured").startswith("Next: 2 specs need a check — "))
-        self.assertTrue(menu.home_next([row()], "configured").startswith("Next: 1 spec not checked yet — "))
-
-    def test_never_checked_alone_has_no_check_age(self):
-        self.assertEqual(menu.home_next([row(spec_id="a" * 64), row(spec_id="b" * 64)], "configured"),
-                         "Next: 2 specs not checked yet — open Catalog and storage.")
-
-    def test_the_archive_location_decides_restore(self):
-        state = [checked(local_state="missing", archive_state="verified")]
-        self.assertIn("1 spec needs Restore", menu.home_next(state, "configured"))
-        self.assertIn("1 spec needs Download", menu.home_next(state, "disabled"))
-
-    def test_no_suggested_step_and_no_catalog_give_no_line(self):
-        self.assertIsNone(menu.home_next([], "configured"))
-        self.assertIsNone(menu.home_next([checked(home=HOME, local_state="ready", **GUARDED)], "configured"))
-
-    def test_saved_service_and_session_records_are_not_read(self):
-        # Ready files suggest Start even though a service may run: the line
-        # never probes or reads session outcomes.
-        state = checked(home=HOME, local_state="ready")
-        with patch.object(menu, "live_fact", side_effect=AssertionError("service read")), \
-                patch.object(menu, "service_outcomes", side_effect=AssertionError("session read")):
-            self.assertIn("ready to Start", menu.home_next([state], "configured"))
-
-    def test_cli_reads_the_catalog_projection_and_prints_nothing_without_a_step(self):
-        for entries, expected in ((self.specs()[:1], "Next: 1 spec not checked yet — open **Catalog and storage**.\n"),
-                                  ([], "")):
-            with self.subTest(entries=len(entries)):
-                out = io.StringIO()
-                with patch("sys.stdin", io.StringIO(json.dumps({"entries": entries}))), patch("sys.stdout", out):
-                    self.assertEqual(menu.main(["next", "--archive-location", "configured"]), 0)
-                self.assertEqual(out.getvalue(), expected)
-
-
 GIB = 1024 ** 3
 MANIFEST = "1" * 64
 
@@ -2199,7 +2124,8 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
             "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "nothing": False})
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0, "adopted": 0,
+                                                             "nothing": False})
 
     def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
         plan = preparation(("n0", "home-view"), ("n1", "copy"), budgets={"n1": budget(limit=GIB)})
@@ -2219,11 +2145,38 @@ class PlanSummary(unittest.TestCase):
                               preparation(("n0", "home-view"), manifest="2" * 64, snapshot="draft")]}
         self.assertTrue(self.summary("prepare", both)[0].startswith("Nothing to copy: both snapshots are already on spark-1."))
 
+    def test_prepare_takes_over_copies_made_before_the_membership_changed(self):
+        # D13: a takeover (rebind) copies nothing and reads as taking over.
+        plan = preparation(("n0", "rebind"), ("n1", "rebind"))
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2, "adopted": 0,
+                                                             "nothing": True})
+        self.assertEqual(self.summary("prepare", plan), [
+            "Nothing to copy: the snapshot is already on spark-1, spark-2. "
+            "Prepare verifies the files and records them.",
+            "It takes over 2 copies made before the cluster's membership changed; nothing is copied or deleted."])
+        self.assertEqual(menu.question("prepare", checked(home=HOME), plan=plan, names=NAMES),
+                         "Prepare org/model on spark-1, spark-2? Nothing is copied; Prepare verifies and records "
+                         "the files already there. It takes over 2 copies made before the cluster's membership "
+                         "changed; nothing is copied or deleted.")
+        mixed = preparation(("n0", "rebind"), ("n1", "copy"), budgets={"n1": budget()})
+        self.assertEqual(self.summary("prepare", mixed)[0], "Copy 2.00 GiB to spark-2 (1 new copy, 0 reused, 1 taken over).")
+        self.assertEqual(menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES),
+                         "Prepare org/model on spark-1, spark-2? 1 new copy, 0 reused, 1 taken over. It takes over "
+                         "1 copy made before the cluster's membership changed; that copy is not copied again or "
+                         "deleted.")
+        # A plan that writes new copies never says that nothing is copied.
+        self.assertNotIn("nothing is copied", menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES))
+        # The full preview names the action, and the estimate counts it as existing files.
+        from model_library.render import preparation_estimate
+        _, nodes = preparation_estimate([mixed])
+        self.assertEqual((nodes["n0"]["new_copy"], nodes["n0"]["existing"]), (0, 2 * GIB))
+
     def test_a_manifest_shared_by_two_snapshots_is_copied_once_per_node(self):
         plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "nothing": False})
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0, "adopted": 0,
+                                                             "nothing": False})
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",
             "Estimated headroom after copying: 48.00 GiB on spark-2 (file sizes only; space is not reserved)."])
@@ -2346,15 +2299,32 @@ class PlanSummary(unittest.TestCase):
                                  "2 more blockers in the full preview."])
 
     def test_an_unrecorded_folder_shows_its_whole_path_and_the_fix(self):
+        from model_library.node import UNRECORDED_DESTINATION_FIX
         path = "/fixture/views/" + "ab" * 32
-        detail = {"code": "unrecorded-destination", "message": "m", "node_id": "n1", "path": path,
-                  "fix": "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."}
+        older = ("Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it "
+                 "is not needed, remove it outside Pulsar, then Prepare again.")
+        detail = {"code": "unrecorded-destination", "message": "m", "node_id": "n1", "path": path, "fix": older}
         plan = {"eligible": False, "blocker_details": [detail]}
         self.assertEqual(self.summary("prepare", plan), [
             f"Blocked: a folder already exists where Prepare would place the prepared copy on spark-2: {path}; "
-            "Pulsar has no record of this folder and never deletes files it did not record. Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again."])
+            f"{older}"])
         # No menu operation removes a folder that no record names.
         self.assertEqual(menu.blocked_choices(plan, [checked()]), [])
+        # Inside the menu the fix names the choice that takes it over, not Prepare's flag (D7).
+        detail["fix"] = UNRECORDED_DESTINATION_FIX
+        text = " ".join(self.summary("prepare", plan))
+        self.assertIn("Look for model files Pulsar has no record of… on Models and disk space… checks every file "
+                      "and takes it over if all of them match", text)
+        self.assertNotIn("--adopt-unrecorded", text)
+
+    def test_prepare_that_adopts_says_it_checks_every_file_first(self):
+        plan = preparation(("n0", "home-view"), ("n1", "adopt"))
+        self.assertEqual(menu.plan_effect("prepare", plan)["adopted"], 1)
+        self.assertEqual(self.summary("prepare", plan), [
+            "Nothing to copy: the snapshot is already on spark-1, spark-2. Prepare verifies the files and records "
+            "them.",
+            "It takes over 1 folder no record names after checking every file, which can take a while, and records "
+            "it only if every file matches; nothing is copied or deleted."])
 
     def test_blocked_plans_without_details_use_their_messages(self):
         plan = {"eligible": False, "blockers": ["n1: disk is full", "n1: disk is full"]}

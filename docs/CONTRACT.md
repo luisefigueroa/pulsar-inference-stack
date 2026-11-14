@@ -303,6 +303,36 @@ Change note, 2026-10-17: plans gained `blocker_details` beside the unchanged
 Change note, 2026-11-04: preparation plans gained the `unrecorded-destination`
 code; `prepare --yes` with such a plan exits 1 before it copies or records anything.
 
+Change note, 2026-11-09: preparation plans gained the action `rebind`: this
+spec's copy on a serving node, made under another `topology_id` or at another
+rank, whose files verify, is taken over under the current membership and rank.
+Its action carries `previous` (`topology_id` and `rank` it was made under).
+Only the records change; no file is copied or deleted, a pin stays, and the
+copy needs no budget. A copy that does not verify, does not match its source or
+is mounted by a container keeps today's `changed-copy`, `pinned` or
+`container-reference` blocker. Prepared-copy records keep their schema and keys.
+
+Change note, 2026-11-09: `model prepare` gained the opt-in flag
+`--adopt-unrecorded`, and preparation plans the action `adopt`. Only with the
+flag, a folder at a rank's prepared copy path that no record names, whose
+layout (`manifest.json` and `snapshots/REVISION` only), manifest, file set and
+file sizes match the snapshot, is planned as `adopt` instead of the
+`unrecorded-destination` blocker; the action carries the folder's `path`.
+`--yes` then hashes every file against the manifest, reusing no earlier
+verification, before any rank of that snapshot is copied, and records the
+folder as that rank's prepared copy, on its node at once and on the controller
+with the other ranks, only when every file matches. A folder that does not
+match keeps the `unrecorded-destination` blocker, with the reason in its `fix`;
+one whose hashes differ makes `--yes` exit 1 before that snapshot's ranks are
+copied or recorded on the controller. A take-over that verified before it, on
+another rank, stays recorded on its node alone, as after an interrupted copy,
+and the next Prepare reuses it; for a recipe with several required snapshots,
+snapshots prepared before the failing one keep their copies. Nothing in the folder is deleted,
+moved or written, and an adoption needs no budget. Without the flag plans are
+unchanged, except that the blocker's `fix` names the flag. Other operations
+refuse the flag as a usage error. Prepared-copy records keep their schema and
+keys; an adopted copy is an ordinary prepared copy afterwards.
+
 Cancelled Stack actions return the existing error envelope with a nonzero exit
 status. `cancelled` confirms cleanup of the local command and tracked node workers;
 `cleanup_incomplete` means worker exit could not be established. Neither result
@@ -323,6 +353,79 @@ For non-streaming `--json` operations, stdout is one envelope with schema versio
 1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human
 logging goes to stderr. Errors have nonzero exit status. Do not parse human
 messages to make lifecycle decisions.
+
+### Cluster readiness and membership
+
+`doctor --json` keeps `kind: "pulsar-doctor"` and schema version 1. Each check
+has `level` (`ok`, `warn` or `fail`), `id` and `message`, which is for people.
+The prerequisite checks run on this node with the ids `python`, `flock`,
+`rsync`, `hf_cli` and `hf_login`, and on every other confirmed node as
+`rank_N_<id>`, such as `rank_2_hf_login`. `python`, `flock` and `rsync`
+fail when they are missing. `hf_cli` and `hf_login` are never `fail`: `hf`
+matters only on a node that receives a download, so a missing, unusable or
+too old `hf`, a missing or rejected login, and a Hub that could not be reached
+are each `warn`, and do not make doctor's `result` `fail`. A node that did
+not answer the prerequisite check has one `warn` row, `prerequisites` or
+`rank_N_prerequisites`, instead. No message carries a token or an account name.
+These facts never change what makes a machine a member.
+
+`topology detect --json` adds `changes_noticed`, the body of the saved changes
+record below without its `schema_version`, `kind` and `observed_at`, whenever
+valid saved membership exists. Each `rejected` entry adds `node_id`, and each
+`saved_membership.missing` entry adds `answered` (true when that member's
+identity answered but was rejected) and, when it answered, `reasons`.
+
+The saved changes record (`.pulsar/cluster-changes.json`, or
+`PULSAR_CLUSTER_CHANGES_FILE`) is private local state with
+`kind: "pulsar-cluster-changes"` and schema version 1: `observed_at`, stamped
+when saved; `topology_id` of the saved membership it was compared with;
+`result` (`unchanged`, `changed` or `not-checked`); `issues`, why discovery
+could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
+`possible_reinstall`); `missing` (`hostname`, `node_id`, `position`,
+`answered`, optional `reasons`); `changed` (`hostname`, `node_id`, and
+`changes` with `control`, `links` or `position`, each `old` and `new`); and
+`untrusted` (`address`, `possible_reinstall`). A successful `ssh-trust enroll`
+rewrites only an `unchanged` record that names the membership from before
+enrollment, to the new `topology_id`, keeping `observed_at`.
+
+`topology configure --remove-missing` saves membership without confirmed nodes
+that did not answer discovery. It refuses with exit 1 when a missing member
+answered, when a node left out answers again with its own machine ID, and when
+a node that answers runs a Pulsar service.
+
+`topology forget [--plan] [--yes] [--json]` removes the saved membership, the
+generated SSH configuration and the saved observations of the cluster after a
+private backup copy. It exits 0 when it planned (whatever the plan found),
+forgot, or found nothing to forget; 1 when a Pulsar service runs on a node
+that answered, or a file changed since its plan; and 2 for a usage mistake or
+when it would have to ask off a terminal without `--yes`. Its JSON is
+`kind: "pulsar-topology-forget"`, schema version 1: `result` (`planned`,
+`nothing` or `forgotten`), `membership` (`saved`, `invalid` or `missing`),
+`nodes`, `services` (`hostname` and `state`: `running`, `none` or
+`not-observed`), `checked_only_here`, `remove` (`name`, `label`, `path`,
+`present`, `sha256`), `keep`, `overlay` (`path`, `present`, and `names`, the
+nodes it names for placement, or null when it could not be read) and
+`backup_root`; a forgotten result adds `backup` and `removed`.
+
+Change note, 2026-11-09: doctor gained the prerequisite check ids above;
+`topology detect --json` gained `changes_noticed`, `rejected[].node_id` and
+`saved_membership.missing[].answered` and `reasons`; new `topology configure
+--remove-missing` and `topology forget`; new saved changes record. Nothing was
+removed or renamed.
+
+The saved changes record may carry two optional fields, each written by the
+menu and carried forward by every later save for the same `topology_id`; a
+save for another `topology_id` drops both. `kept` (`kept_at`, `signature`,
+`missing`, the `node_id`s kept) records that members that did not answer are
+only down; it is dropped as soon as a discovery's `found`, `missing` or
+`changed` differ from what was kept. `check` (`checked_at`, `links` and
+`identities`, each `verified`, `failed` or `not-checked`, and `nodes`, each
+with `hostname`, `node_id`, `answered` true, false or null, and `failures` and
+`warnings` as text for people) is what the last **Check the cluster now**
+found.
+
+Change note, 2026-11-09: the saved changes record gained the optional `kept`
+and `check` fields. Nothing was removed or renamed.
 
 ### Error codes and exit statuses
 

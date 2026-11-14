@@ -11,7 +11,7 @@
 # actionable services, unmanaged GPU PIDs, and summarized inactive diagnostics.
 # --verbose prints every service plus diagnostic metadata. --json always retains
 # the full inventory (schema_version=1). Each live run also saves the inventory
-# on the controller for the home menu's Running block; nothing on a node changes.
+# on the controller for the home menu's Serving line; nothing on a node changes.
 set -euo pipefail
 if [ "${1:-}" = menu ]; then
   shift

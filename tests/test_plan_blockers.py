@@ -214,6 +214,128 @@ class Preparation(Details):
             "code": "changed-copy", "message": "n1: explicitly purge the changed prepared copy before preparing",
             "node_id": "n1", "fix": "purge the prepared copies, then prepare"}])
 
+    def membership_change(self, *, pinned=False, rank=1, n0=None, n1=None):
+        """Copies made under an earlier topology ID, the home's own included."""
+        old = "e" * 64
+        home_view = {**home(), "kind": "pulsar-prepared-view", "spec_id": self.spec["spec_id"], "topology_id": old,
+                     "rank": 0, "pinned": False, "is_home_view": True}
+        copy_view = self.mine(topology=old, rank=rank, pinned=pinned)
+        observations = observed("n0", "n1", n0=n0 or {"view_verified": True}, n1=n1 or {"view_verified": True})
+        return self.plan(views=[home_view, copy_view], observations=observations)
+
+    def test_after_a_membership_save_prepare_takes_over_verified_copies(self):
+        # D13: a membership save changes the topology ID even when the same
+        # nodes keep their positions. Copies whose files verify on the same
+        # node are taken over: nothing is copied or deleted.
+        plan = self.membership_change()
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual(plan["blocker_details"], [])
+        self.assertEqual([(a["action"], a["previous"]) for a in plan["actions"]],
+                         [("rebind", {"topology_id": "e" * 64, "rank": 0}),
+                          ("rebind", {"topology_id": "e" * 64, "rank": 1})])
+        # Under the same topology ID they are reused, as before.
+        same = self.plan(views=[{**home(), "kind": "pulsar-prepared-view", "spec_id": self.spec["spec_id"],
+                                 "topology_id": TOPOLOGY, "rank": 0, "pinned": False, "is_home_view": True},
+                                self.mine()],
+                         observations=observed("n0", "n1", n0={"view_verified": True}, n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in same["actions"]], ["reuse", "reuse"])
+        self.assertNotIn("previous", same["actions"][0])
+
+    def test_a_copy_whose_position_changed_is_taken_over_at_its_new_position(self):
+        plan = self.membership_change(rank=3)
+        self.assertEqual([(a["rank"], a["action"]) for a in plan["actions"]], [(0, "rebind"), (1, "rebind")])
+        self.assertEqual(plan["actions"][1]["previous"]["rank"], 3)
+        # A position change alone, under the same topology ID, is taken over too.
+        moved = self.plan(views=[self.mine(rank=3)], observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in moved["actions"]], ["home-view", "rebind"])
+
+    def test_a_pinned_copy_is_taken_over_and_stays_pinned(self):
+        plan = self.membership_change(pinned=True)
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([a["action"] for a in plan["actions"]], ["rebind", "rebind"])
+
+    def test_unverified_files_or_another_source_are_still_a_changed_copy(self):
+        unverified = self.membership_change(n1={"view_verified": False})
+        self.assertEqual([(item["code"], item["node_id"]) for item in unverified["blocker_details"]],
+                         [("changed-copy", "n1")])
+        self.assertEqual(unverified["blocker_details"][0]["fix"], "purge the prepared copies, then prepare")
+        pinned = self.membership_change(pinned=True, n1={"view_verified": False})
+        self.assertEqual([item["code"] for item in pinned["blocker_details"]], ["pinned"])
+        # The home's own record that does not name the home's files is another source.
+        old = "e" * 64
+        stray = {**self.mine(node="n0", rank=0, topology=old), "is_home_view": True}
+        mismatch = self.plan(views=[stray], observations=observed("n0", "n1", n0={"view_verified": True}))
+        self.assertEqual([(item["code"], item["node_id"]) for item in mismatch["blocker_details"]],
+                         [("changed-copy", "n0")])
+        # A container that mounts the copy still blocks, whatever its state.
+        copy_view = self.mine(topology=old)
+        mounted = self.plan(views=[copy_view], observations=observed(
+            "n0", "n1", containers=[container(copy_view["hub_path"], running=False)], n1={"view_verified": True}))
+        self.assertEqual([item["code"] for item in mounted["blocker_details"]], ["container-reference"])
+        # After a purge removes the records, Prepare makes them again.
+        fresh = self.plan(views=[])
+        self.assertEqual(([a["action"] for a in fresh["actions"]], fresh["eligible"]), (["home-view", "copy"], True))
+
+    def test_a_takeover_needs_no_disk_space(self):
+        plan = self.membership_change()
+        full = self.plan(views=[self.mine(topology="e" * 64)], budgets={"n1": budget(available=0, limit=0)},
+                         observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertTrue(full["eligible"], full["blockers"])
+        self.assertTrue(plan["eligible"])
+
+    def test_only_prepare_resolves_an_interrupted_takeover(self):
+        from model_library.integrity import StorageError
+        from model_library.state import reconcile_views
+        controller = self.mine(topology="e" * 64, rank=1)
+        node = {**controller, "topology_id": TOPOLOGY, "rank": 1}
+        # Other readers still refuse records that disagree.
+        with self.assertRaisesRegex(StorageError, "disagree"):
+            reconcile_views([controller, node])
+        # Prepare takes the record that does not name the current membership,
+        # in either order, so its plan is a takeover that writes both sides
+        # again, never a reuse that rewrites only the controller.
+        for records in ([controller, node], [node, controller]):
+            with self.subTest(first=records[0] is node and "node" or "controller"):
+                merged = reconcile_views(records, current_topology_id=TOPOLOGY)
+                self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [("e" * 64, 1)])
+        # The stale side's position is kept too, so a moved copy is taken over at its new one.
+        moved = {**node, "rank": 0}
+        merged = reconcile_views([controller, moved], current_topology_id=TOPOLOGY)
+        self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [("e" * 64, 1)])
+        plan = self.plan(views=merged, observations=observed("n0", "n1", n1={"view_verified": True}))
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "rebind"])
+        # Any other difference, or neither naming it, still refuses.
+        for other in ({**node, "path": node["path"] + "-elsewhere"}, {**node, "topology_id": "f" * 64}):
+            with self.subTest(other=other["path"][-10:]), self.assertRaisesRegex(StorageError, "disagree"):
+                reconcile_views([controller, other], current_topology_id=TOPOLOGY)
+
+    def test_prepare_resolves_an_interrupted_takeover_that_changed_only_the_position(self):
+        from model_library.integrity import StorageError
+        from model_library.state import reconcile_views
+        # Another order of the same nodes changes a copy's rank and not its
+        # topology ID. Interrupted, both records name the current membership,
+        # at different ranks. This plan asks for n1 at rank 1.
+        observations = observed("n0", "n1", n1={"view_verified": True})
+        for node_rank, controller_rank, action in ((1, 0, "reuse"), (0, 1, "rebind")):
+            with self.subTest(node_rank=node_rank, controller_rank=controller_rank):
+                controller = self.mine(rank=controller_rank)
+                node = {**controller, "rank": node_rank}
+                # Other readers still refuse records that disagree.
+                with self.assertRaisesRegex(StorageError, "disagree"):
+                    reconcile_views([controller, node])
+                # Prepare lists the controller's records first and takes the
+                # node's rank. A reuse writes that rank to the controller, and
+                # a takeover writes both records; a reuse of the controller's
+                # rank would leave the node's record behind.
+                merged = reconcile_views([controller, node], current_topology_id=TOPOLOGY)
+                self.assertEqual([(v["topology_id"], v["rank"]) for v in merged], [(TOPOLOGY, node_rank)])
+                plan = self.plan(views=merged, observations=observations)
+                self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", action])
+        # Two records that name the same earlier membership still refuse.
+        earlier = self.mine(topology="e" * 64, rank=0)
+        with self.assertRaisesRegex(StorageError, "disagree"):
+            reconcile_views([earlier, {**earlier, "rank": 1}], current_topology_id=TOPOLOGY)
+
     def test_a_pinned_and_mounted_copy_lists_both_causes_under_one_message(self):
         old = self.mine(topology="e" * 64, pinned=True)
         plan = self.plan(views=[old], containers=[container(old["hub_path"], {MANAGED: "true", CONF: "ef" * 32})])
@@ -248,10 +370,48 @@ class Preparation(Details):
             "code": "unrecorded-destination",
             "message": f"n1: a folder already exists at the prepared copy path {path} and no Pulsar record names it",
             "node_id": "n1",
-            "fix": "Pulsar has no record of this folder and never deletes files it did not record. "
-                   "Inspect it; if it is not needed, remove it outside Pulsar, then Prepare again.",
+            "fix": "Pulsar has no record of this folder and never deletes files it did not record. Inspect it. "
+                   "If it holds this recipe's files, prepare with --adopt-unrecorded, which checks every file "
+                   "against the manifest and records the folder only if all of them match; if it is not needed, "
+                   "remove it outside Pulsar, then Prepare again.",
             "path": path}])
         self.assertNotIn("purge", plan["blocker_details"][0]["fix"].lower())
+
+    # D7: with --adopt-unrecorded, a folder that matches is taken over; nothing else changes.
+    def test_asked_to_adopt_a_matching_folder_the_plan_takes_it_over_with_no_budget(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": True}
+        observations = observed("n0", "n1", n1={"destination": present})
+        plan = self.plan(observations=observations, adopt_unrecorded=True, budgets={"n1": budget(available=0)})
+        self.assertTrue(plan["eligible"], plan["blockers"])
+        self.assertEqual([(a["action"], a.get("path")) for a in plan["actions"]],
+                         [("home-view", None), ("adopt", path)])
+        # Without the flag the same folder blocks, as before: the plan never adopts on its own.
+        refused = self.plan(observations=observations)
+        self.assertEqual([a["action"] for a in refused["actions"]], ["home-view", "copy"])
+        self.assertEqual([d["code"] for d in refused["blocker_details"]], ["unrecorded-destination"])
+
+    def test_asked_to_adopt_a_folder_that_does_not_match_keeps_the_blocker(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": False,
+                   "mismatch": "its manifest describes other files than this recipe's"}
+        plan = self.plan(observations=observed("n0", "n1", n1={"destination": present}), adopt_unrecorded=True)
+        self.assert_paired(plan)
+        self.assertEqual([a["action"] for a in plan["actions"]], ["home-view", "copy"])
+        detail, = plan["blocker_details"]
+        self.assertEqual((detail["code"], detail["path"]), ("unrecorded-destination", path))
+        self.assertEqual(detail["fix"], "It cannot be taken over: its manifest describes other files than this "
+                                        "recipe's. Pulsar has no record of this folder and never deletes files it did "
+                                        "not record. Inspect it; if it is not needed, remove it outside Pulsar, then "
+                                        "Prepare again.")
+
+    def test_adoption_never_applies_to_a_recorded_folder(self):
+        path = f"/fixture/views/{self.spec['spec_id']}"
+        other = {**view(spec_id="cd" * 32), "hub_path": path, "path": path + "/snapshots/" + "a" * 40}
+        present = {"path": path, "state": "present", "recorded": False, "adoptable": True}
+        plan = self.plan(views=[other], observations=observed("n0", "n1", n1={"destination": present}),
+                         adopt_unrecorded=True)
+        self.assertNotIn("adopt", [a["action"] for a in plan["actions"]])
 
     def test_a_recorded_or_missing_destination_does_not_add_the_blocker(self):
         path = f"/fixture/views/{self.spec['spec_id']}"

@@ -151,6 +151,12 @@ class Help(unittest.TestCase):
         for command in ("pulsar help terms", "pulsar help labels", "pulsar help workflow", "pulsar stop --all --yes"):
             self.assertRegex(text, rf"(?m)^  {re.escape(command)}$")
 
+    def test_the_docs_call_a_prepared_copy_by_its_glossary_name(self):
+        # "prepared copy" is the glossary noun; the older "working copy" is not used in the docs.
+        for path in sorted((ROOT / "docs").glob("*.md")) + [ROOT / "README.md"]:
+            with self.subTest(path=path.name):
+                self.assertNotRegex(path.read_text(encoding="utf-8"), r"(?i)working[ -]cop")
+
     def test_terms_page_shows_every_row_of_the_docs_table(self):
         lines = (ROOT / "docs/OPERATIONS.md").read_text().split("## Terms\n", 1)[1].split("\n## ", 1)[0]
         # The header and separator rows come first.
@@ -188,11 +194,15 @@ class Help(unittest.TestCase):
         """A new status word fails here until docs/OPERATIONS.md explains it."""
         from model_library import catalog, catalog_menu
         from release_spec import schema
-        from scripts import saved_observations
+        from scripts import cluster_status, models_page, serve_plan, services_page, start_reasons
         words = {catalog.NOT_CHECKED, *catalog.FILE_STATES.values(), *catalog.SNAPSHOT_FILE_STATES.values(),
-                 *saved_observations.HOME_WORDS.values(),
+                 *cluster_status.STATUS_WORDS.values(), *services_page.STATUS_WORDS.values(),
+                 *models_page.STATUS_WORDS.values(),
+                 *start_reasons.STATUS_WORDS.values(),
+                 # Serve a model…'s readiness phrases, each value written as … in its row.
+                 *(re.sub(r"\{[a-z]+\}", "…", phrase) for key, phrase in serve_plan.READINESS.items()
+                   if key != "service"),
                  *catalog_menu.LABEL_FILES.values(), *catalog_menu.SERVICE_STATES.values(),
-                 *(one for one, _ in catalog_menu.HOME_NEXT.values()),
                  *(state for state in schema.STATES if state), *schema.REVIEW_STATUSES,
                  "start unsupported", "not checked here", "service exists", "service seen",
                  "last seen", "files not checked", "not offered here", "✓",
@@ -228,7 +238,7 @@ class Help(unittest.TestCase):
         text = self.run_help(("help", "workflow"), 100)
         steps = re.findall(r"(?m)^  (\d)\. (.+)$", text)
         self.assertEqual(steps, [("1", "Download or Restore"), ("2", "Prepare"), ("3", "Start"),
-                                 ("4", "Connect"), ("5", "Stop"), ("6", "Purge prepared copies")])
+                                 ("4", "Connect"), ("5", "Stop"), ("6", "Back up"), ("7", "Purge prepared copies")])
         for step, sentence in help_pages.workflow():
             with self.subTest(step=step):
                 self.assertTrue(sentence.endswith(".") and ". " not in sentence, sentence)
@@ -469,7 +479,7 @@ class Styles(unittest.TestCase):
     def test_pages_mark_headings_terms_choices_and_commands(self):
         expected = {
             "reference": ["\x1b[1;94mPulsar Inference Stack\x1b[0m\n", "\n\x1b[1;94mGuides\x1b[0m\n",
-                          "  \x1b[36mpulsar models show \x1b[0m\x1b[4;36mSPEC\x1b[0m\n", "\x1b[1mHelp\x1b[0m",
+                          "  \x1b[36mpulsar models show \x1b[0m\x1b[4;36mSPEC\x1b[0m\n", "\x1b[1mHelp and troubleshooting…\x1b[0m",
                           "\x1b[4;36mSPEC\x1b[0m is a catalog spec ID."],
             "terms": ["\x1b[1;94mWhat the words mean\x1b[0m\n", "  \x1b[1;94mspec\x1b[0m\n",
                       "\x1b[36mreleases/\x1b[0m", "\x1b[36m./pulsar topology check\x1b[0m",

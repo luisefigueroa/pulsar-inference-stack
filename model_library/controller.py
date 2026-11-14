@@ -146,7 +146,7 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
         store.remove('homes',home['snapshot_manifest_id'])
         return {'removed_record':True}
     if op=='plan-prepare':
-        return preparation_plan(spec=request['spec'],home=request['home'],node_ids=request['node_ids'],topology_id=request['topology_id'],observations=request['observations'],views=request.get('views',store.views(spec_id=request['spec']['spec_id'])),budgets=request['budgets'],snapshot=request.get('snapshot','target'),confirmed_node_ids=request.get('confirmed_node_ids'))
+        return preparation_plan(spec=request['spec'],home=request['home'],node_ids=request['node_ids'],topology_id=request['topology_id'],observations=request['observations'],views=request.get('views',store.views(spec_id=request['spec']['spec_id'])),budgets=request['budgets'],snapshot=request.get('snapshot','target'),confirmed_node_ids=request.get('confirmed_node_ids'),adopt_unrecorded=request.get('adopt_unrecorded') is True)
     if op=='prepare-candidates':
         return preparation_candidates(spec=request['spec'],home=request['home'],node_id=request['node_id'],views=request['views'],transactions=request.get('transactions',()))
     if op=='plan-purge':

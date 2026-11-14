@@ -22,6 +22,15 @@ def node_probe(rank):
         ssh_host_keys=[dict(algorithm='ssh-ed25519', public_key=key)])
 
 
+def prerequisites_answer(rank, *, hf='ok', login='accepted', rsync=True):
+    """A `probe-node.py --prerequisites-only` answer for fixture rank RANK."""
+    return dict(probe_schema_version=1, kind='pulsar-node-prerequisites', local=rank == 0,
+                ssh_host='local' if rank == 0 else f'alias-{rank}', hostname=f'fixture-rank-{rank}',
+                prerequisites=dict(python=dict(version='3.12.3', ok=True), flock=True, rsync=rsync,
+                                   hf=dict(state=hf, version='1.0.0' if hf == 'ok' else '', login=login,
+                                           legacy_cli=False)))
+
+
 class Fixture:
     def __init__(self, root, nodes=2, enrolled=True):
         self.root = root
@@ -56,6 +65,12 @@ class Fixture:
             PULSAR_DOCKER=str(binary/'docker'), PULSAR_SELFTEST='1',
             PULSAR_MODEL_LIBRARY_DIR=str(root/'model-library'),
             PULSAR_COLD_STORAGE_TEST_DOTENV=str(root/'absent-env'),
+            # Saved observations and backups stay in the fixture, never the checkout.
+            PULSAR_CLUSTER_CHANGES_FILE=str(root/'state/cluster-changes.json'),
+            PULSAR_SERVICE_INVENTORY_FILE=str(root/'state/service-inventory.json'),
+            PULSAR_STORAGE_BUDGET_FILE=str(root/'state/storage-budget.json'),
+            PULSAR_CLUSTER_BACKUP_DIR=str(root/'state/cluster-backups'),
+            PULSAR_OVERLAY_PATH=str(root/'overlay.json'),
             PYTHONDONTWRITEBYTECODE='1', COLUMNS='48', TERM='dumb')
 
     def run(self, *args, **kwargs):
@@ -91,6 +106,9 @@ def double_main():
             header = args[args.index('--header')+1].split('\n')[0]
             # A comma-separated choice list answers successive visits to one menu.
             choice_env = {'Pulsar Inference Stack': 'TOPOLOGY_GUM_HOME',
+                          'Cluster': 'TOPOLOGY_GUM_CLUSTER',
+                          'Help and troubleshooting': 'TOPOLOGY_GUM_HELP',
+                          'Advanced: single operations': 'TOPOLOGY_GUM_ADVANCED',
                           'Review discovered machines': 'TOPOLOGY_GUM_REVIEW',
                           'Change membership': 'TOPOLOGY_GUM_CHANGE'}.get(header, 'TOPOLOGY_GUM_CHOICE')
             choices = os.environ.get(choice_env, '0').split(',')
@@ -132,10 +150,15 @@ def double_main():
     if tool == 'ssh':
         separator = args.index('--'); alias = args[separator+1]
         mapping = json.loads((root/'map.json').read_text())
+        # An address that answers with a host key SSH here does not trust.
+        if alias in os.environ.get('TOPOLOGY_UNTRUSTED', '').split(','):
+            print(f'No ED25519 host key is known for {alias} and you have requested strict checking.\n'
+                  'Host key verification failed.', file=sys.stderr)
+            return 255
         if alias not in mapping:
             return 255
         rank = mapping[alias]
-        if os.environ.get('TOPOLOGY_UNREACHABLE') == str(rank):
+        if str(rank) in os.environ.get('TOPOLOGY_UNREACHABLE', '').split(','):
             return 255
         command = args[-1]
         if command.startswith('python3 '): action = 'python3'
@@ -143,6 +166,16 @@ def double_main():
         elif command.startswith('docker ps '): action = 'docker'
         else: raise RuntimeError('unexpected remote operation')
     if action == 'python3':
+        # A node that did not answer discovery but answers later queries.
+        if (tool == 'ssh' and str(rank) in os.environ.get('TOPOLOGY_PROBE_UNREACHABLE', '').split(',')
+                and '--identity-only' not in args[-1]):
+            return 255
+        if '--prerequisites-only' in (args[-1].split() if tool == 'ssh' else args):
+            # A node's prerequisites: prerequisites-RANK.json when a test wrote
+            # one, else every prerequisite in place. The Hub is never asked.
+            path = root/f'prerequisites-{rank}.json'
+            print(path.read_text() if path.exists() else json.dumps(prerequisites_answer(rank)))
+            return 0
         print((root/f'probe-{rank}.json').read_text())
     elif action == 'ping':
         return int(os.environ.get('TOPOLOGY_PING_RC', '0'))

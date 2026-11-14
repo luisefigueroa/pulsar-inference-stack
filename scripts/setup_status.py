@@ -26,13 +26,16 @@ from scripts.topology_manifest import extract_topology, topology_has_ssh_trust
 KIND = "pulsar-setup-status"
 SCHEMA_VERSION = 1
 SPEC_FILENAME = re.compile(r"^[0-9a-f]{64}\.json$")
-# The next setup step. Without saved membership, guided topology setup
-# confirms membership and enrolls SSH trust in one step; trust alone is
-# enrolled when membership is already saved.
+# The next setup step, as the home menu labels it. Guided setup confirms
+# membership and records SSH identities in one sequence, and records only the
+# identities when membership is already saved, so one choice covers both.
+# Saved membership that is invalid cannot be set up again: the way out is
+# to start over.
 ACTIONS = {
-    "set-up-topology": "Set up cluster membership and SSH trust",
-    "enroll-ssh-trust": "Enroll SSH trust",
+    "set-up-topology": "Set up this cluster…",
+    "enroll-ssh-trust": "Set up this cluster…",
 }
+FORGET_LABEL = "Start over: forget this cluster…"
 
 
 def topology_file(repo: Path) -> Path:
@@ -113,7 +116,7 @@ def build(repo: str | Path, environ: Mapping[str, str] | None = None) -> dict[st
     }
     if action is not None:
         document["next_action"] = action
-        document["next_label"] = ACTIONS[action]
+        document["next_label"] = FORGET_LABEL if topology["status"] == "invalid" else ACTIONS[action]
     return document
 
 
@@ -156,13 +159,13 @@ def render_text(
             out.field("SSH trust", trust, indent=2)
         out.field("Archives", archives, indent=2)
         if document["archives"]["status"] == "not-configured":
-            out.emit("Archive actions need a location; choose **Archive storage configuration** when needed.",
+            out.emit("Archive actions need a location; **Cluster…** → **Settings…** sets one when needed.",
                      markup=True)
         elif document["archives"]["status"] == "unreadable":
             where = ("the environment that started Pulsar" if document["archives"].get("source") == "process"
                      else "this checkout's .env file")
-            out.emit(f"Fix PULSAR_COLD_ROOT in {where}, then open **Archive storage configuration** "
-                     "to check it.", markup=True)
+            out.emit(f"Fix PULSAR_COLD_ROOT in {where}, then check it in **Cluster…** → **Settings…**.",
+                     markup=True)
         out.blank()
         out.emit("Catalog", role="heading")
         out.emit(catalog, initial_indent="  ", subsequent_indent="  ")
@@ -176,10 +179,13 @@ def render_text(
     if topology == "confirmed":
         out.emit("Cluster membership is confirmed; SSH trust is not enrolled.")
     elif topology == "invalid":
-        out.emit("Saved cluster membership is invalid.")
+        out.emit("Saved cluster membership is invalid, and setup cannot replace it. Starting over keeps a "
+                 "private backup copy, and model files, archives and records stay.")
     else:
         out.emit("Cluster membership is not configured.")
-    out.emit(f"Next: **{document['next_label']}**.", markup=True)
+    # A label that opens more ends with an ellipsis, which also ends the sentence.
+    label = document["next_label"]
+    out.emit(f"Next: **{label}**{'' if label.endswith('…') else '.'}", markup=True)
 
 
 def main(argv: list[str] | None = None) -> int:

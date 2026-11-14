@@ -123,12 +123,11 @@ class ParsedOutput(unittest.TestCase):
 
     def test_catalog_menu_protocol_output_stays_plain(self):
         from model_library import catalog_menu as menu
-        from tests.test_catalog_menu import HOME, checked, row
+        from tests.test_catalog_menu import HOME, checked
         state = checked(local_state="ready", home=HOME)
         cases = {
             "view": (["view", "--spec-id", state["spec_id"], "--archive-location", "configured"], [state]),
             "confirm": (["confirm", "--spec-id", state["spec_id"], "--action", "start"], [state]),
-            "next": (["next", "--archive-location", "configured"], [row()]),
         }
         for name, (args, entries) in cases.items():
             with self.subTest(command=name):

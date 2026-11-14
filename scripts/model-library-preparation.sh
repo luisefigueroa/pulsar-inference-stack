@@ -23,13 +23,20 @@ prepare_snapshot() {
   [ -n "$SPEC_ID" ] && [ -n "$SPEC_JSON" ] || die "prepare requires a frozen spec"
   require_home
   selected_nodes
-  local home_node home_rank observations existing transactions ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp candidates candidate reuse_view destination
+  local home_node home_rank observations existing transactions ranks_tmp budgets_tmp views_tmp previous row verified result plan rank slot node roots space budget available reserve used limit action stage source_rank source_path source_stamp candidates candidate reuse_view destination adopted_tmp
+  local -a adopt=()
   home_node=$(json_fields "$HOME_JSON" node_id)
   home_rank=$(model_physical_rank "$home_node")
   [ "$home_rank" -lt "$CLUSTER_TOPOLOGY_COUNT" ] || die "snapshot home is outside confirmed membership"
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   observations=$(all_observations) || die "all confirmed nodes must be observable before preparation"
-  existing=$(merged_views snapshot) || die "node and controller preparation records cannot be reconciled"
+  # A takeover interrupted between the node and controller records leaves
+  # them naming different memberships, or different ranks under this one;
+  # Prepare resolves only that case. Between memberships it keeps the record
+  # left behind, so its plan takes the copy over again and writes both the
+  # node's record and the controller's. Between ranks it keeps the node's:
+  # its plan writes that rank to the controller, or takes the copy over.
+  existing=$(merged_views snapshot "$CLUSTER_TOPOLOGY_ID") || die "node and controller preparation records cannot be reconciled"
   transactions=$(json_fields "$existing" transactions)
   existing=$(json_fields "$existing" views)
   ranks_tmp=$(mktemp); budgets_tmp=$(mktemp); views_tmp=$(mktemp)
@@ -46,7 +53,9 @@ prepare_snapshot() {
       row="$candidate"; break
     done < <(printf '%s' "$candidates" | python3 -c 'import json,sys; [print(json.dumps(v)) for v in json.load(sys.stdin)]')
     verified=false
-    if [ "$row" != null ] && { [ "$reuse_view" != null ] || [ "$(json_fields "$row" topology_id)" = "$CLUSTER_TOPOLOGY_ID" ]; }; then
+    # This recipe's copy is verified whatever membership it was made under:
+    # one made before the membership changed can be taken over (rebind).
+    if [ "$row" != null ]; then
       if result=$(verify_record "$row"); then
         verified=true
         # Keep the original pin and ownership metadata; only verification cache changes.
@@ -54,10 +63,14 @@ prepare_snapshot() {
       fi
     fi
     # A rank with no record to reuse gets a new copy; ask whether its path is
-    # already taken by a folder that no record names, which Prepare must not replace.
+    # already taken by a folder that no record names, which Prepare must not
+    # replace. With --adopt-unrecorded the node also says, without hashing,
+    # whether that folder could be taken over (D7).
     destination=null
     if [ "$row" = null ] && [ "$node" != "$home_node" ]; then
-      destination=$(model_node "$rank" "$(model_node_request view-destination spec_id "$SPEC_ID" node_id "$node")") || die "prepared copy destination is unobservable"
+      adopt=()
+      [ "$ADOPT_UNRECORDED" != 1 ] || adopt=(adopt: true)
+      destination=$(model_node "$rank" "$(model_node_request view-destination spec_id "$SPEC_ID" node_id "$node" "${adopt[@]}")") || die "prepared copy destination is unobservable"
     fi
     printf '%s\n' "$(model_json node_id "$node" view_verified: "$verified" reuse_view: "$reuse_view" destination: "$destination")" >>"$ranks_tmp"
     roots=$(model_node "$rank" "$(model_node_request roots)") || die "node storage roots are unavailable"
@@ -67,7 +80,7 @@ prepare_snapshot() {
   done
   observations=$(printf '%s' "$observations" | python3 -c 'import json,sys; all=json.load(sys.stdin); selected=[json.loads(x) for x in open(sys.argv[1])]; print(json.dumps([{**next(o for o in all if o["node_id"]==v["node_id"]),**v} for v in selected]))' "$ranks_tmp")
   budget=$(python3 -c 'import json,sys; print(json.dumps({r["node_id"]:r["budget"] for r in map(json.loads,open(sys.argv[1]))}))' "$budgets_tmp")
-  plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" confirmed_node_ids: "$(all_node_ids)" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget")") || die "could not build preparation plan"
+  plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" confirmed_node_ids: "$(all_node_ids)" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget" adopt_unrecorded: "$([ "$ADOPT_UNRECORDED" = 1 ] && echo true || echo false)")") || die "could not build preparation plan"
   rm -f "$ranks_tmp" "$budgets_tmp"
   if [ "$PLAN" -eq 1 ]; then rm -f "$views_tmp"; emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"
@@ -76,14 +89,29 @@ prepare_snapshot() {
   [ "$VIEW_SCHEMA" != 2 ] || scope="${PREPARE_SNAPSHOT:-target} "
   . "$REPO_DIR/scripts/model-transfer.sh"
   source_rank="$home_rank"; source_path=$(json_fields "$HOME_JSON" path); source_stamp=$(json_fields "$HOME_JSON" verification)
+  # Folders taken over (D7) go first: each node hashes every file of its
+  # folder and records it only if all match, so a folder that does not match
+  # stops Prepare before any rank is copied. Nothing is deleted or moved.
+  adopted_tmp=$(mktemp)
+  for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
+    rank="${SELECTED_RANKS[$slot]}"; node="${CLUSTER_NODE_IDS[$rank]}"
+    action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["actions"][int(sys.argv[1])]["action"])' "$slot")
+    [ "$action" = adopt ] || continue
+    phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): checking every file of the folder no record names before taking it over"
+    result=$(model_node "$rank" "$(model_node_request adopt-view spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") \
+      || { rm -f "$views_tmp" "$adopted_tmp"; die "the folder on $(human_node_name "$rank") was not taken over; nothing was copied or deleted"; }
+    printf '%s\n' "$(json_fields "$result" view)" >>"$adopted_tmp"
+  done
   # Rank 0 is prepared first when a remote home serves multiple ranks. Its
   # required verified working copy supplies later transfers; no extra home.
   for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
     rank="${SELECTED_RANKS[$slot]}"; node="${CLUSTER_NODE_IDS[$rank]}"
     action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["actions"][int(sys.argv[1])]["action"])' "$slot")
     case "$action" in
+      adopt) ;;
       reuse) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): reusing verified files" ;;
       bind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): binding to existing verified files" ;;
+      rebind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed" ;;
       home-view) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): using files from the home" ;;
       *) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): copying and verifying files" ;;
     esac
@@ -95,7 +123,26 @@ prepare_snapshot() {
       fi
       continue
     fi
-    if [ "$action" = bind ]; then
+    if [ "$action" = adopt ]; then
+      row=$(python3 -c 'import json,sys; print(next(x.strip() for x in open(sys.argv[1]) if json.loads(x)["node_id"]==sys.argv[2]))' "$adopted_tmp" "$node") \
+        || die "the folder taken over on $(human_node_name "$rank") was not recorded"
+    elif [ "$action" = rebind ]; then
+      # Records only: the verified record now names this membership and
+      # position, on the node first and on the controller with the others.
+      # Its pin and files are unchanged.
+      row=$(python3 -c '
+import json,sys
+rows=[json.loads(x) for x in open(sys.argv[1])]
+mine=[r for r in rows if r["node_id"]==sys.argv[2]]
+assert len(mine)==1, "taken-over copy was not verified during planning"
+print(json.dumps({**mine[0],"topology_id":sys.argv[3],"rank":int(sys.argv[4])}))
+with open(sys.argv[1],"w") as stream:
+    for r in rows:
+        if r["node_id"]!=sys.argv[2]: stream.write(json.dumps(r)+"\n")
+' "$views_tmp" "$node" "$CLUSTER_TOPOLOGY_ID" "$slot") || die "prepared copy could not be taken over; no file was changed"
+      model_node "$rank" "$(model_node_request save-view view: "$row")" >/dev/null \
+        || die "prepared copy could not be taken over on $(human_node_name "$rank"); no file was changed"
+    elif [ "$action" = bind ]; then
       row=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["actions"][int(sys.argv[1])]["source_view"]))' "$slot")
       model_ctl "$(model_json operation protect-shared-copy source_view: "$row")" >/dev/null || die "shared-copy protection could not be recorded"
       result=$(model_node "$rank" "$(model_node_request bind-view source_view: "$row" spec_id "$SPEC_ID" node_id "$node" rank: "$slot" topology_id "$CLUSTER_TOPOLOGY_ID")") || die "prepared-copy binding failed; original files retained"
@@ -114,7 +161,7 @@ prepare_snapshot() {
     printf '%s\n' "$row" >>"$views_tmp"
   done
   existing=$(python3 -c 'import json,sys; print(json.dumps(sorted([json.loads(x) for x in open(sys.argv[1])],key=lambda r:r["rank"])))' "$views_tmp")
-  rm -f "$views_tmp"
+  rm -f "$views_tmp" "$adopted_tmp"
   # All-rank barrier checks current identity/metadata, rehashing changed copies.
   phase "$steps" "$steps" "${scope}verifying every rank before recording readiness"
   local verified_tmp

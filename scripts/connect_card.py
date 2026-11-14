@@ -24,16 +24,31 @@ if str(ROOT) not in sys.path:
 LOOPBACK = ("127.0.0.1", "localhost", "[::1]")
 
 
+def _store():
+    from model_library.state import Store
+    root = os.environ.get("PULSAR_MODEL_LIBRARY_DIR") or os.environ.get("MODEL_LIBRARY_DIR") \
+        or ROOT / ".model-library"
+    return Store(root)
+
+
 def recorded_api_auth(service_id: object) -> bool | None:
     """Whether the recorded launch plan started the service with an API key; None when unreadable."""
     if not isinstance(service_id, str) or not service_id:
         return None
     try:
-        from model_library.state import Store
-        root = os.environ.get("PULSAR_MODEL_LIBRARY_DIR") or os.environ.get("MODEL_LIBRARY_DIR") \
-            or ROOT / ".model-library"
-        store = Store(root)
-        value = store.get("service-plans", store.get("services", service_id)["plan_id"]).get("api_auth")
+        return plan_api_auth(_store().get("services", service_id)["plan_id"])
+    except Exception:  # noqa: BLE001 - the card says the requirement is unknown
+        return None
+
+
+def plan_api_auth(plan_id: object) -> bool | None:
+    """Whether the launch plan PLAN_ID, as recorded, started the service with an API key;
+    None when it is not recorded or cannot be read. A container names its plan by its
+    io.pulsar.gb10.launch-plan label."""
+    if not isinstance(plan_id, str) or not plan_id:
+        return None
+    try:
+        value = _store().get("service-plans", plan_id).get("api_auth")
     except Exception:  # noqa: BLE001 - the card says the requirement is unknown
         return None
     return value if type(value) is bool else None

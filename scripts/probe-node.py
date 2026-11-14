@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import re
+import shutil
 import socket
 import subprocess
+import sys
 from typing import Any
 
 
@@ -166,12 +169,159 @@ def node_identifier(hostname: str, control_ip: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:20]
 
 
+# The node's operator prerequisites beyond the platform: the tools the
+# installation table lists and the `hf` CLI that Download runs on this node.
+# Only `pulsar doctor`, the menu's Check the cluster now (through doctor) and
+# guided setup's steps 1 and 3 ask for them (--prerequisites-only). They never feed
+# `qualified` or `reject_reasons`, so a node without them can still be a
+# member and serve; and the Hub request never runs in discovery, `topology
+# check` or start's probes.
+MINIMUM_PYTHON = (3, 11)
+HUB_TIMEOUT_SECONDS = 10
+
+# Runs under the `hf` installation's own Python, as Download's source
+# inventory does, with the login user's own Hub authentication. It prints
+# state words only: never the token, and never the account name `whoami`
+# returns. Compatible with the older Pythons an `hf` install may use.
+HF_CLASSIFIER = r"""
+import json, signal, sys
+result = {"version": "", "download_ready": False, "login": None}
+try:
+    import huggingface_hub as hub
+except Exception:
+    print(json.dumps(dict(result, importable=False)))
+    raise SystemExit(0)
+result["importable"] = True
+result["version"] = str(getattr(hub, "__version__", "") or "")[:40]
+try:
+    import inspect
+    from huggingface_hub import HfApi
+    from huggingface_hub.hf_api import RepoFile  # noqa: F401  Download lists RepoFile rows
+    parameters = inspect.signature(HfApi.model_info).parameters
+    tree = inspect.signature(HfApi.list_repo_tree).parameters
+    result["download_ready"] = "expand" in parameters and "expand" in tree
+except Exception:
+    HfApi = None
+token = None
+try:
+    from huggingface_hub import get_token
+    token = get_token()
+except Exception:
+    token = None
+if not token:
+    result["login"] = "missing"
+elif HfApi is None:
+    result["login"] = "not-reached"
+else:
+    def expired(*_):
+        raise TimeoutError("the Hub did not answer in time")
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(int(sys.argv[1]))
+    try:
+        HfApi().whoami(token=token)
+        result["login"] = "accepted"
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        result["login"] = "rejected" if status == 401 else "not-reached"
+    finally:
+        signal.alarm(0)
+print(json.dumps(result))
+"""
+
+
+def find_hf_cli() -> str:
+    """Find `hf` exactly as Download does: `command -v hf`, else the
+    `$HOME/.hf-cli/venv/bin/hf` installation (scripts/acquire-source.sh)."""
+    found = shutil.which("hf")
+    if found:
+        return found
+    fallback = pathlib.Path(os.environ.get("HOME", "")) / ".hf-cli/venv/bin/hf"
+    if os.environ.get("HOME") and fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    return ""
+
+
+def hf_python(cli: str) -> str:
+    """The Python that owns CLI, resolved from its first line as Download's
+    source inventory resolves it; empty when it cannot be identified."""
+    try:
+        resolved = os.path.realpath(cli)
+        with open(resolved, "rb") as stream:
+            first = stream.readline(4096).decode("utf-8", "replace").rstrip("\n")
+    except OSError:
+        return ""
+    if first == "#!/usr/bin/env python3":
+        python = shutil.which("python3") or ""
+    elif first.startswith("#!/"):
+        python = first[2:]
+    else:
+        return ""
+    if not python or any(character.isspace() for character in python):
+        return ""
+    name = os.path.basename(python)
+    if not (name in ("python", "python3") or name.startswith("python3.")):
+        return ""
+    return python if os.path.isfile(python) and os.access(python, os.X_OK) else ""
+
+
+def hf_prerequisite(timeout: int = HUB_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """The `hf` CLI's state and its Hub login, as state words.
+
+    state: ok, missing, unusable (its Python cannot be identified or cannot
+    import the Hub library), too-old (it lacks what Download uses) or
+    not-checked (the check did not finish). login: accepted, missing (no
+    login on this node), rejected (the Hub refused it), not-reached (the Hub
+    could not be reached) or None when `hf` itself is not usable.
+    """
+    cli = find_hf_cli()
+    if not cli:
+        return {"state": "missing", "version": "", "login": None,
+                "legacy_cli": bool(shutil.which("huggingface-cli"))}
+    python = hf_python(cli)
+    if not python:
+        return {"state": "unusable", "version": "", "login": None, "legacy_cli": False}
+    environment = dict(os.environ, HF_HUB_OFFLINE="0", PYTHONDONTWRITEBYTECODE="1")
+    try:
+        proc = subprocess.run(
+            [python, "-c", HF_CLASSIFIER, str(timeout)],
+            check=False, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=timeout + 15, env=environment, cwd="/",
+        )
+        lines = proc.stdout.strip().splitlines()
+        answer = json.loads(lines[-1]) if proc.returncode == 0 and lines else None
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        return {"state": "not-checked", "version": "", "login": None, "legacy_cli": False}
+    if not isinstance(answer, dict):
+        return {"state": "not-checked", "version": "", "login": None, "legacy_cli": False}
+    version = answer.get("version") if isinstance(answer.get("version"), str) else ""
+    if answer.get("importable") is not True:
+        return {"state": "unusable", "version": "", "login": None, "legacy_cli": False}
+    login = answer.get("login")
+    if login not in ("accepted", "missing", "rejected", "not-reached"):
+        login = "not-reached"
+    state = "ok" if answer.get("download_ready") is True else "too-old"
+    return {"state": state, "version": version, "login": login, "legacy_cli": False}
+
+
+def prerequisites() -> dict[str, Any]:
+    version = sys.version_info[:3]
+    return {
+        "python": {"version": ".".join(map(str, version)),
+                   "ok": tuple(version[:2]) >= MINIMUM_PYTHON},
+        "flock": bool(shutil.which("flock")),
+        "rsync": bool(shutil.which("rsync")),
+        "hf": hf_prerequisite(),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ssh-host", default="local")
     parser.add_argument("--local", action="store_true")
     parser.add_argument("--include-ssh-host-keys", action="store_true")
     parser.add_argument("--identity-only", action="store_true")
+    parser.add_argument("--prerequisites-only", action="store_true")
     parser.add_argument("--expected-gpu", default="NVIDIA GB10")
     parser.add_argument("--expected-arch", action="append", default=None)
     parser.add_argument("--min-active-rdma", type=int, default=1)
@@ -184,6 +334,18 @@ def main() -> int:
         raise SystemExit("probe-node: --min-active-rdma must be >= 0")
 
     hostname = socket.gethostname().split(".", 1)[0]
+    if args.prerequisites_only:
+        # A separate answer: no hardware facts, no `qualified`, nothing
+        # discovery or membership reads.
+        print(json.dumps({
+            "probe_schema_version": 1,
+            "kind": "pulsar-node-prerequisites",
+            "local": bool(args.local),
+            "ssh_host": args.ssh_host,
+            "hostname": hostname,
+            "prerequisites": prerequisites(),
+        }, sort_keys=True))
+        return 0
     if args.identity_only:
         result = {
             "probe_schema_version": 2 if args.include_ssh_host_keys else 1,

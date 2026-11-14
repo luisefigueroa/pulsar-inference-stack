@@ -86,7 +86,7 @@ file identity; the manifest supplies it. Prepared copies are associated with
 their spec and job ranks. Pins preserve copies, while ownership and dependency
 checks prevent deleting data used by another recipe or running container.
 
-Prepared bindings may share a verified working copy on the same physical node.
+Prepared bindings may share a verified prepared copy on the same physical node.
 The existing view records are the references; there is no separate reference
 counter or content database. Copy selection matches the full snapshot manifest
 and confirms the files before publishing the new spec/rank/topology binding.

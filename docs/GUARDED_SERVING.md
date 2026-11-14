@@ -89,7 +89,7 @@ The list must match the recipe's exact node count, contain unique confirmed
 nodes, and satisfy its fabric requirement. Its first node runs the API rank.
 The complete topology identity and saved membership remain unchanged. A storage
 home can remain on another confirmed member; Stack verifies it independently
-and requires complete working copies on every participating rank. Existing
+and requires complete prepared copies on every participating rank. Existing
 pinned views and their bytes are retained. Its output directory must not exist.
 
 Ordinary real start supports its existing default placement; a nondefault

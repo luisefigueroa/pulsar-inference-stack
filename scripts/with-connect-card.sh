@@ -11,6 +11,10 @@ trap 'rm -f -- "$result"' EXIT
 rc=0
 PULSAR_SERVICE_RESULT_FILE="$result" "$@" || rc=$?
 if [ "$rc" -eq 0 ] && [ -s "$result" ]; then
-  python3 "$REPO_DIR/scripts/connect_card.py" --result "$result" || true
+  # The card reads the service's launch record from the model library. Load
+  # the configuration in a subshell as every ./pulsar command does, so that a
+  # library location set only in this checkout's .env is read.
+  (. "$REPO_DIR/scripts/lib.sh" >/dev/null 2>&1; export PULSAR_MODEL_LIBRARY_DIR
+   python3 "$REPO_DIR/scripts/connect_card.py" --result "$result") || true
 fi
 exit "$rc"

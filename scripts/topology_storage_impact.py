@@ -49,10 +49,11 @@ def load_topology(path: Path | None) -> dict | None:
     return value
 
 
-def render(document: dict) -> None:
+def render(document: dict, names: dict | None = None) -> None:
+    """NAMES maps a removed node ID to its saved hostname, which people read."""
     out = TerminalWriter()
     out.emit('Managed storage impact')
-    removed = document['removed_node_ids']
+    removed = [(names or {}).get(node_id) or node_id for node_id in document['removed_node_ids']]
     out.field('Removed nodes', ', '.join(removed) if removed else 'none', indent=2)
     out.field('Homes on removed nodes',
               str(len(document['homes_on_removed_nodes'])), indent=2)
@@ -61,7 +62,10 @@ def render(document: dict) -> None:
     out.field('Pinned views affected',
               str(document['pinned_views_requiring_reconciliation']), indent=2)
     if document['prepared_views_requiring_reconciliation']:
-        out.emit('Prepare records bind the previous topology. Purge or reprepare them explicitly; saving membership does not delete files or records.',
+        out.emit('Prepared copies record the membership they were made under. Prepare takes over each copy on a '
+                 'node that still serves the spec, at its new position, when its files still verify: nothing is '
+                 'copied or deleted, and a pin stays. A copy whose files changed, or one on a node that leaves, '
+                 'is purged explicitly. Saving membership does not delete files or records.',
                  initial_indent='  ', subsequent_indent='  ')
     if document['homes_on_removed_nodes']:
         out.emit('Move the home before saving when possible, or plan an explicit archive restore afterward.',
@@ -88,7 +92,7 @@ def main(argv=None) -> int:
     if args.json:
         print(json.dumps(document, sort_keys=True))
     else:
-        render(document)
+        render(document, {row['node_id']: row['hostname'] for row in (old or {}).get('nodes', [])})
     return 0
 
 
