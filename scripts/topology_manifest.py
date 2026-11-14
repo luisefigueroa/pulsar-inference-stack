@@ -298,6 +298,218 @@ def rails_between(
     return rails
 
 
+MESH_CLASS = "roce-full-mesh"
+RING_CLASS = "roce-ring"
+RING_MIN_NODES = 4
+MESH_LEFT_OUT = (
+    "not part of the largest directly connected RoCE group containing this node"
+)
+RING_LEFT_OUT = "not cabled to the ring that contains this node"
+FALLBACK_LEFT_OUT = (
+    "the machines cabled to this node form neither a full mesh nor a closed "
+    "ring of four or more"
+)
+
+
+# What a person reads for each reason a machine that answered was left out.
+# The JSON reasons keep their stable strings.
+LEFT_OUT_WORDS = {
+    MESH_LEFT_OUT: "not cabled to every other machine in the cluster",
+    RING_LEFT_OUT: "not cabled to the ring",
+}
+CABLING_WORDS = (
+    "the cabling forms neither a full mesh nor a closed ring of four or "
+    "more, so Pulsar keeps the largest group in which every machine is "
+    "cabled to every other"
+)
+RING_MEANING = (
+    "Machines that are not neighbours share no direct link. A ring allows "
+    "serving on one machine, a neighbouring pair or the whole ring; each "
+    "recipe's readiness says what can start now."
+)
+
+
+def left_out_for_cabling(item: dict[str, Any]) -> bool:
+    """Whether a rejected machine answered, qualifies, and was left out for its cabling."""
+    return any(reason in LEFT_OUT_WORDS for reason in item.get("reasons") or [])
+
+
+def reason_words(reasons: list[str]) -> str:
+    """REASONS as a person reads them: the cabling reasons in plain words."""
+    words = [LEFT_OUT_WORDS[reason] if reason in LEFT_OUT_WORDS else CABLING_WORDS
+             if reason == FALLBACK_LEFT_OUT else reason for reason in reasons]
+    return "; ".join(words) or "not qualified"
+
+
+def ring_loop(hostnames: list[str]) -> str:
+    """HOSTNAMES in cable order as a loop, the first repeated at the end."""
+    return " → ".join([*hostnames, hostnames[0]]) if hostnames else ""
+
+
+def shape_text(topology: dict[str, Any]) -> str:
+    """The shape and links of a membership, as "ring · 2 links on every cable"."""
+    nodes = topology["nodes"]
+    validation = topology.get("validation") or {}
+    if len(nodes) == 1:
+        return "one machine · no cluster links needed"
+    counts = [len(link.get("rails") or []) for link in topology.get("links") or []]
+    least = min(counts) if counts else 0
+    amount = f"{'' if len(set(counts)) <= 1 else 'at least '}{least} {'link' if least == 1 else 'links'}"
+    if validation.get("class") == RING_CLASS:
+        return f"ring · {amount} on every cable"
+    return f"full mesh · {amount} between every pair"
+
+
+def failure_words(failure: dict[str, Any]) -> str:
+    """One link that did not answer the fabric check (topology check's
+    fabric_failures entry), named by the cable it runs on."""
+    return (f"The cable between {failure['from']} and {failure['to']}: {failure['to']} did not answer at "
+            f"{failure['address']} on link {failure['network']}, pinged from {failure['from']}'s "
+            f"{failure['interface']}.")
+
+
+# Why a recipe on two or more nodes cannot use two machines of a saved ring
+# that are not neighbours. The launch check in cluster/topology.sh prints the
+# same words after naming the two machines.
+RING_CABLING = "the cluster is a ring, and this recipe needs every one of its nodes cabled to the others"
+
+
+def ring_refusal(first: str, second: str) -> str:
+    """The launch check's refusal for two chosen nodes of a ring that share no link."""
+    return f"{first} and {second} are not cabled to each other: {RING_CABLING}"
+
+
+# A recipe that declares the ring pattern (NCCL_ALGO=Ring) needs only each of
+# its nodes cabled to the next and the last to the first, in role order. The
+# same words are in require_profile_topology in cluster/topology.sh.
+RING_LOOP = "this recipe passes data around a closed loop of its nodes, each cabled to the next and the last to the first"
+
+
+def ring_loop_refusal(first: str, second: str) -> str:
+    """The launch check's refusal for a ring-pattern recipe whose loop is broken
+    between FIRST and SECOND: the first pair in role order that shares no link."""
+    return f"{first} and {second} are not cabled to each other: {RING_LOOP}"
+
+
+def cabled_neighbours(nodes: list[dict[str, Any]]) -> list[set[int]]:
+    """For each node, the indexes of the nodes it shares at least one link with."""
+    neighbours: list[set[int]] = [set() for _ in nodes]
+    for a in range(len(nodes)):
+        for b in range(a + 1, len(nodes)):
+            if rails_between(nodes[a], nodes[b]):
+                neighbours[a].add(b)
+                neighbours[b].add(a)
+    return neighbours
+
+
+def cabled_group(neighbours: list[set[int]], start: int = 0) -> set[int]:
+    """The indexes reachable from START over cables, START included."""
+    group = {start}
+    pending = [start]
+    while pending:
+        for other in neighbours[pending.pop()]:
+            if other not in group:
+                group.add(other)
+                pending.append(other)
+    return group
+
+
+def ring_walk(
+    nodes: list[dict[str, Any]], neighbours: list[set[int]], first: int
+) -> list[int]:
+    """Indexes around the loop from node 0, starting towards its neighbour FIRST."""
+    order = [0, first]
+    while True:
+        previous, current = order[-2], order[-1]
+        (following,) = neighbours[current] - {previous}
+        if following == 0:
+            return order
+        order.append(following)
+
+
+def first_cable_neighbour(
+    nodes: list[dict[str, Any]], neighbours: list[set[int]]
+) -> int:
+    """The neighbour of node 0 on the cable that carries its first RoCE adapter.
+
+    Adapters are taken in sorted name order; one that carries no link to a
+    neighbour is passed over for the next."""
+    local = nodes[0]
+    for hca in sorted({link["hca"] for link in local.get("rdma") or []}):
+        for index in sorted(neighbours[0]):
+            if any(
+                rail["a"]["hca"] == hca
+                for rail in rails_between(local, nodes[index])
+            ):
+                return index
+    return min(neighbours[0])
+
+
+def saved_ring_cables(old: dict[str, Any]) -> tuple[list[str], set[frozenset[str]]] | None:
+    """A saved ring's node_ids in rank order and its cables as node_id pairs.
+
+    None unless OLD is a well-formed saved ring; it is read only to keep the
+    ring's direction, never to decide membership."""
+    if (old.get("validation") or {}).get("class") != RING_CLASS:
+        return None
+    nodes = old.get("nodes") or []
+    try:
+        order = [str(node["node_id"]) for node in sorted(nodes, key=lambda node: node["rank"])]
+        if [node["rank"] for node in sorted(nodes, key=lambda node: node["rank"])] != list(range(len(nodes))):
+            return None
+        cables = {
+            frozenset((order[link["ranks"][0]], order[link["ranks"][1]]))
+            for link in old.get("links") or []
+        }
+    except (KeyError, IndexError, TypeError, ValueError):
+        return None
+    return order, cables
+
+
+def cluster_shape(
+    local: dict[str, Any],
+    remotes: list[dict[str, Any]],
+    saved_ring: tuple[list[str], set[frozenset[str]]] | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    """The shape of the cabled group that contains LOCAL, and its nodes in rank order.
+
+    `full-mesh` when every pair in the group is cabled, chosen exactly as
+    before by `largest_mesh`. `ring` when the group is four or more nodes in
+    one closed loop, each cabled to exactly two others. Anything else is
+    `fallback`: the largest full mesh containing LOCAL, as before.
+
+    A ring's ranks follow its cables from LOCAL, rank 0. Rank 1 is the
+    neighbour on the cable of LOCAL's first RoCE adapter, unless SAVED_RING
+    (from `saved_ring_cables`) has exactly these cables: then its direction
+    is kept, so a rediscovery does not reverse the order.
+    """
+    nodes = [local, *remotes]
+    neighbours = cabled_neighbours(nodes)
+    group = cabled_group(neighbours)
+    if all(neighbours[index] >= group - {index} for index in group):
+        return "full-mesh", largest_mesh(local, remotes)
+    if len(group) >= RING_MIN_NODES and all(
+        len(neighbours[index]) == 2 for index in group
+    ):
+        # Connected, and every node of degree two: a single closed loop.
+        ids = [node["node_id"] for node in nodes]
+        cables = {
+            frozenset((ids[index], ids[other]))
+            for index in group
+            for other in neighbours[index]
+        }
+        first = None
+        if saved_ring is not None and saved_ring[1] == cables:
+            order = saved_ring[0]
+            if local["node_id"] in order:
+                following = order[(order.index(local["node_id"]) + 1) % len(order)]
+                first = ids.index(following)
+        if first is None:
+            first = first_cable_neighbour(nodes, neighbours)
+        return "ring", [nodes[index] for index in ring_walk(nodes, neighbours, first)]
+    return "fallback", largest_mesh(local, remotes)
+
+
 def largest_mesh(
     local: dict[str, Any], remotes: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
@@ -402,10 +614,12 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
         by_id[probe["node_id"]] = probe
 
     existing_order: dict[str, int] = {}
+    saved_ring = None
     if existing_path and pathlib.Path(existing_path).is_file():
         old = load_json(existing_path)
         if "topology" in old:
             old = old.get("topology") or {}
+        saved_ring = saved_ring_cables(old)
         for item in old.get("nodes") or []:
             node_id = str(item.get("node_id") or "")
             rank = item.get("rank")
@@ -420,7 +634,12 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
             node["node_id"],
         )
     )
-    selected = largest_mesh(local, remotes)
+    shape, selected = cluster_shape(local, remotes, saved_ring)
+    left_out = {
+        "full-mesh": [MESH_LEFT_OUT],
+        "ring": [RING_LEFT_OUT],
+        "fallback": [MESH_LEFT_OUT, FALLBACK_LEFT_OUT],
+    }[shape]
     selected_ids = {node["node_id"] for node in selected}
     for node in remotes:
         if node["node_id"] not in selected_ids:
@@ -429,9 +648,7 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
                     "ssh_host": node["ssh_host"],
                     "hostname": node["hostname"],
                     "node_id": node["node_id"],
-                    "reasons": [
-                        "not part of the largest directly connected RoCE group containing this node"
-                    ],
+                    "reasons": list(left_out),
                 }
             )
 
@@ -452,10 +669,14 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
             }
         )
 
+    # A full mesh lists every pair; a ring lists only its cables, the lower
+    # rank first: [i, i+1] for consecutive ranks and [0, N-1] for the closing one.
     links: list[dict[str, Any]] = []
     for a in range(len(nodes)):
         for b in range(a + 1, len(nodes)):
             rails = rails_between(nodes[a], nodes[b])
+            if shape == "ring" and not rails:
+                continue
             links.append({"ranks": [a, b], "rails": rails})
 
     rail_counts = [len(link["rails"]) for link in links]
@@ -465,20 +686,34 @@ def assemble(paths: list[str], existing_path: str | None) -> dict[str, Any]:
         "nodes": nodes,
         "links": links,
         "validation": {
-            "class": "roce-full-mesh",
-            "full_mesh": all(rail_counts) if links else True,
+            "class": RING_CLASS if shape == "ring" else MESH_CLASS,
+            "full_mesh": (
+                False if shape == "ring" else (all(rail_counts) if links else True)
+            ),
             "connectivity_verified": False,
             "min_rails_per_pair": min(rail_counts) if rail_counts else 0,
         },
     }
     topology["topology_id"] = topology_digest(topology)
     validate_manifest(topology)
-    return {
+    document = {
         "schema_version": topology_schema,
         "result": "ok",
         "topology": topology,
         "rejected": rejected,
     }
+    if shape != "full-mesh":
+        # Which qualified machines share links, so a ring's changes and a
+        # fallback's left-out machines can be explained. A full mesh needs none.
+        everyone = [local, *remotes]
+        neighbours = cabled_neighbours(everyone)
+        document["cabling"] = sorted(
+            sorted([everyone[a]["node_id"], everyone[b]["node_id"]])
+            for a in range(len(everyone))
+            for b in neighbours[a]
+            if a < b
+        )
+    return document
 
 
 def validate_manifest(
@@ -550,9 +785,21 @@ def validate_manifest(
             for cidr in rdma.get("cidrs") or []:
                 valid_cidr(cidr, f"nodes[{rank}].rdma[{index}].cidr")
 
-    expected_pairs = {
-        (a, b) for a in range(len(nodes)) for b in range(a + 1, len(nodes))
-    }
+    # A ring lists only its cables: each consecutive pair of ranks and the
+    # closing cable [0, N-1]. A full mesh lists every pair.
+    count = len(nodes)
+    ring = validation.get("class") == RING_CLASS
+    if ring:
+        if count < RING_MIN_NODES:
+            fail(
+                f"a ring needs at least {RING_MIN_NODES} nodes; this one has "
+                f"{count}, and fewer nodes cabled in a loop are a full mesh"
+            )
+        expected_pairs = {(a, a + 1) for a in range(count - 1)} | {(0, count - 1)}
+    else:
+        expected_pairs = {
+            (a, b) for a in range(count) for b in range(a + 1, count)
+        }
     observed_pairs: set[tuple[int, int]] = set()
     rail_counts: list[int] = []
     for index, link in enumerate(links):
@@ -564,6 +811,16 @@ def validate_manifest(
         ):
             fail(f"links[{index}].ranks malformed")
         pair = (ranks[0], ranks[1])
+        if ring:
+            if not all(0 <= rank < count for rank in pair):
+                fail(f"links[{index}]: rank outside the ring's {count} nodes")
+            if pair[0] >= pair[1]:
+                fail(f"links[{index}]: ranks must list the lower rank first")
+            if pair not in expected_pairs:
+                fail(
+                    f"links[{index}]: ranks {pair[0]} and {pair[1]} are not "
+                    "neighbours on the ring"
+                )
         if pair not in expected_pairs or pair in observed_pairs:
             fail(f"links[{index}]: invalid or duplicate rank pair")
         observed_pairs.add(pair)
@@ -589,12 +846,28 @@ def validate_manifest(
                     endpoint.get("ip"),
                     f"links[{index}].rails[{rail_index}].{side}.ip",
                 )
-    if observed_pairs != expected_pairs:
-        fail("links do not cover every rank pair")
-    if validation.get("class") != "roce-full-mesh":
-        fail("unsupported validation class")
-    if validation.get("full_mesh") is not True:
-        fail("topology is not a full mesh")
+    if ring:
+        missing = sorted(expected_pairs - observed_pairs)
+        if missing:
+            a, b = missing[0]
+            cable = (
+                f"the closing cable between ranks 0 and {count - 1}"
+                if (a, b) == (0, count - 1)
+                else f"the cable between ranks {a} and {b}"
+            )
+            fail(
+                f"a ring of {count} nodes lists {count} cables in links; this "
+                f"one lists {len(observed_pairs)} and lacks {cable}"
+            )
+        if validation.get("full_mesh") is not False:
+            fail("a ring is not a full mesh; validation.full_mesh must be false")
+    else:
+        if observed_pairs != expected_pairs:
+            fail("links do not cover every rank pair")
+        if validation.get("class") != MESH_CLASS:
+            fail("unsupported validation class")
+        if validation.get("full_mesh") is not True:
+            fail("topology is not a full mesh")
     actual_min = min(rail_counts) if rail_counts else 0
     if validation.get("min_rails_per_pair") != actual_min:
         fail("min_rails_per_pair does not match links")
@@ -636,34 +909,38 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
 
     nodes = topology["nodes"]
     validation = topology["validation"]
-    link_count = validation["min_rails_per_pair"]
-    link_word = "link" if link_count == 1 else "links"
-    node_word = "system" if len(nodes) == 1 else "systems"
     check_count = sum(2 * len(link["rails"]) for link in topology["links"])
+    rejected = document.get("rejected") or []
+    left_out = [item for item in rejected if left_out_for_cabling(item)]
+    answered = len(nodes) + len(left_out)
 
     term.emit("CLUSTER DISCOVERY")
     try:
         display_name = load_current_platform()["display_name"]
     except PlatformReferenceError as exc:
         fail(str(exc))
-    field("Nodes", f"{len(nodes)} {display_name} {node_word}")
+    headline = f"{answered} {display_name} {'machine' if answered == 1 else 'machines'} answered"
+    if left_out:
+        headline += f" · {len(nodes)} in the cluster"
+    field("Found", f"{headline} · {shape_text(topology)}")
+    if validation.get("class") == RING_CLASS:
+        field("Order", ring_loop([node["hostname"] for node in nodes]))
+        field("Serving", RING_MEANING)
+    for item in left_out:
+        reasons = [reason for reason in item.get("reasons") or [] if reason != FALLBACK_LEFT_OUT]
+        field("Left out", f"{item.get('hostname') or item.get('ssh_host') or '?'} answered, but is "
+                          f"{reason_words(reasons)}")
+    if any(FALLBACK_LEFT_OUT in (item.get("reasons") or []) for item in left_out):
+        field("Cabling", CABLING_WORDS[0].upper() + CABLING_WORDS[1:] + ".")
     if len(nodes) == 1:
-        field("Fabric", "single node · no cluster links required")
-        field("Checks", "not needed · no other nodes found")
+        field("Checks", "not needed · no other machines in the cluster")
+    elif validation.get("connectivity_verified") is True:
+        field("Checks", f"PASS · {check_count}/{check_count} connections reachable")
     else:
-        field(
-            "Fabric",
-            f"full mesh · at least {link_count} RoCE {link_word} "
-            "between each node pair",
-        )
-        if validation.get("connectivity_verified") is True:
-            field(
-                "Checks",
-                f"PASS · {check_count}/{check_count} connections reachable",
-            )
-        else:
-            field("Checks", "not yet verified")
-    field("Cluster ID", topology["topology_id"][:12])
+        field("Checks", "not yet verified")
+    noticed = (document.get("changes_noticed") or {}).get("result")
+    if noticed in ("unchanged", "changed"):
+        field("Membership", "the same as saved" if noticed == "unchanged" else "differs from saved membership")
 
     term.blank()
     term.emit("NODES")
@@ -682,13 +959,13 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
                 key["fingerprint"] for key in node["ssh_host_keys"]
             ]
             field(
-                "SSH trust",
-                f"enrolled · {len(fingerprints)} host "
+                "Identity",
+                f"SSH identity recorded · {len(fingerprints)} host "
                 f"{'key' if len(fingerprints) == 1 else 'keys'}",
                 indent=4,
             )
         else:
-            field("SSH trust", "legacy · fingerprints not enrolled", indent=4)
+            field("Identity", "SSH identity not recorded yet", indent=4)
         field(
             "Cluster IP",
             f"{node['control']['ip']} · interface "
@@ -702,19 +979,19 @@ def render(document: dict[str, Any], skipped_ssh: int = 0, in_review: bool = Fal
             indent=4,
         )
 
-    rejected = document.get("rejected") or []
-    if rejected or skipped_ssh:
+    duplicates = [item for item in rejected if item.get("reasons") == ["duplicate node identity"]]
+    others = [item for item in rejected if item not in duplicates and item not in left_out]
+    if duplicates or others or skipped_ssh:
         term.blank()
         term.emit("DISCOVERY NOTES")
-    for item in rejected:
+    for item in others:
         ssh_host = item.get("ssh_host") or "?"
-        hostname = item.get("hostname") or "?"
-        reasons = item.get("reasons") or ["not qualified"]
-        if reasons == ["duplicate node identity"]:
-            detail = f"{ssh_host} · same system already listed as {hostname}"
-        else:
-            detail = f"{ssh_host} · {'; '.join(reasons)}"
-        field("Ignored", detail)
+        field("Ignored", f"{ssh_host} · {reason_words(item.get('reasons') or [])}")
+    if duplicates:
+        # Each machine answers on its LAN address and on its fabric addresses.
+        count = len(duplicates)
+        field("Also seen", f"{count} more {'address' if count == 1 else 'addresses'} answered for "
+                           f"{'a machine' if count == 1 else 'machines'} already listed")
     if skipped_ssh:
         address_word = "address" if skipped_ssh == 1 else "addresses"
         field(
@@ -769,6 +1046,7 @@ def rows(topology: dict[str, Any]) -> None:
                 str(validation["min_rails_per_pair"]),
                 str(topology["schema_version"]),
                 "1" if topology_has_ssh_trust(topology) else "0",
+                str(validation["class"]),
             ]
         )
     )
@@ -868,6 +1146,11 @@ def profile_fabric(topology: dict[str, Any], node_count: int, node_ids: list[str
 
 
 def ping_plan(topology: dict[str, Any]) -> None:
+    """One row per saved link and direction, for a mesh and a ring alike.
+
+    Columns: source rank, source SSH host, target rank, target address,
+    network, and the source's own interface on that link, which each ping
+    is bound to so that it cannot pass over another path."""
     validate_manifest(topology)
     nodes = topology["nodes"]
     for link in topology["links"]:
@@ -881,6 +1164,7 @@ def ping_plan(topology: dict[str, Any]) -> None:
                         str(b),
                         rail["b"]["ip"],
                         rail["network"],
+                        rail["a"]["netdev"],
                     ]
                 )
             )
@@ -892,6 +1176,7 @@ def ping_plan(topology: dict[str, Any]) -> None:
                         str(a),
                         rail["a"]["ip"],
                         rail["network"],
+                        rail["b"]["netdev"],
                     ]
                 )
             )

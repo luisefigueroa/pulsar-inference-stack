@@ -57,9 +57,11 @@ if str(ROOT) not in sys.path:
 from model_library.catalog import archive_facts  # noqa: E402
 from model_library.catalog_menu import (ARCHIVE_LOCATION, SERVICE_STATES, CARD_NAME_COLUMN,  # noqa: E402
                                         CARD_SPEC_COLUMN, CARD_WRAP_COLUMN, _fit_name, _plan_actions,
-                                        _plan_document, clean, distinguishing_facts, found_files, members,
+                                        _plan_document, clean, copy_route_sentences, distinguishing_facts,
+                                        found_files, members,
                                         node_count, plan_blocked, plan_effect, plan_summary, recorded_node,
-                                        services_in_the_way, short_model_names, start_unsupported)
+                                        services_in_the_way, short_model_names, start_unsupported,
+                                        taken_over_reason)
 from model_library.node_names import NodeNames  # noqa: E402
 from model_library.render import short_size  # noqa: E402
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, terminal_width  # noqa: E402
@@ -75,8 +77,20 @@ READINESS = {
     "restore": "needs restoring from its archive",
     "download": "needs downloading · {size}",
     "too-big": "needs {needed}; the cluster has {have}",
+    "ring": "needs every one of its nodes cabled to the others; the cluster is a ring",
+    "loop": "needs {needed} cabled in a closed loop; the ring has {have}",
     "unsupported": "start unsupported",
     "unknown": "size unknown",
+    # On a saved ring a one- or two-node recipe can serve on several
+    # placements, so its phrase names the nodes it is about; a pair is named
+    # in role order, "first + second", and the first serves the API.
+    "ready-on": "ready to start on {hosts}",
+    "verify-on": "needs its files checked on {hosts}",
+    # Placements in the same state, the default first: each has its copies
+    # recorded under this saved cluster and none has a saved check.
+    "verify-or": "needs its files checked on {hosts} or {others}",
+    "copy-to": "needs copying to {hosts} · {size}",
+    "copies-recorded": "copies recorded on {hosts}",
 }
 # The plan screen's choices, in order; the cursor starts on Cancel (D1).
 CHOICES = (("cancel", "Cancel"), ("go", "Go ahead"), ("ready", "Get it ready, but do not start"),
@@ -131,11 +145,149 @@ def snapshot_sizes(repo: Path, spec_id: str) -> dict:
 
 def serving_nodes(row: dict, order: list[str], node: str | None) -> list[str]:
     """The serving node_ids: a one-node recipe's chosen node, or the first saved
-    nodes in their saved order, as Start uses them. Empty when unknown."""
+    nodes in their saved order, as Start uses them. Empty when unknown.
+
+    For a multi-node recipe NODE may name its nodes in role order, comma-
+    separated: Restart of a service Start ran on named nodes."""
     count = row["geometry"]["nodes"]
     if count == 1:
         return [node] if node else []
+    if node and "," in node:
+        chosen = node.split(",")
+        return chosen if len(chosen) == count else []
     return list(order[:count]) if len(order) >= count else []
+
+
+def placement_args(row: dict, names: NodeNames, serving: list[str], node: str | None) -> list[str]:
+    """How Prepare, the serving image and Start name the serving nodes: a
+    one-node recipe's machine; a multi-node recipe's nodes in role order when
+    NODE named them and they differ from the default order (role rank r on
+    saved rank r). Otherwise nothing: Start uses the default order."""
+    hosts = [names(item) for item in serving]
+    if row["geometry"]["nodes"] == 1:
+        return ["--node", hosts[0]] if hosts else []
+    if node and "," in node and serving and serving != list(names.order[:len(serving)]):
+        return ["--placement-nodes", ",".join(hosts)]
+    return []
+
+
+def ring_pairs(topology: dict | None) -> list[tuple[str, str]]:
+    """The neighbouring pairs of a saved ring as node_ids in role order (the
+    first serves the API): this machine (saved rank 0) with its rank-1
+    neighbour, which is the default order; this machine with its other
+    neighbour; then the other pairs in cable order, each led by its lower
+    saved rank. Empty unless the saved links make rank 0 and 1 neighbours."""
+    try:
+        nodes = sorted((topology or {}).get("nodes") or [], key=lambda node: node["rank"])
+        ids = [str(node["node_id"]) for node in nodes]
+        cables = {tuple(sorted(int(rank) for rank in link["ranks"])) for link in (topology or {}).get("links") or []}
+    except (KeyError, TypeError, ValueError):
+        return []
+    if (0, 1) not in cables or any(len(cable) != 2 or max(cable) >= len(ids) for cable in cables):
+        return []
+    mine = [(0, 1)] + sorted(cable for cable in cables if cable[0] == 0 and cable != (0, 1))
+    rest = sorted(cable for cable in cables if cable[0] != 0)
+    return [(ids[first], ids[second]) for first, second in mine + rest]
+
+
+def copies_recorded(row: dict, placement, topology_id: str | None) -> bool:
+    """Whether saved records hold a prepared copy of every required snapshot
+    on every node of PLACEMENT in that role order: role rank r on its r-th
+    node, recorded under TOPOLOGY_ID (any saved cluster when None). A saved
+    record is not proof the copy still verifies, nor a saved check: only the
+    plan's own preview, or a saved check, says the files are ready. The pair
+    question's "its copies are recorded here" and the ring's "copies recorded
+    on" both mean this."""
+    if not placement:
+        return False
+    views = [view for view in row.get("prepared_copies") or []
+             if topology_id is None or view.get("topology_id") in (None, topology_id)]
+    # Each required snapshot by its manifest; schema 2 has one, unnamed.
+    manifests = {member.get("snapshot_manifest_id") for member in members(row).values()} \
+        if isinstance(row.get("snapshots"), dict) else {None}
+    return all(any(view.get("rank") == rank and view.get("node_id") == node
+                   and (manifest is None or view.get("snapshot_manifest_id") == manifest) for view in views)
+               for manifest in manifests for rank, node in enumerate(placement))
+
+
+def ring_placements(row: dict, order: list[str], pairs: list[tuple[str, str]]) -> list[tuple[str, ...]]:
+    """Where a recipe can serve on a saved ring, in the order the readiness
+    phrase names them: each saved node, in saved order, for a one-node
+    recipe; for a two-node recipe each pair of neighbours in ring_pairs'
+    order, each followed by its reverse (role order matters: the first node
+    serves the API)."""
+    if row["geometry"]["nodes"] == 1:
+        return [(node,) for node in order]
+    return [placement for pair in pairs for placement in (tuple(pair), tuple(reversed(pair)))]
+
+
+def offered_order(row: dict, pair, topology_id: str | None) -> tuple[str, ...]:
+    """The order the pair question offers one cable in: the order whose copies
+    this saved cluster's records show complete when exactly one order has
+    them (it is the order Prepare used, so Start finds each rank's copy),
+    else ring_pairs' order, its lower saved rank first."""
+    pair, reverse = tuple(pair), tuple(reversed(pair))
+    if topology_id and copies_recorded(row, reverse, topology_id) and not copies_recorded(row, pair, topology_id):
+        return reverse
+    return pair
+
+
+def asks_for_a_pair(row: dict, names: NodeNames) -> bool:
+    """Whether Serve a model… asks which two neighbours serve ROW: a two-node
+    recipe Start can run, on a saved ring, that does not pass data around a
+    loop of its nodes (such a recipe serves on the ring's own order)."""
+    return (names.ring and row["geometry"]["nodes"] == 2 and not ring_pattern(row)
+            and not start_unsupported(row))
+
+
+def pair_lines(row: dict, pairs: list[tuple[str, str]], names: NodeNames, *, width: int,
+               inventory: dict | None = None, entries: list[dict] = (), topology_id: str | None = None) -> list[str]:
+    """The pair question of a two-node recipe on a ring: a title, the pair the
+    cursor starts on (the first choice), then one choice per neighbouring
+    pair, in ring_pairs' order, each cable in offered_order: the order its
+    copies are recorded in, when only one is. Each names both machines and
+    the one that serves the API, says which is what Start uses when no
+    machines are named, and what saved records and the captured service
+    inventory already show there: the recipe's copies recorded in this
+    order, its model files on one of them, a service running. A choice too
+    wide goes on to "line" rows."""
+    import textwrap
+    model = clean(row["model_id"])
+    lines = [f"title\tWhich two neighbouring machines should serve {model}?"]
+    pairs = [offered_order(row, pair, topology_id) for pair in pairs]
+    default = tuple(names.order[:2])
+    if pairs:
+        lines.append(f"default\t{','.join(pairs[0])}")
+    homes = {(member.get("home") or {}).get("node_id") for member in members(row).values()}
+    services = []
+    if inventory:
+        from scripts.inventory_menu import project, project_others
+        catalog = [{"spec_id": entry["spec_id"], "model_id": entry["model_id"], "nodes": entry["geometry"]["nodes"]}
+                   for entry in entries]
+        try:
+            found = {**project(inventory, catalog), **project_others(inventory, catalog)}
+        except ValueError:
+            found = {}
+        services = [service for service in found.values() if service["state"] in ACTIVE]
+    for index, pair in enumerate(pairs):
+        hosts = [names(node) for node in pair]
+        hints = [f"{hosts[0]} and {hosts[1]}, API on {hosts[0]}"]
+        if pair == default:
+            hints.append("what Start uses when no machines are named")
+        if copies_recorded(row, pair, topology_id):
+            hints.append("its copies are recorded here")
+        else:
+            hints += [f"its model files are on {names(node)}" for node in pair if node in homes][:1]
+        for service in services:
+            there = [host for host in service["hosts"] if host in hosts]
+            if there:
+                hints.append(f"{clean(service['model_id'])} is {SERVICE_STATES.get(service['state'], service['state'])}"
+                             f" on {_list(there)}")
+        wrapped = textwrap.wrap("; ".join(hints), max(MIN_WIDTH, width - 2), subsequent_indent="  ",
+                                break_long_words=True, break_on_hyphens=False)
+        lines.append(f"node\t{','.join(pair)}\t{wrapped[0]}")
+        lines += [f"line\t{text}" for text in wrapped[1:]]
+    return lines
 
 
 def without_home(row: dict) -> list:
@@ -150,6 +302,18 @@ def archive_available(row: dict, name, archive_location: str) -> bool:
         return False
     kind = archive_facts(row)[name][0]
     return kind in ("present", "verified")
+
+
+def running_nodes(inventory: dict | None, spec_id: str) -> list[str]:
+    """The node_ids SPEC_ID's service runs on in the inventory, in role order
+    (rank 0 first); empty when the inventory does not say."""
+    from scripts.inventory_menu import rank_order
+    for service in (inventory or {}).get("services") or []:
+        if isinstance(service, dict) and service.get("conf") == spec_id:
+            ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)), key=rank_order)
+            nodes = [((inventory.get("nodes") or {}).get(rank.get("node")) or {}).get("node_id") for rank in ranks]
+            return [str(node) for node in nodes] if nodes and all(nodes) else []
+    return []
 
 
 def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict | None:
@@ -169,10 +333,29 @@ def own_service(row: dict, inventory: dict | None, entries: list[dict]) -> dict 
 # The model list
 # ---------------------------------------------------------------------------
 
+def ring_pattern(row: dict) -> bool:
+    """Whether the recipe passes data around a loop of its nodes (NCCL_ALGO=Ring
+    in its container_env), so it needs only each node cabled to the next."""
+    from scripts.release_consumer import ring_pattern as declares
+    return row["geometry"]["nodes"] > 1 and declares(row.get("container_env"))
+
+
 def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict,
-              service: dict | None) -> str:
+              service: dict | None, ring: bool = False, host=None, pairs: list[tuple[str, str]] = (),
+              topology_id: str | None = None) -> str:
     """One phrase for where the recipe stands, from saved records and the inventory.
-    "ready to start" carries the age of the saved check it rests on."""
+
+    RING: the saved cluster is a ring. Its ranks 0 and 1 are neighbours, so a
+    two-node recipe fits; three or more nodes always include two that are not.
+    A recipe that passes data around a loop of its nodes fits on the whole ring,
+    whose saved order follows the cables, and on no fewer nodes than that.
+
+    HOST names a node_id for people. With it, on a ring, a one-node recipe and
+    a two-node recipe that does not pass data around a loop name the nodes the
+    phrase is about (see ring_readiness); PAIRS are ring_pairs' and
+    TOPOLOGY_ID the saved cluster's. Without it, or on a full mesh, the phrase
+    is the default placement's alone. "ready to start" carries the age of the
+    saved check it rests on."""
     if service and service["state"] in ACTIVE:
         hosts = ", ".join(service["hosts"]) or "nodes not identified"
         if service["state"] == "running":
@@ -183,6 +366,10 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         return READINESS["unsupported"]
     if order and nodes > len(order):
         return READINESS["too-big"].format(needed=node_count(nodes), have=node_count(len(order)))
+    if ring and nodes > 2 and not ring_pattern(row):
+        return READINESS["ring"]
+    if ring and nodes > 2 and nodes != len(order):
+        return READINESS["loop"].format(needed=node_count(nodes), have=node_count(len(order)))
     missing = without_home(row)
     if missing:
         if all(archive_available(row, name, archive_location) for name in missing):
@@ -190,6 +377,8 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
         size = [sizes.get(name) for name in missing]
         text = short_size(sum(size)) if size and all(value is not None for value in size) else READINESS["unknown"]
         return READINESS["download"].format(size=text)
+    if ring and host is not None and (nodes == 1 or not ring_pattern(row)):
+        return ring_readiness(row, order=order, sizes=sizes, host=host, pairs=pairs, topology_id=topology_id)
     if row.get("checked_at") and row.get("local_state") == "ready":
         # The last saved check found the files ready; the list repeats no check, so it says when that was.
         from model_library.catalog import _checked
@@ -201,6 +390,91 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     text = (short_size(sum(total) * count) if total and all(value is not None for value in total)
             else READINESS["unknown"])
     return READINESS["copy"].format(count=node_count(count), size=text)
+
+
+def keep_pairs(text: str, room: int) -> str:
+    """TEXT with each pair "first + second" that fits in ROOM columns held
+    together by no-break spaces, so a wrapped line never splits a pair or
+    starts with "+". Hostnames hold no spaces."""
+    return re.sub(r"\S+ \+ \S+", lambda pair: pair.group().replace(" ", KEEP) if len(pair.group()) <= room
+                  else pair.group(), text)
+
+
+def placement_words(host, placement) -> str:
+    """A placement for people: one node by its name; a pair in role order,
+    "first + second", where the first serves the API."""
+    return " + ".join(host(node) for node in placement)
+
+
+def ring_readiness(row: dict, *, order: list[str], sizes: dict, host, pairs: list[tuple[str, str]],
+                   topology_id: str | None) -> str:
+    """The readiness phrase on a saved ring, where a recipe on one or two nodes
+    can serve on several placements. It names the default placement
+    (serving_nodes: a one-node recipe's machine its saved records name, where
+    the machine question starts; a pair's ranks 0 and 1, which Start uses when
+    no machines are named) and, when that is not ready to start, the first
+    other placement whose copies this saved cluster's records show complete,
+    in ring_placements' order, with how many more there are. When the
+    default's own copies are recorded too and it needs only a check, those
+    placements are in the same state, so one phrase names them all:
+    "needs its files checked on DEFAULT or OTHER". Records alone never make
+    files "ready": only the saved check does. Copies recorded for an earlier
+    saved cluster, or without the saved cluster's topology_id, never
+    count."""
+    default = serving_nodes(row, order, recorded_node(row))
+    if row.get("checked_at") and row.get("local_state") == "ready":
+        # The saved check does not record which nodes it covered: name them
+        # only when this cluster's records show the default placement complete.
+        # The list repeats no check, so it says when that check was.
+        from model_library.catalog import _checked
+        checked = f" ({_checked(row.get('observation_age_seconds'))})"
+        if topology_id and copies_recorded(row, default, topology_id):
+            return READINESS["ready-on"].format(hosts=placement_words(host, default)) + checked
+        return READINESS["ready"] + checked
+    count = copies_needed(row, default)
+    if not count:
+        phrase = (READINESS["verify-on"].format(hosts=placement_words(host, default)) if default
+                  else READINESS["verify"])
+    else:
+        # The same rule as the count: a node with one snapshot's home still needs the others.
+        targets = nodes_needing_copies(row, default)
+        total = [sizes.get(name) for name in members(row)]
+        size = (short_size(sum(total) * count) if total and all(value is not None for value in total)
+                else READINESS["unknown"])
+        phrase = READINESS["copy-to"].format(hosts=_list([host(node) for node in targets]), size=size)
+    if not topology_id:
+        return phrase
+    recorded = [placement for placement in ring_placements(row, order, pairs)
+                if list(placement) != list(default) and copies_recorded(row, placement, topology_id)]
+    if not recorded:
+        return phrase
+    if not count and copies_recorded(row, default, topology_id):
+        return same_state(row, default, recorded, host)
+    if row["geometry"]["nodes"] == 1:
+        # One-node placements are short: up to two by name, then how many more.
+        names = [host(placement[0]) for placement in recorded]
+        hosts = _list(names) if len(names) <= 2 else f"{', '.join(names[:2])} and {len(names) - 2} more"
+    else:
+        hosts = placement_words(host, recorded[0])
+        if len(recorded) > 1:
+            hosts += f" and {_count(len(recorded) - 1, 'more pair', 'more pairs')}"
+    return f"{phrase} · {READINESS['copies-recorded'].format(hosts=hosts)}"
+
+
+def same_state(row: dict, default: list[str], recorded: list[tuple[str, ...]], host) -> str:
+    """One phrase for placements in the same state: the default and every
+    other placement whose copies are recorded, none checked. One-node: the
+    default and up to two others by name, then how many more nodes; a pair:
+    the default and the first other pair, then how many more pairs. The
+    last alternative follows "or"."""
+    one = row["geometry"]["nodes"] == 1
+    named = [placement_words(host, placement) for placement in recorded[:2 if one else 1]]
+    rest = len(recorded) - len(named)
+    if rest:
+        others = _count(rest, "more node" if one else "more pair", "more nodes" if one else "more pairs")
+    else:
+        others = named.pop()
+    return READINESS["verify-or"].format(hosts=", ".join([placement_words(host, default), *named]), others=others)
 
 
 def nodes_needing_copies(row: dict, serving: list[str]) -> list[str]:
@@ -246,12 +520,15 @@ def _facts(rows: list[dict]) -> dict[str, list[str]]:
 
 def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archive_location: str,
                order: list[str], repo: Path, writer: TerminalWriter | None = None,
-               leave_out: frozenset = frozenset()) -> list[str]:
+               leave_out: frozenset = frozenset(), ring: bool = False, host=None,
+               pairs: list[tuple[str, str]] = (), topology_id: str | None = None) -> list[str]:
     """The Serve list: a card per recipe grouped by model, each line the facts
     that tell it apart, its node count and one readiness phrase. Lines are
     KIND<TAB>TEXT, as the catalog list's cards: heading, spec, line, gap.
     LEAVE_OUT names recipes not to list, as Compare with another recipe
-    leaves out the one it compares."""
+    leaves out the one it compares. HOST, PAIRS and TOPOLOGY_ID let a ring's
+    phrases name their nodes (see readiness); on a ring each part of the
+    phrase is a card part of its own, so a line breaks only between them."""
     width = max(MIN_WIDTH, min(MAX_WIDTH, width))
     facts, names = _facts(entries), short_model_names(entries)
     shown = [row for row in entries if not row.get("historical") and row["spec_id"] not in leave_out]
@@ -266,14 +543,18 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
         parts = list(facts.get(row["spec_id"]) or [])
         phrase = readiness(row, order=order, archive_location=archive_location,
                            sizes=snapshot_sizes(repo, row["spec_id"]),
-                           service=own_service(row, inventory, entries))
+                           service=own_service(row, inventory, entries), ring=ring, host=host, pairs=pairs,
+                           topology_id=topology_id)
         # The node count, unless a fact or the phrase already names it.
         count = node_count(row["geometry"]["nodes"])
         if count not in parts and not phrase.startswith(f"needs {count}"):
             parts.append(count)
         if (row.get("review") or {}).get("status") == "withdrawn":
             parts.insert(0, "withdrawn")
-        parts.append(phrase)
+        if ring and host is not None:
+            parts += [keep_pairs(part, width - CARD_WRAP_COLUMN) for part in phrase.split(" · ")]
+        else:
+            parts.append(phrase)
         text = _card(parts, width)
         lines.append(f"spec\t{row['spec_id']}\t{text[0]}")
         lines += [f"line\t{line}" for line in text[1:]]
@@ -283,17 +564,19 @@ def list_lines(entries: list[dict], *, width: int, inventory: dict | None, archi
 
 
 def _card(parts: list[str], width: int) -> list[str]:
+    """PARTS on card lines, " · " between parts that share a line. A no-break
+    space (KEEP) in a part holds its words on one line; it prints as a space."""
     import textwrap
     hang = " " * CARD_WRAP_COLUMN
     lines = [" " * CARD_SPEC_COLUMN + clean(parts[0])]
     for part in parts[1:]:
-        part = clean(part)
+        part = KEEP.join(clean(piece) for piece in part.split(KEEP))
         if len(lines[-1]) + 3 + len(part) <= width:
             lines[-1] += " · " + part
         else:
             lines.extend(textwrap.wrap(part, width, initial_indent=hang, subsequent_indent=hang,
                                        break_long_words=True, break_on_hyphens=False))
-    return lines
+    return [line.replace(KEEP, " ") for line in lines]
 
 
 def node_lines(row: dict, order: list[str], names: NodeNames, *, width: int) -> list[str]:
@@ -322,6 +605,19 @@ def node_lines(row: dict, order: list[str], names: NodeNames, *, width: int) -> 
 # Where missing files come from
 # ---------------------------------------------------------------------------
 
+def home_nodes(count: int, serving: list[str], order: list[str]) -> list[str]:
+    """Where Download, Restore and Register may put the home of a recipe on
+    COUNT nodes. One node: any confirmed node. More: Acquire and Restore take
+    a home only on a saved rank below COUNT, so its serving nodes among those;
+    when the chosen nodes hold none of them, such as a pair at saved ranks 2
+    and 3 of a ring, those default nodes, and Prepare copies to the pair. The
+    home may be outside the nodes that serve."""
+    if count == 1:
+        return list(order)
+    default = list(order[:count])
+    return [node for node in serving if node in default] or default
+
+
 def file_sources(row: dict, *, serving: list[str], order: list[str], archive_location: str,
                  files: dict[str, list[str]] | None = None, source: str | None = None,
                  files_node: str | None = None, not_found: frozenset = frozenset()) -> list[dict]:
@@ -330,10 +626,12 @@ def file_sources(row: dict, *, serving: list[str], order: list[str], archive_loc
     a download. SOURCE (archive or download) is the operator's Change…, which
     skips found files. FILES_NODE is where restored or downloaded files go:
     the first serving node unless the operator changes it (D9); a multi-node
-    recipe keeps them on one of its serving nodes. NOT_FOUND names snapshots
-    whose found files Download's own plan did not take."""
-    allowed = serving if row["geometry"]["nodes"] > 1 else order
-    destination = files_node if files_node in allowed else (serving[0] if serving else None)
+    recipe keeps them on a node that home_nodes allows, one of its serving
+    nodes where it can. NOT_FOUND names snapshots whose found files
+    Download's own plan did not take."""
+    allowed = home_nodes(row["geometry"]["nodes"], serving, order)
+    first = serving[0] if serving and serving[0] in allowed else (allowed[0] if allowed else None)
+    destination = files_node if files_node in allowed else first
     result = []
     snapshots = members(row)
     for name in without_home(row):
@@ -472,7 +770,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     serving = serving_nodes(row, order, node)
     hosts = [names(item) for item in serving]
     ref = spec_ref(spec, entries)
-    placement = ["--node", hosts[0]] if nodes == 1 and hosts else []
+    # Named nodes (the pair question, or Restart of a service Start ran on
+    # them): Prepare, the image and Start name them, in the same order.
+    placement = placement_args(row, names, serving, node)
     told = [part for part in (_facts(entries).get(spec) or []) if part != node_count(nodes)]
     plan: dict = {"kind": PLAN_KIND, "spec_id": spec, "model_id": model, "ready_only": ready_only,
                   "restart": restart,
@@ -489,6 +789,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         blocked.append(f"It needs {node_count(nodes)}; the cluster has {node_count(len(order))}."
                        if nodes > 1 else "No machine was chosen to serve it.")
         return plan
+    if names.ring and nodes > 2 and not ring_pattern(row):
+        from scripts.topology_manifest import RING_CABLING
+        blocked.append(f"Start refuses it: {RING_CABLING}.")
+        return plan
+    if names.ring and nodes > 2 and nodes != len(order):
+        from scripts.topology_manifest import RING_LOOP
+        blocked.append(f"Start refuses it: {RING_LOOP}; on this ring only all {node_count(len(order))} form one.")
+        return plan
     silent = [names(item) for item in serving if item in unanswered]
     if silent:
         blocked.append(f"{_list(silent)} did not answer the last cluster check, so Pulsar cannot tell whether "
@@ -502,6 +810,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     service = own_service(row, inventory, entries)
     if service and service["state"] == "running" and not ready_only and not restart:
         plan["already"] = f"{model} is already running on {_list(service['hosts'])}."
+        running = running_nodes(inventory, spec)
+        if running and running != list(serving):
+            # The operator chose other machines: there is something to do, but not here.
+            chosen = _list(plan["hosts"])
+            plan["already"] = (f"{model} already runs on {_list(service['hosts'])}, not on {chosen}. A recipe runs "
+                               f"as one service: to serve it on {chosen}, stop it first with Running services… → "
+                               "Stop…, then serve it again. Restart… there starts it again where it runs.")
+            plan["elsewhere"] = True
         return plan
     from scripts.service_status import unobserved_nodes
     # A node the inventory did not observe matters when it serves, or when it cannot be identified.
@@ -527,9 +843,17 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         return _restart(plan, row, entries, inventory, service, stops, hosts, placement, ref)
     if stop and stop != spec:
         _switch_from(plan, stop, stops, inventory, catalog)
-    for note in notes:
-        if "GPU process" in note or "more GPU processes" in note:
-            plan["notes"].append(note)
+    # What this plan cannot stop. GPU processes are notes: Start measures the
+    # memory. So are containers Pulsar did not start that have all exited:
+    # they hold no port or memory. Anything else on a serving node blocks.
+    # A plan that only gets the model ready starts nothing, so what runs on
+    # its nodes neither blocks it nor needs a note: Prepare's own preview
+    # says what keeps it from writing a copy.
+    for note in [] if ready_only else notes:
+        if getattr(note, "exited", False):
+            plan["notes"].append(f"{note}. The plan leaves them alone; Start checks the port and memory itself.")
+        elif not getattr(note, "blocks", True):
+            plan["notes"].append(str(note))
         else:
             blocked.append(f"{note}. Pulsar cannot stop it from this plan.")
 
@@ -555,6 +879,9 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
             document, error = envelope_result(preview)
             free = ""
             if document and document.get("kind") == "pulsar-restore-plan":
+                if document.get("eligible") is False:
+                    # Such as a copy route through the neighbours that cannot be proven.
+                    blocked.append(f"Restoring {what} to {host} cannot run: {_restore_blockers(document, names)}.")
                 space = (document.get("destination_space") or {}).get("available")
                 if type(space) is int and space >= 0:
                     free = f"; {_kept(short_size(space))} free there"
@@ -630,16 +957,31 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                     blocked.append(line.removeprefix("Blocked: "))
             step["facts"] = {"copy_to": copied}
             taken = effect["taken_over"]
-            takeover = (f" It takes over {_count(taken, 'copy', 'copies')} made before the cluster's membership "
-                        "changed, whose files still verify; they are not copied again." if taken else "")
+            takeover = (f" It takes over {_count(taken, 'copy', 'copies')} "
+                        f"{taken_over_reason(taken, effect['taken_over_reordered'])}, whose files still verify; "
+                        "they are not copied again." if taken else "")
+            # A bind records, for this recipe, files another recipe's prepared
+            # copy already holds on that node; the two recipes then share it.
+            bound = sorted({str(action["node_id"]) for action in _plan_actions(document)
+                            if action.get("action") == "bind"}, key=lambda item: order.index(item)
+                           if item in order else len(order))
+            shared = (f" {_list([names(item) for item in bound])} already "
+                      f"{'holds' if len(bound) == 1 else 'hold'} them as another recipe's prepared copy, which "
+                      "this recipe will share." if bound else "")
             if copied:
-                step["sentence"] = copy_sentence(copied, "." + takeover)
+                # A copy to a node that shares no cable with this one says what it passes through.
+                route = "".join(" " + line for line in copy_route_sentences(document, names))
+                step["sentence"] = copy_sentence(copied, "." + route + takeover + shared)
                 step["changes"] = f"writes a prepared copy on {_list([names(item) for item in copied])}"
             else:
                 step["sentence"] = (f"Check the files on {_list(hosts)} and record them for this recipe; nothing "
-                                    "is copied." + takeover)
+                                    "is copied." + takeover + shared)
                 step["changes"] = "records only"
-                if effect["nothing"] and not taken and row.get("local_state") == "ready" and not sources:
+                # Only "reuse" writes nothing: every other action (home-view,
+                # bind, rebind, adopt, copy) records a prepared copy for this
+                # recipe, which Start needs, so its step stays.
+                writes = [action for action in _plan_actions(document) if action.get("action") != "reuse"]
+                if not writes and row.get("local_state") == "ready" and not sources:
                     step = None
         elif prepare is not None:
             error = error or {"message": "its preview did not return a plan"}
@@ -729,8 +1071,14 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
                 again = service_node(inventory, stop["conf"]) if single else None
                 modified = any(item.get("conf") == stop["conf"] and item.get("matches_selected_spec") is False
                                for item in inventory.get("services") or [] if isinstance(item, dict))
-                restart = (["./pulsar", "start", stop["conf"], *(["--node", names(again)] if again else [])]
-                           if own is not None and not modified and (again or not single) else None)
+                # A multi-node service starts again on the nodes it ran on, in role
+                # order, named as Start names them; unknown nodes offer no restart.
+                ran_on = service_nodes(inventory, stop["conf"]) if own is not None and not single else []
+                known = single or len(ran_on) == (own or {}).get("geometry", {}).get("nodes")
+                where_again = (["--node", names(again)] if again else
+                               placement_args(own, names, ran_on, ",".join(ran_on)) if not single and known else [])
+                restart = (["./pulsar", "start", stop["conf"], *where_again]
+                           if own is not None and not modified and (again or (not single and known)) else None)
                 plan["stopped"].append({"conf": stop["conf"], "name": stop["name"], "hosts": stop["hosts"],
                                         "in_catalog": restart is not None, "node": again, "restart": restart,
                                         "restart_shown": shown(restart, entries) if restart else None})
@@ -850,6 +1198,18 @@ def _restart(plan: dict, row: dict, entries: list[dict], inventory: dict, servic
     return plan
 
 
+def service_nodes(inventory: dict, conf: str) -> list[str]:
+    """The node_ids a service's ranks ran on, in role order; [] when a rank's
+    node is not identified."""
+    for service in inventory.get("services") or []:
+        if isinstance(service, dict) and service.get("conf") == conf:
+            ranks = sorted((rank for rank in service.get("ranks") or [] if isinstance(rank, dict)),
+                           key=lambda rank: int(rank.get("rank")) if str(rank.get("rank")).isdigit() else -1)
+            ids = [((inventory.get("nodes") or {}).get(rank.get("node")) or {}).get("node_id") for rank in ranks]
+            return ids if ids and all(isinstance(item, str) and item for item in ids) else []
+    return []
+
+
 def service_node(inventory: dict, conf: str) -> str | None:
     """The node_id a one-node service ran on, for starting it again after a failed Start."""
     for service in inventory.get("services") or []:
@@ -871,7 +1231,8 @@ def render(plan: dict, *, width: int | None = None) -> str:
     out.emit(plan["title"], role="heading")
     out.blank()
     if plan.get("already"):
-        out.emit(plan["already"] + " Nothing to do.")
+        # "Nothing to do" only when it runs on the machines chosen.
+        out.emit(plan["already"] + ("" if plan.get("elsewhere") else " Nothing to do."))
         return output.getvalue()
     steps = plan["steps"]
     if not steps:
@@ -948,6 +1309,14 @@ def choices(plan: dict) -> list[tuple[str, str]]:
 # Running a step
 # ---------------------------------------------------------------------------
 
+def _restore_blockers(document: dict, names: NodeNames) -> str:
+    """What a restore plan that is not eligible says is in the way, each node
+    by its hostname, as Prepare's blockers are named."""
+    from model_library.render import blocker_message
+    found = [clean(blocker_message(str(item), names)).rstrip(".") for item in document.get("blockers") or [] if item]
+    return "; ".join(found) or "its preview says it cannot run"
+
+
 def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: NodeNames | None = None,
                entries: list[dict] = ()) -> tuple[str, str]:
     """Whether a step's own preview, run when its turn came, still does what the
@@ -1004,6 +1373,8 @@ def check_step(plan: dict, index: int, preview: Any, rc: int = 0, *, names: Node
     if kind == "restore":
         if document.get("kind") != "pulsar-restore-plan":
             return "blocked", "Restore's preview did not return its plan"
+        if document.get("eligible") is False:
+            return "blocked", _restore_blockers(document, names)
         if document.get("selected_node") != facts["node"]:
             return "differs", f"the files would go to {names(document.get('selected_node'))}"
         return "same", ""
@@ -1120,7 +1491,7 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
         out.blank()
         out.emit("Same as:")
         for command in ran:
-            out.emit(command, "  ", "    ", role="command")
+            out.emit_command(command, "  ", "    ")
     return output.getvalue().replace(KEEP, " "), choices_ + [("back", "Back")]
 
 
@@ -1191,7 +1562,7 @@ def preview_requests(row: dict, entries: list[dict], *, names: NodeNames, node: 
     if without_home(row) and not files_scanned and source is None:
         return [("files", ["./pulsar", "model", "files", "--json"])]
     ref = spec_ref(row["spec_id"], entries)
-    placement = ["--node", names(serving[0])] if row["geometry"]["nodes"] == 1 else []
+    placement = placement_args(row, names, serving, node)
     requests: list[tuple[str, list[str]]] = []
     for item in sources:
         name = "-" if item["snapshot"] is None else str(item["snapshot"])
@@ -1260,6 +1631,16 @@ def _unanswered(repo: Path, topology_id: str | None) -> list[str]:
     return [item["node_id"] for item in record.get("missing") or [] if not item.get("answered")]
 
 
+def _saved_topology(repo: Path) -> dict | None:
+    """The saved membership document, for its links; None when unreadable."""
+    from model_library.node_names import topology_path
+    from scripts.topology_manifest import extract_topology
+    try:
+        return extract_topology(json.loads(topology_path(repo).read_text(encoding="utf-8")))
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
 def _topology_id(repo: Path) -> str | None:
     from scripts.cluster_status import membership
     state, topology = membership(repo)
@@ -1312,6 +1693,9 @@ def main(argv: list[str] | None = None) -> int:
     listing.add_argument("--leave-out", action="append", default=[], help="a recipe not to list")
     nodes = sub.add_parser("nodes")
     nodes.add_argument("--spec-id", required=True)
+    nodes.add_argument("--pairs", action="store_true",
+                       help="a two-node recipe on a ring: its neighbouring pairs (Serve a model…'s question)")
+    nodes.add_argument("--inventory", help="the captured service inventory, for what runs on each pair")
     previews = sub.add_parser("previews")
     compose_ = sub.add_parser("compose")
     for command in (previews, compose_):
@@ -1390,17 +1774,31 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "list":
             entries = _entries(sys.stdin)
             inventory = load_json(args.inventory)
+            # On a ring the phrases name their nodes and the placements whose files are ready.
+            context = ({"host": names, "pairs": ring_pairs(_saved_topology(args.repo_root)),
+                        "topology_id": _topology_id(args.repo_root)} if names.ring else {})
             for line in list_lines(entries, width=width - 2, inventory=inventory if isinstance(inventory, dict)
                                    else None, archive_location=location,
                                    order=names.order, repo=args.repo_root,
-                                   writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out)):
+                                   writer=TerminalWriter(width=width), leave_out=frozenset(args.leave_out),
+                                   ring=names.ring, **context):
                 print(line)
             return 0
         if args.command == "nodes":
-            # Nothing for a multi-node recipe: it serves on the saved order.
-            row = _row(_entries(sys.stdin), args.spec_id)
+            # A one-node recipe's machine; with --pairs, a two-node recipe's
+            # pair of neighbours on a ring; nothing for any other recipe, which
+            # serves on the saved order.
+            entries = _entries(sys.stdin)
+            row = _row(entries, args.spec_id)
             if row["geometry"]["nodes"] == 1:
                 print("\n".join(node_lines(row, names.order, names, width=width)))
+            elif args.pairs and asks_for_a_pair(row, names):
+                pairs = ring_pairs(_saved_topology(args.repo_root))
+                inventory = load_json(args.inventory)
+                if pairs:
+                    print("\n".join(pair_lines(row, pairs, names, width=width,
+                                               inventory=inventory if isinstance(inventory, dict) else None,
+                                               entries=entries, topology_id=_topology_id(args.repo_root))))
             return 0
         if args.command in ("previews", "compose"):
             entries = _entries(sys.stdin)
@@ -1460,10 +1858,9 @@ def main(argv: list[str] | None = None) -> int:
             if image is not None:
                 facts = image.get("facts") or {}
                 print(f"image\t{facts.get('mode')}\t{int(bool(facts.get('copy_possible')))}")
-            # Where restored or downloaded files can go: a serving node of a
-            # multi-node recipe, any node of a one-node recipe.
+            # Where restored or downloaded files can go (home_nodes).
             if kinds & {"restore", "download"}:
-                allowed = plan["serving"] if len(plan["serving"]) > 1 else names.order
+                allowed = home_nodes(len(plan["serving"]), plan["serving"], names.order)
                 current = next(step["node"] for step in plan["steps"] if step["kind"] in ("restore", "download"))
                 for node_id in allowed:
                     print(f"destination\t{node_id}\t{names(node_id)}{' (now)' if node_id == current else ''}")

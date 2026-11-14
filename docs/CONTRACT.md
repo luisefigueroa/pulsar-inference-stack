@@ -54,8 +54,13 @@ recorded launch plan, not recipe identity or evidence of physical fit.
 
 An explicit multi-node `--placement-nodes NODE_ID,NODE_ID` is operational input,
 not recipe data. It selects ordered confirmed members for preparation, file and
-image checks, guarded dry-run/run, and pre-launch resource sampling. Omission
-retains first-N placement; `--node` retains its one-node/home meaning. Selection
+image checks, guarded dry-run/run, and pre-launch resource sampling. An
+ordinary `start` accepts it for a multi-node recipe whose named nodes are saved
+members cabled as the recipe needs, which the launch check decides from saved
+membership; the first named node runs the API. A placement the launch check
+refuses, a node that is not a saved member, and a spec with a serving guard are
+refused before any node is contacted. Omission retains first-N placement; `--node` retains its one-node/home
+meaning. Selection
 does not change membership or `spec_id`. Existing launch-plan rank/node fields
 bind it and produce a distinct `service_id` for a different ordered placement.
 The verified snapshot home may be another confirmed member; complete source
@@ -285,11 +290,14 @@ Preparation, purge and home-removal plans keep `blockers` as messages and add
 explains, `node_id` when one node is involved, and `fix`, a sentence for
 people. A `container-reference` record also has `container` (`id`, `name`,
 `state` of `running`, `stopped` or `unknown`, and `spec_id`, the selected catalog
-spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`. An
+spec, when Pulsar started it for a spec), the `mount` that covers the files and the files' `path`.
+Its `container` carries `earlier_cluster: true` when its labels name an earlier
+saved cluster, which Stop refuses; its `fix` then gives the `docker rm -f` that
+removes it instead of Stop. An
 `unrecorded-destination` record has the `path` of a folder that is already
 where Prepare would place a rank's prepared copy and that no record names. Other
 codes are `pinned`, `changed-copy`, `insufficient-space`, `reuse-unverified`,
-`dependent-copies` and `incomplete-preparations`. Older plans may contain
+`copy-route`, `dependent-copies` and `incomplete-preparations`. Older plans may contain
 `archive-required`, `discard-required` and `catalog-snapshot`; current home
 removal no longer requires an archive or distinguishes catalog and lab homes.
 The CLI still accepts `--discard-unpromoted` for compatibility, with `--yes`
@@ -375,6 +383,30 @@ valid saved membership exists. Each `rejected` entry adds `node_id`, and each
 `saved_membership.missing` entry adds `answered` (true when that member's
 identity answered but was rejected) and, when it answered, `reasons`.
 
+Saved membership, and the `topology` of `topology detect --json` and
+`topology show --json`, names the cluster's shape in `validation.class`:
+`roce-full-mesh`, every pair of nodes cabled, or `roce-ring`, four or more
+nodes in one closed loop, each cabled to exactly two neighbours. `links` lists
+cabled pairs only, the lower rank first and as side `a` of each entry's
+`rails`: every pair for a full mesh, and for a ring of N nodes exactly N
+entries, `[i, i+1]` for consecutive ranks and `[0, N-1]` for the cable that
+closes the loop. Consumers must not assume that every pair of ranks is present
+in `links`. A ring has `validation.full_mesh` false, and `min_rails_per_pair`
+is the smallest link count over the listed pairs. Field names and the schema
+version are unchanged. A Stack without ring support refuses a ring's saved
+membership as invalid, because its `links` do not cover every pair.
+
+Whenever discovery found something other than a full mesh, `topology detect
+--json` adds `cabling`: every pair of qualified machines that answered and share
+at least one RoCE link, as two `node_id`s each, so a ring's changes and the
+machines a fallback left out can be explained. Left-out machines keep their
+stable `reasons` strings; people read them in plain words.
+
+`topology check --json` adds `fabric_failures` when the fabric check failed:
+one entry per saved link that did not answer, with `from` and `to` (the
+hostnames of the pinging and the pinged node), `ranks`, `address`, `network`
+and `interface`, the pinging node's own interface on that link.
+
 The saved changes record (`.pulsar/cluster-changes.json`, or
 `PULSAR_CLUSTER_CHANGES_FILE`) is private local state with
 `kind: "pulsar-cluster-changes"` and schema version 1: `observed_at`, stamped
@@ -384,7 +416,12 @@ could not compare; `found` (`hostname`, `node_id`, `ssh_host`,
 `possible_reinstall`); `missing` (`hostname`, `node_id`, `position`,
 `answered`, optional `reasons`); `changed` (`hostname`, `node_id`, and
 `changes` with `control`, `links` or `position`, each `old` and `new`); and
-`untrusted` (`address`, `possible_reinstall`). A successful `ssh-trust enroll`
+`untrusted` (`address`, `possible_reinstall`). When discovery produced a
+cluster, the record also has `order` (`hostname`, `node_id`), the order a save
+keeps, which follows a ring's cables; `shape` (`old` and `new`
+`validation.class`) when the shape differs from saved; and `cables` (`gone`
+and `new`, hostname pairs) when a ring is saved or found and the cables between
+machines that answered differ. A successful `ssh-trust enroll`
 rewrites only an `unchanged` record that names the membership from before
 enrollment, to the new `topology_id`, keeping `observed_at`.
 
@@ -412,6 +449,40 @@ Change note, 2026-11-09: doctor gained the prerequisite check ids above;
 `saved_membership.missing[].answered` and `reasons`; new `topology configure
 --remove-missing` and `topology forget`; new saved changes record. Nothing was
 removed or renamed.
+
+Change note, 2026-11-10: saved membership gained the `validation.class` value
+`roce-ring`, whose `links` list only its cables; `topology check --json`
+gained `fabric_failures`; `topology detect --json` gained `cabling`; the saved
+changes record gained `order`, `shape` and `cables`. Nothing was removed or
+renamed.
+
+Change note, 2026-11-10: start's launch check judges the recipe's chosen nodes
+rather than the cluster's shape: every pair of them must share at least the
+links the recipe needs. On a ring a `fabric_incomplete` record for two chosen
+nodes that share no link has a null `fix` and a `note`. No code, field or
+value was added, removed or renamed.
+
+Change note, 2026-11-10: a copy between two nodes that share no cable passes
+through the nodes between them. A preparation plan's `copy` action, and a
+home-move, restore or archive plan, then carries `passes_through`: one record
+per leg with a node in between, with `copies` (`to` or `from` the node, as
+seen from this machine), the far end's `node_id` and the `through` node_ids in
+order. A copy with no node in between has no such field. A route that cannot
+be made or proven adds a `copy-route` blocker that names the hop and makes the
+plan not eligible; a move, restore or archive plan then also carries
+`eligible` false, `blockers` and `blocker_details`, which it had no reason to
+carry before, and `--yes` exits 1 before it copies anything. `transfer_route`
+keeps its values. Nothing was removed or renamed.
+
+Change note, 2026-11-10: each entry of `models list --json` and `models show
+--json` gained `container_env`, the recipe's frozen container environment as
+its spec holds it, beside the existing `engine_args`. A multi-node recipe whose
+`container_env` holds exactly one `NCCL_ALGO` entry whose whole value is `Ring`
+passes data around a closed loop of its nodes; Start then needs each of its
+nodes cabled to the next and the last to the first instead of every pair, and
+records a broken loop as the existing `fabric_incomplete` blocker. No spec,
+spec_id, launch plan, label or record changed, and nothing was removed or
+renamed.
 
 The saved changes record may carry two optional fields, each written by the
 menu and carried forward by every later save for the same `topology_id`; a
@@ -569,8 +640,10 @@ code from `start_blocker_codes` in the contract), `stage`, `node` (hostname) and
   `container_start_failed`, `smoke_test_failed`, `health_timeout`,
   `container_exited` and `service_stopped`. `service_id` names that service.
 - `fix` is one command that can be run as written, or null when no command
-  resolves the blocker (`guard_unsupported`, `historical_spec`, and launch
-  records whose containers were confirmed removed). When removing a failed
+  resolves the blocker (`guard_unsupported`, `historical_spec`, launch
+  records whose containers were confirmed removed, and `fabric_incomplete`
+  when two of the chosen nodes share no link on a ring, whose `note` says
+  what placement could start instead, if any). When removing a failed
   launch's containers cannot be confirmed on every node, `fix` is
   `./pulsar stop` and `note` names those nodes. `note` carries any
   explanation. Suggested start commands repeat the flags start was given, such
@@ -619,8 +692,49 @@ Change note, 2026-09-29: blocker records gained `stage`, `node_id`, `note` and
 `container_start_failed`, `smoke_test_failed`, `health_timeout`,
 `container_exited` and `service_stopped`.
 
+Change note, 2026-11-11: `start --placement-nodes` naming nodes that are not
+cabled as the recipe needs is reported as a start check: `error.checks` lists
+the checks run so far with `fabric` failed, and `error.details` holds the
+existing `fabric_incomplete` blocker with a null `fix` and a `note`, as on the
+default order. `error.code` stays `prerequisite_failed`; before, `checks` was
+empty and `message` carried the launch check's own line. Nothing was removed or
+renamed.
+
+Change note, 2026-11-11: a `container-reference` blocker detail's `container`
+gained `earlier_cluster`, true when the container's labels name an earlier saved
+cluster; it is absent otherwise. Its `fix` then names the Docker removal. Nothing
+was removed or renamed.
+
+Change note, 2026-11-10: an ordinary `start --placement-nodes` accepts any
+saved members cabled as the recipe needs, on a full mesh as on a ring, and
+for any number of nodes; it no longer refuses a placement only because it is
+off the first-N order. This widens what start accepts; no field, code or
+output shape changed.
+
 Change note, 2026-10-18: blocker records gained `cleanup`, an additive field.
 Earlier records lack it, which reads as null.
+
+Change note, 2026-11-12: new code `port_check_failed`, a check-stage blocker
+(also from the launcher's recheck): the port probe could not run on the node,
+for example because SSH failed, so whether the port is free is not known.
+Before, such a node was reported as `port_in_use`. Its `fix` is `./pulsar
+topology check`. The port probe also binds as the service does, with
+`SO_REUSEADDR`, so a port held only by connections that are closing after a
+stop is no longer `port_in_use`; a live listener still is. Nothing was removed
+or renamed.
+
+Change note, 2026-11-11: new code `start_in_progress`, a check-stage blocker:
+another multi-node start of the same service (spec, saved cluster and nodes in
+role order) is still running, so this one was refused before it checked
+containers or saved a record. Its `fix` is `./pulsar status SPEC`; its `note`
+says to wait for that start or interrupt it. Nothing was removed or renamed.
+
+Change note, 2026-11-10: new code `service_recorded_elsewhere`, a check-stage
+blocker: an active service record of the same multi-node spec names other
+nodes, another order or an earlier saved cluster. Its `fix` is `./pulsar stop
+SPEC`, which also clears a record whose containers are gone. A `fix` or `note`
+that names stop or status carries `--node` for a one-node service and no
+placement for a multi-node one; a suggested start keeps `--placement-nodes`.
 
 `stop --json` returns `completed`, the `spec_id` and `stopped`: `true` when an
 owned service was stopped, `false` when none was running. For `stop --all`,

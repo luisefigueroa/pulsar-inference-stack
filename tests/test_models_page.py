@@ -298,6 +298,36 @@ class FreeUpSpace(unittest.TestCase):
         cluster_line = next(option for option in removable if option["target"].startswith("cluster:"))
         self.assertTrue(cluster_line["label"].startswith("Remove org/model from the cluster: frees "), cluster_line)
 
+    def test_recipes_outside_the_catalog_that_share_a_copy_are_counted_once(self):
+        outside = [f"{index:02d}" * 32 for index in range(1, 6)]
+        cases = (
+            (outside[:1], [], "a recipe outside this catalog"),
+            (outside, [], "5 recipes outside this catalog"),
+            (outside[:2], [OTHER], "org/model (2 nodes) and 2 recipes outside this catalog"),
+        )
+        for sharers, catalog, expected in cases:
+            with self.subTest(expected=expected):
+                rows = [recipe()] + [recipe(other, "org/model", MODEL, nodes=2, engine_args=["--max-model-len", "8192"])
+                                     for other in catalog]
+                bindings = [binding(), *(binding(other) for other in catalog + sharers)]
+                document = files([entry(MODEL, "org/model", [
+                    home("n0", *bindings), location("n1", "prepared", *bindings)], specs=[SPEC, *catalog])])
+                _, blocked = self.options(rows, document)
+                line = next(text for text, _ in blocked if "are shared with" in text)
+                self.assertIn(f" are shared with {expected}; their files stay, so removing them frees nothing.", line)
+                self.assertEqual(line.count("outside this catalog"), 1 if sharers else 0)
+
+    def test_services_started_outside_the_catalog_are_counted_once(self):
+        owners = ["0a" * 32, "0b" * 32]
+        users = [served("n1", spec=owner, name=f"pulsar-x{index}") for index, owner in enumerate(owners)]
+        document = files([entry(MODEL, "org/model", [
+            home("n0", binding()), location("n1", "prepared", binding(), users=users),
+            location("n2", "prepared", binding(), users=[served("n2", spec=owners[0], name="pulsar-x0")])],
+            specs=[SPEC])])
+        _, blocked = self.options([recipe()], document)
+        self.assertIn("2 Pulsar services started outside this catalog use the files of org/model on spark-2 and "
+                      "spark-3. Stop them through Running services… first.", [text for text, _ in blocked])
+
     def test_a_node_that_did_not_answer_offers_nothing_destructive_anywhere(self):
         nodes = [node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3", unread=True)]
         removable, blocked = self.options([recipe()], files([ready_model()], nodes=nodes))
@@ -553,6 +583,18 @@ def prepare_preview(*actions):
 
 class LookForFiles(unittest.TestCase):
     """Look for model files Pulsar has no record of…: one plan from the page's scan."""
+
+    def test_downloads_or_copies_that_never_finished_are_said_to_once(self):
+        loose = {"path": "/fixture/homes/.pending-y", "kind": "incomplete", "reason": "incomplete staging"}
+        for count, words in ((1, "1 download or copy on spark-2 never finished"),
+                             (2, "2 downloads or copies on spark-2 never finished")):
+            with self.subTest(count=count):
+                nodes = [node("n0", "spark-1"), node("n1", "spark-2", unfinished=[loose] * count),
+                         node("n2", "spark-3")]
+                found = mp.find_items(mp.Cluster([recipe()], files([ready_model()], nodes=nodes),
+                                                 budget()["nodes"], names=NAMES))
+                self.assertEqual(found["cannot"], [f"{words}, so there is nothing complete to record. Pulsar never "
+                                                   "deletes files it has no record of."])
 
     def test_the_page_offers_it_and_says_where_files_with_no_record_are(self):
         found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")], specs=[SPEC])]))

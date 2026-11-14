@@ -90,6 +90,18 @@ class StorageRendering(unittest.TestCase):
         _,flat=self.display(dict(prepared=2,spec_id=SPEC),'prepare')
         self.assertIn('2 serving ranks',flat);self.assertIn('Start is a separate operation',flat)
 
+    def test_a_takeover_says_whether_membership_or_only_the_role_order_changed(self):
+        topology='d'*64
+        for previous,words in (('e'*64,"take over verified files prepared before the cluster's membership changed"),
+                               (topology,'take over verified files prepared for these nodes in another role order')):
+            with self.subTest(previous=previous[:2]):
+                plan=dict(kind='pulsar-preparation-plan',spec_id=SPEC,snapshot_manifest_id=SNAPSHOT,
+                          topology_id=topology,eligible=True,blockers=[],blocker_details=[],budgets={},
+                          total_bytes=1,file_count=1,actions=[dict(rank=0,node_id='node-1',action='rebind',
+                                                                   previous=dict(topology_id=previous,rank=1))])
+                _,flat=self.display(plan,'prepare')
+                self.assertIn(f'node-1: {words}; nothing is copied or deleted',flat)
+
     def test_blocked_plan_exposes_reasons_and_dependencies(self):
         reason='A stopped container still references the model home; explicitly remove its container before retrying this operation.'
         _,flat=self.display(dict(kind='pulsar-home-removal-plan',eligible=False,home=HOME,blockers=[reason],dependent_spec_ids=[SPEC]),'remove')

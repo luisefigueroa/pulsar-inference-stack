@@ -1,0 +1,108 @@
+{
+ "MESH_PUSH": [
+  [
+   "ip",
+   0,
+   [
+    "-j",
+    "route",
+    "get",
+    "198.51.100.12"
+   ]
+  ],
+  [
+   "ssh_node",
+   2,
+   "ip -j route get 198.51.100.10"
+  ],
+  [
+   "ssh_node",
+   2,
+   "python3 -c $'\\nimport os,re,stat,sys\\nfrom pathlib import Path\\npath=Path(sys.argv[1]);revision=sys.argv[2]\\nif not path.is_absolute() or \\'..\\' in path.parts or any(ord(c)<32 or ord(c)==127 for c in str(path)):\\n raise SystemExit(\\'unsafe transfer staging path\\')\\nif path.name!=revision or path.parent.name!=\\'snapshots\\' or not re.fullmatch(r\\'\\\\.pending-[0-9a-f]{32}\\',path.parent.parent.name):\\n raise SystemExit(\\'destination is not a snapshot in owned pending staging\\')\\nfd=os.open(\\'/\\',os.O_RDONLY|os.O_DIRECTORY)\\ntry:\\n for part in path.parts[1:]:\\n  nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=nxt\\n if os.listdir(fd):raise SystemExit(\\'transfer staging snapshot must be empty\\')\\nfinally:os.close(fd)' <root>/.pending-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  [
+   "rsync",
+   [
+    "-rt",
+    "--protect-args",
+    "--from0",
+    "--files-from=<temp>/stream-N.list",
+    "--timeout=120",
+    "-e",
+    "<root>/ssh -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o HostName=198.51.100.12 -o HostKeyAlias=alias-2 -o BindAddress=198.51.100.10 -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no",
+    "--",
+    "<root>/source/",
+    "alias-2:<root>/.pending-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+   ]
+  ]
+ ],
+ "RING_NEIGHBOUR_PULL": [
+  [
+   "ip",
+   0,
+   [
+    "-j",
+    "route",
+    "get",
+    "198.51.100.113"
+   ]
+  ],
+  [
+   "ssh_node",
+   3,
+   "ip -j route get 198.51.100.114"
+  ],
+  [
+   "rsync",
+   [
+    "-rt",
+    "--protect-args",
+    "--from0",
+    "--files-from=<temp>/stream-N.list",
+    "--timeout=120",
+    "-e",
+    "<root>/ssh -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o HostName=198.51.100.113 -o HostKeyAlias=ring-alpha -o BindAddress=198.51.100.114 -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no",
+    "--",
+    "ring-alpha:<root>/source/",
+    "<root>/.pending-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+   ]
+  ]
+ ],
+ "RING_NEIGHBOUR_PUSH": [
+  [
+   "ip",
+   0,
+   [
+    "-j",
+    "route",
+    "get",
+    "198.51.100.2"
+   ]
+  ],
+  [
+   "ssh_node",
+   1,
+   "ip -j route get 198.51.100.1"
+  ],
+  [
+   "ssh_node",
+   1,
+   "python3 -c $'\\nimport os,re,stat,sys\\nfrom pathlib import Path\\npath=Path(sys.argv[1]);revision=sys.argv[2]\\nif not path.is_absolute() or \\'..\\' in path.parts or any(ord(c)<32 or ord(c)==127 for c in str(path)):\\n raise SystemExit(\\'unsafe transfer staging path\\')\\nif path.name!=revision or path.parent.name!=\\'snapshots\\' or not re.fullmatch(r\\'\\\\.pending-[0-9a-f]{32}\\',path.parent.parent.name):\\n raise SystemExit(\\'destination is not a snapshot in owned pending staging\\')\\nfd=os.open(\\'/\\',os.O_RDONLY|os.O_DIRECTORY)\\ntry:\\n for part in path.parts[1:]:\\n  nxt=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd);os.close(fd);fd=nxt\\n if os.listdir(fd):raise SystemExit(\\'transfer staging snapshot must be empty\\')\\nfinally:os.close(fd)' <root>/.pending-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  ],
+  [
+   "rsync",
+   [
+    "-rt",
+    "--protect-args",
+    "--from0",
+    "--files-from=<temp>/stream-N.list",
+    "--timeout=120",
+    "-e",
+    "<root>/ssh -o BatchMode=yes -o ConnectTimeout=8 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -o HostName=198.51.100.2 -o HostKeyAlias=ring-bravo -o BindAddress=198.51.100.1 -o StrictHostKeyChecking=yes -o CheckHostIP=no -o UpdateHostKeys=no",
+    "--",
+    "<root>/source/",
+    "ring-bravo:<root>/.pending-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/snapshots/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+   ]
+  ]
+ ]
+}

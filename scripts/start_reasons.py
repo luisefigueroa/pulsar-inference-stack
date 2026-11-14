@@ -56,6 +56,8 @@ REASONS = {
     "topology_incomplete": ("The cluster has fewer nodes than this recipe needs.", "cluster"),
     "fabric_incomplete": ("The links between the nodes do not meet this recipe's needs.", "cluster"),
     "node_unreachable": ("A serving node did not answer over SSH.", "cluster"),
+    "port_check_failed": ("The port check could not finish on a serving node, so whether its port is free is "
+                          "not known.", "cluster"),
     "docker_unavailable": ("Docker is unavailable on a serving node, or could not confirm the serving image.",
                            "diagnostics"),
     "image_check_failed": ("The serving image check could not finish.", "diagnostics"),
@@ -74,6 +76,10 @@ FIXES = {
     "diagnostics": ("Run diagnostics", "checks Docker, the GPUs and every node's prerequisites"),
 }
 NO_FIX = "No menu choice resolves it: this Stack cannot start this recipe."
+# A cabling refusal: the launch check found two chosen nodes of a ring that
+# share no link, and Start recorded it with no command, since none changes
+# the cabling. Its detail is the check's own sentence.
+RING_NO_FIX = "No menu choice resolves it on this cluster."
 
 
 def clean(value: Any) -> str:
@@ -146,6 +152,12 @@ def blockers(records: list[dict]) -> list[tuple[str, str | None]]:
                                             "diagnostics"))
         where = clean(record.get("node") or "")
         detail = clean(record.get("detail") or "")
+        if code == "fabric_incomplete" and record.get("fix") is None and record.get("note"):
+            # Start's record holds the check's sentence in brackets after its summary.
+            message = clean(record.get("message") or "")
+            sentence = detail or (message.split(" (", 1)[1].rstrip(")") if " (" in message else message)
+            # It starts with a hostname, which keeps its own case.
+            reason, action, detail = sentence + ".", "ring", ""
         extra = "; ".join(part for part in (f"on {where}" if where else "", detail) if part)
         sentence = reason[:-1] + f" ({extra})." if extra else reason
         if (sentence, action) in seen:
@@ -178,7 +190,8 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
                  "✓ ", "  ", markup=True)
     else:
         for sentence, action in blockers(records):
-            fix = (f"Fix: **{FIXES[action][0]}** {FIXES[action][1]}." if action else NO_FIX)
+            fix = (RING_NO_FIX if action == "ring" else
+                   f"Fix: **{FIXES[action][0]}** {FIXES[action][1]}." if action else NO_FIX)
             out.emit(f"{sentence} {fix}", "Blocked: ", "  ", prefix_role="fail", markup=True)
     return output.getvalue().replace(KEEP, " ")
 
@@ -186,7 +199,7 @@ def screen(document: Any, rc: int, title: str, *, width: int | None = None) -> s
 def choices(document: Any, rc: int) -> list[tuple[str, str]]:
     checks, records, failure = read(document, rc)
     found: list[tuple[str, str]] = []
-    actions = [action for _, action in blockers(records) if action]
+    actions = [action for _, action in blockers(records) if action in FIXES]
     if failure is not None:
         actions.append("diagnostics")
     elif not records:

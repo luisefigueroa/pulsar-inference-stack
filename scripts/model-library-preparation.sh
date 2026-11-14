@@ -19,6 +19,27 @@ collect_node_views() {
   rm -f "$temp"
 }
 
+# prepare_copy_routes PLAN HOME_RANK: PLAN with the route of each copy, as
+# the copy loop below will run it: from the home until this machine's slot is
+# prepared, then from this machine. A route through a neighbour is proven
+# now; one that cannot be made or proven blocks the plan, naming the hop.
+prepare_copy_routes() {
+  local plan="$1" source_rank="$2" slot rank action routes
+  routes=$(mktemp)
+  for ((slot=0; slot<${#SELECTED_RANKS[@]}; slot++)); do
+    rank="${SELECTED_RANKS[$slot]}"
+    action=$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["actions"][int(sys.argv[1])]["action"])' "$slot")
+    if [ "$action" = copy ] && [ "$source_rank" != "$rank" ]; then
+      model_transfer_plan_route "$source_rank" "$rank" || true
+      printf '%s\n' "$(model_json slot: "$slot" passes_through: "$ROUTE_PASSES" refusal "$ROUTE_REFUSAL")" >>"$routes"
+    fi
+    [ "$rank" -ne 0 ] || source_rank=0
+  done
+  printf '%s' "$plan" | python3 -c 'import json,sys; from model_library.planning import with_copy_routes; print(json.dumps(with_copy_routes(json.load(sys.stdin),[json.loads(x) for x in open(sys.argv[1])])))' "$routes" \
+    || { rm -f "$routes"; return 2; }
+  rm -f "$routes"
+}
+
 prepare_snapshot() {
   [ -n "$SPEC_ID" ] && [ -n "$SPEC_JSON" ] || die "prepare requires a frozen spec"
   require_home
@@ -82,12 +103,13 @@ prepare_snapshot() {
   budget=$(python3 -c 'import json,sys; print(json.dumps({r["node_id"]:r["budget"] for r in map(json.loads,open(sys.argv[1]))}))' "$budgets_tmp")
   plan=$(model_ctl "$(model_json operation plan-prepare snapshot "${PREPARE_SNAPSHOT:-target}" views: "$existing" spec: "$SPEC_JSON" home: "$HOME_JSON" node_ids: "$NODE_IDS_JSON" confirmed_node_ids: "$(all_node_ids)" topology_id "$CLUSTER_TOPOLOGY_ID" observations: "$observations" budgets: "$budget" adopt_unrecorded: "$([ "$ADOPT_UNRECORDED" = 1 ] && echo true || echo false)")") || die "could not build preparation plan"
   rm -f "$ranks_tmp" "$budgets_tmp"
+  . "$REPO_DIR/scripts/model-transfer.sh"
+  plan=$(prepare_copy_routes "$plan" "$home_rank") || die "could not check the copy routes"
   if [ "$PLAN" -eq 1 ]; then rm -f "$views_tmp"; emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "preparation requires --yes after reviewing placement and storage"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; rm -f "$views_tmp"; return 1; }
   local steps=$(( ${#SELECTED_RANKS[@]} + 1 )) scope=""
   [ "$VIEW_SCHEMA" != 2 ] || scope="${PREPARE_SNAPSHOT:-target} "
-  . "$REPO_DIR/scripts/model-transfer.sh"
   source_rank="$home_rank"; source_path=$(json_fields "$HOME_JSON" path); source_stamp=$(json_fields "$HOME_JSON" verification)
   # Folders taken over (D7) go first: each node hashes every file of its
   # folder and records it only if all match, so a folder that does not match
@@ -111,7 +133,14 @@ prepare_snapshot() {
       adopt) ;;
       reuse) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): reusing verified files" ;;
       bind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): binding to existing verified files" ;;
-      rebind) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed" ;;
+      rebind)
+        # The same saved cluster: only the role order of these nodes changed.
+        previous=$(printf '%s' "$plan" | python3 -c 'import json,sys; print((json.load(sys.stdin)["actions"][int(sys.argv[1])].get("previous") or {}).get("topology_id") or "")' "$slot")
+        if [ "$previous" = "$CLUSTER_TOPOLOGY_ID" ]; then
+          phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared for these nodes in another role order"
+        else
+          phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): taking over verified files prepared before the membership changed"
+        fi ;;
       home-view) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): using files from the home" ;;
       *) phase $((slot + 1)) "$steps" "${scope}rank $slot on $(human_node_name "$rank"): copying and verifying files" ;;
     esac

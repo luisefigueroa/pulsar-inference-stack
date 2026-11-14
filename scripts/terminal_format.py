@@ -292,6 +292,74 @@ class TerminalWriter:
     def blank(self) -> None:
         print(file=self.stream)
 
+    def emit_command(self, command: str, initial_indent: str = "", subsequent_indent: str = "") -> None:
+        """COMMAND, one shell command styled as a command, so that it pastes as
+        it is shown: see command_lines. The continuation marks stay plain."""
+        lines = command_lines(command, self.width, initial_indent, subsequent_indent)
+        for number, line in enumerate(lines):
+            indent = initial_indent if number == 0 else subsequent_indent
+            tail = " \\" if number < len(lines) - 1 else ""
+            body = line[len(indent):len(line) - len(tail)]
+            print(indent + self.command_line(body) + tail, file=self.stream)
+
+
+def _shell_words(command: str) -> list[str]:
+    """COMMAND split at unquoted blanks, each word as written. A word made of
+    adjacent quoted parts, such as shlex.join's '/a'"'"'b' for /a'b, stays one
+    word, and a "#" inside a word is part of it. ValueError for an open quote."""
+    words, word, quote, escaped = [], "", None, False
+    for char in command:
+        if escaped:
+            word, escaped = word + char, False
+        elif char == "\\" and quote != "'":
+            word, escaped = word + char, True
+        elif quote:
+            word += char
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            word, quote = word + char, char
+        elif char.isspace():
+            if word:
+                words.append(word)
+            word = ""
+        else:
+            word += char
+    if quote or escaped:
+        raise ValueError("unfinished quote")
+    return words + ([word] if word else [])
+
+
+def command_lines(command: str, width: int, initial_indent: str = "", subsequent_indent: str = "") -> list[str]:
+    """COMMAND as plain lines for WIDTH columns. A command that fits is one
+    line. A longer one breaks only between arguments, never between an option
+    and its value (an option followed by a word that is not an option), and
+    every line but the last ends with " \\", so the lines paste as one
+    command. An argument wider than a line stays whole; the terminal wraps it."""
+    if len(initial_indent) + len(command) <= width:
+        return [initial_indent + command]
+    try:
+        words = _shell_words(command)
+    except ValueError:
+        words = command.split()
+    units: list[str] = []
+    for word in words:
+        if units and units[-1].startswith("-") and " " not in units[-1] and not word.startswith("-"):
+            units[-1] += " " + word
+        else:
+            units.append(word)
+    lines: list[str] = []
+    row = ""
+    for number, unit in enumerate(units):
+        indent = subsequent_indent if lines else initial_indent
+        mark = len(" \\") if number < len(units) - 1 else 0
+        if row and len(indent) + len(row) + 1 + len(unit) + mark > width:
+            lines.append(indent + row + " \\")
+            row = unit
+        else:
+            row = f"{row} {unit}" if row else unit
+    lines.append((subsequent_indent if lines else initial_indent) + row)
+    return lines
+
 
 # One help style for every command: usage lines, a sentence on what the
 # command does, then options with their descriptions in one column.
@@ -436,7 +504,8 @@ def main(argv: list[str]) -> int:
       --status LEVEL WORD TEXT         a closing verdict line
       --sgr TTY                        shell assignments of the status styles for
                                        output that is (1) or is not (0) a terminal
-      --text                           paragraphs from stdin, with their marks"""
+      --text                           paragraphs from stdin, with their marks
+      --same-as COMMAND                "Same as: COMMAND", wrapped as command_lines does"""
     if argv[:1] == ["--sgr"] and len(argv) == 2:
         class Destination:
             def isatty(self) -> bool:
@@ -448,6 +517,8 @@ def main(argv: list[str]) -> int:
         writer = TerminalWriter()
         for line in sys.stdin.read().splitlines():
             writer.emit(line, markup=True)
+    elif argv[:1] == ["--same-as"] and len(argv) == 2:
+        TerminalWriter().emit_command(argv[1], "Same as: ", "  ")
     elif argv[:1] == ["--checks"] and len(argv) >= 2 and len(argv) % 2 == 0:
         emit_checks(argv[1], list(zip(argv[2::2], argv[3::2])))
     elif argv[:1] == ["--status"] and len(argv) == 4:
@@ -455,7 +526,7 @@ def main(argv: list[str]) -> int:
     elif not argv:
         emit_help(sys.stdin.read())
     else:
-        print("usage: terminal_format.py [--checks TITLE [LEVEL TEXT]... | --status LEVEL WORD TEXT | --sgr TTY | --text]",
+        print("usage: terminal_format.py [--checks TITLE [LEVEL TEXT]... | --status LEVEL WORD TEXT | --sgr TTY | --text | --same-as COMMAND]",
               file=sys.stderr)
         return 2
     return 0

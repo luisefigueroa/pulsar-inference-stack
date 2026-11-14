@@ -1,0 +1,790 @@
+"""An ordinary Start of a multi-node recipe on nodes the operator names, on a
+saved four-node ring (and a full mesh), through the real up.sh, launcher and
+preflight with Docker, SSH and curl doubles (tests/support/service_cluster.py).
+Nothing here contacts a node."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(ROOT), str(ROOT / 'tests')]
+from scripts.container_runtime import service_identifier  # noqa: E402
+from support.service_cluster import ServiceCluster  # noqa: E402
+
+
+class Cluster(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self):
+        self.cluster = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())))
+
+    def trace(self):
+        return [line for line in self.cluster.trace() if 'docker info' not in line]
+
+    def launcher(self, spec, *args, **env):
+        c = self.cluster
+        stack = c.install()
+        environment = {**c.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(c.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': '',
+                       'WAIT_ATTEMPTS': '2', 'WAIT_SECONDS': '0', **env}
+        return subprocess.run(['bash', str(stack / 'cluster/start-cluster.sh'), spec['spec_id'], *args],
+                              env=environment, text=True, capture_output=True, timeout=120)
+
+
+class OneMap(Cluster):
+    """The launcher resolves the placement Start resolved and builds the same plan."""
+
+    def test_the_launcher_builds_its_plan_on_the_named_nodes(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result_file = c.root / 'launch-result.json'
+        result = self.launcher(spec, '--skip-preflight', '--dry-run', '--placement-nodes',
+                               f'{c.hostname(2)},{c.hostname(3)}', PULSAR_LAUNCH_RESULT_FILE=str(result_file))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result_file.read_text())['service_id'],
+                         service_identifier(spec['spec_id'], c.topology_id, [c.node_id(2), c.node_id(3)]))
+
+    def test_a_plan_that_differs_from_the_one_start_checked_starts_nothing(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_PREPARED_DRIFT='1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('error: the launch plan differs from the one start checked', result.stderr)
+        self.assertIn('Nothing was started.', result.stderr)
+        self.assertFalse([line for line in self.trace() if 'docker run' in line or 'docker rm' in line])
+        self.assertEqual(c.store.records('services'), [])
+
+
+class FirstNodeAddress(Cluster):
+    """Health comes from the first node's own address."""
+
+    def launch(self, positions, **env):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = ','.join(c.hostname(position) for position in positions)
+        return self.launcher(spec, '--skip-preflight', '--placement-nodes', names, **env)
+
+    def test_a_service_on_this_machines_loopback_port_does_not_answer_for_it(self):
+        # The curl double answers /health on 127.0.0.1 only: another service here.
+        result = self.launch([2, 3], SERVICE_HEALTHY='127.0.0.1')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('waiting for http://192.0.2.32:8000/health', result.stdout)
+        self.assertNotIn('healthy ·', result.stdout)
+        self.assertEqual({url for url in self.cluster.calls()['curl']}, {'http://192.0.2.32:8000/health'})
+        self.assertEqual(self.cluster.remaining(), [])
+
+    def test_the_first_nodes_address_answers(self):
+        result = self.launch([2, 3], SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('healthy · first-health=', result.stdout)
+
+    def test_the_loopback_address_only_when_the_first_node_is_this_machine(self):
+        result = self.launch([0, 1])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.cluster.calls()['curl'], ['http://127.0.0.1:8000/health'])
+
+
+class Preflight(Cluster):
+    """Preflight checks the chosen nodes only, and its rows name role ranks."""
+
+    def test_a_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        stack = c.install()
+        environment = {**c.env, 'SERVICE_STACK': str(stack), 'BASH_ENV': str(c.root / 'start-env.sh'),
+                       'VLLM_IMAGE_MAINLINE': 'example/image', 'VLLM_EXTRA_ARGS': '', 'EXTRA_ENV': ''}
+        result = subprocess.run(['bash', str(stack / 'cluster/preflight.sh'), spec['spec_id'], '--placement-nodes',
+                                 f'{c.hostname(3)},{c.hostname(2)}'], env=environment, text=True,
+                                capture_output=True, timeout=120)
+        nodes = {line.split()[0] for line in self.trace() if line.startswith('node-')}
+        self.assertEqual(nodes, {'node-2', 'node-3'}, self.trace())
+        self.assertIn('ok   rank 0 SSH ring-alpha · fixture-ring-alpha', result.stdout)
+        self.assertIn('ok   rank 1 SSH ring-echo · fixture-ring-echo', result.stdout)
+        self.assertIn('ok   rank 0: no stale vllm-cluster containers', result.stdout)
+        self.assertIn('ranks 0/1:', result.stdout)
+        self.assertIn(f"check-weights.sh {spec['spec_id']} --placement-nodes "
+                      f'{c.hostname(3)},{c.hostname(2)}', c.calls()['checks'])
+        for word in ('rank 2', 'rank 3', 'dorado', 'bravo'):
+            self.assertNotIn(word, result.stdout)
+
+
+class StartWithPreflight(Cluster):
+    """Start runs the real preflight on the doubles, then the launcher: each
+    preflight command reaches only the nodes the service runs on."""
+
+    # Preflight's commands on a node it reaches over SSH, in order: SSH, the
+    # pings of its two links, the node probe, RDMA adapters, the RDMA device,
+    # the control address, memory, stale containers and the image.
+    OVER_SSH = ['true over ssh', 'ping over ssh', 'ping over ssh', 'probe over ssh', 'rdma over ssh',
+                'test over ssh', 'ip over ssh', 'meminfo over ssh', 'docker ps names over ssh',
+                'docker image inspect over ssh']
+
+    def preflight(self):
+        """What each node did between Start's own checks and the launcher's
+        first container, without Start's container lookups."""
+        lines = self.trace()
+        first_run = next(index for index, line in enumerate(lines) if 'docker run' in line)
+        reached = {}
+        for line in lines[:first_run]:
+            if line.startswith('node-') and 'docker inspect' not in line:
+                node, what = line.split(' ', 1)
+                reached.setdefault(node, []).append(what)
+        return reached
+
+    def test_the_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS  preflight cluster OK', result.stdout)
+        # The cable between the serving nodes, as preflight counted its links.
+        self.assertIn(f'PASS  preflight cluster OK\n      links that answered both ways: 2 of 2 between '
+                      f'{c.hostname(2)} and {c.hostname(3)}\n', result.stdout)
+        self.assertNotIn('--skip-preflight', ' '.join(json.dumps(call) for call in c.calls()['checks']))
+        self.assertEqual(self.preflight(), {'node-2': self.OVER_SSH, 'node-3': self.OVER_SSH}, self.trace())
+        self.assertEqual([line for line in self.trace() if 'docker run' in line],
+                         ['node-3 docker run rank 1 over ssh', 'node-2 docker run rank 0 over ssh'])
+
+    def test_the_default_order(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS  preflight cluster OK', result.stdout)
+        # This node answers its own checks locally: the probe, rdma and ip
+        # doubles, then the docker double. Its device and memory checks run as
+        # local commands the trace does not show.
+        self.assertEqual(self.preflight(), {
+            'node-0': ['probe', 'rdma', 'ip', 'docker ps names', 'docker image inspect'],
+            'node-1': self.OVER_SSH}, self.trace())
+        self.assertEqual([line for line in self.trace() if 'docker run' in line],
+                         ['node-1 docker run rank 1 over ssh', 'node-0 docker run rank 0'])
+
+    def test_the_fabric_check_is_shown_by_the_dry_run_and_start(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        for args in (('--dry-run',), ('--skip-preflight',)):
+            with self.subTest(args=args):
+                c.forget_calls()
+                result = c.start(spec['spec_id'], *args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('PASS  fabric    the confirmed fabric meets this spec\n', result.stdout)
+                # Neither pinged anything, so neither says a link answered.
+                self.assertNotIn('answered', result.stdout)
+                c.pulsar('stop', spec['spec_id'])
+
+
+class InventoryOnNamedNodes(Cluster):
+    """Inventory's page lists a service's nodes in role order and says which
+    one serves the API; its JSON keeps its own order."""
+
+    def test_role_order_and_the_api_node(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # Role order: saved rank 3 first, then saved rank 2.
+        c.run(c.plan(spec, manifest, [3, 2]))
+        before = json.loads(c.pulsar('inventory', '--json').stdout)['services'][0]['ranks']
+        result = c.pulsar('inventory')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        headings = [line.strip() for line in result.stdout.splitlines() if line.startswith('  fixture-ring-')]
+        self.assertEqual(headings, [f'{c.hostname(3)} · rank 0, serves the API', f'{c.hostname(2)} · rank 1'])
+        # Saved cluster order in the JSON, as before.
+        self.assertEqual([r['rank'] for r in before], ['1', '0'])
+
+    def test_a_one_node_service_keeps_its_heading(self):
+        c = self.cluster
+        spec, manifest = c.spec(1)
+        c.run(c.plan(spec, manifest, [2]))
+        result = c.pulsar('inventory')
+        self.assertIn(f'\n  {c.hostname(2)}\n', result.stdout)
+        self.assertNotIn('serves the API', result.stdout)
+
+
+class StatusOnNamedNodes(Cluster):
+    """`./pulsar status` with the real observe-serving.sh, for a service Start ran
+    on saved ranks 2 and 3: it observes those nodes and the first one's address."""
+
+    def test_the_pair_on_saved_ranks_2_and_3(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        c.forget_calls()
+        result = c.status(spec['spec_id'], SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(' '.join(result.stdout.split()),
+                         f"spec {spec['spec_id'][:12]}: running and healthy on {c.hostname(2)}, {c.hostname(3)}; "
+                         'recipe and files verified API: http://192.0.2.32:8000/v1')
+        self.assertIn('health http://192.0.2.32:8000/health', self.trace())
+        # Each rank's container and image were read on its own node.
+        self.assertEqual([line for line in self.trace() if line.startswith('node-')], [
+            'node-2 docker inspect by name over ssh', 'node-2 docker image inspect over ssh',
+            'node-2 runtime context over ssh',
+            'node-3 docker inspect by name over ssh', 'node-3 docker image inspect over ssh',
+            'node-3 runtime context over ssh',
+            'node-2 docker inspect by name over ssh', 'node-3 docker inspect by name over ssh'])
+
+
+class HealthWait(Cluster):
+    """A multi-node Start's wait keeps its 120 checks 10 s apart: the 20 minutes a one-node Start now allows too."""
+
+    def test_the_default_wait_and_an_early_answer(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                         SERVICE_HEALTHY='192.0.2.32', WAIT_ATTEMPTS='', WAIT_SECONDS='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('up to 120 health checks, 10 s apart)', result.stdout + result.stderr)
+
+
+class OneServicePerSpec(Cluster):
+    """Start reads the saved records: a spec runs as one service."""
+
+    def recorded_on(self, positions, **options):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        return spec, c.plan(spec, manifest, positions, **options)
+
+    def test_a_record_on_other_nodes_refuses_a_default_order_start(self):
+        c = self.cluster
+        spec, _ = self.recorded_on([2, 3])
+        for flags in ((), ('--replace',)):
+            with self.subTest(flags=flags):
+                c.forget_calls()
+                result = c.start(spec['spec_id'], '--skip-preflight', *flags)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes '
+                              '(on fixture-ring-echo, fixture-ring-alpha). Next: ./pulsar stop '
+                              f"{spec['spec_id'][:12]}", ' '.join(result.stdout.split()))
+                self.assertFalse([line for line in self.trace() if 'docker' in line])
+
+    def test_an_ordinary_dry_run_still_reports_a_record_on_other_nodes(self):
+        c = self.cluster
+        spec, _ = self.recorded_on([2, 3])
+        result = c.start(spec['spec_id'], '--dry-run')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes',
+                      ' '.join(result.stdout.split()))
+
+    def test_a_guarded_dry_run_does_not_read_the_records_of_its_spec(self):
+        # A guarded run checks its prerequisites with up.sh --dry-run; an
+        # earlier trial's record of the same spec, on other nodes or under an
+        # earlier saved cluster, changes nothing in that dry run.
+        c = self.cluster
+        spec, manifest = c.spec(2, catalog=False, guarded=True)
+        path = c.root / 'guarded-spec.json'
+        path.write_text(json.dumps(spec))
+
+        def dry_run():
+            c.forget_calls()
+            # As scripts/guarded-serving.sh runs it.
+            result = c.start(spec['spec_id'], '--spec-file', str(path), '--dry-run',
+                             PULSAR_LAUNCH_PLAN_OUT=str(c.root / 'trial-plan.json'))
+            # Each dry run draws its own guarded run ID, and the plan ID covers it.
+            plan = json.loads((c.root / 'trial-plan.json').read_text())
+            plan.update(guard_run_id='<run>', plan_id='<plan>')
+            return result.returncode, result.stdout, result.stderr, self.trace(), plan
+
+        before = dry_run()
+        self.assertEqual(before[0], 0, before[1] + before[2])
+        for positions, topology_id in (([2, 3], None), ([0, 1], 'e' * 64), ([1, 0], None)):
+            with self.subTest(positions=positions, topology_id=topology_id):
+                plan = c.plan(spec, manifest, positions, topology_id=topology_id)
+                self.assertEqual(dry_run(), before)
+                c.store.remove('services', plan['service_id'])
+
+    def test_a_record_of_an_earlier_saved_cluster_is_another_service(self):
+        c = self.cluster
+        spec, plan = self.recorded_on([0, 1], topology_id='e' * 64)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('service_recorded_elsewhere', result.stdout)
+        # ./pulsar stop clears it when none of its containers is left, and Start then runs.
+        self.assertEqual(c.pulsar('stop', spec['spec_id']).returncode, 0)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_replace_off_the_default_order_is_refused_before_anything_is_contacted(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = c.start(spec['spec_id'], '--skip-preflight', '--replace', '--placement-nodes',
+                         f'{c.hostname(2)},{c.hostname(3)}')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--replace replaces a service on the default node order only. To start this spec on '
+                      f'{c.hostname(2)},{c.hostname(3)}, stop its service first (./pulsar stop {spec["spec_id"][:12]}), '
+                      'then start it without --replace', result.stderr)
+        self.assertEqual(self.trace(), [])
+
+    def test_the_launcher_refuses_replace_off_the_default_order_too(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--replace', '--placement-nodes',
+                               f'{c.hostname(2)},{c.hostname(3)}')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('--replace replaces a service on the default node order only', result.stderr)
+        self.assertFalse([line for line in self.trace() if 'docker' in line])
+
+
+KEY = 'fixture-secret-key-5f1e'
+
+
+class ApiKey(Cluster):
+    """The key goes where it goes for a one-node start on a remote node: the
+    docker run sent over SSH to the first node, and that container's
+    arguments; nowhere else."""
+
+    def test_the_key_reaches_only_the_first_node(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--placement-nodes', f'{c.hostname(2)},{c.hostname(3)}',
+                               VLLM_API_KEY=KEY, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(KEY, result.stdout + result.stderr)
+        calls = c.calls()
+        to_nodes = [(node, command) for node, command in calls['ssh'] if KEY in command]
+        self.assertEqual([node for node, _ in to_nodes], [c.node_id(2)])
+        self.assertTrue(to_nodes[0][1].startswith('docker run '))
+        runs = {node: args for node, args in calls['runs']}
+        self.assertIn(KEY, runs[c.node_id(2)])
+        self.assertNotIn(KEY, ' '.join(runs[c.node_id(3)]))
+        self.assertFalse([args for node, args in calls['docker'] if node != c.node_id(2) and KEY in ' '.join(args)])
+        for path in (c.root / 'model-library').rglob('*'):
+            if path.is_file():
+                self.assertNotIn(KEY, path.read_text(errors='replace'), path)
+        for name in ('trace.log', 'checks.log'):
+            self.assertNotIn(KEY, (c.root / name).read_text())
+
+    def test_a_dry_run_prints_it_redacted(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        result = self.launcher(spec, '--skip-preflight', '--dry-run', '--placement-nodes',
+                               f'{c.hostname(2)},{c.hostname(3)}', VLLM_API_KEY=KEY)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(KEY, result.stdout + result.stderr)
+        self.assertIn('--api-key \\<redacted\\>', result.stdout)
+        self.assertIn('rank 0 · ssh ring-echo · fixture-ring-echo', result.stdout)
+
+
+class LauncherOnTheMap(Cluster):
+    """The launcher runs each role rank on its node: local Docker for this
+    machine, SSH otherwise, the first node included; the other ranks first."""
+
+    def launch(self, positions, **env):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = ','.join(c.hostname(position) for position in positions)
+        return self.launcher(spec, '--skip-preflight', '--placement-nodes', names, **env)
+
+    def test_a_failed_health_wait_removes_what_it_started_on_the_pair_only(self):
+        result = self.launch([2, 3], SERVICE_HEALTHY='none')
+        self.assertEqual(result.returncode, 1)
+        trace = [line for line in self.trace() if not line.startswith(('curl', 'port'))]
+        self.assertEqual(trace, [
+            'node-3 docker inspect by name over ssh', 'node-2 docker inspect by name over ssh',
+            'node-3 docker run rank 1 over ssh', 'node-2 docker run rank 0 over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh',
+            'node-2 docker logs over ssh', 'node-3 docker logs over ssh',
+            'node-2 docker rm by id over ssh', 'node-3 docker rm by id over ssh',
+            'node-2 docker state over ssh', 'node-3 docker state over ssh'])
+        self.assertIn('port 8000 on ring-echo', self.trace())
+        self.assertIn('starting rank 1 on ring-alpha', result.stdout)
+        self.assertIn('starting rank 0 on ring-echo', result.stdout)
+        self.assertEqual(self.cluster.remaining(), [])
+
+    def test_a_failed_first_node_removes_the_other_rank_on_its_node(self):
+        c = self.cluster
+        result = self.launch([2, 3], SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 1)
+        trace = [line for line in self.trace() if not line.startswith(('curl', 'port'))]
+        self.assertEqual(trace[2:5], ['node-3 docker run rank 1 over ssh', 'node-2 docker run fails over ssh',
+                                      'node-3 docker rm by id over ssh'])
+        self.assertIn('fixture-ring-echo (rank 0): the service container could not be started', result.stdout)
+        self.assertEqual(c.remaining(), [])
+
+    def test_this_machine_as_the_second_node_runs_on_local_docker(self):
+        result = self.launch([3, 0], SERVICE_HEALTHY='none')
+        trace = [line for line in self.trace() if 'docker run' in line]
+        self.assertEqual(trace, ['node-0 docker run rank 1', 'node-3 docker run rank 0 over ssh'])
+        self.assertIn('starting rank 1 locally', result.stdout)
+        self.assertIn('starting rank 0 on ring-alpha', result.stdout)
+
+
+class Decision(Cluster):
+    """scripts/start_placement.py: the one decision, and what it accepts."""
+
+    def refusal(self, positions, *, guarded=False, topology=None):
+        from scripts.start_placement import ordinary_start_refusal
+        c = self.cluster
+        return ordinary_start_refusal(topology or c.topology, [c.node_id(p) for p in positions], guarded=guarded)
+
+    def test_a_neighbouring_pair_of_a_ring_in_either_order(self):
+        for positions in ((2, 3), (3, 2), (0, 3), (3, 0), (1, 2)):
+            with self.subTest(positions=positions):
+                self.assertIsNone(self.refusal(positions))
+
+    def test_what_stays_refused(self):
+        # The cabling is the launch check's to judge (tests/test_start_any_named_nodes.py):
+        # the decision refuses only a guarded spec and a node outside the saved cluster.
+        from scripts.start_placement import ordinary_start_refusal
+        c = self.cluster
+        for positions in ((0, 1, 2), (0, 2), (1, 2, 3, 0)):
+            with self.subTest(positions=positions):
+                self.assertIsNone(self.refusal(positions))
+        self.assertEqual(self.refusal((2, 3), guarded=True), 'a guarded recipe runs only as a guarded trial')
+        self.assertEqual(ordinary_start_refusal(c.topology, [c.node_id(2), 'fixture-elsewhere'], guarded=False),
+                         'a named node is not in the saved cluster')
+        mesh = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())), mesh=3)
+        self.assertIsNone(ordinary_start_refusal(mesh.topology, [mesh.node_id(2), mesh.node_id(1)], guarded=False))
+
+    def test_the_cabling_as_the_launch_check_reads_the_saved_links(self):
+        from scripts.start_placement import cabling_refusal
+        c = self.cluster
+        ids = [c.node_id(position) for position in range(4)]
+        self.assertIsNone(cabling_refusal(c.topology, [ids[2], ids[3]], loop=False))
+        self.assertEqual(cabling_refusal(c.topology, [ids[0], ids[2]], loop=False),
+                         'fixture-ring-dorado and fixture-ring-echo are not cabled to each other: the cluster is a '
+                         'ring, and this recipe needs every one of its nodes cabled to the others')
+        self.assertIsNone(cabling_refusal(c.topology, [ids[1], ids[2], ids[3], ids[0]], loop=True))
+        self.assertEqual(cabling_refusal(c.topology, [ids[0], ids[2], ids[1], ids[3]], loop=True),
+                         'fixture-ring-dorado and fixture-ring-echo are not cabled to each other: this recipe '
+                         'passes data around a closed loop of its nodes, each cabled to the next and the last to '
+                         'the first')
+        mesh = ServiceCluster(Path(self.enterContext(tempfile.TemporaryDirectory())), mesh=4)
+        self.assertIsNone(cabling_refusal(mesh.topology, [mesh.node_id(3), mesh.node_id(1), mesh.node_id(2)],
+                                          loop=False))
+
+
+class StartOnNamedNodes(Cluster):
+    """An ordinary Start on a neighbouring pair, end to end under doubles."""
+
+    def start(self, positions, *args, **env):
+        c = self.cluster
+        names = ','.join(c.hostname(position) for position in positions)
+        first = c.nodes[positions[0]]['control']['ip'] if positions[0] else '127.0.0.1'
+        env.setdefault('SERVICE_HEALTHY', first)
+        return c.start(self.spec['spec_id'], '--skip-preflight', '--placement-nodes', names, *args, **env)
+
+    def setUp(self):
+        super().setUp()
+        self.spec, _ = self.cluster.spec(2)
+
+    def test_a_pair_that_does_not_include_this_machine_in_both_orders(self):
+        c = self.cluster
+        for positions in ((2, 3), (3, 2)):
+            with self.subTest(positions=positions):
+                c.forget_calls()
+                result = self.start(positions)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                first = c.nodes[positions[0]]
+                url = f"http://{first['control']['ip']}:8000"
+                self.assertIn(f'url:      {url}/v1', result.stdout)
+                self.assertEqual(c.calls()['curl'], [f'{url}/health', f'{url}/v1/completions'])
+                pair = {f'node-{position}' for position in positions}
+                self.assertEqual({line.split()[0] for line in self.trace() if line.startswith('node-')}, pair)
+                self.assertEqual({node.rsplit('-', 1)[-1] for node, _ in c.calls()['ssh']},
+                                 {str(position) for position in positions})
+                runs = [line for line in self.trace() if 'docker run' in line]
+                self.assertEqual(runs, [f'node-{positions[1]} docker run rank 1 over ssh',
+                                        f'node-{positions[0]} docker run rank 0 over ssh'])
+                (record,) = c.store.records('services')
+                plan = c.store.get('service-plans', record['plan_id'])
+                self.assertEqual([rank['node_id'] for rank in plan['ranks']], [c.node_id(p) for p in positions])
+                self.assertEqual(c.pulsar('stop', self.spec['spec_id']).returncode, 0)
+
+    def test_this_machine_with_its_other_neighbour(self):
+        c = self.cluster
+        result = self.start((0, 3))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual([line for line in self.trace() if 'docker run' in line],
+                         ['node-3 docker run rank 1 over ssh', 'node-0 docker run rank 0'])
+        self.assertIn('url:      http://127.0.0.1:8000/v1', result.stdout)
+
+    def test_a_node_outside_the_pair_that_is_down_never_blocks_it(self):
+        c = self.cluster
+        result = self.start((2, 3), SERVICE_UNREACHABLE=f'{c.node_id(1)}', SERVICE_DOCKER_DOWN=c.node_id(0))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_start_then_inventory_then_stop(self):
+        c = self.cluster
+        result = self.start((2, 3))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        inventory = c.pulsar('inventory', '--json')
+        self.assertEqual(inventory.returncode, 0, inventory.stderr)
+        (service,) = json.loads(inventory.stdout)['services']
+        self.assertEqual((service['state'], service['ownership'], service['safe_to_stop']), ('running', 'managed', True))
+        self.assertEqual([rank['node'] for rank in service['ranks']], ['rank-2', 'rank-3'])
+        stopped = c.pulsar('stop', self.spec['spec_id'])
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertIn(f"Stopped spec {self.spec['spec_id'][:12]} on fixture-ring-echo (rank 0), fixture-ring-alpha "
+                      '(rank 1)', stopped.stdout)
+        self.assertEqual((c.remaining(), c.store.records('services')), ([], []))
+        # stop --all removes it too.
+        self.assertEqual(self.start((2, 3)).returncode, 0)
+        self.assertEqual(c.pulsar('stop', '--all', '--yes').returncode, 0)
+        self.assertEqual((c.remaining(), c.store.records('services')), ([], []))
+
+    def test_start_stays_non_replacing(self):
+        c = self.cluster
+        self.assertEqual(self.start((2, 3)).returncode, 0)
+        c.forget_calls()
+        result = self.start((2, 3))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('BLOCKED service_exists', result.stdout)
+        self.assertFalse([line for line in self.trace() if 'docker run' in line or 'docker rm' in line])
+
+    def test_refused_placements_contact_nothing(self):
+        # Named nodes that are not cabled as the spec needs fail the fabric
+        # check, reported as every other blocker is, before any node is contacted.
+        c = self.cluster
+        three, _ = c.spec(3)
+        for spec, names, nodes, pair, note in (
+                (self.spec, f'{c.hostname(0)},{c.hostname(2)}', 2, (0, 2),
+                 'Choose two machines that are neighbours on the ring, which share a cable.'),
+                (three, f'{c.hostname(1)},{c.hostname(2)},{c.hostname(3)}', 3, (1, 3),
+                 'On this cluster no 3 machines are all cabled to each other.')):
+            for dry in ((), ('--dry-run',)):
+                with self.subTest(names=names, dry=dry):
+                    c.forget_calls()
+                    result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, *dry)
+                    self.assertEqual(result.returncode, 1)
+                    reason = (f'{c.hostname(pair[0])} and {c.hostname(pair[1])} are not cabled to each other: the '
+                              'cluster is a ring, and this recipe needs every one of its nodes cabled to the others')
+                    self.assertIn('├─ checks\nINFO  spec-review not specified (display-only)\n'
+                                  'PASS  recipe    exact spec contract parsed\n'
+                                  f'PASS  topology  spec needs {nodes} node(s)  confirmed=4', result.stdout)
+                    self.assertIn(f'FAIL  fabric    {reason}\n'
+                                  "BLOCKED fabric_incomplete: the confirmed fabric does not meet this spec's "
+                                  f'requirements ({reason}). Note: {note}\n', result.stdout)
+                    self.assertNotIn('Next:', result.stdout)
+                    self.assertEqual(result.stderr.strip().splitlines()[-1],
+                                     'error: start is blocked by 1 blocker(s) above; nothing was launched')
+                    self.assertEqual(self.trace(), [])
+
+    def test_refused_placement_in_json(self):
+        c = self.cluster
+        result = c.start(self.spec['spec_id'], '--dry-run', '--json', '--placement-nodes',
+                         f'{c.hostname(0)},{c.hostname(2)}')
+        self.assertEqual(result.returncode, 1)
+        error = json.loads(result.stdout)['error']
+        self.assertEqual(error['code'], 'prerequisite_failed')
+        self.assertEqual([(check['id'], check['outcome']) for check in error['checks']][:4],
+                         [('spec-review', 'info'), ('recipe', 'pass'), ('topology', 'pass'), ('fabric', 'fail')])
+        (detail,) = error['details']
+        self.assertEqual((detail['blocker'], detail['fix']), ('fabric_incomplete', None))
+        self.assertIn(f'{c.hostname(0)} and {c.hostname(2)} are not cabled to each other', detail['message'])
+        self.assertNotIn('error:', detail['message'])
+
+
+class Suggestions(Cluster):
+    """No suggestion gives --placement-nodes to stop or status; a suggested
+    Start carries it."""
+
+    def test_the_catalog_of_blockers(self):
+        from scripts.start_blockers import blocker
+        spec = 'ab' * 32
+        placement = '--placement-nodes fixture-ring-echo,fixture-ring-alpha'
+        record = blocker('service_exists', spec=spec, placement=placement)
+        self.assertEqual(record['fix'], './pulsar status abababababab')
+        record = blocker('start_interrupted', spec=spec, placement=placement)
+        self.assertIn('To remove it: ./pulsar stop abababababab', record['note'])
+        self.assertNotIn('--placement-nodes', record['fix'] + record['note'])
+        record = blocker('container_exited', spec=spec, placement=placement, unconfirmed='fixture-ring-echo (rank 0)')
+        self.assertEqual(record['fix'], './pulsar stop abababababab')
+        self.assertEqual(blocker('image_missing', spec=spec, placement=placement)['fix'],
+                         f'./pulsar start abababababab {placement} --pull-image')
+        # One-node services keep their --node.
+        self.assertEqual(blocker('service_exists', spec=spec, placement='--node spark-2')['fix'],
+                         './pulsar status abababababab --node spark-2')
+
+    def test_ready_and_the_launchers_records(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = f'{c.hostname(2)},{c.hostname(3)}'
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = [' '.join(line.split()) for line in result.stdout.splitlines()]
+        self.assertIn(f"status: ./pulsar status {spec['spec_id']}", lines)
+        self.assertIn(f"stop: ./pulsar stop {spec['spec_id']}", lines)
+        c.pulsar('stop', spec['spec_id'])
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='none',
+                         PULSAR_START_BLOCKERS_FILE=str(c.root / 'records.jsonl'))
+        from scripts import start_blockers
+        (record,) = start_blockers.read(c.root / 'records.jsonl')
+        self.assertEqual((record['blocker'], record['node']), ('health_timeout', 'fixture-ring-echo'))
+        self.assertNotIn('--placement-nodes', (record['fix'] or '') + (record['note'] or ''))
+
+
+class Readers(Cluster):
+    """The Connect card and Restart for a pair Start ran on saved ranks 2 and 3."""
+
+    def setUp(self):
+        super().setUp()
+        c = self.cluster
+        self.spec, _ = c.spec(2)
+        self.card = c.root / 'connect.json'
+        result = c.start(self.spec['spec_id'], '--skip-preflight', '--placement-nodes',
+                         f'{c.hostname(2)},{c.hostname(3)}', SERVICE_HEALTHY='192.0.2.32',
+                         PULSAR_SERVICE_RESULT_FILE=str(self.card))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_the_connect_card_names_the_first_nodes_address(self):
+        self.assertEqual(json.loads(self.card.read_text())['api_url'], 'http://192.0.2.32:8000')
+
+    def test_restart_runs_start_on_the_same_nodes_in_the_same_order(self):
+        from model_library.catalog import entries as catalog_entries
+        from model_library.node_names import NodeNames
+        from scripts import serve_plan
+        from scripts import topology_manifest as tm
+        c = self.cluster
+        pages = c.pages(self.spec['spec_id'])
+        self.assertIn('restart', [action for action, _ in pages['choices']])
+        _, _, _, node = pages['page'].command(self.spec['spec_id'], 'restart')
+        names = NodeNames({n['node_id']: n['hostname'] for n in c.nodes}, [n['node_id'] for n in c.nodes],
+                          tm.RING_CLASS)
+        entries = catalog_entries(c.root, c.store)
+        row = next(entry for entry in entries if entry['spec_id'] == self.spec['spec_id'])
+        inventory = json.loads(c.pulsar('inventory', '--json').stdout)
+        plan = serve_plan.compose(row, entries, names=names, node=node, inventory=inventory, restart=True)
+        self.assertEqual(plan['blocked'], [])
+        self.assertEqual([step['command'] for step in plan['steps']], [
+            ['./pulsar', 'stop', self.spec['spec_id']],
+            ['./pulsar', 'start', self.spec['spec_id'], '--placement-nodes', 'fixture-ring-echo,fixture-ring-alpha']])
+
+
+def folded(text, width):
+    """TEXT as a terminal of WIDTH columns shows lines Pulsar does not wrap."""
+    lines = []
+    for line in text.splitlines():
+        lines += [line[start:start + width] for start in range(0, max(len(line), 1), width)]
+    return '\n'.join(lines) + '\n'
+
+
+class Renders(Cluster):
+    """At 80 and 60 columns with NO_COLOR=1, for a pair on saved ranks 2 and 3:
+    Start's output, the Connect card, a refused --replace, a refused second
+    service of the spec, and the Running services card with Restart.
+    START_NAMED_RENDERS names a folder outside the checkout that receives them."""
+
+    def setUp(self):
+        super().setUp()
+        self.renders = {}
+        self.spec, _ = self.cluster.spec(2)
+        self.names = f'{self.cluster.hostname(2)},{self.cluster.hostname(3)}'
+
+    def tearDown(self):
+        import os
+        target = os.environ.get('START_NAMED_RENDERS')
+        if target and self.renders:
+            target = Path(target).resolve()
+            self.assertFalse(target.is_relative_to(ROOT), 'write renders outside the checkout')
+            target.mkdir(parents=True, exist_ok=True)
+            for name, text in self.renders.items():
+                (target / f'{name}.txt').write_text(text)
+
+    def keep(self, name, text, width, *, fits=True):
+        self.renders[f'{name}-{width}'] = text
+        if fits:
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+
+    def start(self, *args, **env):
+        return self.cluster.start(self.spec['spec_id'], *args, **env)
+
+    def test_start_and_the_connect_card(self):
+        from scripts import connect_card
+        c = self.cluster
+        for width in (80, 60):
+            c.store.remove('services', service_identifier(self.spec['spec_id'], c.topology_id,
+                                                          [c.node_id(2), c.node_id(3)]))
+            c.containers = []
+            c.write()
+            card = c.root / f'card-{width}.json'
+            result = self.start('--skip-preflight', '--placement-nodes', self.names, SERVICE_HEALTHY='192.0.2.32',
+                                PULSAR_SERVICE_RESULT_FILE=str(card), COLUMNS=str(width))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            shown = f"$ ./pulsar start {self.spec['spec_id'][:12]} --placement-nodes {self.names}\n" + result.stdout
+            self.keep('start', folded(shown, width), width)
+            lines = connect_card.card(json.loads(card.read_text()))
+            self.assertIn('  API:    http://192.0.2.32:8000/v1', lines)
+            self.keep('connect-card', '\n'.join(lines) + '\n', width, fits=False)
+
+    def test_refused_replace_and_second_service(self):
+        c = self.cluster
+        for width in (80, 60):
+            result = self.start('--skip-preflight', '--replace', '--placement-nodes', self.names, COLUMNS=str(width))
+            self.keep('refused-replace', folded(result.stderr, width), width)
+            self.assertEqual(result.returncode, 2)
+        self.assertEqual(self.start('--skip-preflight', '--placement-nodes', self.names,
+                                    SERVICE_HEALTHY='192.0.2.32').returncode, 0)
+        for width in (80, 60):
+            result = self.start('--skip-preflight', COLUMNS=str(width))
+            self.assertEqual(result.returncode, 1)
+            blocked = '\n'.join(line for line in (result.stdout + result.stderr).splitlines()
+                                if 'BLOCKED' in line or line.startswith(('  ', 'error:')))
+            self.keep('refused-second-service', folded(blocked, width), width)
+
+    def test_the_running_services_card_offers_restart(self):
+        c = self.cluster
+        self.assertEqual(self.start('--skip-preflight', '--placement-nodes', self.names,
+                                    SERVICE_HEALTHY='192.0.2.32').returncode, 0)
+        for width in (80, 60):
+            pages = c.pages(self.spec['spec_id'], width=width)
+            choices = '\n'.join(label for _, label in pages['choices'])
+            self.keep('running-services-card', pages['screen'] + '\n' + choices + '\n', width)
+            self.assertIn('Restart…', choices)
+            self.assertNotIn('Restart   not offered', pages['screen'])
+
+
+class RecordsWithoutContainers(Cluster):
+    """The plan and record are saved just before the first docker run. A Start
+    that fails after that and confirms every container it launched gone
+    retires the record it saved (maintainer's decision, 2026-11-11); one kept,
+    as a failed start left it before, refuses the spec elsewhere until Stop
+    clears it."""
+
+    def test_a_failed_start_retires_its_record_so_any_start_follows(self):
+        c = self.cluster
+        spec, _ = c.spec(2)
+        names = f'{c.hostname(2)},{c.hostname(3)}'
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names,
+                         SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('No container this start launched is left on its nodes; retired its service record.',
+                      result.stdout)
+        self.assertEqual((c.store.records('services'), c.remaining()), ([], []))
+        # A retry on the same nodes, or the default order, starts.
+        result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names, SERVICE_HEALTHY='192.0.2.32')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(c.pulsar('stop', spec['spec_id']).returncode, 0)
+        result = c.start(spec['spec_id'], '--skip-preflight', SERVICE_RUN_FAILS=c.node_id(2))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_other_nodes_are_refused_until_stop_clears_a_kept_record(self):
+        c = self.cluster
+        spec, manifest = c.spec(2)
+        # A record with no container, as a failed start left one before.
+        c.plan(spec, manifest, [2, 3])
+        c.write()
+        for positions in ((0, 1), (3, 2)):
+            with self.subTest(positions=positions):
+                names = ','.join(c.hostname(p) for p in positions)
+                result = c.start(spec['spec_id'], '--skip-preflight', '--placement-nodes', names)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn('BLOCKED service_recorded_elsewhere: a service of this spec is recorded on other nodes '
+                              f"(on fixture-ring-echo, fixture-ring-alpha). Next: ./pulsar stop {spec['spec_id'][:12]}",
+                              ' '.join(result.stdout.split()))
+        # The one command that clears it: a record with no container left is retired.
+        stopped = c.pulsar('stop', spec['spec_id'])
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertIn('had no container left', stopped.stdout)
+        result = c.start(spec['spec_id'], '--skip-preflight')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+if __name__ == '__main__':
+    unittest.main()

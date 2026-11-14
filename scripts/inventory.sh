@@ -455,6 +455,16 @@ collect_live_snapshot() {
   done
 
   printf '%s' "$profiles_json" >"$profiles_file"
+  # The saved service records, read here and never from a node: they say which
+  # nodes a service recorded off the default node order runs on.
+  local records_file
+  records_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-records.XXXXXX")
+  if ! python3 "$REPO_DIR/scripts/service_state.py" bindings --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
+      >"$records_file"; then
+    warn "the saved service records cannot be read; a service recorded off the default node order shows as a mismatch"
+    printf '[]' >"$records_file"
+  fi
+  RECORDS_FILE="$records_file" \
   PROFILES_FILE="$profiles_file" \
   WORKER_IP_V="$worker_ip" \
   WORKER_STATUS="$worker_status" \
@@ -535,9 +545,10 @@ print(json.dumps({
     "nodes": nodes,
     "containers": load_ndjson(os.environ["CONTAINERS_FILE"]),
     "gpu_processes": load_ndjson(os.environ["GPU_FILE"]),
+    "service_records": json.load(open(os.environ["RECORDS_FILE"], encoding="utf-8")),
 }))
 PY_SNAPSHOT
-  rm -f "$tmp_c" "$tmp_g" "$tmp_n" "$profiles_file"
+  rm -f "$tmp_c" "$tmp_g" "$tmp_n" "$profiles_file" "$records_file"
 }
 
 # ---------------------------------------------------------------------------
@@ -572,6 +583,9 @@ SPEC_KEY = "io.pulsar.gb10.spec-id"
 SELECTED_SPEC_KEY = "io.pulsar.gb10.selected-spec-id"
 PLAN_KEY = "io.pulsar.gb10.launch-plan"
 
+sys.path.insert(0, os.environ["REPO_DIR"])
+from scripts.service_state import off_default_order, recorded_ownership
+
 with open(os.environ["SNAP_PATH"], encoding="utf-8") as _sf:
     snap = json.load(_sf)
 profiles = snap.get("profiles") or {}
@@ -584,6 +598,50 @@ node_name_by_id = {
     for name, info in nodes_info.items()
     if isinstance(info, dict) and info.get("node_id")
 }
+# Active service records (scripts/service_state.py recorded_bindings); a
+# snapshot without them, such as an older fixture, judges by saved position.
+service_records = snap.get("service_records") or []
+
+
+def node_position(name):
+    """The saved rank of an inventory node name (head, worker, rank-N)."""
+    index = (nodes_info.get(name) or {}).get("topology_index")
+    if type(index) is int:
+        return index
+    if name == "head":
+        return 0
+    if name == "worker":
+        return 1
+    if isinstance(name, str) and name.startswith("rank-") and name[5:].isdigit():
+        return int(name[5:])
+    return None
+
+
+saved_order = {}
+for _name, _info in nodes_info.items():
+    if isinstance(_info, dict) and _info.get("node_id") and node_position(_name) is not None:
+        saved_order[node_position(_name)] = str(_info["node_id"])
+membership_ids = [saved_order.get(index) for index in range(max(saved_order) + 1)] if saved_order else []
+
+
+def recorded_placement(labels):
+    """The node IDs, in role order, of the ordinary service recorded off the
+    default node order whose launch plan LABELS name; None for any other
+    container, which keeps its place by saved position."""
+    plan_id = (labels or {}).get(PLAN_KEY)
+    for item in service_records:
+        if (plan_id and item.get("plan_id") == plan_id and not item.get("guarded")
+                and off_default_order(item.get("node_ids") or [], membership_ids)):
+            return item["node_ids"]
+    return None
+
+
+def recorded_node_for_rank(rank, labels):
+    """The inventory node name the record names for RANK, or None."""
+    placement = recorded_placement(labels)
+    if placement is None or not str(rank).isdigit() or int(rank) >= len(placement):
+        return None
+    return node_name_by_id.get(placement[int(rank)])
 worker_status = snap.get("worker_status") or "unset"
 worker_reason = snap.get("worker_reason")
 worker_ip = snap.get("worker_ip")
@@ -678,6 +736,9 @@ def expected_node_for_rank(rank, profile, labels=None):
         rank_i = int(rank)
     except (TypeError, ValueError):
         return None
+    recorded = recorded_node_for_rank(rank, labels)
+    if recorded is not None:
+        return recorded
     if rank_i == 0:
         return "head"
     if rank_i == 1 and nodes > 1:
@@ -699,8 +760,15 @@ def remote_probe_states(profile, ranks=None):
                 targets.append(node)
         rank_nodes = [("single", node) for node in targets]
     else:
+        # A service recorded off the default node order needs the nodes its
+        # record names; any other, those of the saved positions.
+        placements = [recorded_placement(item.get("labels")) for item in ranks or []]
+        labels = next((item.get("labels") for item, placement in zip(ranks or [], placements)
+                       if placement is not None), None)
+        if any(placement != placements[0] for placement in placements):
+            labels = None
         rank_nodes = [
-            (rank, expected_node_for_rank(rank, profile))
+            (rank, expected_node_for_rank(rank, profile, labels))
             for rank in (profile or {}).get("expected_ranks") or []
         ]
 
@@ -766,6 +834,15 @@ def classify_container(c):
                 f"(expected {','.join(profile.get('expected_ranks') or [])})"
             )
             return "mismatch", False, conf, rank, reasons, profile
+        # The same ownership test as Stop: a container of an ordinary service
+        # recorded off the default node order is judged against its record.
+        verdict = recorded_ownership({"name": name, "labels": labels}, position=node_position(node),
+                                     topology_id=topology_id, node_ids=membership_ids, bindings=service_records)
+        if verdict is not None:
+            if not verdict[0]:
+                reasons.append(verdict[1])
+                return "mismatch", False, conf, rank, reasons, profile
+            return "managed", True, conf, rank, reasons, profile
         want_node = expected_node_for_rank(rank, profile, labels)
         profile_nodes = int(profile.get("nodes") or 1)
         node_id = str(labels.get(NODE_ID_KEY) or "")
@@ -1393,6 +1470,7 @@ else
   INV_JSON_PATH="$inv_json_path" INV_VERBOSE="$VERBOSE" python3 - <<'PY'
 import json
 import os
+from scripts.service_state import earlier_cluster_note, left_from_earlier_cluster
 from scripts.terminal_format import TerminalWriter
 
 with open(os.environ["INV_JSON_PATH"], encoding="utf-8") as f:
@@ -1487,6 +1565,13 @@ def service_inactive_unknown_legacy(s):
     return not service_active(s)
 
 
+def role_number(rank_record):
+    """A container's role rank as a number, or None (a one-node service's
+    "single", or no rank label)."""
+    value = str(rank_record.get("rank") or "")
+    return int(value) if value.isdigit() else None
+
+
 def fmt_ranks(vals):
     if not vals:
         return "-"
@@ -1522,14 +1607,24 @@ def print_service(s):
     if verbose or obs_y != "complete":
         field("observe", obs_y)
 
-    for r in s.get("ranks") or []:
+    # A multi-node service's nodes in role order, the first serving the API;
+    # the JSON keeps its own order.
+    ranks = list(s.get("ranks") or [])
+    roles = [role_number(r) for r in ranks]
+    in_roles = len(ranks) > 1 and None not in roles
+    if in_roles:
+        ranks = [r for _, r in sorted(zip(roles, ranks), key=lambda pair: pair[0])]
+    for r in ranks:
         g = r.get("gpu_memory") or {}
         gm = g.get("measured_mib")
         run = "running" if r.get("running") else ("stale" if r.get("stale") else "stopped")
         st = "safe_to_stop" if r.get("safe_to_stop") else "not_safe_to_stop"
         print()
+        heading = placement_label(r.get("node"))
+        if in_roles:
+            heading += f" · rank {role_number(r)}" + (", serves the API" if role_number(r) == 0 else "")
         emit(
-            placement_label(r.get("node")),
+            heading,
             initial_indent="  ",
             subsequent_indent="    ",
         )
@@ -1547,6 +1642,10 @@ def print_service(s):
             field("source", f"{g.get('status') or '?'} · {source}", indent=4)
         for reason in r.get("reasons") or []:
             field("reason", reason, indent=4)
+        # Said only here: the JSON keeps its reasons as they are.
+        if left_from_earlier_cluster(r.get("labels"), inv.get("topology_id")):
+            field("reason", earlier_cluster_note(r.get("container_id") or r.get("container_id_short") or ""),
+                  indent=4)
     for reason in s.get("reasons") or []:
         field("reason", reason)
 

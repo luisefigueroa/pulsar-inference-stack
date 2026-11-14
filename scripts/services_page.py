@@ -119,8 +119,10 @@ class Page:
     """One service inventory joined to the catalog, with the last Check it now of one service."""
 
     def __init__(self, inventory: dict, entries: list[dict], *, names: NodeNames | None = None,
-                 now: float | None = None, status: dict | None = None):
+                 now: float | None = None, status: dict | None = None, topology: dict | None = None):
         self.inventory = inventory
+        # The saved cluster, for whether Start would run a service on the nodes it runs on.
+        self.topology = topology
         self.entries = entries
         self.names = names or NodeNames()
         self.now = now if now is not None else time.time()
@@ -205,9 +207,27 @@ class Page:
         order = self.names.order
         serving = [self.names(node) for node in order[:nodes]] if len(order) >= nodes else []
         if list(service["hosts"]) != serving:
+            # Start runs it again on its own nodes when it accepts them
+            # (scripts/start_placement.py) and they are cabled as the recipe
+            # needs, as the launch check reads the saved links.
+            from scripts.release_consumer import ring_pattern
+            from scripts.start_placement import cabling_refusal, ordinary_start_refusal
+            placement = self.placement(conf)
+            if placement and self.topology is not None:
+                return (ordinary_start_refusal(self.topology, placement, guarded=False)
+                        or cabling_refusal(self.topology, placement, loop=ring_pattern(row.get("container_env"))))
             return (f"it runs on {_list(service['hosts'])}, but Start serves it on "
                     f"{_list(serving) or 'nodes the cluster does not have'}")
         return None
+
+    def placement(self, conf: str) -> list[str]:
+        """The node IDs a multi-node service runs on, in role order, or [] when
+        a rank's node is not identified."""
+        ranks = sorted((rank for rank in self.raw(conf).get("ranks") or [] if isinstance(rank, dict)),
+                       key=lambda rank: int(rank.get("rank")) if str(rank.get("rank")).isdigit() else -1)
+        nodes = self.inventory.get("nodes") or {}
+        ids = [(nodes.get(rank.get("node")) or {}).get("node_id") for rank in ranks]
+        return ids if ids and all(isinstance(item, str) and item for item in ids) else []
 
     def choices(self, conf: str | None) -> list[tuple[str, str]]:
         """The page's choices: for one service, or for the list or nothing."""
@@ -247,7 +267,11 @@ class Page:
         if action == "stop":
             return ["./pulsar", "stop", spec, *place]
         if action == "restart":
-            # Its one node, when it serves on one: Start uses the saved order otherwise.
+            # Its one node, when it serves on one; the nodes it runs on, in role
+            # order, when they are not the saved order Start uses otherwise.
+            placement = self.placement(conf) if not node and service["nodes"] > 1 else []
+            if placement and placement != self.names.order[:len(placement)]:
+                return ["--restart", conf, "--node", ",".join(placement)]
             return ["--restart", conf, *(["--node", node] if node else [])]
         if action == "switch":
             return ["--switch-from", conf]
@@ -459,7 +483,7 @@ def outcome(action: str, rc: int, name: str, shown: str, *, width: int | None = 
     else:
         out.emit(f"Stop was refused or failed for {subject}; the reason is above. Nothing else was changed.",
                  "✗ ", "  ", prefix_role="fail")
-    out.emit(shown, "Same as: ", "  ", role="command")
+    out.emit_command(shown, "Same as: ", "  ")
     return output.getvalue()
 
 
@@ -506,8 +530,10 @@ def main(argv: list[str] | None = None) -> int:
         status = {}
         if args.command in ("screen", "choices") and args.status_rc is not None:
             status = {"result": load_json(args.status), "rc": args.status_rc, "at": args.status_at}
+        from model_library.node_names import topology_path
+        topology = load_json(str(topology_path(args.repo_root)))
         page = Page(inventory, _entries(sys.stdin), names=NodeNames.saved(args.repo_root), now=args.now,
-                    status=status)
+                    status=status, topology=topology if isinstance(topology, dict) else None)
         if args.command == "services":
             for conf, kind in page.order():
                 print(f"{conf}\t{kind}")

@@ -69,7 +69,7 @@ review_candidates() {
       case "${actions[$choice]}" in
         continue) return 0 ;;
         add)
-          if candidate=$(prompt_input "Management hostname or IP" "Hostname or IP"); then
+          if candidate=$(prompt_input "Management hostname or IP" "node-b or 192.0.2.20"); then
             case "$candidate" in
               -*|*[!A-Za-z0-9._:@%+-]*)
                 echo 'Enter one hostname or IP, without spaces or SSH options.'
@@ -401,7 +401,7 @@ if load_cluster_topology; then
         >"$temporary/rank-$rank.json" 2>/dev/null || rm -f "$temporary/rank-$rank.json"
     fi
   done
-  topology_check_fabric "$CLUSTER_TOPOLOGY_FILE" || touch "$temporary/fabric-failed"
+  topology_check_fabric "$CLUSTER_TOPOLOGY_FILE" "$temporary/fabric-failures" || touch "$temporary/fabric-failed"
   touch "$temporary/fabric-checked"
 else
   touch "$temporary/configuration-error"

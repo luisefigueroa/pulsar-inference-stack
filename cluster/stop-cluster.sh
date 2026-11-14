@@ -35,6 +35,42 @@ if [ "$ARG" = --all ]; then
     fi
   done
 
+  # First each ordinary service recorded off the default node order, on the
+  # nodes its record names and with the same proofs as stop SPEC. Guarded
+  # trials of this saved cluster keep their own path: scripts/down.sh refuses
+  # --all while one is recorded off the default order. Each record of an
+  # earlier saved cluster, one-node or multi-node, ordinary or a guarded
+  # trial's, is cleared when none of its containers is on any node of this
+  # cluster; a container still there is reported, the record is kept, and the
+  # sweep below judges that container by its labels.
+  if ! recorded=$(python3 - "$PULSAR_MODEL_LIBRARY_DIR" "$CLUSTER_TOPOLOGY_ID" "${CLUSTER_NODE_IDS[@]}" <<'PY_RECORDED'
+import sys
+from model_library.state import Store
+from scripts.service_state import off_default_order, recorded_bindings
+for item in recorded_bindings(Store(sys.argv[1])):
+    earlier = item['topology_id'] != sys.argv[2]
+    if earlier or (not item['guarded'] and off_default_order(item['node_ids'], sys.argv[3:])):
+        print(item['selected_spec_id'], item['plan_id'], 'earlier' if earlier else 'current', sep='\t')
+PY_RECORDED
+  ); then
+    echo "error: stop --all did not run: the saved service records cannot be read, so no container was removed. Next: ./pulsar inventory" >&2
+    exit 1
+  fi
+  earlier_left=0
+  while IFS=$'\t' read -r recorded_spec recorded_plan recorded_cluster; do
+    [ -n "$recorded_plan" ] || continue
+    step=0
+    # Its probes run SSH, which reads standard input: keep the rows of this loop from them.
+    stop_recorded_service "$recorded_spec" "$recorded_plan" "./pulsar stop --all --yes" </dev/null || step=$?
+    [ "$step" != 0 ] || continue
+    if [ "$recorded_cluster" = earlier ] && [ "$step" = 3 ]; then
+      earlier_left=1
+      continue
+    fi
+    echo "error: stop --all stopped before removing the other services' containers, because spec ${recorded_spec:0:12}'s service could not be stopped on its recorded nodes. Next: ./pulsar stop $(spec_reference "$recorded_spec"), which says what it needs, then rerun ./pulsar stop --all --yes" >&2
+    exit 1
+  done <<<"$recorded"
+
   rc=0
   for ((rank = CLUSTER_TOPOLOGY_COUNT - 1; rank >= 1; rank--)); do
     host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
@@ -49,11 +85,22 @@ if [ "$ARG" = --all ]; then
   case "$rc" in
     0)
       retire_stopped_service_indexes --all
-      log "clean — no stack-managed containers remain"
+      # A container of an earlier saved cluster was left, as said above.
+      [ "$earlier_left" = 0 ] || exit 1
+      if [ "${EARLIER_UNCHECKED:-0}" = 1 ]; then
+        log "clean — no stack-managed containers remain on the nodes of the saved cluster; the machines named above were not checked"
+      else
+        log "clean — no stack-managed containers remain"
+      fi
       exit 0
       ;;
     2)
-      warn "some candidates were refused (unknown spec or rank placement)"
+      if [ "${SWEEP_OTHER_REFUSED:-0}" = 0 ] && [ "${SWEEP_EARLIER_REFUSED:-0}" -gt 0 ]; then
+        # Every refusal was a container of an earlier saved cluster, named above.
+        warn "the containers left from an earlier saved cluster named above were not removed"
+      else
+        warn "some candidates were refused (unknown spec or rank placement)"
+      fi
       ;;
     *)
       warn "managed cleanup reported an operational error"
@@ -67,8 +114,9 @@ if [ "$NODES" -le 1 ]; then
   echo "error: $ARG is a single-node spec; use ./pulsar stop $ARG" >&2
   exit 1
 fi
-require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" \
-  || exit 1
+# Stop needs the confirmed nodes, never the fabric: a running or leftover
+# service stays stoppable whatever the saved cluster's shape.
+require_cluster_nodes "$NODES" || exit 1
 
 EXACT=$(container_name_for "$ARG" "$NODES")
 log "stopping spec ${ARG:0:12} · $NODES nodes · container=$EXACT"

@@ -111,6 +111,19 @@ def _count(number: int, one: str, many: str | None = None) -> str:
     return f"{number} {one if number == 1 else (many or one + 's')}"
 
 
+def recipe_names(cluster: "Cluster", specs) -> str:
+    """SPECS for people: each catalog recipe by its name, then the recipes
+    outside this catalog counted once ("a recipe outside this catalog", "5
+    recipes outside this catalog"), joined as a list."""
+    specs = list(dict.fromkeys(specs))
+    named = [cluster.name(spec) for spec in specs if spec in cluster.catalog]
+    outside = len(specs) - len(named)
+    if outside:
+        named.append("a recipe outside this catalog" if outside == 1 else
+                     f"{outside} recipes outside this catalog")
+    return _list(named)
+
+
 # ---------------------------------------------------------------------------
 # What one files scan, one storage budget and the catalog say
 # ---------------------------------------------------------------------------
@@ -136,8 +149,12 @@ class Cluster:
     """The catalog joined to one files scan and one storage budget."""
 
     def __init__(self, entries: list[dict], files: dict, budget: list[dict] | None, *,
-                 names: NodeNames | None = None, archive_location: str = "not-configured", now=None):
+                 names: NodeNames | None = None, archive_location: str = "not-configured", now=None,
+                 pairs: list[tuple[str, str]] = (), topology_id: str | None = None):
         from model_library.file_inventory import _unread
+        # A saved ring's neighbouring pairs (serve_plan.ring_pairs) and the saved
+        # cluster's topology_id: with them, readiness names a ring's placements.
+        self.pairs, self.topology_id = list(pairs), topology_id
         self.entries = [row for row in entries if not row.get("historical")]
         self.catalog = {row["spec_id"]: row for row in self.entries}
         self.files = files
@@ -282,8 +299,9 @@ class Cluster:
         from scripts.serve_plan import readiness
         sizes = {name: (self.entry(manifest) or {}).get("payload_bytes")
                  for name, manifest in self.manifests(spec).items()}
+        ring = {"host": self.host, "pairs": self.pairs, "topology_id": self.topology_id} if self.names.ring else {}
         return readiness(self.catalog[spec], order=self.names.order, archive_location=self.archive_location,
-                         sizes=sizes, service=None)
+                         sizes=sizes, service=None, ring=self.names.ring, **ring)
 
     # -- containers that use files --------------------------------------------
 
@@ -333,8 +351,13 @@ def room_lines(cluster: Cluster) -> list[tuple[str, str, str | None]]:
     return lines
 
 
-def model_lines(cluster: Cluster, spec: str) -> list[str]:
-    """One recipe's facts: size and where its files are, then ready, kept and archived."""
+def model_lines(cluster: Cluster, spec: str, room: int | None = None) -> list[str]:
+    """One recipe's facts: size and where its files are, then ready, kept and archived.
+
+    On a saved ring, where the readiness phrase names placements, each part of
+    the second line that fits in ROOM columns with its " ·" is kept whole, so
+    the line breaks only between parts; a longer part breaks between words,
+    never inside a pair "first + second"."""
     homes = {name: location for name, location in cluster.homes(spec).items() if location}
     where = [_size(cluster.size(spec))]
     bound = cluster.bound(spec)
@@ -347,6 +370,9 @@ def model_lines(cluster: Cluster, spec: str) -> list[str]:
     if copies or not bound:
         where.append(f"{STATUS_WORDS['copies-on']} {cluster.hosts(copies)}" if copies else STATUS_WORDS["no-copies"])
     state = [cluster.readiness(spec)]
+    ring = bool(cluster.names.ring and room)
+    if ring:
+        state = state[0].split(" · ")
     pinned, loose = cluster.kept(spec)
     if pinned or loose:
         state.append(STATUS_WORDS["kept"] if pinned and not loose else
@@ -355,6 +381,11 @@ def model_lines(cluster: Cluster, spec: str) -> list[str]:
     used = cluster.users([location for _, location in cluster.bound(spec)] + list(homes.values()))
     if used:
         state.append(f"{STATUS_WORDS['in-use']} on {cluster.hosts(item['node'] for item in used)}")
+    if ring:
+        # Each part that fits keeps its " ·", so a line never starts with one.
+        from scripts.serve_plan import keep_pairs
+        return [" · ".join(where), f"{KEEP}· ".join(_kept(part) if len(part) + 2 <= room
+                                                     else keep_pairs(part, room) for part in state)]
     return [" · ".join(where), " · ".join(state)]
 
 
@@ -383,7 +414,7 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         text, first = (f"{'Models':<{LABEL_WIDTH}}" if first else indent), False
         return text
     for spec in shown_specs:
-        lines = model_lines(cluster, spec)
+        lines = model_lines(cluster, spec, out.width - len(more))
         out.emit(f"{cluster.name(spec)} · {lines[0]}", label(), more)
         out.emit(lines[1], more, more)
     for entry in cluster.snapshots:
@@ -474,11 +505,21 @@ def _users_text(cluster: Cluster, spec: str, users: list[dict]) -> list[tuple[st
     others = {}
     for item in users:
         if item["managed"] and item["owner"] != spec:
-            others.setdefault(item["owner"], []).append(item["node"])
-    for owner, nodes in others.items():
-        who = cluster.name(owner) if owner in cluster.catalog else "a Pulsar service started outside this catalog"
-        lines.append((f"{who} uses the files of {name} on {cluster.hosts(nodes)}. Stop it through Running "
-                      "services… first.", None))
+            # Services started outside this catalog are counted together, not repeated.
+            key = item["owner"] if item["owner"] in cluster.catalog else None
+            others.setdefault(key, {"owners": set(), "nodes": []})
+            others[key]["owners"].add(item["owner"])
+            others[key]["nodes"].append(item["node"])
+    for owner, found in sorted(others.items(), key=lambda pair: pair[0] is None):
+        count = len(found["owners"])
+        if owner is not None:
+            who, verb, it = cluster.name(owner), "uses", "it"
+        else:
+            who = ("a Pulsar service started outside this catalog" if count == 1 else
+                   f"{count} Pulsar services started outside this catalog")
+            verb, it = ("uses", "it") if count == 1 else ("use", "them")
+        lines.append((f"{who} {verb} the files of {name} on {cluster.hosts(found['nodes'])}. "
+                      f"Stop {it} through Running services… first.", None))
     for item in users:
         if not item["managed"]:
             lines.append((f"{item['name']}, a container Pulsar did not start, mounts the files of {name} on "
@@ -538,8 +579,7 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
         if fact["shared"] and not fact["freed"]:
             nodes = list(fact["shared"])
             others = sorted({other for value in fact["shared"].values() for other in value})
-            who = _list([cluster.name(other) if other in cluster.catalog else "a recipe outside this catalog"
-                         for other in others])
+            who = recipe_names(cluster, others)
             blocked.append((f"The copies of {name} on {cluster.hosts(nodes)} are shared with {who}; their files stay, "
                             "so removing them frees nothing.", None))
     removable += cluster_options(cluster, facts, blocked)
@@ -981,7 +1021,8 @@ def find_items(cluster: Cluster) -> dict:
         loose = [item for item in node.get("unidentified") or []
                  if item.get("kind") == "incomplete" and not item.get("preparation_spec_id")]
         if loose and node["node_id"] not in cluster.unread:
-            cannot.append(f"{_count(len(loose), 'unfinished download or copy', 'unfinished downloads or copies')} on "
+            # "Never finished" says it once; "unfinished" before it would say it twice.
+            cannot.append(f"{_count(len(loose), 'download or copy', 'downloads or copies')} on "
                           f"{cluster.host(node['node_id'])} never finished, so there is nothing complete to record. "
                           "Pulsar never deletes files it has no record of.")
     return {"register": register, "adopt": list(adopt.values()), "cannot": cannot, "unknown": list(cluster.unread)}
@@ -1573,7 +1614,7 @@ def outcome(plan: dict, *, done: int, failed: int | None = None, rc: int = 0, ra
         out.blank()
         out.emit("Same as:")
         for command in ran:
-            out.emit(command, "  ", "    ", role="command")
+            out.emit_command(command, "  ", "    ")
     return output.getvalue().replace(KEEP, " ")
 
 
@@ -1594,8 +1635,12 @@ def _cluster(args, entries: list[dict]) -> Cluster:
     if location is None:
         from scripts.serve_plan import _archive_location
         location = _archive_location(args.repo_root)
-    return Cluster(entries, files, budget_nodes(args.budget), names=NodeNames.saved(args.repo_root),
-                   archive_location=location)
+    names = NodeNames.saved(args.repo_root)
+    ring = {}
+    if names.ring:
+        from scripts.serve_plan import _saved_topology, _topology_id, ring_pairs
+        ring = {"pairs": ring_pairs(_saved_topology(args.repo_root)), "topology_id": _topology_id(args.repo_root)}
+    return Cluster(entries, files, budget_nodes(args.budget), names=names, archive_location=location, **ring)
 
 
 def main(argv: list[str] | None = None) -> int:

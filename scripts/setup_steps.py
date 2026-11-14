@@ -10,7 +10,7 @@ this cluster…): each machine's prerequisites, and what is still to fix.
 
 `machine` shows one machine: its platform facts (from the full probe of this
 machine, or from discovery for another machine, which verified its Docker,
-GPU and links to every other machine), then each prerequisite from
+GPU and links to every machine it is cabled to), then each prerequisite from
 `probe-node.py --prerequisites-only` (scripts/prerequisites.py words them as
 `pulsar doctor` does). A prerequisite that is missing is reported with its
 fix and never blocks saving: only the platform facts decide whether a machine
@@ -55,7 +55,8 @@ def machine(hostname: str, probe: dict | None, prerequisites: dict | None, *, di
         hostname = str((probe or {}).get("hostname") or (prerequisites or {}).get("hostname") or hostname)
     out.emit(f"{hostname} (this machine)" if this_machine else hostname, initial_indent="  ", role="heading")
     if discovered:
-        out.emit("Docker and GPU ✓ · links to every other machine ✓", initial_indent="    ", subsequent_indent="    ")
+        out.emit("Docker and GPU ✓ · links to every machine it is cabled to ✓", initial_indent="    ",
+                 subsequent_indent="    ")
     elif probe is None:
         found.append(("fail", "this machine's platform could not be checked; run `./pulsar doctor` for the reason"))
     elif probe.get("qualified") is True:

@@ -80,6 +80,11 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
 - With `markup=True`, write `` `literal` ``, `**choice**` and `*term*` marks.
   Use `role="command"` for a usage line or option term, and `role="option"` for
   an aligned `  TERM  DESCRIPTION` row.
+- Print a command a person may paste, such as one under `Same as:`, with
+  `emit_command` (from Bash, `terminal_format --same-as COMMAND`). A command
+  that fits stays one line. A longer one breaks only between arguments, never
+  between an option and its value, and every line but the last ends with ` \`.
+  Never wrap a command as prose: a break inside it pastes as two commands.
 - Help screens use `emit_help`'s layout: a usage line, one sentence, then
   option rows with at least two spaces between a term and its description.
   Only a text with a usage line is styled. Questions and the SSH help also pass
@@ -106,6 +111,20 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   option row.
 - `gum style` strips escape codes, so the recipe frame's text stays plain; only
   its border takes the accent.
+- Without colour Gum marks a question's selected answer with nothing, and under
+  `NO_COLOR` it drops every attribute. So in plain mode (`NO_COLOR` or
+  `PULSAR_COLOR=never`) `confirm` runs Gum with every colour cleared and marks
+  the selected answer bold and underlined, with its key hint under the
+  question. Anything the operator selects must be marked without colour: a
+  menu's `>` cursor is. `prompt_input` does the same in plain mode: its
+  cursor is a reverse-video block and its placeholder moves above the field
+  as `Example: …`, where it cannot be read as typed text; so a placeholder
+  is an example, not a description.
+- Gum cuts a menu title, a question or an input header wider than the
+  terminal at its edge. `choose_index`, `confirm` and `prompt_input` wrap them
+  between words to the terminal's width; a word wider than the terminal gets
+  its own row, which Gum still cuts. Text passed to Gum some other way must
+  fit by itself.
 - `spin` draws on stderr. Capture a spun command's stderr inside the command
   (`spin TITLE bash -c '"$@" 2>FILE' _ CMD...`), never `spin`'s own, or the
   spinner disappears and its frames land in the captured error.

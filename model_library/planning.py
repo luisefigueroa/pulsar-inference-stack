@@ -20,6 +20,15 @@ names at the rank's prepared copy ``path`` has the layout, manifest, file set
 and sizes of this snapshot, and the run hashes every file before it records
 the folder as the rank's copy (decision D7). Nothing is copied or deleted, and
 it needs no budget.
+
+A copy between two nodes that share no cable passes through the nodes
+between them (a ring). Its plan says so: a ``copy`` action, or a move,
+restore or archive plan, carries ``passes_through``, one entry per leg that
+has a node in between: ``copies`` (``to`` or ``from`` the node), the
+``node_id`` at the far end and the ``through`` node_ids in order. A copy
+with no node in between has no such field. A route that cannot be made or
+proven is a ``copy-route`` blocker that names the hop, and the plan is not
+eligible.
 """
 from __future__ import annotations
 
@@ -100,8 +109,50 @@ def detail(code: str, message: str, fix: str, node_id: str | None = None, **fiel
     return {'code': code, 'message': message, **({'node_id': node_id} if node_id else {}), 'fix': fix, **fields}
 
 
-def container_details(record: dict, observations: dict[str, dict], message: str) -> list[dict]:
-    """One blocker detail for each container, running or stopped, that mounts the record's files."""
+COPY_ROUTE_FIX = 'check the cables and SSH servers of the machines named, then preview again'
+
+
+def with_copy_routes(plan: dict, routes: list[dict]) -> dict:
+    """PLAN with each copy action's route, as the copy will run it.
+
+    ROUTES has one entry per copy action, by its ``slot`` in the actions:
+    ``passes_through`` (the legs with a node in between) and, when the route
+    cannot be made or proven, the ``refusal`` that says why."""
+    actions = [dict(action) for action in plan['actions']]
+    blockers, details = list(plan['blockers']), list(plan.get('blocker_details') or [])
+    for route in routes:
+        action = actions[route['slot']]
+        if action['action'] != 'copy':
+            raise StorageError('a copy route belongs to a copy action')
+        if route.get('passes_through'):
+            action['passes_through'] = route['passes_through']
+        if route.get('refusal'):
+            blockers.append(f"{action['node_id']}: {route['refusal']}")
+            details.append(detail('copy-route', blockers[-1], COPY_ROUTE_FIX, action['node_id']))
+    return {**plan, 'actions': actions, 'eligible': not blockers, 'blockers': blockers,
+            'blocker_details': details}
+
+
+def with_copy_route(plan: dict, node_id: str, passes_through: list, refusal: str = '') -> dict:
+    """A plan of one copy to or from NODE_ID (move, restore, archive) with its route.
+    A copy with no node in between and no refusal leaves the plan unchanged."""
+    plan = {**plan, **({'passes_through': passes_through} if passes_through else {})}
+    if refusal:
+        message = f'{node_id}: {refusal}'
+        plan.update(eligible=False, blockers=[*(plan.get('blockers') or []), message],
+                    blocker_details=[*(plan.get('blocker_details') or []),
+                                     detail('copy-route', message, COPY_ROUTE_FIX, node_id)])
+    return plan
+
+
+def container_details(record: dict, observations: dict[str, dict], message: str,
+                      topology_id: str | None = None) -> list[dict]:
+    """One blocker detail for each container, running or stopped, that mounts the record's files.
+
+    TOPOLOGY_ID, the saved cluster's identity when the caller knows it, tells
+    a Pulsar container of an earlier saved cluster apart: Stop refuses it, so
+    its fix is the Docker removal, and the container carries
+    ``earlier_cluster``."""
     details = []
     for container in container_references(record, observations):
         labels = container.get('labels') if isinstance(container.get('labels'), dict) else {}
@@ -110,17 +161,27 @@ def container_details(record: dict, observations: dict[str, dict], message: str)
                    if labels.get(MANAGED_LABEL) == 'true' else None)
         running = container.get('running')
         state = 'running' if running is True else 'stopped' if running is False else 'unknown'
-        fix = (f'stop the Pulsar service for spec {str(spec_id)[:12]}' if spec_id
-               else 'remove the container or its mount; Pulsar never removes it')
+        earlier = False
+        if spec_id and topology_id:
+            # The planner runs on the controller, beside scripts/.
+            from scripts.service_state import earlier_cluster_fix, left_from_earlier_cluster
+            earlier = left_from_earlier_cluster(labels, topology_id)
+        if earlier:
+            fix = earlier_cluster_fix(container.get('id') or '')
+        else:
+            fix = (f'stop the Pulsar service for spec {str(spec_id)[:12]}' if spec_id
+                   else 'remove the container or its mount; Pulsar never removes it')
         details.append(detail('container-reference', message, fix, record['node_id'],
                               container={'id': container.get('id'),
                                          'name': str(container.get('name') or str(container.get('id'))[:12]),
-                                         'state': state, **({'spec_id': spec_id} if spec_id else {})},
+                                         'state': state, **({'spec_id': spec_id} if spec_id else {}),
+                                         **({'earlier_cluster': True} if earlier else {})},
                               mount=_covering_mount(record, container['mounts']), path=record['path']))
     return details
 
 
-def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observations: list[dict]) -> dict:
+def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observations: list[dict],
+                 topology_id: str | None = None) -> dict:
     validate_home(home)
     checked = require_observations(node_ids, observations)
     dependencies = [validate_view(v) for v in views if v['snapshot_manifest_id'] == home['snapshot_manifest_id']]
@@ -129,7 +190,7 @@ def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observat
         blockers.append('prepared copies still depend on this home; explicitly purge them first')
         details.append(detail('dependent-copies', blockers[-1], 'purge the prepared copies of each dependent spec first'))
     message = 'a container still references the home, including stopped containers'
-    references = container_details(home, checked, message)
+    references = container_details(home, checked, message, topology_id)
     if references:
         blockers.append(message)
         details += references
@@ -139,7 +200,7 @@ def removal_plan(*, home: dict, views: list[dict], node_ids: list[str], observat
 
 
 def purge_plan(*, views: list[dict], node_ids: list[str], observations: list[dict],
-               all_views: list[dict] | None = None) -> dict:
+               all_views: list[dict] | None = None, topology_id: str | None = None) -> dict:
     checked = require_observations(node_ids, observations)
     blockers, details = [], []
     selected = {view_record_key(v) for v in views}
@@ -150,7 +211,7 @@ def purge_plan(*, views: list[dict], node_ids: list[str], observations: list[dic
             blockers.append(f"prepared copy for {view['spec_id']} is pinned; explicitly unpin first")
             details.append(detail('pinned', blockers[-1], 'unpin the prepared copies first', view['node_id']))
         message = f"a container references the prepared copy for {view['spec_id']}"
-        references = container_details(view, checked, message)
+        references = container_details(view, checked, message, topology_id)
         if references:
             blockers.append(message)
             details += references
@@ -234,7 +295,7 @@ def preparation_plan(*, spec: dict, home: dict, node_ids: list[str], topology_id
                 action = 'bind'
         if old and not view_ready:
             message = f'{node_id}: existing prepared copy is pinned or referenced'
-            references = container_details(old, checked, message)
+            references = container_details(old, checked, message, topology_id)
             # D13: a copy on this node made under an earlier membership or
             # position, whose files still verify, is taken over: only its
             # record's topology_id and rank change. No file is copied or

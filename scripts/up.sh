@@ -19,7 +19,7 @@ usage: pulsar start SPEC_ID [options]
   --dry-run             Check prerequisites without launching
   --verbose             Show full diagnostic output
   --node NODE           Select a confirmed node, by hostname or node ID, for a one-node spec
-  --placement-nodes LIST  Ordered confirmed nodes for guarded dry-run planning
+  --placement-nodes LIST  Saved nodes for a multi-node spec, in role order; the first runs the API. They must be cabled as the spec needs
   --accept-memory-warn  Explicitly accept a memory warning
   --pull-image          Permit staging the pinned image when missing
   --replace             Permit stopping an existing exact-name service
@@ -150,12 +150,28 @@ if [ "$NODES" -eq 1 ]; then
   export START_BLOCKER_PLACEMENT="--node ${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}"
   SERVICE_API_BASE=$(single_node_api_base_url "$PORT")
 else
-  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" || die "confirmed serving placement is unavailable"
+  # Whether the named nodes are cabled as the spec needs is the fabric check
+  # below, reported with the others.
+  resolve_serving_placement "$NODE_SELECTOR" "$PLACEMENT_NODES" defer-fabric \
+    || die "confirmed serving placement is unavailable"
   [ -z "$PLACEMENT_NODES" ] || PLACEMENT_ARGS=(--placement-nodes "$PLACEMENT_NODES")
-  if [ "$DRY" != 1 ] && [ -n "$PLACEMENT_NODES" ]; then
-    for ((slot=0;slot<NODES;slot++)); do
-      [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || usage_die "nondefault multi-node placement requires guarded run; ordinary start cannot launch a remote head"
-    done
+  # The API runs on the first node: its own address, the loopback address only
+  # when it is this machine (saved position 0).
+  FIRST_INDEX="${SERVING_NODE_INDEXES[0]}"
+  if [ "$FIRST_INDEX" != 0 ]; then
+    SERVICE_API_BASE="http://$(url_host "${CLUSTER_NODE_CONTROL_IPS[$FIRST_INDEX]}"):$PORT"
+  fi
+  OFF_DEFAULT_ORDER=0
+  for ((slot=0;slot<NODES;slot++)); do [ "${SERVING_NODE_INDEXES[$slot]}" = "$slot" ] || OFF_DEFAULT_ORDER=1; done
+  if [ "$REPLACE" = 1 ] && [ "$OFF_DEFAULT_ORDER" = 1 ]; then
+    usage_die "--replace replaces a service on the default node order only. To start this spec on $PLACEMENT_NODES, stop its service first (./pulsar stop $(spec_reference "$NAME")), then start it without --replace"
+  fi
+  # Off the default order, scripts/start_placement.py alone decides whether an
+  # ordinary Start runs this recipe there; a refusal comes before any probe.
+  if [ "$DRY" != 1 ] && [ "$OFF_DEFAULT_ORDER" = 1 ]; then
+    placement_refusal=$(python3 "$REPO_DIR/scripts/start_placement.py" check --topology "$CLUSTER_TOPOLOGY_FILE" \
+      --spec "$CONF_PATH" "${SERVING_NODE_IDS[@]}") \
+      || usage_die "start does not run this recipe on $PLACEMENT_NODES: ${placement_refusal:-the placement could not be judged}"
   fi
 fi
 resolve_spec_decode "$SPEC_MODE"
@@ -230,6 +246,14 @@ start_flags=()
 [ "$SKIP_PF" != 1 ] || start_flags+=(--skip-preflight)
 export START_BLOCKER_START_FLAGS="${start_flags[*]:-}"
 
+# Suggested follow-up commands name the node by hostname and a catalog spec by
+# its 12-character prefix when that prefix is unique; a candidate keeps its full ID.
+SUGGEST_SPEC="$NAME"
+if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; then
+  shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
+  [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
+fi
+
 # check_error FILE — the last "error:" line a check script printed, for a detail.
 check_error() {
   sed -nE 's/^(\[[^]]+\] )?error: //p' "$1" 2>/dev/null | tail -n1
@@ -254,8 +278,9 @@ if ! require_cluster_nodes "$NODES" >/dev/null 2>&1; then
   blocked topology_incomplete --detail "needs $NODES, confirmed ${CLUSTER_TOPOLOGY_COUNT:-0}"
   stop_if_blocked
 fi
-# Recorded before the fabric check, in check order, so a fabric blocker leaves it passed.
+# Recorded and shown before the fabric check, in check order, so a fabric blocker leaves it passed.
 start_check pass topology "spec needs $NODES node(s); confirmed $CLUSTER_TOPOLOGY_COUNT"
+echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
 if [ "$NODES" -gt 1 ]; then
   fabric_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-fabric.XXXXXX")
   if ! require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" 2>"$fabric_err"; then
@@ -263,18 +288,62 @@ if [ "$NODES" -gt 1 ]; then
     rm -f "$fabric_err"
     status_line "FAIL  fabric    ${fabric_reason:-the confirmed fabric does not meet this spec}"
     start_check fail fabric "${fabric_reason:-the confirmed fabric does not meet this spec}"
-    blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
+    if [ "${CLUSTER_TOPOLOGY_REFUSAL:-}" = cabling ]; then
+      # No command changes the cabling, so the record names none.
+      if [ "$TOPOLOGY_CLASS" = roce-ring ] && [ "$NODES" -gt 2 ] && [ "$NODES" -lt "$CLUSTER_TOPOLOGY_COUNT" ]; then
+        # A recipe that passes data around a loop closes it only on the whole ring.
+        cabling_note="On this ring no $NODES machines form a closed loop of cables; only all $CLUSTER_TOPOLOGY_COUNT do, in cable order."
+      elif [ "$TOPOLOGY_CLASS" = roce-ring ] && [ "$NODES" -gt 2 ]; then
+        cabling_note="Serve it on the ring's machines in cable order, the default order."
+      elif [ "$NODES" = 2 ]; then
+        cabling_note="Choose two machines that are neighbours on the ring, which share a cable."
+      else
+        cabling_note="On this cluster no $NODES machines are all cabled to each other."
+      fi
+      blocked fabric_incomplete --detail "$fabric_reason" --no-command --note "$cabling_note"
+    else
+      blocked fabric_incomplete --detail "${fabric_reason:-run ./pulsar topology check for details}"
+    fi
     stop_if_blocked
   fi
   rm -f "$fabric_err"
   start_check pass fabric "the confirmed fabric meets this spec"
+  # Judged from the saved links; preflight pings them before a launch.
+  echo "PASS  fabric    the confirmed fabric meets this spec"
 fi
-echo "PASS  topology  spec needs $NODES node(s)  confirmed=$CLUSTER_TOPOLOGY_COUNT  id=${CLUSTER_TOPOLOGY_ID:0:12}"
+
+# --- one service per spec: the saved records, read here, never by probing ---
+# A multi-node spec recorded on other nodes (or in another order, or under an
+# earlier saved cluster) is another service of it; Start never runs a second.
+# A guarded spec reaches here only as a guarded run's prerequisite dry run;
+# guarded trials keep their own lifecycle and records, so none is read here.
+if [ "$NODES" -gt 1 ] && [ "${SPEC_GUARDED:-0}" = 0 ]; then
+  elsewhere_args=()
+  for node in "${SERVING_NODE_IDS[@]}"; do elsewhere_args+=(--node-id "$node"); done
+  elsewhere_err=$(mktemp "${TMPDIR:-/tmp}/pulsar-elsewhere.XXXXXX")
+  if ! elsewhere=$(python3 "$REPO_DIR/scripts/service_state.py" elsewhere --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
+      --selected-spec-id "$NAME" --topology-id "$CLUSTER_TOPOLOGY_ID" "${elsewhere_args[@]}" 2>"$elsewhere_err"); then
+    # The reader's own reason goes into the blocker's detail.
+    elsewhere_reason=$(sed -n 's/^error: //p' "$elsewhere_err" | tail -n1)
+    rm -f "$elsewhere_err"
+    start_check fail service "the saved service records cannot be read${elsewhere_reason:+: $elsewhere_reason}"
+    blocked service_recorded_elsewhere --detail "the saved service records cannot be read${elsewhere_reason:+: $elsewhere_reason}"
+    stop_if_blocked
+  fi
+  rm -f "$elsewhere_err"
+  if [ -n "$elsewhere" ]; then
+    while IFS= read -r hosts; do
+      start_check fail service "a service of this spec is recorded on $hosts"
+      blocked service_recorded_elsewhere --detail "on $hosts"
+    done <<<"$elsewhere"
+    stop_if_blocked
+  fi
+fi
 # A new home goes on the start placement (one node) or on rank 0.
 if [ "$NODES" -eq 1 ]; then
   START_BLOCKER_HOME_NODE="${SINGLE_NODE_HOSTNAME:-}"
 else
-  START_BLOCKER_HOME_NODE="$(human_node_name 0)"
+  START_BLOCKER_HOME_NODE="$(human_node_name "${SERVING_NODE_INDEXES[0]:-0}")"
 fi
 export START_BLOCKER_HOME_NODE
 
@@ -341,10 +410,28 @@ else
       missing-on-worker|missing-on-rank|missing-on-head|missing-on-target|missing-both)
         if [ "$PULL_IMG" != 1 ]; then
           start_check fail image "${img_message:-the pinned image is missing${missing_on:+ on $missing_on}}"
-          blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}"
+          stage_note=()
+          if [ -n "$(image_ranks missing)" ] && controller_holds_pinned_image; then
+            # A copy from this machine, previewed first, on the same nodes.
+            stage_args=("$SUGGEST_SPEC")
+            [ -z "${PULSAR_SPEC_FILE:-}" ] || stage_args+=(--spec-file "$PULSAR_SPEC_FILE")
+            if [ "$NODES" -eq 1 ]; then
+              stage_args+=(--node "${SINGLE_NODE_HOSTNAME:-$PLACEMENT_SELECTOR}")
+            else
+              stage_args+=(${PLACEMENT_ARGS[@]+"${PLACEMENT_ARGS[@]}"})
+            fi
+            stage_note=(--note "This machine holds the pinned image, so it can also be copied from here: ./pulsar image stage $(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "${stage_args[@]}") --plan, then the same command with --yes instead of --plan.")
+          fi
+          blocked image_missing --detail "$IMAGE${missing_on:+ on $missing_on}" ${stage_note[@]+"${stage_note[@]}"}
         elif [ "$DRY" = 1 ]; then
-          echo "INFO  image     missing${missing_on:+ on $missing_on}; --pull-image would stage it"
-          start_check info image "missing${missing_on:+ on $missing_on}; --pull-image would stage it"
+          # Which staging --pull-image would run: decided as the staging below decides it.
+          if controller_holds_pinned_image; then
+            would_stage="--pull-image would copy it from this machine; a registry call adds only the pinned name where the copy does not keep it"
+          else
+            would_stage="--pull-image would pull it from its registry on each of those nodes, because this machine does not hold it"
+          fi
+          echo "INFO  image     missing${missing_on:+ on $missing_on}; $would_stage"
+          start_check info image "missing${missing_on:+ on $missing_on}; $would_stage"
         else
           start_check info image "missing${missing_on:+ on $missing_on}; --pull-image stages it after the other checks"
           IMAGE_SYNC="$img_state"
@@ -432,7 +519,13 @@ if [ "$SKIP_W" != 1 ]; then
     0) start_check pass model-files "prepared files verified on every serving rank" ;;
     1)
       start_check fail model-files "prepared files are not ready on every serving rank"
-      blocked model_files_not_ready --detail "see the model-files check above" ;;
+      if [ -n "$PLACEMENT_NODES" ] && [ "$NODES" -gt 1 ]; then
+        # Prepared copies hold one rank per node: another order needs Prepare again.
+        blocked model_files_not_ready --detail "see the model-files check above" \
+          --note "Each node's prepared copy serves one rank. Copies prepared for these nodes in another order are prepared again for this order by the command above; if a service of this spec still runs on them, stop it first: ./pulsar stop $(spec_reference "$NAME")"
+      else
+        blocked model_files_not_ready --detail "see the model-files check above"
+      fi ;;
     *)
       w_detail=$(check_error "$w_err")
       start_check fail model-files "the model-files check could not complete: ${w_detail:-exit $w_rc}"
@@ -512,16 +605,23 @@ else
     port_rows=("$head_index:$PORT" "$head_index:${MASTER_PORT:-29500}")
   fi
   for row in "${port_rows[@]}"; do
-    index="${row%%:*}" checked_port="${row#*:}" port_host=""
+    index="${row%%:*}" checked_port="${row#*:}" port_host="" port_rc=0
     if [ "$index" -gt 0 ]; then port_host="${CLUSTER_NODE_SSH_HOSTS[$index]}"; fi
-    if port_free "$checked_port" ${port_host:+"$port_host"}; then
-      continue
-    fi
-    status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
-    start_check fail port "$checked_port is in use" --node "$(human_node_name "$index")"
+    port_free "$checked_port" ${port_host:+"$port_host"} || port_rc=$?
+    [ "$port_rc" != 0 ] || continue
     ports_busy=1
-    blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
-      --detail "port $checked_port"
+    if [ "$port_rc" = 1 ]; then
+      status_line "FAIL  port      $checked_port is in use on $(human_node_name "$index")"
+      start_check fail port "$checked_port is in use" --node "$(human_node_name "$index")"
+      blocked port_in_use --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
+        --detail "port $checked_port"
+    else
+      # Unknown is not in use: the node did not answer the check.
+      status_line "FAIL  port      $checked_port could not be checked on $(human_node_name "$index")"
+      start_check fail port "$checked_port could not be checked" --node "$(human_node_name "$index")"
+      blocked port_check_failed --node "$(human_node_name "$index")" --node-id "${CLUSTER_NODE_IDS[$index]:-}" \
+        --detail "port $checked_port"
+    fi
   done
   if [ "$ports_busy" = 0 ]; then
     ports=$(printf '%s, ' "${port_rows[@]##*:}")
@@ -531,21 +631,21 @@ fi
 stop_if_blocked
 
 # --- deferred image staging (--pull-image) ---
-case "$IMAGE_SYNC" in
-  "") ;;
-  missing-on-worker|missing-on-rank)
-    # Streaming from this node can omit the digest reference; --pull-image
-    # also permits pulling the exact digest on a node where that happens.
+# Whatever the image check's state name, which counts role ranks: when this
+# machine holds the pinned image, it is copied from here, and --pull-image
+# also permits pulling the exact digest on a node where the copy did not keep
+# the pinned name. When this machine lacks it, only a pull works.
+if [ -n "$IMAGE_SYNC" ]; then
+  if controller_holds_pinned_image; then
     "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --yes --pull-if-stream-incomplete
     QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
       || die "the pinned image is still missing after staging; see the staging errors above"
-    ;;
-  *)
+  else
     "$REPO_DIR/scripts/sync-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" --pull --yes
     QUIET=1 "$REPO_DIR/scripts/check-image.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
       || die "the pinned image is still missing after pulling it; see the pull errors above"
-    ;;
-esac
+  fi
+fi
 
 # --- multi-node preflight ---
 if [ "$NODES" -gt 1 ]; then
@@ -556,7 +656,7 @@ if [ "$NODES" -gt 1 ]; then
     else
       echo "│  running cluster preflight…"
       if [ "$VERBOSE" = 1 ]; then
-        if "$REPO_DIR/cluster/preflight.sh" "$NAME"; then
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME" "${PLACEMENT_ARGS[@]}"; then
           start_check pass preflight "cluster OK"
         else
           start_check fail preflight "see the preflight output above"
@@ -567,9 +667,16 @@ if [ "$NODES" -gt 1 ]; then
         _pf_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-preflight.XXXXXX")
         # shellcheck disable=SC2064
         trap 'rm -f "${_pf_log:-}"' RETURN
-        if "$REPO_DIR/cluster/preflight.sh" "$NAME" \
+        if "$REPO_DIR/cluster/preflight.sh" "$NAME" "${PLACEMENT_ARGS[@]}" \
             >"$_pf_log" 2>&1; then
           echo "PASS  preflight cluster OK"
+          # The links preflight pinged between the serving nodes, as it
+          # counted them; its rows name role ranks.
+          pf_links=""
+          while IFS=' ' read -r pf_first pf_second pf_count; do
+            pf_links+="${pf_links:+; }$pf_count between $(human_node_name "${SERVING_NODE_INDEXES[$pf_first]:-$pf_first}") and $(human_node_name "${SERVING_NODE_INDEXES[$pf_second]:-$pf_second}")"
+          done < <(sed -nE 's|^  ok   ranks ([0-9]+)/([0-9]+): ([0-9]+ of [0-9]+) links answered both ways$|\1 \2 \3|p' "$_pf_log")
+          [ -z "$pf_links" ] || echo "      links that answered both ways: $pf_links"
           start_check pass preflight "cluster OK"
           rm -f "$_pf_log"
         else
@@ -619,16 +726,13 @@ plan_schema=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["s
 echo "PASS  plan      schema=$plan_schema ranks=$NODES; prerequisites checked separately"
 start_check pass plan "schema $plan_schema, $NODES rank(s)"
 
-# Suggested follow-up commands name the node by hostname and a catalog spec by
-# its 12-character prefix when that prefix is unique; a candidate keeps its full ID.
-SUGGEST_SPEC="$NAME"
-if [ -z "${PULSAR_SPEC_FILE:-}" ] && [ -f "$REPO_DIR/releases/$NAME.json" ]; then
-  shopt -s nullglob; prefix_matches=("$REPO_DIR/releases/${NAME:0:12}"*.json); shopt -u nullglob
-  [ "${#prefix_matches[@]}" -ne 1 ] || SUGGEST_SPEC="${NAME:0:12}"
-fi
-SUGGEST_ARGS=("${PLACEMENT_ARGS[@]}")
+# Status and stop take --node for a one-node service and no placement for a
+# multi-node one, which they find from its record.
+SUGGEST_ARGS=()
 if [ "${PLACEMENT_ARGS[0]:-}" = --node ] && [ -n "${SINGLE_NODE_HOSTNAME:-}" ]; then
   SUGGEST_ARGS=(--node "$SINGLE_NODE_HOSTNAME")
+elif [ "${PLACEMENT_ARGS[0]:-}" = --node ]; then
+  SUGGEST_ARGS=("${PLACEMENT_ARGS[@]}")
 fi
 
 if [ "$DRY" = 1 ]; then
@@ -672,10 +776,17 @@ api_auth_args=()
 api_auth_curl_args api_auth_args
 if [ "$NODES" -gt 1 ]; then
   log "starting exact $NODES-node cluster…"
-  SERVICE_NODE="$(human_node_name 0)" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[0]:-}"
+  SERVICE_NODE="$(human_node_name "$FIRST_INDEX")" SERVICE_NODE_ID="${CLUSTER_NODE_IDS[$FIRST_INDEX]:-}"
   START_PHASE=cluster
+  # The launcher resolves the same placement and must build this same plan;
+  # without the ID of the plan checked here, nothing is launched.
+  checked_plan_id=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plan_id"])' "$PLAN_FILE") \
+    || checked_plan_id=""
+  [[ "$checked_plan_id" =~ ^[0-9a-f]{64}$ ]] \
+    || die "the launch plan start checked cannot be read, so the launcher could not confirm it builds the same one; nothing was launched"
+  launch_flags+=(--launch-plan-id "$checked_plan_id")
   "$REPO_DIR/cluster/start-cluster.sh" "$NAME" \
-    ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}"
+    ${spec_flag[@]+"${spec_flag[@]}"} "${launch_flags[@]}" "${PLACEMENT_ARGS[@]}"
 else
   log "starting single-node…"
   SERVICE_NODE="${SINGLE_NODE_HOSTNAME:-}" SERVICE_NODE_ID="${SINGLE_NODE_ID:-}"
@@ -693,7 +804,9 @@ else
       "$PULSAR_DOCKER" logs --tail "$1" "$CONTAINER" >&2 || true
     fi
   }
-  wait_attempts="${WAIT_ATTEMPTS:-90}" wait_started=$SECONDS
+  # As long as a multi-node Start's wait (START_HEALTH_WAIT_SECONDS), checked
+  # every 5 s so an exited container is seen as soon as before.
+  wait_attempts="${WAIT_ATTEMPTS:-$((START_HEALTH_WAIT_SECONDS / 5))}" wait_started=$SECONDS
   log "waiting for ${SERVICE_API_BASE}/health on $(single_node_display) (cold load can take minutes;" \
     "up to $wait_attempts health checks, ${WAIT_SECONDS:-5} s apart)"
   ok=0 container_state=""
@@ -707,8 +820,12 @@ else
     case "$container_state" in
       exited)
         error_line "the container $CONTAINER exited before it became healthy; last logs:"
-        service_logs 80
+        service_log=$(mktemp "${TMPDIR:-/tmp}/pulsar-service-log.XXXXXX")
+        service_logs "${ENGINE_LOG_LINES:-400}" 2>"$service_log"
+        tail -n 80 "$service_log" >&2
         blocked container_exited --node "$SERVICE_NODE" --node-id "$SERVICE_NODE_ID" --service-id "$SERVICE_ID"
+        engine_memory_refusal "$(single_node_display)" "$service_log" || true
+        rm -f "$service_log"
         exit 1
         ;;
       absent)
@@ -752,7 +869,10 @@ if [ "$smoke_status" != 0 ] || [ "${smoke_http:-000}" != 200 ]; then
     smoke_detail="HTTP $smoke_http: $(head -c 200 "$smoke_body" | tr '\n' ' ')"
   fi
   error_line "the test completion failed ($smoke_detail); the service is still running; last logs:"
-  if [ "$NODES" -gt 1 ]; then
+  if [ "$NODES" -gt 1 ] && [ "$FIRST_INDEX" != 0 ]; then
+    "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "${CLUSTER_NODE_SSH_HOSTS[$FIRST_INDEX]}" \
+      "$(shell_join_q docker logs --tail 80 "$CONTAINER")" >&2 || true
+  elif [ "$NODES" -gt 1 ]; then
     "$PULSAR_DOCKER" logs --tail 80 "$CONTAINER" >&2 || true
   else
     service_logs 80

@@ -144,6 +144,9 @@ case "$*" in
   "models check "*) key=check ;;
   *) key=other ;;
 esac
+# KEY.reads-stdin: the command reads its standard input to the end, as ssh
+# without -n does (scripts/check-image.sh on a remote node).
+[ ! -e "$FIXTURES/$key.reads-stdin" ] || cat >/dev/null
 echo >> "$FIXTURES/$key.count"
 n=$(wc -l < "$FIXTURES/$key.count")
 file="$FIXTURES/$key.$n.json"; [ -e "$file" ] || file="$FIXTURES/$key.json"
@@ -457,6 +460,9 @@ class Switch(Harness):
         self.assertIn("Same as: ./pulsar stop cdcdcdcdcdcd ./pulsar start abababababab", text)
         self.assertEqual(self.menus()[2], ["Serve a model", "Start org/other again", "Back"])
         self.assertEqual(self.ran(), [f"stop {OTHER}", f"start {SPEC}", f"start {OTHER}"])
+        # One "again", after the model it starts.
+        self.assertIn("→ Starting org/other again.", text)
+        self.assertNotIn("again again", text)
 
     def test_change_offers_a_pull_where_a_copy_from_this_machine_is_possible_too(self):
         self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "missing"), (2, "ok"))))
@@ -544,6 +550,38 @@ class Switch(Harness):
         self.assertIn("Still serving: org/other.", text)
 
 
+class PreviewsThatReadStdin(Harness):
+    """A preview that reads its standard input (ssh to a remote node does) must not take the
+    list of previews still to run: Prepare's, the image's and Start's previews all run, in order."""
+
+    def setUp(self):
+        super().setUp()
+        self.entries(checked(home=HOME, local_state="missing"),
+                     checked(spec_id=OTHER, model_id="org/other", home=HOME, local_state="ready"))
+        self.fixture("prepare-plan", envelope(prepare_plan(("n0", "home-view"), ("n1", "copy"), ("n2", "copy"))))
+        self.fixture("image-plan", envelope(image_plan((0, "ok"), (1, "ok"), (2, "ok"))))
+        self.fixture("start-plan", start_blocked("model_files_not_ready"), rc=1)
+
+    def test_every_preview_runs_when_one_reads_stdin(self):
+        for key in ("prepare-plan", "image-plan"):
+            with self.subTest(reads=key):
+                for path in self.fixtures.glob("*.count"):
+                    path.unlink()
+                for path in self.fixtures.glob("*.reads-stdin"):
+                    path.unlink()
+                self.log.unlink(missing_ok=True)
+                self.answers.with_suffix(".n").unlink(missing_ok=True)
+                (self.fixtures / f"{key}.reads-stdin").touch()
+                result = self.run_menu(["0", "Cancel", "Back"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.commands(), ["inventory --json", f"model prepare {SPEC} --plan --json",
+                                                   f"image stage {SPEC} --plan --json",
+                                                   f"start {SPEC} --dry-run --json"])
+                # Start refused only because Prepare has not run: the plan's own step covers it.
+                self.assertNotIn("Start's checks were not run yet", result.stdout)
+                self.assertNotIn("Blocked", result.stdout)
+
+
 class NeedsEverything(Harness):
     """No home, no archive: download, copy, image, Stop, Start."""
 
@@ -612,6 +650,21 @@ class NeedsEverything(Harness):
         self.choose_log.unlink()
         self.run_menu(["0", "Go ahead", "Back"])
         self.assert_plain_choices()
+
+    def test_back_from_details_shows_the_same_plan_without_running_its_previews_again(self):
+        result = self.run_menu(["0", "Details", "Back", "Cancel", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # One inventory and one round of previews; Details changes nothing.
+        self.assertEqual(self.commands(), ["inventory --json", "model files --json", "prerequisites n0",
+                                           f"image stage {SPEC} --plan --json", f"start {SPEC} --dry-run --json"])
+        # The plan is shown again above its choices, as it was.
+        self.assertEqual(result.stdout.count("Pulsar will:"), 2)
+        self.assertEqual(self.menus()[1], self.menus()[3])
+        # Change… still plans again.
+        self.log.unlink()
+        self.answers.with_suffix(".n").unlink()
+        self.run_menu(["0", "Change…", "Back", "Cancel", "Back"])
+        self.assertEqual(self.commands().count(f"start {SPEC} --dry-run --json"), 2)
 
     def test_details_compares_with_another_recipe_from_the_lists_cards(self):
         result = self.run_menu(["0", "Details", "Compare with another recipe", "0", "Back", "Cancel", "Back"])

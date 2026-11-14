@@ -47,7 +47,7 @@ acquire_model_library_lifecycle_lock() {
 }
 acquire_model_library_hot_lock() { :; }
 release_model_library_locks() { touch "$FIXTURE_DIR/locks-released"; }
-load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS=mesh; MIN_RAILS_PER_PAIR=2; }
+load_conf() { NODES="${FIXTURE_NODES:-1}"; CONF_SOURCE=spec; CONF_NAME="$1"; MODEL=example/model; IMAGE=example/image@sha256:abc; PORT=8000; SERVED_NAME=example; TOPOLOGY_CLASS="${FIXTURE_TOPOLOGY_CLASS:-mesh}"; MIN_RAILS_PER_PAIR=2; }
 require_spec_launch_admission() { :; }
 spec_overlay_node_selector() { echo "$1"; }
 resolve_single_node_placement() {
@@ -63,15 +63,19 @@ human_node_name() { echo "fixture-host-$1"; }
 CLUSTER_NODE_IDS=(node-0 node-1 node-2)
 CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2)
 require_cluster_nodes() { CLUSTER_TOPOLOGY_COUNT="${FIXTURE_TOPOLOGY:-$NODES}"; CLUSTER_TOPOLOGY_ID=cccccccccccc; [ "$CLUSTER_TOPOLOGY_COUNT" -ge "$1" ]; }
-require_profile_topology() { [ -z "${FIXTURE_FABRIC:-}" ] || { echo "topology: $FIXTURE_FABRIC" >&2; return 1; }; }
+require_profile_topology() { CLUSTER_TOPOLOGY_REFUSAL="${FIXTURE_REFUSAL:-}"; [ -z "${FIXTURE_FABRIC:-}" ] || { echo "topology: $FIXTURE_FABRIC" >&2; return 1; }; }
 container_name_for() { echo fixture-container; }
 container_ownership_inspect_local() { return "${FIXTURE_EXISTING:-3}"; }
 container_ownership_inspect_remote() { return "${FIXTURE_EXISTING:-3}"; }
-port_free() { [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
+# As scripts/lib.sh: 0 free, 1 in use, 2 not checked.
+port_free() { [ "$1" != "${FIXTURE_UNCHECKED_PORT:-}" ] || return 2; [ "$1" != "${FIXTURE_BUSY_PORT:-}" ]; }
 resolve_library_hot_for_profile() { :; }
-write_launch_plan_file() { printf '{"schema_version": 5, "service_id": "%s"%s}\n' "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
+# Every plan has an ID; a multi-node Start hands it to the launcher.
+write_launch_plan_file() { printf '{"schema_version": 5, "plan_id": "%s", "service_id": "%s"%s}\n' "${FIXTURE_PLAN_ID:-7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a}" "$FIXTURE_SERVICE_ID" "${FIXTURE_PLAN_FIELDS:-}" >"$1"; }
 api_auth_curl_args() { :; }
 container_state_exact() { echo "${FIXTURE_CONTAINER:-running}"; }
+# FIXTURE_CONTROLLER_IMAGE=1: this machine's Docker holds the pinned image.
+controller_holds_pinned_image() { [ "${FIXTURE_CONTROLLER_IMAGE:-0}" = 1 ]; }
 '''
 # Run the owning selector while keeping topology/transport boundaries synthetic.
 _source_lib = (ROOT/'scripts/lib.sh').read_text()
@@ -79,7 +83,7 @@ LIB += _source_lib[_source_lib.index('resolve_serving_placement() {'):
                    _source_lib.index('resolve_single_node_placement() {')]
 # The real health-wait progress helpers, so up.sh's loading phase keeps its wiring.
 LOAD_PROGRESS = _source_lib[_source_lib.index('_message_tag() {'):_source_lib.index('\nlog()')] + "\n" + \
-    _source_lib[_source_lib.index('# load_progress STARTED'):_source_lib.index('die()  {')]
+    _source_lib[_source_lib.index('# START_HEALTH_WAIT_SECONDS'):_source_lib.index('die()  {')]
 LIB += LOAD_PROGRESS
 # The real status-word helpers, so up.sh's check rows keep their wiring.
 LIB += _source_lib[_source_lib.index('# Status words in check rows take'):_source_lib.index('print_hanging() {')]
@@ -131,7 +135,8 @@ case "$url" in
   *) exit 2 ;;
 esac
 '''
-DOCKER = '#!/usr/bin/env bash\necho "$*" >>"$FIXTURE_DIR/docker-calls"\n[ "$1" != logs ] || echo "fixture engine log line"\n'
+DOCKER = ('#!/usr/bin/env bash\necho "$*" >>"$FIXTURE_DIR/docker-calls"\n'
+          '[ "$1" != logs ] || echo "${FIXTURE_LOG:-fixture engine log line}"\n')
 
 
 # Blockers that no ./pulsar command resolves; their note says why. Adding a
@@ -340,11 +345,15 @@ class StartScenarios(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/up.sh", self.root / "scripts/up.sh")
         shutil.copyfile(ROOT / "scripts/start_blockers.py", self.root / "scripts/start_blockers.py")
         shutil.copyfile(ROOT / "scripts/start_checks.py", self.root / "scripts/start_checks.py")
+        # Start reads the saved service records (none here) for one service per spec.
+        shutil.copyfile(ROOT / "scripts/service_state.py", self.root / "scripts/service_state.py")
         (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
-                                                   + lib_function("launch_plan_service_id"))
+                                                   + lib_function("launch_plan_service_id")
+                                                   + lib_function("engine_memory_refusal"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
                            ("scripts/check-memory.sh", MEMORY),
-                           ("scripts/sync-image.sh", '#!/usr/bin/env bash\ntouch "$FIXTURE_DIR/synced"\n'),
+                           # Staging records the arguments it was given.
+                           ("scripts/sync-image.sh", '#!/usr/bin/env bash\necho "$*" >"$FIXTURE_DIR/synced"\n'),
                            ("serve.sh", LAUNCHER), ("cluster/start-cluster.sh", LAUNCHER),
                            ("cluster/preflight.sh", "#!/usr/bin/env bash\nexit 0\n"),
                            ("bin/curl", CURL), ("bin/docker", DOCKER)):
@@ -408,7 +417,9 @@ class StartScenarios(unittest.TestCase):
         self.assertEqual((result.returncode, codes), (0, []), result.stderr + result.stdout)
         self.assertEqual([outcome for _, outcome in self.outcomes()],
                          ["info", "pass", "pass", "info", "pass", "pass", "pass", "pass", "pass"])
-        self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would stage it")
+        self.assertEqual(self.checked[3]["message"], "missing on fixture-host-0; --pull-image would pull it from its "
+                                                     "registry on each of those nodes, because this machine does not "
+                                                     "hold it")
 
     def test_multi_node_checks_keep_their_order_and_record_preflight(self):
         # A fabric blocker leaves the topology check passed, not not_run.
@@ -454,6 +465,45 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--pull-image")
         self.assertEqual(codes, ["model_files_not_ready"])  # from the first run only
         self.assertTrue(self.ran("synced"), result.stderr + result.stdout)
+
+    def test_a_missing_image_offers_a_copy_from_this_machine_when_it_holds_the_image(self):
+        for nodes, flags, selection in ((1, (), "--node spark-1 "), (2, (), "")):
+            with self.subTest(nodes=nodes):
+                self.reset()
+                result, codes = self.start(*flags, image="missing-on-rank", nodes=nodes, controller_image=1)
+                self.assertEqual(codes[0], "image_missing")
+                self.assertEqual(self.records[0]["note"],
+                                 "This machine holds the pinned image, so it can also be copied from here: "
+                                 f"./pulsar image stage {SPEC} {selection}--plan, then the same command with --yes "
+                                 "instead of --plan.")
+                self.assertIn(f"./pulsar image stage {SPEC} {selection}--plan", result.stdout)
+                # Without the image here, Start offers only --pull-image, as before.
+                self.reset()
+                self.start(*flags, image="missing-on-rank", nodes=nodes)
+                self.assertIsNone(self.records[0]["note"])
+
+    def test_pull_image_copies_from_this_machine_when_it_holds_the_image_whatever_the_state(self):
+        # The state names count role ranks, not this machine: missing-on-head on
+        # named nodes can mean two other nodes lack it while this one holds it.
+        for state in ("missing-on-head", "missing-on-rank", "missing-both"):
+            for held, staged, would in (
+                    (1, "--yes --pull-if-stream-incomplete",
+                     "--pull-image would copy it from this machine; a registry call adds only the pinned name "
+                     "where the copy does not keep it"),
+                    (0, "--pull --yes",
+                     "--pull-image would pull it from its registry on each of those nodes, because this machine "
+                     "does not hold it")):
+                with self.subTest(state=state, held=held):
+                    self.reset()
+                    (self.root / "synced").unlink(missing_ok=True)
+                    result, codes = self.start("--pull-image", "--dry-run", image=state, controller_image=held)
+                    self.assertEqual((result.returncode, codes), (0, []), result.stdout + result.stderr)
+                    self.assertIn(f"INFO  image     missing on fixture-host-0; {would}\n", result.stdout)
+                    self.assertFalse(self.ran("synced"))
+                    result, codes = self.start("--pull-image", image=state, controller_image=held)
+                    self.assertEqual((result.returncode, codes), (0, []), result.stdout + result.stderr)
+                    self.assertEqual((self.root / "synced").read_text().split(), [SPEC, "--node", "node-0",
+                                                                                 *staged.split()])
 
     def test_known_missing_image_is_reported_with_an_unreachable_node(self):
         result, codes = self.start(image="mixed")
@@ -538,7 +588,8 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--dry-run", "--pull-image")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(codes, [])
-        self.assertIn("INFO  image     missing on fixture-host-0; --pull-image would stage it", result.stdout)
+        self.assertIn("INFO  image     missing on fixture-host-0; --pull-image would pull it from its registry on "
+                      "each of those nodes, because this machine does not hold it", result.stdout)
         self.assertIn("DRY-RUN OK", result.stdout)
         # The follow-up command names the node by hostname, like the blocker fixes; a
         # spec that is not a catalog file keeps its complete ID.
@@ -585,6 +636,17 @@ class StartScenarios(unittest.TestCase):
         result, codes = self.start("--skip-preflight", image="ok", nodes=2, busy_port=29500)
         self.assertEqual(codes, ["port_in_use", "port_in_use"])
         self.assertIn("(port 29500)", self.records[1]["message"])
+
+    def test_a_port_that_could_not_be_checked_is_not_said_to_be_in_use(self):
+        result, codes = self.start(image="ok", unchecked_port=8000)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(codes, ["port_check_failed"])
+        self.assertIn("FAIL  port      8000 could not be checked on fixture-host-0\n", result.stdout)
+        self.assertIn("BLOCKED port_check_failed: fixture-host-0: the port check could not complete on the node "
+                      "(port 8000). Next: ./pulsar topology check\n  Whether the port is free is not known; start "
+                      "again once the node answers.", result.stdout)
+        self.assertNotIn("in use", result.stdout)
+        self.assertFalse(self.ran("launched"))
 
     def test_ready_only_after_the_test_completion_answers(self):
         result, codes = self.start(image="ok")
@@ -677,6 +739,46 @@ class StartScenarios(unittest.TestCase):
                 self.assertEqual(codes, [code])
                 self.assertEqual((self.records[0]["fix"], self.records[0]["service_id"]), (fix, SERVICE_ID))
                 self.assertIn(f"FAILED {code}: spark-1: ", result.stdout)
+
+    def test_an_engine_memory_refusal_in_the_log_is_quoted_and_explained(self):
+        refusal = ("ValueError: Free memory on device cuda:0 (86.66/121.69 GiB) on startup is less than desired "
+                   "GPU memory utilization (0.75, 91.27 GiB)")
+        result, codes = self.start(image="ok", health="fail", container="exited",
+                                   log=f"(EngineCore pid=1) ERROR 01-01 00:00:00 [core.py:1] {refusal}")
+        self.assertEqual(codes, ["container_exited"])
+        self.assertIn(f"engine on fixture-host: {refusal}\n  The engine measures free GPU memory when it starts, and "
+                      "that reading varies from one start to the next, so a retry can pass.\n", result.stderr)
+        # Other logs say nothing more.
+        self.reset()
+        result, _ = self.start(image="ok", health="fail", container="exited")
+        self.assertNotIn("engine on", result.stderr)
+
+    # The one-node wait is as long as a multi-node Start's: 240 checks 5 s apart, 20 minutes.
+    def test_the_one_node_wait_allows_240_checks_5_s_apart_and_ends_early(self):
+        defaults = {"WAIT_ATTEMPTS": "", "WAIT_SECONDS": ""}
+        started = time.monotonic()
+        result, codes = self.start(image="ok", extra_env=defaults)
+        self.assertEqual((result.returncode, codes), (0, []), result.stderr)
+        self.assertIn("up to 240 health checks, 5 s apart)", result.stdout)
+        self.assertIn("\nREADY\n", result.stdout)
+        # A container that exits ends the wait at its first check, as before.
+        self.reset()
+        result, codes = self.start(image="ok", health="fail", container="exited",
+                                   extra_env={**defaults, "LOAD_PROGRESS_LOG_SECONDS": "0"})
+        self.assertEqual((result.returncode, codes), (1, ["container_exited"]))
+        self.assertIn("up to 240 health checks, 5 s apart)", result.stdout)
+        self.assertNotIn("health check 1 of 240", result.stderr)
+        # Neither waited for a single 5-second interval.
+        self.assertLess(time.monotonic() - started, 5 * 2)
+
+    def test_wait_attempts_and_wait_seconds_still_set_the_wait(self):
+        result, codes = self.start(image="ok", health="fail",
+                                   extra_env={"WAIT_ATTEMPTS": "3", "WAIT_SECONDS": "0",
+                                              "LOAD_PROGRESS_LOG_SECONDS": "0"})
+        self.assertEqual(codes, ["health_timeout"])
+        self.assertIn("up to 3 health checks, 0 s apart)", result.stdout)
+        self.assertIn("health check 3 of 3 · container running\n", result.stderr)
+        self.assertNotIn("health check 4", result.stderr)
 
     # TUI-31: the wait reports elapsed time, the check count and the container state.
     def test_captured_wait_progress_is_plain_lines_on_stderr(self):
@@ -779,6 +881,9 @@ class Interrupts(unittest.TestCase):
             f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
             f"CLUSTER_PHASE={phase} LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
             'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            # The launcher's role-to-node map, in the default order.
+            "SERVING_NODE_INDEXES=(0 1)",
+            *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
             lib_function("start_blocker"),
             lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
             "cluster_interrupted 2",
@@ -829,6 +934,9 @@ class Interrupts(unittest.TestCase):
             f"REPO_DIR={shlex.quote(str(ROOT))} NODES=2 MODEL_NAME={SPEC} SERVICE_ID={SERVICE_ID}",
             "CLUSTER_PHASE=removing LAUNCHING_RANK=0 CLUSTER_NODE_IDS=(node-0 node-1)",
             'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+            # The launcher's role-to-node map, in the default order.
+            "SERVING_NODE_INDEXES=(0 1)",
+            *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
             lib_function("start_blocker"),
             lib_function("cluster_interrupted", "cluster/start-cluster.sh"),
             "cluster_interrupted 2",
@@ -920,7 +1028,9 @@ class ClusterCleanup(unittest.TestCase):
     """A multi-node launch failure says its containers were removed only when it
     confirmed that on every node."""
 
-    def failure(self, states, *args, replaced=False):
+    def failure(self, states, *args, replaced=False, saved=False, outcome="retired", output=None):
+        """SAVED: the launch record was saved; OUTCOME: what retiring it answers
+        (retire_recorded_plan); OUTPUT, a list, receives the human lines."""
         with tempfile.TemporaryDirectory() as temp:
             blockers = Path(temp) / "blockers.jsonl"
             script = "\n".join([
@@ -928,10 +1038,21 @@ class ClusterCleanup(unittest.TestCase):
                 f" SERVICE_ID={SERVICE_ID}",
                 "CLUSTER_NODE_IDS=(node-0 node-1 node-2) CLUSTER_NODE_SSH_HOSTS=(local alias-1 alias-2)",
                 'human_node_name() { echo "spark-$(( $1 + 1 ))"; }',
+                'log() { echo "$*"; }',
+                'spec_reference() { echo "${1:0:12}"; }',
+                # Retiring a record: logged, and answered as retire_recorded_plan answers.
+                f'retire_recorded_plan() {{ echo "$1" >>{shlex.quote(temp)}/retired; echo {outcome}; }}',
+                lib_function("retired_words"),
                 # States by rank; rank 0 is observed without an SSH host.
                 'container_state_exact() { local states=($FIXTURE_STATES); echo "${states[${2#alias-}]:-${states[0]}}"; }',
+                # The launcher's role-to-node map, in the default order.
+                "SERVING_NODE_INDEXES=(0 1 2)",
+                *re.findall(r"^role_\w+\(\) \{.*\}$", (ROOT / "cluster/start-cluster.sh").read_text(), re.M),
                 lib_function("start_blocker"),
                 lib_function("cluster_failure", "cluster/start-cluster.sh"),
+                lib_function("launch_containers_left", "cluster/start-cluster.sh"),
+                lib_function("failed_launch_record", "cluster/start-cluster.sh"),
+                *([f"SAVED_PLAN_ID={'7a' * 32}"] if saved else []),
                 "cluster_failure " + " ".join(shlex.quote(arg) for arg in args),
             ])
             env = {**os.environ, "FIXTURE_STATES": states, "PULSAR_START_BLOCKERS_FILE": str(blockers),
@@ -939,8 +1060,38 @@ class ClusterCleanup(unittest.TestCase):
             env.pop("START_BLOCKER_PLACEMENT", None)
             result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
+            if output is not None:
+                # Without the blocker's own line and its note.
+                output += [line for line in result.stdout.splitlines() if not line.startswith(("FAILED ", "  "))]
+                retired = Path(temp) / "retired"
+                output.append(f"retired {retired.read_text().strip()}" if retired.exists() else "kept")
             (record,) = start_blockers.read(blockers)
             return record
+
+    def test_a_failed_launch_retires_its_record_only_when_removal_is_confirmed(self):
+        note = "The cluster's containers were removed; the logs are shown above."
+        lines = []
+        self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note,
+                     saved=True, output=lines)
+        self.assertEqual(lines, ["No container this start launched is left on its nodes; retired its service "
+                                 "record.", f"retired {'7a' * 32}"])
+        # A node that could not be checked is not absence: the record stays.
+        lines = []
+        self.failure("absent unknown absent", "health_timeout", "0", "--no-command", "--note", note,
+                     saved=True, output=lines)
+        self.assertEqual(lines, ["The service record this start saved is kept, because removing its containers "
+                                 "could not be confirmed on spark-2 (rank 1). Next: ./pulsar stop abababababab, "
+                                 "which removes what remains and retires the record.", "kept"])
+        # The record names another launch plan by now: it is kept, and the line says so.
+        lines = []
+        self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note,
+                     saved=True, outcome="other", output=lines)
+        self.assertEqual(lines, ["No container this start launched is left on its nodes; its service record now "
+                                 "names another launch plan, so it was kept.", f"retired {'7a' * 32}"])
+        # Before the record was saved there is nothing to say.
+        lines = []
+        self.failure("absent absent absent", "health_timeout", "0", "--no-command", "--note", note, output=lines)
+        self.assertEqual(lines, ["kept"])
 
     def test_removal_confirmed_on_every_node_keeps_the_removed_note(self):
         note = "The cluster's containers were removed; the logs are shown above."

@@ -35,6 +35,10 @@ if args[:2]==['image','inspect']:
  if mode in ('other-name','other-name-controller') and rank==(1 if mode=='other-name' else 0) and not (root/'pulled').exists():
   if not args[-1].startswith('sha256:'):sys.exit(1)
   image.update(Id=args[-1],RepoTags=['pulsar-local/model:latest'],RepoDigests=[])
+ # untagged-after-load: rank 1 lacks the image; a copy loads its content without any name (the containerd store).
+ if mode=='untagged-after-load' and rank==1 and not (root/'pulled').exists():
+  if not (root/'loaded-1').exists() or not args[-1].startswith('sha256:'):sys.exit(1)
+  image.update(Id=args[-1],RepoTags=[],RepoDigests=[])
  if mode=='wrong-image' and rank==1:image['RepoDigests']=['example/image@sha256:'+'f'*64]
  if mode=='legacy-image-id-only':image['RepoDigests']=[]
  if mode=='wrong-repository':image['RepoDigests']=['other/repository@'+image['RepoDigests'][0].split('@')[1]]
@@ -297,6 +301,35 @@ ssh_node() {{
         self.assertNotIn('pull',(self.root/'mutations').read_text())
         self.assertIn('rerun with --pull to pull the exact digest',result.stderr)
 
+    def test_a_copy_that_lost_the_pinned_name_says_what_arrived_and_what_adds_the_name(self):
+        spec_id=self.spec['spec_id']
+        selection=['--placement-nodes','rank-0,rank-1,rank-2']
+        # The preview warns, on stderr, that a copy can leave the name unrecorded.
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--plan'],'untagged-after-load')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(json.loads(result.stdout)['mode'],'stream-from-controller')
+        self.assertIn('warning: a copy from this machine can arrive without the pinned name, on a node whose Docker '
+                      'uses the containerd image store; staging then ends with the content there and the name '
+                      f'missing, and ./pulsar image stage {spec_id} --placement-nodes rank-0,rank-1,rank-2 --pull '
+                      '--yes adds the name: it contacts the registry and reuses the content already there',
+                      ' '.join(result.stderr.split()))
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--pull','--plan'],'untagged-after-load')
+        self.assertNotIn('warning',result.stderr)
+        # The copy brings the content; Docker keeps no name; staging says so and exits 1.
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--yes'],'untagged-after-load')
+        self.assertEqual(result.returncode,1)
+        self.assertEqual(' '.join(result.stderr.split()),
+                         'error: the image content arrived on rank-1 (rank 1), but Docker there did not record the '
+                         'pinned name, so the pinned image is not established yet. Next: ./pulsar image stage '
+                         f'{spec_id} --placement-nodes rank-0,rank-1,rank-2 --pull --yes, which contacts the registry '
+                         'to add the pinned name and reuses the content already there')
+        self.assertNotIn('pull',(self.root/'mutations').read_text())
+        # Following it pulls on that node only, and the check passes.
+        (self.root/'mutations').unlink()
+        result=self.run_tool('sync-image.sh',[spec_id,*selection,'--pull','--yes'],'untagged-after-load')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
+
     def test_start_pull_permission_pulls_the_digest_a_stream_lost(self):
         result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes','--pull-if-stream-incomplete'],'missing-ref-after-load')
         self.assertEqual(result.returncode,0,result.stderr)
@@ -352,11 +385,26 @@ ssh_node() {{
         self.assertEqual(checked.returncode, 0, checked.stderr+checked.stdout)
         self.assertEqual([row['available_gib'] for row in json.loads(checked.stdout)['rank_available_gib']], [120.0, 120.0])
 
-    def test_ordinary_start_refuses_nondefault_pair_before_image_or_service_mutation(self):
+    def test_ordinary_start_takes_a_pair_off_the_default_order_of_a_full_mesh(self):
+        # This scenario was refused, first because ordinary start could not
+        # launch a remote first node, then because Start named nodes only on a
+        # ring.
         self.spec, self.path, *_ = fixture(self.root, 2)
-        result = self.run_tool('up.sh', [self.spec['spec_id'], '--placement-nodes', 'node-2,node-1', '--yes'])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('requires guarded run', result.stderr)
+        topology = self.root/'mesh-topology.json'
+        topology.write_text(json.dumps({'validation': {'class': 'roce-full-mesh'}, 'links': [
+            {'ranks': [a, b]} for a, b in ((0, 1), (0, 2), (1, 2))], 'nodes': [
+            {'rank': rank, 'node_id': f'node-{rank}', 'hostname': f'rank-{rank}'} for rank in range(3)]}))
+        result = self.run_tool('up.sh', [self.spec['spec_id'], '--placement-nodes', 'node-2,node-1', '--yes'],
+                               extra={'CLUSTER_TOPOLOGY_FILE': str(topology)})
+        # Inverted on purpose: Start now runs a recipe on the nodes it names when they are cabled as it
+        # needs, so it goes on to its checks on node-2 and node-1. This harness's Docker double cannot
+        # list containers, so Start stops there; the same placement starts end to end in
+        # tests/test_start_any_named_nodes.py (FullMeshOfThree).
+        self.assertNotIn('start does not run this recipe', result.stderr)
+        self.assertIn('PASS image Pinned arm64 image verified on all 2 serving ranks.', ' '.join(result.stdout.split()))
+        self.assertIn('BLOCKED docker_unavailable: rank-2:', result.stdout)
+        self.assertIn('BLOCKED docker_unavailable: rank-1:', result.stdout)
+        self.assertNotIn('rank-0', result.stdout)
         self.assertFalse((self.root/'mutations').exists())
 
     def test_named_export_refuses_missing_peer_reference_without_pulling(self):
@@ -441,6 +489,14 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
         self.assertNotIn('lacks it too',result.stderr)
         self.assertFalse((self.root/'mutations').exists())
         result=self.run_tool('sync-image.sh',[spec_id,'--pull','--yes'],'other-name')
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
+
+    def test_start_staging_copies_nothing_to_a_node_that_holds_the_content(self):
+        # start --pull-image stages with --pull-if-stream-incomplete when this
+        # machine holds the image: a node with the content under another name
+        # gets only the pull that adds the pinned name, not a second copy.
+        result=self.run_tool('sync-image.sh',[self.spec['spec_id'],'--yes','--pull-if-stream-incomplete'],'other-name')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual((self.root/'mutations').read_text(),'pull 1\n')
 

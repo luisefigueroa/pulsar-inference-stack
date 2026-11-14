@@ -181,6 +181,26 @@ def _gpu_mem_util_from_engine_args(engine_args: list[str]) -> tuple[str, list[st
         fail("identity.engine_args must include --gpu-memory-utilization")
     return gpu_value, remaining
 
+# A multi-node recipe declares that its ranks pass data around a loop, each to
+# the next and the last back to the first, with exactly one NCCL_ALGO entry in
+# its own container_env whose whole value is Ring, in any case. Such a recipe
+# needs only those neighbouring ranks cabled (TOPOLOGY_CLASS=roce-ring); every
+# other multi-node recipe needs every pair of its nodes cabled. The same rule
+# is in recipe_ring_pattern in scripts/lib.sh.
+RING_PATTERN_KEY = "NCCL_ALGO"
+
+
+def ring_pattern(container_env: Any) -> bool:
+    """Whether CONTAINER_ENV (KEY=VALUE strings) declares the ring pattern.
+
+    A list such as Ring,Tree, an exclusion (^Tree), a per-collective form
+    (allreduce:ring), a repeated key, or anything outside container_env does
+    not."""
+    values = [item.split("=", 1)[1] for item in container_env or []
+              if isinstance(item, str) and item.split("=", 1)[0] == RING_PATTERN_KEY and "=" in item]
+    return len(values) == 1 and values[0].lower() == "ring"
+
+
 def spec_shell_values(
     spec: dict[str, Any],
     overlay_entry: dict[str, Any],
@@ -257,6 +277,9 @@ def spec_shell_values(
     if nodes == 1:
         topology_class = "single"
         min_rails = "0"
+    elif ring_pattern(identity.get("container_env")):
+        topology_class = "roce-ring"
+        min_rails = "2"
     else:
         topology_class = "roce-full-mesh"
         min_rails = "2"

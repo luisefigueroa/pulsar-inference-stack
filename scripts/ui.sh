@@ -156,6 +156,27 @@ _ui_gum() {
   fi
 }
 
+# _ui_gum_esc_line LINE: removes the line Gum printed on stderr after Esc.
+# Gum 0.17 ends a choose or input left with Esc by printing "nothing
+# selected" or "not submitted" on stderr, after it has cleared its menu, and
+# exits 1. The menu is drawn on stderr too, so the line cannot be filtered
+# without losing the terminal (colors and width), and Gum has no setting to
+# leave it out. Call this only after that exit with nothing chosen: it moves
+# up one line and clears it, and only where the line is known to be there:
+# stderr is a terminal at least as wide as LINE, so it took one line, and
+# Gum is a 0.17 release, whose Esc line was observed. Other Gum releases,
+# output off a terminal and every other Gum message are left as they are.
+_ui_gum_esc_line() {
+  local line="$1" version columns
+  [ -t 2 ] || return 0
+  version=$("$GUM_CMD" --version 2>/dev/null) || return 0
+  [[ "$version" =~ ^gum\ version\ v0\.17\. ]] || return 0
+  if columns=$(_ui_terminal_columns) && [ "$columns" -le "${#line}" ]; then
+    return 0
+  fi
+  printf '\033[1A\r\033[2K' >&2
+}
+
 # Style flags: layout always; color only when color is enabled, and then the
 # complete palette.
 _ui_gum_choose_style_args() {
@@ -170,6 +191,12 @@ _ui_gum_choose_style_args() {
   GUM_CHOOSE_STYLE_ARGS+=(--padding "1 0")
 }
 
+# Without colour Gum's confirm marks the selected answer with nothing at all
+# (under NO_COLOR it drops every attribute), so plain mode clears every colour
+# Gum would use, runs it without NO_COLOR, and marks the selected answer bold
+# and underlined. Gum's own key hint is coloured, so it is hidden there and
+# confirm says the keys under the question instead (_UI_CONFIRM_HINT).
+_UI_CONFIRM_HINT="←/→ move · enter choose · y yes · n no"
 _ui_gum_confirm_style_args() {
   GUM_CONFIRM_STYLE_ARGS=()
   if pulsar_color_enabled; then
@@ -177,6 +204,12 @@ _ui_gum_confirm_style_args() {
       --prompt.foreground="$PULSAR_ACCENT"
       --selected.foreground="$_PULSAR_CONFIRM_SELECTED_FG"
       --selected.background="$_PULSAR_CONFIRM_SELECTED_BG"
+    )
+  else
+    GUM_CONFIRM_STYLE_ARGS+=(
+      --prompt.foreground= --selected.foreground= --selected.background=
+      --unselected.foreground= --unselected.background=
+      --selected.bold --selected.underline --no-show-help
     )
   fi
   GUM_CONFIRM_STYLE_ARGS+=(--padding "1 0")
@@ -202,6 +235,12 @@ _ui_gum_pager_style_args() {
   fi
 }
 
+# Without colour Gum draws an input's placeholder exactly like typed text and
+# its cursor not at all (under NO_COLOR it drops every attribute). So plain
+# mode clears every colour Gum would use and runs it without NO_COLOR: the
+# cursor is then a reverse-video block, the placeholder moves to the header as
+# "Example: …", and Gum's coloured key hint is hidden for _UI_INPUT_HINT.
+_UI_INPUT_HINT="enter submit · esc cancel"
 _ui_gum_input_style_args() {
   GUM_INPUT_STYLE_ARGS=()
   if pulsar_color_enabled; then
@@ -209,6 +248,11 @@ _ui_gum_input_style_args() {
       --prompt.foreground="$PULSAR_ACCENT"
       --header.foreground="$PULSAR_ACCENT"
       --placeholder.foreground="8"
+    )
+  else
+    GUM_INPUT_STYLE_ARGS+=(
+      --prompt.foreground= --header.foreground= --placeholder.foreground= --cursor.foreground=
+      --cursor.mode=static --no-show-help
     )
   fi
   GUM_INPUT_STYLE_ARGS+=(--padding "1 0")
@@ -237,11 +281,24 @@ emit_error() {
 # prompt_input HEADER [PLACEHOLDER]
 # Prints the entered line on stdout. Returns 1 on Esc/empty input, 130 on Ctrl-C.
 prompt_input() {
-  local header="$1" placeholder="${2:-}" out rc
+  local header="$1" placeholder="${2:-}" out rc columns
+  local -a gum=(_ui_gum)
   _ui_require_gum || return
+  if ! pulsar_color_enabled; then
+    # Plain mode (see _ui_gum_input_style_args): the example is said above the
+    # field, never drawn in it, so it cannot be read as typed text.
+    [ -z "$placeholder" ] || header+=$'\n'"Example: $placeholder"
+    header+=$'\n'"$_UI_INPUT_HINT"
+    placeholder=""
+    gum=(env -u NO_COLOR "$GUM_CMD")
+  fi
+  # Gum cuts a header line wider than the terminal: it wraps between words.
+  if columns=$(_ui_terminal_columns); then
+    header=$(_ui_wrap "$columns" "$header")
+  fi
   _ui_gum_input_style_args
   set +e
-  out=$(_ui_gum input \
+  out=$("${gum[@]}" input \
     "${GUM_INPUT_STYLE_ARGS[@]}" \
     --header "$header" \
     --placeholder "$placeholder")
@@ -250,6 +307,8 @@ prompt_input() {
   if [ "$rc" -eq 130 ]; then
     return 130
   fi
+  # Esc: Gum's "not submitted" line goes, so the screen keeps what was there.
+  [ "$rc" -ne 1 ] || [ -n "${out:-}" ] || _ui_gum_esc_line "not submitted"
   if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
@@ -330,6 +389,32 @@ _ui_card_page() {
   printf '%s\n' "$((best > 0 ? best : largest))"
 }
 
+# _ui_wrap WIDTH TEXT
+# TEXT with each of its lines wrapped between words to WIDTH columns. A word
+# wider than WIDTH, such as a long unbroken name, gets a row of its own and is
+# not split there, so the words around it stay whole. Characters are counted,
+# not their display width.
+_ui_wrap() {
+  local width="$1" text="$2" part word row out=""
+  local -a words
+  while IFS= read -r part || [ -n "$part" ]; do
+    read -r -a words <<<"$part"
+    row=""
+    for word in "${words[@]}"; do
+      if [ -z "$row" ]; then
+        row=$word
+      elif [ $((${#row} + 1 + ${#word})) -le "$width" ]; then
+        row+=" $word"
+      else
+        out+="${out:+$'\n'}$row"
+        row=$word
+      fi
+    done
+    out+="${out:+$'\n'}$row"
+  done <<<"$text"
+  printf '%s\n' "$out"
+}
+
 # choose_index HEADER OPTION...
 # Prints the selected zero-based option index. Gum shows each label and
 # returns its hidden index, so a label's whole row is available to its text.
@@ -381,7 +466,14 @@ choose_index() {
   done
   # Gum's own key hint names neither Esc nor what it does, so it is replaced by
   # Pulsar's under the title. PULSAR_CHOOSE_ESC says what Esc does (default back).
-  local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}"
+  local hint="↑/↓ move · enter choose · esc ${PULSAR_CHOOSE_ESC:-back}" title=$header columns extra=0
+  # Gum cuts a header line wider than the terminal at its edge, so the title
+  # wraps between words to the terminal's width; each row it adds takes one
+  # row from the list. The hint stays one line.
+  if columns=$(_ui_terminal_columns); then
+    title=$(_ui_wrap "$columns" "$header")
+    extra=$(($(printf '%s\n' "$title" | wc -l) - 1))
+  fi
   if [ "$cards" = 1 ]; then
     # Options are separated by the record separator, so they may hold
     # newlines; a trailing separator would be an empty option, which Gum
@@ -389,16 +481,20 @@ choose_index() {
     card_args=(--input-delimiter=$'\x1e' --no-strip-ansi)
     for option in "${entries[@]}"; do input+="${input:+$'\x1e'}$option"; done
     if rows=$(_ui_terminal_rows); then
-      height=$(_ui_card_page "$rows" "${labels[@]}")
+      height=$(_ui_card_page "$((rows - extra))" "${labels[@]}")
     fi
   else
     if [[ "$default" =~ ^[0-9]+$ ]] && [ "$default" -lt "$#" ]; then
       # Gum splits --selected at commas; a backslash keeps one in the label.
       initial=(--selected="${labels[$default]//,/\\,}")
     fi
-    # Gum adds 5 rows around the list: padding and the two-line header.
-    if rows=$(_ui_terminal_rows) && [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
-      height=$((rows - 5))
+    # Gum adds 5 rows around the list: padding and the two-line header, and
+    # one more for each row the title wrapped onto.
+    if rows=$(_ui_terminal_rows); then
+      rows=$((rows - extra))
+      if [ $((rows - 5)) -ge 3 ] && [ "$height" -gt $((rows - 5)) ]; then
+        height=$((rows - 5))
+      fi
     fi
   fi
   _ui_gum_choose_style_args
@@ -407,12 +503,14 @@ choose_index() {
   # interactive TUI is drawn on stderr; silencing it makes the menu invisible.
   out=$(if [ "$cards" = 1 ]; then printf '%s' "$input"; else printf '%s\n' "${entries[@]}"; fi | _ui_gum choose \
     "${GUM_CHOOSE_STYLE_ARGS[@]}" "${initial[@]}" "${card_args[@]}" \
-    --label-delimiter=$'\t' --height="$height" --no-show-help --header "$header"$'\n'"$hint")
+    --label-delimiter=$'\t' --height="$height" --no-show-help --header "$title"$'\n'"$hint")
   rc=$?
   set -e
   if [ "$rc" -eq 130 ]; then
     return 130
   fi
+  # Esc: Gum's "nothing selected" line goes, so the screen keeps what was there.
+  [ "$rc" -ne 1 ] || [ -n "${out:-}" ] || _ui_gum_esc_line "nothing selected"
   if [ "$rc" -ne 0 ] || [ -z "${out:-}" ]; then
     return 1
   fi
@@ -429,18 +527,30 @@ choose_index() {
 # Returns 0 if affirmed, 1 if declined, 130 on Ctrl-C.
 confirm() {
   local msg="$1"
-  local default="${2:-no}" rc
+  local default="${2:-no}" rc columns
   _ui_require_gum || return
+  # Gum cuts a prompt line wider than the terminal, and draws the prompt one
+  # column in: it wraps between words, a column short of the edge on each side.
+  if columns=$(_ui_terminal_columns) && [ "$columns" -gt 4 ]; then
+    msg=$(_ui_wrap "$((columns - 2))" "$msg")
+  fi
   _ui_gum_confirm_style_args
+  local -a gum=(_ui_gum)
+  if ! pulsar_color_enabled; then
+    # Plain mode: no colour flag is passed (see _ui_gum_confirm_style_args),
+    # and the selected answer keeps its bold and underline.
+    msg+=$'\n'"$_UI_CONFIRM_HINT"
+    gum=(env -u NO_COLOR "$GUM_CMD")
+  fi
   set +e
   # Leave stderr open — Gum confirm draws its TUI on stderr.
   # Gum defaults to Yes when --default is omitted; pass both values explicitly.
   if [ "$default" = yes ]; then
-    _ui_gum confirm \
+    "${gum[@]}" confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
       --default=true "$msg"
   else
-    _ui_gum confirm \
+    "${gum[@]}" confirm \
       "${GUM_CONFIRM_STYLE_ARGS[@]}" \
       --default=false "$msg"
   fi
@@ -486,10 +596,15 @@ _UI_PAGER_LINES=8
 # shows a spinner while a slow command runs. COMMAND must be an executable,
 # not a shell function: it runs with COLUMNS set to the pager's text width.
 # Returns the command's status, or 130 after Ctrl-C while it runs or in the
-# pager.
+# pager. Each call sets PAGE_OUTPUT_IN_PLACE to 1 when the output printed in
+# place and stays on screen (short output, or a pager that could not open),
+# and to 0 when the pager showed it and closed; it stays empty when nothing
+# was shown. A caller can then print what must stay readable under a closed
+# pager without repeating what is already on screen.
 page_output() {
   local title="$1" out columns rc=0 pager_rc=0
   shift
+  PAGE_OUTPUT_IN_PLACE=""
   _ui_require_gum || return
   local -a command=("$@") page_env=()
   # The pager's border and padding take four columns.
@@ -518,11 +633,16 @@ page_output() {
   fi
   if [ "$(wc -l <"$out")" -le "$_UI_PAGER_LINES" ]; then
     cat -- "$out"
+    PAGE_OUTPUT_IN_PLACE=1
   else
     _ui_gum_pager_style_args
     _ui_gum pager "${GUM_PAGER_STYLE_ARGS[@]}" <"$out" || pager_rc=$?
+    PAGE_OUTPUT_IN_PLACE=0
     # A pager that could not open must not hide the output.
-    [ "$pager_rc" -eq 0 ] || [ "$pager_rc" -eq 130 ] || cat -- "$out"
+    if [ "$pager_rc" -ne 0 ] && [ "$pager_rc" -ne 130 ]; then
+      cat -- "$out"
+      PAGE_OUTPUT_IN_PLACE=1
+    fi
   fi
   rm -f -- "$out"
   [ "$pager_rc" -ne 130 ] || return 130

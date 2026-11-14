@@ -7,6 +7,7 @@ changes noticed), `topology check --json`, `ssh-trust check --json`,
 `model budget --json`.
 
     python3 scripts/cluster_overview.py DIR --started EPOCH --finished EPOCH
+    python3 scripts/cluster_overview.py DIR --started EPOCH --summary
     python3 scripts/cluster_overview.py DIR --check-record
 
 DIR holds each source's output as NAME.json, NAME.err and NAME.rc, for NAME
@@ -15,18 +16,24 @@ that failed or printed no JSON is reported as not observed, with its error;
 the others still show. Nodes come from topology check, which lists every
 saved node by hostname, and the other sources join them by node ID or
 position. Memory is the node's available memory: on GB10 the GPU and the host
-share it. Each finding carries its fix. `--check-record` prints what the
-report found as the `check` body that scripts/saved_observations.py
+share it. Each finding carries its fix. `--summary` prints one line for this
+check, counted as the report's Result line counts: when it ran, the blocking
+issues, how many nodes answered, the checks not observed and the warnings. The
+Cluster menu prints it under a report the pager has closed, so the screen shows
+this check and not only the saved one. `--check-record` prints what the report
+found as the `check` body that scripts/saved_observations.py
 save-cluster-check keeps beside the changes noticed.
 """
 from __future__ import annotations
 
 import argparse
 from datetime import datetime
+import io
 import json
 from pathlib import Path
 import re
 import sys
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,6 +41,8 @@ if str(ROOT) not in sys.path:
 
 from model_library.render import can_still_copy, short_size  # noqa: E402
 from scripts.terminal_format import TerminalWriter  # noqa: E402
+from scripts.topology_manifest import (  # noqa: E402
+    RING_CLASS, RING_MEANING, failure_words, reason_words, ring_loop)
 
 SOURCES = {"discovery": "topology detect", "topology": "topology check", "identities": "ssh-trust check",
            "diagnostics": "doctor", "inventory": "inventory", "budget": "model budget"}
@@ -45,6 +54,7 @@ FABRIC_UNCHECKED = "Fabric connectivity could not be checked."
 SETTINGS_CHECKS = {"api_auth": "API key", "cold_storage": "Archives"}
 CLUSTER_CHECKS = {"topology", "ssh_trust", "local_fabric", "catalog"}
 REMOTE = re.compile(r"^rank_(\d+)_(.+)$")
+KEEP = " "  # no-break space: textwrap never breaks at it; printed as a space
 
 
 def read_source(directory: Path, name: str) -> tuple[dict | None, str | None]:
@@ -195,7 +205,7 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
         rows.append((f"discovery did not finish: {issues}. Fix it, then choose **Check again**.", "fail"))
     for item in changes.get("missing") or []:
         if item.get("answered"):
-            reasons = "; ".join(item.get("reasons") or []) or "not qualified"
+            reasons = reason_words(item.get("reasons") or [])
             rows.append((f"{item['hostname']} answered but cannot be a member: {reasons}; fix it on that machine",
                          "fail"))
         else:
@@ -211,6 +221,16 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
                 for key in ("control", "links", "position") if key in (item.get("changes") or {})]
         rows.append((f"{item['hostname']}: {', '.join(what) or 'details'} changed; {review} shows old against "
                      "new and saves it", "warn"))
+    shape = changes.get("shape")
+    if shape:
+        words = {"roce-full-mesh": "full mesh", RING_CLASS: "ring"}
+        rows.append((f"the cluster's shape changed: {words.get(shape.get('old'), 'unknown')} → "
+                     f"{words.get(shape.get('new'), 'unknown')}; {review} shows it and saves it", "warn"))
+    cables = changes.get("cables") or {}
+    for first, second in cables.get("gone") or []:
+        rows.append((f"{first} and {second} share no link now; the saved cluster has them cabled", "warn"))
+    for first, second in cables.get("new") or []:
+        rows.append((f"{first} and {second} are cabled now; {review} saves it", "warn"))
     for item in changes.get("untrusted") or []:
         rows.append((f"{item['address']} answers, but SSH on this machine does not trust it yet; check its host key "
                      f"with `ssh -o StrictHostKeyChecking=ask {item['address']}`, then choose **Check again**",
@@ -218,7 +238,81 @@ def _change_lines(discovery: dict | None) -> list[tuple[str, str | None]]:
     return rows
 
 
-def render(directory: Path, started: float, finished: float, writer: TerminalWriter | None = None) -> None:
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
+
+def verdict_parts(counts: dict[str, int], missing: int) -> dict[str, str | None]:
+    """The Result line's parts: the blocking issues, the warnings and the checks not observed."""
+    return {"blocking": plural(counts["fail"], "blocking issue") if counts["fail"] else "no blocking issue",
+            "warnings": plural(counts["warn"], "warning") if counts["warn"] else None,
+            "not_observed": f"{plural(missing, 'check')} not observed" if missing else None}
+
+
+def answered_words(report: Report) -> tuple[str, bool, bool]:
+    """How many nodes answered this check, whether every one did, and whether
+    any node was not observed.
+
+    Unknown is not absent: a node the check could not observe is counted
+    apart, never as one that answered or one that did not."""
+    if not report.nodes:
+        return "no node observed", False, True
+    answers = [(node, report.answered(node)) for node in report.nodes]
+    total = len(answers)
+    unknown = sum(1 for _, answer in answers if answer is None)
+    if unknown == total:
+        return f"{plural(total, 'node')} not observed", False, True
+    answered = sum(1 for _, answer in answers if answer is True)
+    silent = [str(node["hostname"]) for node, answer in answers if answer is False]
+    text = f"{answered} of {total} answered"
+    if unknown:
+        text += f", {unknown} not observed"
+    if silent:
+        names = silent[0] if len(silent) == 1 else ", ".join(silent[:-1]) + " and " + silent[-1]
+        text += f" ({names} did not answer)"
+    return text, answered == total, bool(unknown)
+
+
+def summary(directory: Path, started: float, writer: TerminalWriter | None = None) -> None:
+    """One line for this check, for the screen under a report the pager closed.
+
+    It counts what the report's Result line counts, from the same sources, and
+    leads with what needs attention: blocking issues, nodes that did not answer
+    or were not observed, and checks not observed come before anything that
+    reads as fine. Unknown is not absent: when a node or a check was not
+    observed, it does not say "no blocking issue"; a blocking issue that was
+    found is always counted."""
+    out = writer or TerminalWriter()
+    report = Report(directory)
+    counts = render(directory, started, started, TerminalWriter(width=out.width, stream=io.StringIO()))
+    verdict = verdict_parts(counts, len(report.missing))
+    answers, everyone, unobserved = answered_words(report)
+    unobserved = unobserved or bool(report.missing)
+    parts = [datetime.fromtimestamp(started).strftime("%H:%M:%S")]
+    if counts["fail"]:
+        parts.append(verdict["blocking"])
+    if not everyone:
+        parts.append(answers)
+    parts.append(verdict["not_observed"])
+    if not counts["fail"] and not unobserved:
+        parts.append(verdict["blocking"])
+    if everyone:
+        parts.append(answers)
+    parts.append(verdict["warnings"])
+    attention = "fail" if counts["fail"] else "warn" if not everyone or unobserved else None
+    # Lines break only between parts, unless a part with its " ·" is wider than the line.
+    room = out.width - LABEL_WIDTH
+    kept = [part.replace(" ", KEEP) if len(part) + 2 <= room else part for part in parts if part]
+    lines = textwrap.wrap(f"{KEEP}· ".join(kept), width=out.width, initial_indent=f"{'Checked':<{LABEL_WIDTH}}",
+                          subsequent_indent=" " * LABEL_WIDTH, break_on_hyphens=False)
+    for number, line in enumerate(lines):
+        line = line.replace(KEEP, " ")
+        label = len("Checked") if number == 0 else 0
+        print(out.paint(line, [attention] * label + [None] * (len(line) - label)), file=out.stream)
+
+
+def render(directory: Path, started: float, finished: float, writer: TerminalWriter | None = None) -> dict[str, int]:
+    """Print the report; return the blocking issues and warnings it counted as {"fail": N, "warn": N}."""
     out = writer or TerminalWriter()
     report = Report(directory)
     inventory, budget = report.inventory, report.budget
@@ -243,19 +337,29 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
 
     counts = {"fail": 0, "warn": 0}
     out.emit("Cluster check", role="heading")
+    saved = (report.topology or {}).get("topology") or {}
+    ring = (saved.get("validation") or {}).get("class") == RING_CLASS
     if report.topology:
         state = report.topology.get("status") or "unknown"
-        top("Nodes", f"{len(shown)} saved · {state}",
+        shape = {"roce-full-mesh": "full mesh", RING_CLASS: "ring"}.get((saved.get("validation") or {}).get("class"), "")
+        top("Nodes", " · ".join(part for part in (f"{len(shown)} saved", shape, state) if part),
             None if state == "ready" else "fail")
+        if ring and saved.get("nodes"):
+            top("Order", ring_loop([node["hostname"] for node in saved.get("nodes") or []]))
+            top("Serving", RING_MEANING)
     when = datetime.fromtimestamp(started).strftime("%H:%M:%S")
     took = max(0, round(finished - started))
     top("Checked", f"{when}; the checks took {took} s")
     links = report.links()
-    link_text = {"verified": "verified between every pair of nodes",
+    # A ring's links run only between neighbours, over its cables.
+    link_text = {"verified": "verified on every cable between neighbours" if ring
+                 else "verified between every pair of nodes",
                  "failed": "failed between some nodes; check the cables and the links' addresses, then choose "
                            "**Check again**",
                  "not-checked": "not checked"}[links]
     top("Links", link_text, {"failed": "fail"}.get(links), markup=True)
+    for failure in (report.topology or {}).get("fabric_failures") or []:
+        top("", failure_words(failure))
     counts["fail"] += links == "failed"
     for issue in (report.topology or {}).get("issues") or []:
         if issue not in (FABRIC_FAILED, FABRIC_UNCHECKED):
@@ -388,18 +492,12 @@ def render(directory: Path, started: float, finished: float, writer: TerminalWri
         for name, reason in report.missing.items():
             out.emit(reason, initial_indent="  ", subsequent_indent="    ", markup=True)
     out.blank()
-    if counts["fail"]:
-        verdict = f"{counts['fail']} blocking issue{'' if counts['fail'] == 1 else 's'}"
-    else:
-        verdict = "no blocking issue"
-    if counts["warn"]:
-        verdict += f" · {counts['warn']} warning{'' if counts['warn'] == 1 else 's'}"
-    if report.missing:
-        verdict += f" · {len(report.missing)} check{'' if len(report.missing) == 1 else 's'} not observed"
+    verdict = " · ".join(part for part in verdict_parts(counts, len(report.missing)).values() if part)
     out.field("Result", verdict + "; each finding above names its fix.", label_width=LABEL_WIDTH,
               label_role="fail" if counts["fail"] else None)
     out.field("Same as", "`./pulsar topology detect`, `topology check`, `ssh-trust check`, `doctor`, `inventory` "
                          "and `model budget`", label_width=LABEL_WIDTH, markup=True)
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -407,11 +505,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("directory", type=Path)
     parser.add_argument("--started", type=float)
     parser.add_argument("--finished", type=float)
+    parser.add_argument("--summary", action="store_true",
+                        help="print one line for this check: when it ran and what the report's Result counts")
     parser.add_argument("--check-record", action="store_true",
                         help="print the check body saved beside the changes noticed")
     args = parser.parse_args(argv)
     if args.check_record:
         print(json.dumps(Report(args.directory).check_record(), sort_keys=True))
+        return 0
+    if args.summary:
+        if args.started is None:
+            parser.error("--started is required for the summary")
+        summary(args.directory, args.started)
         return 0
     if args.started is None or args.finished is None:
         parser.error("--started and --finished are required to render the report")

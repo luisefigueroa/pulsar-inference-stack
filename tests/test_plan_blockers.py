@@ -141,6 +141,22 @@ class Purge(Details):
                 self.assertEqual((detail["mount"], detail["path"]), (mount, record["path"]))
         self.assertTrue(self.plan(record, containers=[container("/elsewhere")])["eligible"])
 
+    def test_a_container_of_an_earlier_saved_cluster_when_the_cluster_is_known(self):
+        record = view()
+        labels = {MANAGED: "true", SELECTED: "cd" * 32, "io.pulsar.gb10.topology": "e" * 64}
+        observations = observed("n0", "n1", containers=[container(record["hub_path"], labels)])
+        for topology_id, earlier in ((TOPOLOGY, True), (None, False)):
+            with self.subTest(topology_id=topology_id):
+                plan = purge_plan(views=[record], node_ids=["n0", "n1"], observations=observations,
+                                  topology_id=topology_id)
+                self.assertEqual(plan["blocker_details"][0]["fix"].startswith("remove that container with Docker"),
+                                 earlier)
+                plan = removal_plan(home=home(node="n1"), views=[], node_ids=["n0", "n1"], topology_id=topology_id,
+                                    observations=observed("n0", "n1", containers=[
+                                        container(home(node="n1")["hub_path"], labels)]))
+                self.assertEqual(plan["blocker_details"][0]["fix"].startswith("remove that container with Docker"),
+                                 earlier)
+
     def test_each_mounting_container_is_its_own_detail(self):
         record = view(pinned=True)
         plan = self.plan(record, containers=[container(record["hub_path"], identifier="1" * 64, name="one"),
@@ -344,6 +360,29 @@ class Preparation(Details):
         self.assertEqual({item["message"] for item in plan["blocker_details"]},
                          {"n1: existing prepared copy is pinned or referenced"})
         self.assertEqual(plan["blocker_details"][1]["container"]["spec_id"], "ef" * 32)
+
+    def test_a_container_of_an_earlier_saved_cluster_names_the_docker_removal(self):
+        # Stop refuses a container whose labels name an earlier saved cluster,
+        # so the fix is the removal that works; this cluster's keeps Stop.
+        from model_library.catalog_menu import blocked_choices
+        old = self.mine(topology="e" * 64)
+        labels = {MANAGED: "true", CONF: "ef" * 32, "io.pulsar.gb10.topology": "e" * 64}
+        plan = self.plan(views=[old], containers=[container(old["hub_path"], labels, running=False)])
+        (detail,) = plan["blocker_details"]
+        self.assertEqual(detail["fix"], f"remove that container with Docker on its node (docker rm -f {'c' * 12}): "
+                                        "it is left from an earlier saved cluster, and Pulsar does not remove "
+                                        "containers of an earlier saved cluster")
+        self.assertEqual(detail["container"], {"id": "c" * 64, "name": "fixture-vllm", "state": "stopped",
+                                               "spec_id": "ef" * 32, "earlier_cluster": True})
+        self.assertEqual(blocked_choices(plan, [{"spec_id": "ef" * 32, "model_id": "org/model"}]), [])
+        current = self.plan(views=[old], containers=[container(old["hub_path"], {
+            **labels, "io.pulsar.gb10.topology": TOPOLOGY}, running=False)])
+        self.assertEqual(current["blocker_details"][0]["fix"], f"stop the Pulsar service for spec {'ef' * 6}")
+        self.assertNotIn("earlier_cluster", current["blocker_details"][0]["container"])
+        # Without a topology label, nothing says it is of an earlier saved cluster.
+        unlabelled = {key: value for key, value in labels.items() if key != "io.pulsar.gb10.topology"}
+        bare = self.plan(views=[old], containers=[container(old["hub_path"], unlabelled, running=False)])
+        self.assertEqual(bare["blocker_details"][0]["fix"], f"stop the Pulsar service for spec {'ef' * 6}")
 
     def test_insufficient_space(self):
         plan = self.plan(budgets={"n1": budget(available=11)})

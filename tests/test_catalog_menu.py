@@ -2124,7 +2124,8 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 4.00 GiB to spark-2, spark-3 (2 new copies, 1 reused).",
             "Estimated headroom after copying: 38.00 GiB on spark-3 (file sizes only; space is not reserved)."])
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 2, "reused": 1, "taken_over": 0,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": False})
 
     def test_prepare_shortfall_and_unobserved_headroom_are_estimates(self):
@@ -2148,7 +2149,8 @@ class PlanSummary(unittest.TestCase):
     def test_prepare_takes_over_copies_made_before_the_membership_changed(self):
         # D13: a takeover (rebind) copies nothing and reads as taking over.
         plan = preparation(("n0", "rebind"), ("n1", "rebind"))
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 0, "reused": 0, "taken_over": 2,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": True})
         self.assertEqual(self.summary("prepare", plan), [
             "Nothing to copy: the snapshot is already on spark-1, spark-2. "
@@ -2166,6 +2168,17 @@ class PlanSummary(unittest.TestCase):
                          "deleted.")
         # A plan that writes new copies never says that nothing is copied.
         self.assertNotIn("nothing is copied", menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES))
+        # Under the same saved cluster only the role order changed, and it says so.
+        reordered = preparation(("n0", "rebind"), ("n1", "rebind"), topology_id="d" * 64)
+        reordered["actions"][0]["previous"] = {"topology_id": "d" * 64, "rank": 1}
+        reordered["actions"][1]["previous"] = {"topology_id": "d" * 64, "rank": 0}
+        self.assertEqual(self.summary("prepare", reordered)[1],
+                         "It takes over 2 copies prepared for these nodes in another role order; nothing is copied "
+                         "or deleted.")
+        reordered["actions"][1]["previous"] = {"topology_id": "e" * 64, "rank": 0}
+        self.assertEqual(self.summary("prepare", reordered)[1],
+                         "It takes over 2 copies (1 made before the cluster's membership changed, 1 prepared for "
+                         "these nodes in another role order); nothing is copied or deleted.")
         # The full preview names the action, and the estimate counts it as existing files.
         from model_library.render import preparation_estimate
         _, nodes = preparation_estimate([mixed])
@@ -2175,7 +2188,8 @@ class PlanSummary(unittest.TestCase):
         plan = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="target", budgets={"n1": budget()}),
             preparation(("n0", "home-view"), ("n1", "copy"), snapshot="draft", budgets={"n1": budget()})]}
-        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0, "adopted": 0,
+        self.assertEqual(menu.plan_effect("prepare", plan), {"copied": 1, "reused": 3, "taken_over": 0,
+                                                             "taken_over_reordered": 0, "adopted": 0,
                                                              "nothing": False})
         self.assertEqual(self.summary("prepare", plan), [
             "Copy 2.00 GiB to spark-2 (1 new copy, 3 reused).",
@@ -2244,6 +2258,22 @@ class PlanSummary(unittest.TestCase):
                          ["Move the home from spark-1 to spark-3: a direct copy over the confirmed RoCE rail."])
         self.assertEqual(self.summary("move", {**plan, "transfer_route": "already-home"}),
                          ["Nothing to move: the home is already on spark-3."])
+
+    def test_a_copy_through_a_neighbour_names_the_nodes_it_passes_through(self):
+        leg = {"copies": "to", "node_id": "n2", "through": ["n1"]}
+        plan = preparation(("n0", "home-view"), ("n2", "copy"), budgets={"n2": budget()})
+        plan["actions"][1]["passes_through"] = [leg]
+        self.assertEqual(self.summary("prepare", plan)[:2], [
+            "Copy 2.00 GiB to spark-3 (1 new copy, 1 reused).", "Copies to spark-3 pass through spark-2."])
+        move = {"source_node": "n0", "destination_node": "n2", "transfer_route": "direct-ssh-roce",
+                "passes_through": [leg]}
+        self.assertEqual(self.summary("move", move), [
+            "Move the home from spark-1 to spark-3: a copy over confirmed RoCE cables, through the nodes between.",
+            "Copies to spark-3 pass through spark-2."])
+        restore = self.summary("restore", {"selected_node": "n2", "passes_through": [leg]})
+        self.assertEqual(restore[1], "Copies to spark-3 pass through spark-2.")
+        archive = {"home": {**HOME, "node_id": "n2"}, "passes_through": [{**leg, "copies": "from"}]}
+        self.assertEqual(self.summary("archive", archive)[1], "Copies from spark-3 pass through spark-2.")
 
     def test_an_existing_archive_is_verified_never_replaced(self):
         self.assertEqual(self.summary("archive", {"home": HOME, "archive_root": "/fixture/archive"}),
@@ -2446,6 +2476,28 @@ class ServicesInTheWay(unittest.TestCase):
         self.assertEqual(len(notes), 4)
         self.assertEqual(notes[0], "On spark-2: GPU process p (PID 1) · 0.5 GiB · not started by Pulsar · read-only")
         self.assertEqual(notes[-1], "and 2 more GPU processes not started by Pulsar")
+
+    def test_exited_containers_pulsar_did_not_start_are_named_as_holding_nothing(self):
+        exited = running(None, ["w1"], ownership="unknown", container_name="vllm-port80", safe_to_stop=False,
+                         state="stale")
+        exited["ranks"][0]["running"] = False
+        busy = running(None, ["w1"], ownership="unknown", container_name="someone-else", safe_to_stop=False)
+        busy["ranks"][0]["running"] = True
+        stops, notes = self.way(crowded(exited, busy, processes=[
+            {"node": "w1", "pid": 7, "process_name": "p", "used_memory_mib": 512}]))
+        self.assertEqual(stops, [])
+        # The refused-start menu shows the same lines; only a plan reads BLOCKS.
+        self.assertEqual(notes, [
+            "On spark-2: vllm-port80 · exited containers · not started by Pulsar · read-only; they hold no port or "
+            "GPU memory",
+            "On spark-2: someone-else · running · not started by Pulsar · read-only",
+            "On spark-2: GPU process p (PID 7) · 0.5 GiB · not started by Pulsar · read-only"])
+        self.assertEqual([note.blocks for note in notes], [False, True, False])
+        # Exited, but one container was not observed: unknown is not absent.
+        del exited["ranks"][0]["running"]
+        _, notes = self.way(crowded(exited))
+        self.assertEqual((notes, [note.blocks for note in notes]),
+                         (["On spark-2: vllm-port80 · exited containers · not started by Pulsar · read-only"], [True]))
 
     def test_a_service_on_the_busy_port_comes_first_then_the_most_memory(self):
         third = "01" * 32

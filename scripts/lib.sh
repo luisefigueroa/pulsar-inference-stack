@@ -136,6 +136,13 @@ error_line() {
   printf '%s%s %s\n' "$(_message_tag)" "$label" "$*" >&2
 }
 
+# START_HEALTH_WAIT_SECONDS — how long Start waits by default for a launched
+# service to answer /health, one node or several: a first load on a node reads
+# every model file and compiles, which can take most of it. A one-node Start
+# checks every 5 s (240 checks) and a multi-node Start every 10 s (120
+# checks); WAIT_ATTEMPTS and WAIT_SECONDS set the count and the spacing
+# instead. A healthy service, or a container that exits, ends the wait early.
+START_HEALTH_WAIT_SECONDS=1200
 # load_progress STARTED CHECK LIMIT [STATE] — health-wait progress on stderr.
 # On a terminal one line is rewritten on every check: elapsed time, which
 # health check of the limit, and the observed container state. Otherwise a
@@ -623,10 +630,12 @@ require_spec_platform_admission() {
 # staging an image or replacing a service. Read-only commands do not call it.
 # A serving guard in the effective recipe, including one an override adds, is
 # refused as guard_unsupported by ordinary start; dry-run planning stays read-only.
-# Historical schema-1 specs are refused as historical_spec.
+# Historical schema-1 specs are refused as historical_spec. SPEC_GUARDED is 1
+# afterwards when the effective recipe has a serving guard (a dry run only).
 require_spec_launch_admission() {
   local name="${1:-${CONF_NAME:-}}" guard
   local -a detail=()
+  SPEC_GUARDED=0
   if [ "${CONF_SOURCE:-conf}" = spec ] && python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("schema_version")==1 else 1)' "$CONF_PATH" 2>/dev/null; then
     START_BLOCKER_SPEC="$name" start_blocker historical_spec
     die "spec ${name:0:12} is a historical schema-1 spec; historical services remain inspectable and stoppable"
@@ -647,6 +656,7 @@ print(source)
 PY
   ) || die "cannot read the effective recipe of spec ${name:0:12} to check for a serving guard; nothing was launched"
   [ -n "$guard" ] || return 0
+  SPEC_GUARDED=1
   # The public guarded runner reuses read-only prerequisite planning. Ordinary
   # start still cannot execute a guard, even with image/replacement authority.
   [ "${2:-start}" != dry-run ] || return 0
@@ -675,6 +685,9 @@ _finalize_loaded_profile() {
   if [ "$NODES" = 1 ]; then
     TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-single}"
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-0}"
+  elif recipe_ring_pattern; then
+    TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-roce-ring}"
+    MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
   else
     TOPOLOGY_CLASS="${TOPOLOGY_CLASS:-roce-full-mesh}"
     MIN_RAILS_PER_PAIR="${MIN_RAILS_PER_PAIR:-2}"
@@ -793,8 +806,13 @@ validate_profile_contract() {
     die "$CONF_NAME: exact spec mismatch: TP=$tp × PP=$pp = $world, but NODES=$NODES"
   fi
   if [ "$NODES" -gt 1 ]; then
-    [ "$TOPOLOGY_CLASS" = roce-full-mesh ] \
-      || die "$CONF_NAME: multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh"
+    if recipe_ring_pattern; then
+      [ "$TOPOLOGY_CLASS" = roce-ring ] \
+        || die "$CONF_NAME: a multi-node spec whose container_env sets NCCL_ALGO=Ring requires TOPOLOGY_CLASS=roce-ring"
+    else
+      [ "$TOPOLOGY_CLASS" = roce-full-mesh ] \
+        || die "$CONF_NAME: multi-node spec requires TOPOLOGY_CLASS=roce-full-mesh"
+    fi
     [[ "$MIN_RAILS_PER_PAIR" =~ ^[1-9][0-9]*$ ]] \
       || die "$CONF_NAME: MIN_RAILS_PER_PAIR must be positive"
     [ "$(engine_arg_value --distributed-executor-backend "")" = mp ] \
@@ -802,6 +820,20 @@ validate_profile_contract() {
   elif [ "$TOPOLOGY_CLASS" != single ]; then
     die "$CONF_NAME: single-node spec requires TOPOLOGY_CLASS=single"
   fi
+}
+
+# recipe_ring_pattern: whether the loaded CONTAINER_ENV declares that the
+# recipe's ranks pass data around a loop: exactly one NCCL_ALGO entry whose
+# whole value is Ring, in any case. The same rule as ring_pattern in
+# scripts/release_consumer.py, which sets TOPOLOGY_CLASS from it.
+recipe_ring_pattern() {
+  local item count=0 value=""
+  for item in ${CONTAINER_ENV[@]+"${CONTAINER_ENV[@]}"}; do
+    case "$item" in
+      NCCL_ALGO=*) count=$((count + 1)); value="${item#NCCL_ALGO=}" ;;
+    esac
+  done
+  [ "$count" = 1 ] && [ "${value,,}" = ring ]
 }
 
 append_loaded_profile_contract_args() {
@@ -1359,8 +1391,13 @@ single_node_index_for_key() {
   esac
 }
 
+# resolve_serving_placement NODE LIST [defer-fabric] — SERVING_NODE_INDEXES and
+# SERVING_NODE_IDS for a one-node spec on NODE or a multi-node spec on LIST
+# (--placement-nodes; the default order without it). Named nodes must be cabled
+# as the spec needs (require_profile_topology); with defer-fabric that check is
+# left to the caller, which reports it as one of its own checks (Start).
 resolve_serving_placement() {
-  local single="${1:-}" selection="${2:-}" selector index seen="" slot
+  local single="${1:-}" selection="${2:-}" defer="${3:-}" selector index seen="" slot
   local -a selectors=()
   require_cluster_nodes "$NODES" >/dev/null || return 1
   SERVING_NODE_INDEXES=() SERVING_NODE_IDS=()
@@ -1386,7 +1423,7 @@ resolve_serving_placement() {
     fi
   fi
   for index in "${SERVING_NODE_INDEXES[@]}"; do SERVING_NODE_IDS+=("${CLUSTER_NODE_IDS[$index]}"); done
-  if [ -n "$selection" ] && [ "$NODES" -gt 1 ]; then
+  if [ -n "$selection" ] && [ "$NODES" -gt 1 ] && [ "$defer" != defer-fabric ]; then
     require_profile_topology "$NODES" "$TOPOLOGY_CLASS" "$MIN_RAILS_PER_PAIR" || return 1
   fi
 }
@@ -2084,9 +2121,38 @@ container_ownership_is_proven() {
   return 0
 }
 
+# recorded_service_ownership METADATA PLACEMENT — the ownership test for a
+# container whose launch plan an ordinary service record names off the default
+# node order (scripts/service_state.py recorded_ownership), on the node at
+# PLACEMENT. Prints "none" when no such record names it, and the caller judges
+# it by saved position; otherwise "owned" or "refused<TAB>REASON". Records that
+# cannot be read refuse.
+recorded_service_ownership() {
+  local metadata="${1:?}" placement="${2:?}" index node verdict
+  local -a members=()
+  case "$metadata" in *'"io.pulsar.gb10.launch-plan"'*) ;; *) printf 'none\n'; return 0 ;; esac
+  # With no service recorded, none can name it.
+  if ! compgen -G "$PULSAR_MODEL_LIBRARY_DIR/services/*.json" >/dev/null; then
+    printf 'none\n'
+    return 0
+  fi
+  index=$(placement_index_for_role "$placement") \
+    || { printf 'refused\tthe node it was observed on has no saved rank\n'; return 0; }
+  load_cluster_topology >/dev/null 2>&1 \
+    || { printf 'refused\tconfirmed topology is unavailable\n'; return 0; }
+  for node in "${CLUSTER_NODE_IDS[@]}"; do members+=(--node-id "$node"); done
+  verdict=$(printf '%s' "$metadata" | python3 "$REPO_DIR/scripts/service_state.py" ownership \
+      --state-root "$PULSAR_MODEL_LIBRARY_DIR" --topology-id "${CLUSTER_TOPOLOGY_ID:-}" --position "$index" \
+      "${members[@]}" 2>/dev/null) \
+    || verdict=$'refused\tthe saved service records cannot be read'
+  printf '%s\n' "$verdict"
+}
+
 # True when a managed container may be stopped. Labels prove ownership.
 # A live conf file is extra geometry when present; a missing conf still
-# stops from labels (world-size / single-node identity).
+# stops from labels (world-size / single-node identity). A container of an
+# ordinary service recorded off the default node order is judged against its
+# record instead of its saved position (recorded_service_ownership).
 container_all_candidate_is_safe() {
   local metadata="${1:?}" placement="${2:?}"
   local id name managed conf rank
@@ -2095,6 +2161,10 @@ container_all_candidate_is_safe() {
   container_managed_label_is_true "$managed" || return 1
   [ -n "$conf" ] || return 1
   [ -n "$rank" ] || return 1
+  case "$(recorded_service_ownership "$metadata" "$placement")" in
+    owned) return 0 ;;
+    refused*) return 1 ;;
+  esac
   local nodes
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
     # Retired profile (no catalog spec under releases/, or a conf name from
@@ -2170,6 +2240,12 @@ container_all_refuse_reason() {
   fi
   if [ -z "$conf" ] || [ -z "$rank" ]; then
     echo "managed label set but the conf/rank labels are incomplete (conf label='${conf}' rank label='${rank}')"
+    return
+  fi
+  local verdict
+  verdict=$(recorded_service_ownership "$metadata" "$placement")
+  if [ "${verdict%%$'\t'*}" = refused ]; then
+    printf '%s\n' "${verdict#*$'\t'}"
     return
   fi
   if ! profile_nodes_for_conf "$conf" >/dev/null 2>&1; then
@@ -2316,7 +2392,8 @@ container_ownership_inspect_remote() {
   remote_cmd+="printf 'PRESENT\\n%s\\n' \"\$meta\"; exit 0; fi; "
   remote_cmd+="printf '%s\\n' ABSENT; exit 0"
 
-  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null); then
+  # A probe reads nothing; without the redirect SSH would take a caller's loop input.
+  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null </dev/null); then
     return 1
   fi
   status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r')
@@ -2576,7 +2653,8 @@ list_managed_container_ids_remote() {
   remote_cmd+="printf '%s\\n' OK; "
   remote_cmd+="if [ -n \"\$ids\" ]; then printf '%s\\n' \"\$ids\"; fi"
 
-  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null); then
+  # A probe reads nothing; without the redirect SSH would take a caller's loop input.
+  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null </dev/null); then
     return 1
   fi
   status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r')
@@ -2679,11 +2757,11 @@ raise SystemExit(1)
 ' "$1"
 }
 
-# guarded_trial_node_still INDEX NODE_ID TOPOLOGY_ID — whether confirmed
+# recorded_node_still INDEX NODE_ID TOPOLOGY_ID — whether confirmed
 # membership is unchanged and position INDEX still holds the recorded node.
 # Reloaded before every probe and removal so a changed topology never sends an
 # operation to a different machine.
-guarded_trial_node_still() {
+recorded_node_still() {
   reload_cluster_topology >/dev/null 2>&1 || return 1
   [ "$CLUSTER_TOPOLOGY_ID" = "$3" ] && [ "${CLUSTER_NODE_IDS[$1]:-}" = "$2" ]
 }
@@ -2699,9 +2777,9 @@ docker_on_node() {
   fi
 }
 
-# guarded_trial_container INDEX FILTERS — the IDs of the containers matching
-# every '|'-separated docker filter on one confirmed node.
-guarded_trial_container() {
+# recorded_service_containers INDEX FILTERS — the IDs of the containers
+# matching every '|'-separated docker filter on one confirmed node.
+recorded_service_containers() {
   local index="$1" part
   local -a parts=() filters=()
   IFS='|' read -r -a parts <<<"$2"
@@ -2709,19 +2787,142 @@ guarded_trial_container() {
   docker_on_node "$index" container ls -aq --no-trunc "${filters[@]}"
 }
 
-# stop_recorded_guarded_service SPEC PLAN_ID — stop a guarded trial whose
-# controller has exited, on the rank-to-node bindings its launch plan records.
-# The caller holds the exclusive lifecycle lock; a running guarded controller
-# holds it shared for its whole life, so holding it proves the controller is
-# gone. Only the trial's exact container is removed: its recorded name and its
-# guard-run, launch-plan, spec and rank labels, as the trial's own cleanup
-# requires. Every recorded node is probed before anything is removed, and an
-# unobservable node removes nothing. Then the trial's service record retires.
-stop_recorded_guarded_service() {
-  local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rows prefix
+# container_launch_plan_field METADATA — the launch-plan label of ownership
+# inspect JSON, or nothing.
+container_launch_plan_field() {
+  printf '%s' "${1:?}" | python3 -c '
+import json, sys
+print(str((json.load(sys.stdin).get("labels") or {}).get("io.pulsar.gb10.launch-plan") or ""))
+'
+}
+
+# retire_recorded_plan PLAN_ID — retire the active record of that launch plan
+# (service_state.retire_plan) and print what happened: "retired"; "gone" when
+# no record of its service was left to retire; "other" when the record of its
+# service now names another launch plan, which is kept.
+retire_recorded_plan() {
+  python3 -c '
+import sys
+from model_library.state import Store
+from scripts.service_state import retire_plan
+store = Store(sys.argv[1])
+plan = store.get("service-plans", sys.argv[2])
+if retire_plan(store, plan):
+    print("retired")
+else:
+    print("gone" if store.get("services", plan["service_id"]) is None else "other")
+' "$PULSAR_MODEL_LIBRARY_DIR" "$1"
+}
+
+# retired_words OUTCOME [ADJECTIVE] — what retire_recorded_plan did, as the end
+# of a sentence: "retired its [stale ]service record".
+retired_words() {
+  local record="${2:+$2 }service record"
+  case "$1" in
+    retired) printf 'retired its %s' "$record" ;;
+    gone) printf 'its %s was already retired' "$record" ;;
+    *) printf 'its service record now names another launch plan, so it was kept' ;;
+  esac
+}
+
+# stop_earlier_cluster_record SPEC PLAN_ID NAME [RUN] — a service record saved
+# under an earlier saved cluster: an ordinary service's, or with RUN a guarded
+# trial's (the caller holds the exclusive lifecycle lock, so no guarded
+# controller is running). Its containers' labels name that cluster, so Pulsar
+# cannot prove they are its own and never removes them. Every node of the
+# current cluster is asked for a container named NAME with that launch plan
+# (and that guard-run): none anywhere retires the record; one found refuses,
+# says how to clear it and returns 3; a node that cannot be observed changes
+# nothing and returns 1. A record that names a machine no longer in the saved
+# cluster, one-node or multi-node, is retired the same way when no node of
+# this cluster has its container, with a warning that names that machine
+# (EARLIER_UNCHECKED=1). RERUN is the command the operator reruns after
+# removing a container found (default: ./pulsar stop SPEC).
+stop_earlier_cluster_record() {
+  local spec="$1" plan_id="$2" name="$3" run="${4:--}" rerun="${5:-}" index ids id prefix ref filters subject
+  local -a found=()
+  prefix="${PULSAR_MANAGED_LABEL%managed}"
+  ref=$(spec_reference "$spec")
+  [ -n "$rerun" ] || rerun="./pulsar stop $ref"
+  filters="name=^/$name\$|label=${prefix}launch-plan=$plan_id"
+  subject="spec ${spec:0:12}'s service"
+  if [ "$run" != - ]; then
+    filters+="|label=${prefix}guard-run=$run"
+    subject="guarded trial ${run:0:12} of spec ${spec:0:12}"
+  fi
+  if [ "$CLUSTER_TOPOLOGY_COUNT" -gt 1 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
+    error_line "reaching the other nodes needs confirmed SSH trust; nothing was changed. Next: ./pulsar ssh-trust check"
+    return 1
+  fi
+  for ((index = 0; index < CLUSTER_TOPOLOGY_COUNT; index++)); do
+    ids=$(recorded_service_containers "$index" "$filters") \
+      || { stop_unobservable_error "$index" "$spec"; return 1; }
+    while IFS= read -r id; do
+      [ -z "$id" ] || found+=("${id:0:12} on $(human_node_name "$index")")
+    done <<<"$ids"
+  done
+  if [ "${#found[@]}" -gt 0 ]; then
+    # The sweep of stop --all then names no second time the container named here.
+    EARLIER_REPORTED_IDS="${EARLIER_REPORTED_IDS:-} ${found[0]%% on *}"
+    error_line "$subject was recorded under an earlier saved cluster, and its container ${found[0]} is still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was removed and the record is kept. Next: remove that container with Docker on its node (docker rm -f ${found[0]%% on *}), then rerun $rerun"
+    return 3
+  fi
+  # Machines the record names that are no longer in the saved cluster (left
+  # out, or reinstalled with a new identity) were not looked at.
+  local outside
+  outside=$(python3 -c '
+import sys
+from model_library.state import Store
+plan = Store(sys.argv[1]).get("service-plans", sys.argv[2]) or {}
+members = set(sys.argv[3:])
+names = [rank.get("hostname") or rank["node_id"] for rank in plan.get("ranks") or [] if rank["node_id"] not in members]
+print(", ".join(dict.fromkeys(names)))
+' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" "${CLUSTER_NODE_IDS[@]}") || outside="the machines it names"
+  local retired
+  retired=$(retire_recorded_plan "$plan_id") || {
+    if [ "$run" != - ]; then
+      error_line "the guarded trial's service record could not be retired. Next: ./pulsar inventory"
+    else
+      error_line "the service record of spec ${spec:0:12} could not be retired. Next: ./pulsar inventory"
+    fi
+    return 1
+  }
+  local subject_lead="Spec ${spec:0:12}'s service" tail=""
+  [ "$run" = - ] || subject_lead="Guarded trial ${run:0:12} of spec ${spec:0:12}" tail=" The trial's run directory keeps its own result."
+  log "$subject_lead was recorded under an earlier saved cluster and has no container on any node of this one; $(retired_words "$retired" stale).$tail"
+  if [ -n "$outside" ]; then
+    # Read by stop --all's closing line, which then speaks for the saved cluster only.
+    EARLIER_UNCHECKED=1
+    warn "the record also names $outside, which $( [[ "$outside" == *,* ]] && echo are || echo is ) not in the saved cluster, so Pulsar did not check $( [[ "$outside" == *,* ]] && echo them || echo it ); a container of this service left there is not removed by Pulsar. Next: remove it with Docker on that machine"
+  fi
+}
+
+# stop_recorded_service SPEC PLAN_ID — stop a service on the rank-to-node
+# bindings its launch plan records: a guarded trial whose controller has
+# exited, or an ordinary multi-node service recorded off the default node
+# order. The caller holds the exclusive lifecycle lock; a running guarded
+# controller holds it shared for its whole life, so holding it proves the
+# controller is gone.
+#
+# A guarded trial's container is its recorded name with its guard-run,
+# launch-plan, spec and rank labels, as the trial's own cleanup requires. An
+# ordinary service's is the container with its recorded name on each recorded
+# node, inspected by ID and removed only when it passes the ownership test
+# (recorded_service_ownership); one with that name but another launch plan is
+# not this service's, so it is left and named. Every recorded node is probed
+# before anything is removed: an unobservable node, a changed membership,
+# more than one match on a node, or a container of this plan that fails the
+# ownership test removes nothing. Removal is by container ID; absence is then
+# confirmed on every recorded node, and only this plan's service record is
+# retired. Sets RECORDED_SERVICE_STOPPED=1 when it removed a container, and
+# also ORDINARY_RECORDED_STOPPED=1 when that was an ordinary service. A record
+# of an earlier saved cluster goes to stop_earlier_cluster_record, with RERUN
+# (the third argument) and its return status.
+stop_recorded_service() {
+  local spec="${1:?spec required}" plan_id="${2:?launch plan required}" rerun="${3:-}" rows prefix
   local rank label node_id host name run plan spec_label topology index i ids removed=0 where trial_run=""
-  local trial_topology="" changed
-  local -a indexes=() hosts=() filters_of=() found=() node_ids=()
+  local trial_topology="" changed subject meta probe verdict
+  local -a indexes=() hosts=() filters_of=() absent_of=() found=() node_ids=() left=()
   prefix="${PULSAR_MANAGED_LABEL%managed}"
   rows=$(python3 -c '
 import sys
@@ -2730,27 +2931,37 @@ from scripts.container_runtime import validate_plan
 plan = validate_plan(Store(sys.argv[1]).get("service-plans", sys.argv[2]))
 single = len(plan["ranks"]) == 1
 for row in plan["ranks"]:
+    # "-" marks a plan without a guarded run; a tab-separated read would drop an empty field.
     print("\t".join([str(row["rank"]), "single" if single else str(row["rank"]), row["node_id"],
-                     row.get("hostname") or row["node_id"], plan["container_name"], plan["guard_run_id"],
+                     row.get("hostname") or row["node_id"], plan["container_name"], plan.get("guard_run_id") or "-",
                      plan["plan_id"], plan["spec_id"], plan["topology_id"]]))
 ' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id") \
     || { error_line "cannot read the saved launch plan of spec ${spec:0:12}; nothing was removed"; return 1; }
+  IFS=$'\t' read -r _ _ _ _ name run _ _ topology <<<"${rows%%$'\n'*}"
+  if [ "$CLUSTER_TOPOLOGY_ID" != "$topology" ]; then
+    stop_earlier_cluster_record "$spec" "$plan_id" "$name" "$run" "$rerun"
+    return
+  fi
   while IFS=$'\t' read -r rank label node_id host name run plan spec_label topology; do
+    trial_run="$run"
+    if [ "$run" != - ]; then subject="guarded trial ${run:0:12}"; else subject="spec ${spec:0:12}'s service"; fi
     index=""
     for i in "${!CLUSTER_NODE_IDS[@]}"; do [ "${CLUSTER_NODE_IDS[$i]}" != "$node_id" ] || index="$i"; done
     if [ -z "$index" ]; then
-      error_line "guarded trial ${run:0:12} recorded rank $rank on $host, which is not in the confirmed membership; nothing was removed. Next: ./pulsar topology show"
+      error_line "$subject recorded rank $rank on $host, which is not in the confirmed membership; nothing was removed. Next: ./pulsar topology show"
       return 1
     fi
-    indexes+=("$index"); hosts+=("$host (rank $rank)"); node_ids+=("$node_id"); trial_run="$run"
+    indexes+=("$index"); hosts+=("$host (rank $rank)"); node_ids+=("$node_id")
     trial_topology="$topology"
-    filters_of+=("name=^/$name\$|label=${prefix}guard-run=$run|label=${prefix}launch-plan=$plan|label=${prefix}spec-id=$spec_label|label=${prefix}rank=$label")
+    if [ "$run" != - ]; then
+      filters_of+=("name=^/$name\$|label=${prefix}guard-run=$run|label=${prefix}launch-plan=$plan|label=${prefix}spec-id=$spec_label|label=${prefix}rank=$label")
+      absent_of+=("${filters_of[-1]}")
+    else
+      filters_of+=("name=^/$name\$")
+      absent_of+=("name=^/$name\$|label=${prefix}launch-plan=$plan")
+    fi
   done <<<"$rows"
   changed="confirmed membership changed while stop was running; the service record is kept. Next: ./pulsar topology show, then rerun ./pulsar stop $(spec_reference "$spec")"
-  if [ "$CLUSTER_TOPOLOGY_ID" != "$trial_topology" ]; then
-    error_line "guarded trial ${trial_run:0:12} was recorded under a different confirmed membership; nothing was removed. Next: ./pulsar topology show"
-    return 1
-  fi
   for i in "${!indexes[@]}"; do
     if [ "${indexes[$i]}" != 0 ] && ! require_topology_ssh_trust >/dev/null 2>&1; then
       error_line "reaching ${hosts[$i]} needs confirmed SSH trust; nothing was removed. Next: ./pulsar ssh-trust check"
@@ -2759,19 +2970,43 @@ for row in plan["ranks"]:
   done
   # Probe every recorded node before removing anything.
   for i in "${!indexes[@]}"; do
-    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+    recorded_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
       || { error_line "nothing was removed: $changed"; return 1; }
-    ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") \
+    ids=$(recorded_service_containers "${indexes[$i]}" "${filters_of[$i]}") \
       || { stop_unobservable_error "${indexes[$i]}" "$spec"; return 1; }
     if [ "$(printf '%s\n' "$ids" | grep -c .)" -gt 1 ]; then
-      error_line "more than one container matches the guarded trial on ${hosts[$i]}; nothing was removed. Next: ./pulsar inventory"
+      if [ "$trial_run" != - ]; then
+        error_line "more than one container matches the guarded trial on ${hosts[$i]}; nothing was removed. Next: ./pulsar inventory"
+      else
+        error_line "more than one container matches $subject on ${hosts[$i]}; nothing was removed. Next: ./pulsar inventory"
+      fi
       return 1
+    fi
+    if [ "$trial_run" = - ] && [ -n "$ids" ]; then
+      probe=0
+      meta=$(container_ownership_inspect_on_node "${indexes[$i]}" "$ids") || probe=$?
+      if [ "$probe" -eq 3 ]; then
+        ids=""
+      elif [ "$probe" -ne 0 ]; then
+        stop_unobservable_error "${indexes[$i]}" "$spec"
+        return 1
+      elif [ "$(container_launch_plan_field "$meta")" != "$plan_id" ]; then
+        left+=("${ids:0:12} on ${hosts[$i]%% (*}")
+        ids=""
+      else
+        verdict=$(recorded_service_ownership "$meta" "${indexes[$i]}")
+        [ "$verdict" != none ] || verdict=$'refused\tis not judged by its record any more'
+        if [ "$verdict" != owned ]; then
+          error_line "container ${ids:0:12} on ${hosts[$i]%% (*} carries the launch plan of $subject, but it ${verdict#*$'\t'}; nothing was removed. Next: ./pulsar inventory"
+          return 1
+        fi
+      fi
     fi
     found+=("$ids")
   done
   for i in "${!indexes[@]}"; do
     [ -n "${found[$i]}" ] || continue
-    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+    recorded_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
       || { error_line "removed $removed container(s) before $changed"; return 1; }
     docker_on_node "${indexes[$i]}" rm -f "${found[$i]}" >/dev/null || {
       error_line "removing container ${found[$i]:0:12} on ${hosts[$i]} failed; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
@@ -2781,28 +3016,43 @@ for row in plan["ranks"]:
   done
   # Confirm absence on every recorded node before retiring the service record.
   for i in "${!indexes[@]}"; do
-    guarded_trial_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
+    recorded_node_still "${indexes[$i]}" "${node_ids[$i]}" "$trial_topology" \
       || { error_line "removed $removed container(s) before $changed"; return 1; }
-    if ! ids=$(guarded_trial_container "${indexes[$i]}" "${filters_of[$i]}") || [ -n "$ids" ]; then
-      error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
+    if ! ids=$(recorded_service_containers "${indexes[$i]}" "${absent_of[$i]}") || [ -n "$ids" ]; then
+      if [ "$trial_run" != - ]; then
+        error_line "the guarded trial container on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
+      else
+        error_line "the container of $subject on ${hosts[$i]} could not be confirmed absent; the service record is kept. Next: ./pulsar inventory, then rerun ./pulsar stop $(spec_reference "$spec")"
+      fi
       return 1
     fi
   done
-  python3 -c '
-import sys
-from model_library.state import Store
-from scripts.service_state import retire_plan
-store = Store(sys.argv[1])
-retire_plan(store, store.get("service-plans", sys.argv[2]))
-' "$PULSAR_MODEL_LIBRARY_DIR" "$plan_id" \
-    || { error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"; return 1; }
+  local retired
+  retired=$(retire_recorded_plan "$plan_id") || {
+    if [ "$trial_run" != - ]; then
+      error_line "the guarded trial's service record could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"
+    else
+      error_line "the service record of spec ${spec:0:12} could not be retired; its containers are stopped. Next: ./pulsar status $(spec_reference "$spec")"
+    fi
+    return 1
+  }
   where=$(printf '%s, ' "${hosts[@]}"); where="${where%, }"
   if [ "$removed" -gt 0 ]; then
-    GUARDED_TRIAL_STOPPED=1
-    log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and retired its service record. The trial's run directory keeps its own result."
+    RECORDED_SERVICE_STOPPED=1
+    if [ "$trial_run" != - ]; then
+      log "Stopped guarded trial ${trial_run:0:12} of spec ${spec:0:12} on $where: removed $removed container(s) and $(retired_words "$retired"). The trial's run directory keeps its own result."
+    else
+      ORDINARY_RECORDED_STOPPED=1
+      log "Stopped spec ${spec:0:12} on $where: removed $removed container(s) and $(retired_words "$retired")."
+    fi
+  elif [ "$trial_run" != - ]; then
+    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; $(retired_words "$retired" stale). The trial's run directory keeps its own result."
   else
-    log "Guarded trial ${trial_run:0:12} of spec ${spec:0:12} had no container left on $where; retired its stale service record. The trial's run directory keeps its own result."
+    log "Spec ${spec:0:12} had no container left on $where; $(retired_words "$retired" stale)."
   fi
+  for i in "${!left[@]}"; do
+    warn "left container ${left[$i]}: it has the name of spec ${spec:0:12}'s service but another launch plan, so it is not that service's. Next: ./pulsar inventory"
+  done
 }
 
 # spec_reference SPEC_ID — how a suggested command names a spec: its 12-character
@@ -2812,7 +3062,9 @@ spec_reference() {
   local spec="$1" releases="${PULSAR_RELEASES_ROOT:-$REPO_DIR/releases}" matches
   if [[ "$spec" =~ ^[0-9a-f]{64}$ ]] && [ -f "$releases/$spec.json" ]; then
     matches=$(find "$releases" -maxdepth 1 -name "${spec:0:12}*.json" | wc -l)
-    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return; }
+    # return 0, not a bare return: called from an EXIT trap, a bare return
+    # gives the status the shell is exiting with, and set -e ends the trap.
+    [ "$matches" != 1 ] || { printf '%s\n' "${spec:0:12}"; return 0; }
   fi
   printf '%s\n' "$spec"
 }
@@ -2871,6 +3123,7 @@ stop_named_service_by_labels() {
       if ! container_all_candidate_is_safe "$meta" "$placement"; then
         reason=$(container_all_refuse_reason "$meta" "$placement")
         warn "refusing $(conf_label_display "$conf") id=${id:0:12} on $(human_node_name "$index"): $reason"
+        report_refused_leftover "$meta" "$(human_node_name "$index")"
         return 2
       fi
       found_indices+=("$index")
@@ -2902,7 +3155,11 @@ stop_named_service_by_labels() {
   fi
 
   if [ "${#found_ids[@]}" -eq 0 ]; then
-    log "no stack-managed service is running for spec $conf; nothing to stop"
+    # After an ordinary service was stopped on its recorded nodes
+    # (stop_recorded_service), nothing else is left; a guarded trial's stop
+    # keeps this line, as it always printed it.
+    [ "${ORDINARY_RECORDED_STOPPED:-0}" = 1 ] \
+      || log "no stack-managed service is running for spec $conf; nothing to stop"
     STOP_NAMED_NOTHING_FOUND=1
     return 0
   fi
@@ -2915,6 +3172,37 @@ stop_named_service_by_labels() {
   return 0
 }
 
+# earlier_cluster_leftover METADATA NODE — when ownership inspect METADATA is
+# a Stack-managed container whose labels name an earlier saved cluster, say
+# so, in the words of scripts/service_state.py, and return 0; otherwise print
+# nothing and return 1.
+earlier_cluster_leftover() {
+  python3 -c '
+import json, sys
+from scripts.service_state import earlier_cluster_note, left_from_earlier_cluster
+meta = json.loads(sys.argv[1])
+if not left_from_earlier_cluster(meta.get("labels"), sys.argv[3]):
+    raise SystemExit(1)
+cid = str(meta.get("id") or "")
+print("container", cid[:12], "on", sys.argv[2], "is", earlier_cluster_note(cid))
+' "$1" "$2" "${CLUSTER_TOPOLOGY_ID:-}" 2>/dev/null
+}
+
+# report_refused_leftover METADATA NODE — after the sweep refused a container:
+# one more warning when it is left from an earlier saved cluster, unless the
+# record pass already named it (EARLIER_REPORTED_IDS). Counts such refusals in
+# SWEEP_EARLIER_REFUSED and the others in SWEEP_OTHER_REFUSED.
+report_refused_leftover() {
+  local words id
+  if words=$(earlier_cluster_leftover "$1" "$2"); then
+    SWEEP_EARLIER_REFUSED=$((${SWEEP_EARLIER_REFUSED:-0} + 1))
+    id=$(printf '%s' "$1" | python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("id") or "")[:12])')
+    case " ${EARLIER_REPORTED_IDS:-} " in *" $id "*) ;; *) warn "$words" ;; esac
+  else
+    SWEEP_OTHER_REFUSED=$((${SWEEP_OTHER_REFUSED:-0} + 1))
+  fi
+}
+
 # Remove local --all candidates that are safe for head placement.
 # Exit 0 all ok; 1 operational error; 2 any refused candidate left intact.
 # Operational error (1) is sticky: later refusals must not overwrite it.
@@ -2925,7 +3213,7 @@ remove_all_stack_managed_local() {
     return 1
   }
   if [ -z "${ids//[$' \t\r\n']/}" ]; then
-    log "no stack-managed containers on local docker"
+    log "no stack-managed containers on $(human_node_name 0)"
     return 0
   fi
   for id in $ids; do
@@ -2944,6 +3232,7 @@ remove_all_stack_managed_local() {
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
       warn "refusing managed candidate id=${id:0:12} on $(human_node_name 0): $reason"
+      report_refused_leftover "$meta" "$(human_node_name 0)"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -2961,6 +3250,7 @@ remove_all_stack_managed_local() {
     if ! container_all_candidate_is_safe "$meta" "head"; then
       reason=$(container_all_refuse_reason "$meta" "head")
       warn "refusing id=$short on $(human_node_name 0) after revalidation: $reason"
+      report_refused_leftover "$meta" "$(human_node_name 0)"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -2980,13 +3270,15 @@ remove_all_stack_managed_local() {
 
 remove_all_stack_managed_remote() {
   local host="${1:?}" placement="${2:-worker}"
-  local ids id meta conf rank reason rc=0 short remote_rm probe
+  local ids id meta conf rank reason rc=0 short remote_rm probe node
+  # People read the node's hostname; SSH takes its address.
+  node=$(human_node_name "$(placement_index_for_role "$placement" || echo 1)")
   ids=$(list_managed_container_ids_remote "$host") || {
-    warn "remote host unreachable or Docker error listing managed containers on $host"
+    warn "remote host unreachable or Docker error listing managed containers on $node"
     return 1
   }
   if [ -z "${ids//[$' \t\r\n']/}" ]; then
-    log "no stack-managed containers on $host"
+    log "no stack-managed containers on $node"
     return 0
   fi
   for id in $ids; do
@@ -2997,14 +3289,15 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "Docker or SSH error inspecting managed id=${id:0:12} on $host"
+      warn "Docker or SSH error inspecting managed id=${id:0:12} on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     IFS=$'\t' read -r _ _ _ conf rank < <(container_ownership_fields "$meta")
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing managed candidate id=${id:0:12} on $host: $reason"
+      warn "refusing managed candidate id=${id:0:12} on $node: $reason"
+      report_refused_leftover "$meta" "$node"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
@@ -3015,25 +3308,26 @@ remove_all_stack_managed_remote() {
       continue
     fi
     if [ "$probe" -ne 0 ]; then
-      warn "Docker or SSH error revalidating id=$short on $host"
+      warn "Docker or SSH error revalidating id=$short on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     if ! container_all_candidate_is_safe "$meta" "$placement"; then
       reason=$(container_all_refuse_reason "$meta" "$placement")
-      warn "refusing id=$short on $host after revalidation: $reason"
+      warn "refusing id=$short on $node after revalidation: $reason"
+      report_refused_leftover "$meta" "$node"
       rc=$(lifecycle_merge_rc "$rc" 2)
       continue
     fi
-    log "removing stack-managed on $host id=$short $(conf_label_display "$conf") rank=$rank"
+    log "removing stack-managed on $node id=$short $(conf_label_display "$conf") rank=$rank"
     remote_rm="docker rm -f $(printf '%q' "$id") >/dev/null"
     if ! "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_rm"; then
-      warn "docker rm -f failed for id=$short on $host"
+      warn "docker rm -f failed for id=$short on $node"
       rc=$(lifecycle_merge_rc "$rc" 1)
       continue
     fi
     if ! container_id_absent_remote "$host" "$id"; then
-      warn "container id=$short still present or unverifiable on $host after docker rm -f"
+      warn "container id=$short still present or unverifiable on $node after docker rm -f"
       rc=$(lifecycle_merge_rc "$rc" 1)
     fi
   done
@@ -3459,12 +3753,56 @@ check_exit_convention() {
 }
 check_result() { CHECK_RESULT_EXIT="$1"; exit "$1"; }
 
+# engine_memory_refusal WHERE LOG_FILE — when a failed rank's container log
+# (read before clean-up removed the container) holds the engine's own refusal
+# for free GPU memory at its startup, as vLLM words it ("Free memory on device
+# ... on startup is less than desired GPU memory utilization"), quote that line
+# once with WHERE (the node and rank) and say what it means, on stderr. Start's
+# own memory check is separate and unchanged. Returns 1 when the log has no
+# such line.
+# How many of a failed rank's last log lines Start reads for it: more than it
+# shows, since the engine's error sits above the API server's own traceback.
+ENGINE_LOG_LINES="${ENGINE_LOG_LINES:-400}"
+engine_memory_refusal() {
+  local where="$1" line
+  line=$(grep -m1 -E 'Free memory on device .* on startup is less than desired GPU memory utilization' "$2" 2>/dev/null \
+    | tr -d '\r') || return 1
+  [ -n "$line" ] || return 1
+  # From the exception's name when the line has one, without the log's prefix.
+  case "$line" in *ValueError:*) line="ValueError:${line#*ValueError:}" ;; *) line="Free memory on device${line#*Free memory on device}" ;; esac
+  printf 'engine on %s: %s\n' "$where" "$line" >&2
+  printf '  The engine measures free GPU memory when it starts, and that reading varies from one start to the next, so a retry can pass.\n' >&2
+}
+
+# controller_holds_pinned_image — whether this machine's Docker holds the
+# spec's pinned image (IMAGE) as the image check verifies it: its identity,
+# the pinned repository@digest reference and arm64. Only then can image stage
+# copy it from here without --pull. Read-only; any failure answers no.
+controller_holds_pinned_image() {
+  local raw
+  raw=$("$PULSAR_DOCKER" image inspect --format '{{json .}}' "$IMAGE" 2>/dev/null) || return 1
+  printf '%s' "$raw" | python3 -c '
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+if isinstance(data, list) and len(data) == 1:
+    data = data[0]
+held = (isinstance(data, dict) and bool(data.get("Id")) and sys.argv[1] in (data.get("RepoDigests") or [])
+        and data.get("Architecture") == "arm64")
+raise SystemExit(0 if held else 1)
+' "$IMAGE"
+}
+
 # Launch scripts recheck under their own locks just before launch. The image
 # recheck runs first; with --replace the old service is removed before the
 # memory recheck, which cannot count memory that service still holds.
 require_launch_image_check() {
   local -a placement=()
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  # A multi-node launch on named nodes rechecks those nodes.
+  if [ "$NODES" -gt 1 ] && [ -n "${PLACEMENT_NODES:-}" ]; then placement=(--placement-nodes "$PLACEMENT_NODES"); fi
   "$REPO_DIR/scripts/check-image.sh" "$CONF_NAME" "${placement[@]}" || die "image verification failed before launch"
 }
 
@@ -3481,6 +3819,7 @@ require_launch_memory_check() {
   local rc=0
   local -a placement=() memory_args=(--cold-start)
   if [ "$NODES" = 1 ] && [ -n "${SINGLE_NODE_ID:-}" ]; then placement=(--node "$SINGLE_NODE_ID"); fi
+  if [ "$NODES" -gt 1 ] && [ -n "${PLACEMENT_NODES:-}" ]; then placement=(--placement-nodes "$PLACEMENT_NODES"); fi
   if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
     memory_args+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")
   fi
@@ -3502,16 +3841,35 @@ require_launch_memory_check() {
   resolve_library_hot_for_profile "$CONF_NAME"
 }
 
-# port_free PORT [SSH_HOST] — 0 when PORT can be bound on the node.
+# port_free PORT [SSH_HOST] — whether the service could bind PORT on the
+# node: 0 free, 1 in use, 2 not checked (SSH or the probe failed; unknown is
+# not in use). The probe binds as the engine and its API server do, with
+# SO_REUSEADDR: a port whose last connections are only closing (TIME_WAIT,
+# for about a minute after a Stop) is free, as it is for them; a live
+# listener still holds it on Linux. Local and remote probes are the same.
 port_free() {
-  local port="${1:?}" host="${2:-}"
-  local probe='import socket,sys; s=socket.socket(); s.bind(("0.0.0.0",int(sys.argv[1]))); s.close()'
+  local port="${1:?}" host="${2:-}" rc=0
+  local probe='import errno,socket,sys
+s=socket.socket()
+s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+try:
+    s.bind(("0.0.0.0",int(sys.argv[1])))
+except OSError as error:
+    sys.exit(10 if error.errno==errno.EADDRINUSE else 3)
+s.close()'
   if [ -n "$host" ]; then
     "$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
-      "python3 -c $(printf '%q' "$probe") $(printf '%q' "$port")" >/dev/null 2>&1
+      "python3 -c $(printf '%q' "$probe") $(printf '%q' "$port")" >/dev/null 2>&1 || rc=$?
   else
-    python3 -c "$probe" "$port" >/dev/null 2>&1
+    python3 -c "$probe" "$port" >/dev/null 2>&1 || rc=$?
   fi
+  # Only the probe's own 10 means in use: Python's uncaught errors exit 1 and
+  # SSH's own failures 255, and neither says anything about the port.
+  case "$rc" in
+    0) return 0 ;;
+    10) return 1 ;;
+    *) return 2 ;;
+  esac
 }
 
 # container_state_exact NAME [SSH_HOST] — prints running, exited, absent, or

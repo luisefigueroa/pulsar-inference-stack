@@ -237,9 +237,10 @@ class OneService(Page):
 
     def test_restart_is_not_offered_where_start_would_use_other_nodes_or_another_recipe(self):
         for document, reason in (
+                # Start runs a recipe on the nodes it names when they are cabled as it needs;
+                # this fixture's saved cluster records no links.
                 (inventory(service(SPEC, keys=("w1", "w2", "head"))),
-                 "Restart not offered: it runs on spark-2, spark-3 and spark-1, but Start serves it on spark-1, "
-                 "spark-2 and spark-3"),
+                 "Restart not offered: spark-2 and spark-3 share no link in the saved cluster"),
                 (inventory(service(SPEC, matches=False)),
                  "Restart not offered: it was started from a modified recipe")):
             with self.subTest(reason=reason):

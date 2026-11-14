@@ -186,9 +186,15 @@ list_managed_container_ids_on_node() { [ "$1" != "${UNOBSERVABLE_INDEX:-}" ]; }
         self.assert_untouched()
 
     def test_a_trial_recorded_under_other_membership_is_not_touched(self):
+        # Its containers are still there: Stop names the first and removes nothing.
         result = self.stop(self.plan['selected_spec_id'], TEST_TOPOLOGY_ID='d' * 64)
         self.assertEqual(result.returncode, 1, result.stdout)
-        self.assertIn('was recorded under a different confirmed membership; nothing was removed', result.stderr)
+        self.assertIn(f"error: guarded trial {self.plan['guard_run_id'][:12]} of spec {self.plan['spec_id'][:12]} "
+                      'was recorded under an earlier saved cluster, and its container 111111111111 on rank-1 is '
+                      'still there. Pulsar does not remove containers of an earlier saved cluster, so nothing was '
+                      'removed and the record is kept. Next: remove that container with Docker on its node '
+                      f"(docker rm -f 111111111111), then rerun ./pulsar stop {self.plan['selected_spec_id']}",
+                      result.stderr)
         self.assert_untouched()
 
     def test_node_selection_cannot_split_a_trial(self):

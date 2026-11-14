@@ -126,7 +126,11 @@ JSON fields, and container labels retain their existing names. The menu's
 | membership | The nodes you confirmed for this checkout and saved. A saved node may not be reachable now; `./pulsar topology check` tests each one. |
 | changes noticed | What the last discovery saw against saved membership: machines found that are not members, members that did not answer, and changed addresses or links. Every discovery saves it with its time, and the last Check the cluster now keeps its findings beside it; it changes nothing by itself. Cluster… → Review what changed… shows it and saves a change after one question. |
 | SSH trust | The SSH host identities Pulsar records for each member after you confirm them. Pulsar does not install login keys; key-based SSH login must already work. |
-| fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of nodes. |
+| fabric | The RoCE (RDMA) links between nodes, which multi-node recipes need. `./pulsar topology check` tests every pair of cabled nodes. |
+| full mesh | A cluster in which every node is cabled to every other. Three machines in a loop are a full mesh. A multi-node recipe serves on the first nodes in saved order, or on any nodes named with `--placement-nodes`, in that order. |
+| ring | A closed loop of four or more nodes, each cabled to exactly two neighbours. Nodes that are not neighbours share no direct link. Pulsar saves a ring as a ring, with its nodes in cable order. A one-node recipe serves on any of its nodes that has the recipe's files. A copy of model files to a node that is not a neighbour passes through the neighbours between them, each hop on its own cable. A recipe needs every pair of its nodes cabled, so a two-node recipe serves on this node and its neighbour at rank 1, or on any two neighbours named with `--placement-nodes`, which Serve a model… asks for, and a recipe on three or more nodes does not start on a ring, unless its spec sets `NCCL_ALGO=Ring`: such a recipe passes data around a closed loop of its nodes and serves on the whole ring, in cable order or named with `--placement-nodes` in any order that follows the cables, in either direction and from any node. |
+| cable | One physical connection between two neighbours. On a ring each cable carries two links. |
+| neighbour | A node at the other end of one of this node's cables. |
 
 ## Catalog labels
 
@@ -176,7 +180,7 @@ below are for reading.
 | Cluster: not checked since membership was saved | The saved check describes the membership before its last save, so it is not shown as current. **Check the cluster now** checks the membership as it is. |
 | Cluster: the last discovery did not finish | Discovery stopped before it could compare the machines with saved membership, for the reason given. Nothing was saved from it; **Check the cluster now** tries again. |
 | Cluster: saved check unreadable | The saved changes record could not be read. The next **Check the cluster now** replaces it. |
-| Checked: links verified, links failed | Whether the last check found working RoCE links between every pair of nodes. Failed links name their fix in the check's report. |
+| Checked: links verified, links failed | Whether the last check found working RoCE links between every pair of cabled nodes. Failed links name their fix in the check's report. |
 | Checked: SSH identities verified, SSH identities did not match | Whether each node presented the SSH identity Pulsar recorded for it at the last check. A mismatch means a reinstalled machine or a changed host key; the report says how to verify and record it again. |
 | Checked: SSH identities recorded, SSH identities not recorded | Pulsar has recorded the nodes' SSH identities (*SSH trust*), but no check has verified them yet; or it has not recorded them, and **Set up this cluster…** does. |
 | Changes: none noticed | The last discovery found the machines exactly as saved, with its age. |
@@ -185,6 +189,8 @@ below are for reading.
 | Changes: found …, not a member | Discovery found a machine that qualifies and is not in saved membership. **Review what changed…** can add it. A machine with the hostname of a node that did not answer may be that node reinstalled: Pulsar knows a node by its OS machine ID, so it joins as a new node. |
 | Changes: answered but cannot be a member | A node in saved membership answered but no longer qualifies, for the reasons given. Fix it on that machine; Pulsar never leaves out a node that answered. |
 | Changes: address, links or position changed | A node's control address, its RoCE links or its position in the saved order differs from saved membership. **Review what changed…** shows old against new before it saves. |
+| Changes: cluster shape changed | Discovery found the machines cabled in another shape than saved: for example a full mesh that is now a *ring*, after a machine was added and the cables close the loop. **Review what changed…** shows the new order around the ring and saves it. |
+| Changes: share no link now, are cabled now | Two machines the saved cluster has cabled share no RoCE link now, or two machines that were not cabled are now. On a ring this is a *cable* that is dead or was moved; **Review what changed…** shows each one, and a machine that answered but no longer fits the cluster blocks the save until its cables are back. |
 | Changes: SSH on this machine does not trust it yet | A machine answered, but OpenSSH on this machine does not trust its host key, so Pulsar could not check it. Verify the key with `ssh -o StrictHostKeyChecking=ask HOST`; Pulsar never accepts a host key for you. |
 | Issues: … | A blocking issue the last check found on a node, with its fix. Warnings, such as a missing `hf` CLI, are in the check's report, not here. |
 | Serving: not observed yet | No *service inventory* is saved on this controller yet, so home cannot say what runs. It does not mean nothing runs. **Running services…** looks and saves what it sees. |
@@ -195,13 +201,19 @@ below are for reading.
 | Serving: none running | Every node answered the last saved service inventory, and none ran a Pulsar service. Exited or stopped containers that remain are named after it. |
 | Serving: unknown; … not observed | A node did not answer the last saved service inventory, so its services are unknown, not absent. |
 | Serving: saved inventory unreadable | The saved inventory could not be read, so it is left out. **Running services…** replaces it. |
-| Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do. |
+| Serve: running on … | The service inventory **Serve a model…** took on entry saw this recipe running on those nodes. Choosing it says there is nothing to do when the machines chosen are the ones it runs on, in that role order. For other machines it says that a recipe runs as one service: **Running services…** → **Stop…** first, then serve it there; **Restart…** starts it again where it runs. |
 | Serve: ready to start (checked … ago) | The last saved check found its files prepared on every serving node; the age is that check's. The list repeats no check, so an old age is a reason to choose **Check now** in the catalog menu or `./pulsar models check SPEC` first. Its plan is Start alone, after whatever is in the way is stopped. `check time unknown` stands for the age when the saved check's time cannot be read. |
-| Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. |
+| Serve: needs copying to … · … | Its files are on the cluster, but not on every serving node yet: the plan copies them to that many nodes, about that much in all. A copy already there that still verifies is taken over, not copied again. On a *ring* it names the machines a copy goes to instead of counting them. |
 | Serve: needs its files checked | Its files are where it serves, but no saved check has found them prepared. The plan checks and records them; nothing is copied. |
+| Serve: ready to start on … (checked … ago) | On a saved *ring*, a recipe on one or two nodes can serve on several machines, so its phrase names the ones it is about: for a one-node recipe the machine saved records name (its home, else a prepared copy), where **Serve a model…** starts its machine question; for a two-node recipe this machine and its neighbour at rank 1, which Start uses when no machines are named. Here this saved cluster's records show their copies complete and the last saved check found the files ready. A pair is named in role order, `first + second`: the first serves the API. |
+| Serve: needs its files checked on … | On a *ring*: the machines named, chosen as for `ready to start on …`, hold its files, but no saved check has found them prepared, or the copies there were recorded for an earlier saved cluster and must be taken over. The plan checks and records them; nothing is copied. |
+| Serve: needs its files checked on … or … | On a *ring*: the machines named first, chosen as for `ready to start on …`, and the other machines or pairs after them are in the same state. Each has a complete copy of its files recorded for this saved cluster, in that role order, and no saved check has found them prepared. A pair is `first + second`: the first serves the API. A one-node recipe names up to two other machines, then how many more; a two-node recipe names one other pair, then how many more. The plan for the machines you choose checks and records the copies; nothing is copied. |
+| Serve: copies recorded on … | On a *ring*, when the machines named first are not ready to start and their own copies are not recorded for this saved cluster (only the home, a copy from an earlier saved cluster, or none): saved records of this saved cluster show a complete copy of its files on these other machines, in this role order, and the first of a pair serves the API. `and N more` counts the other machines or pairs. A record is not a check: no saved check has said these copies are ready, and a plan that serves there checks them first. Copies recorded for an earlier saved cluster never count. |
 | Serve: needs restoring from its archive | No home (the copy Pulsar keeps) is recorded, and its archive is there: the plan restores the files from it, without the internet. |
 | Serve: needs downloading · … | No home is recorded and no archive can restore it: the plan downloads that much from Hugging Face. **Change…** on the plan can pick the node it goes to. |
 | Serve: needs …; the cluster has … | The recipe serves on more nodes than the cluster has, so it cannot be served here. |
+| Serve: needs every one of its nodes cabled to the others; the cluster is a ring | The saved cluster is a *ring*: each machine is cabled only to its two *neighbours*. This recipe needs every one of its nodes cabled to the others, so Start refuses it here. |
+| Serve: needs … cabled in a closed loop; the ring has … | The recipe passes data around a closed loop of its nodes, each cabled to the next and the last to the first: its spec sets `NCCL_ALGO=Ring`. On a *ring* three or more machines form such a loop only when they are all of its machines, so a recipe on more than two and fewer than all of them does not start here. |
 | Serve: size unknown | The recipe's spec file could not be read, so how much would be copied or downloaded is not known. |
 | Services: by the service inventory … ago | Where **Running services…** got the service's model, state, nodes, port and served model name, and how old that is. An API address marked `· seen` comes from it too. The page takes one inventory on entry and reuses it while it is under a minute old; a Stop or a Start makes it look again. |
 | Services: not checked here; choose Check it now | The service inventory holds no health, and for this service no API port either. **Check it now** asks the service (`./pulsar status`) and fills them in with its age; nothing is guessed before it. |
@@ -313,7 +325,7 @@ every prerequisite before it can fail later; it installs nothing:
    with a host key SSH on this machine does not trust is listed with the check
    to run (`ssh -o StrictHostKeyChecking=ask HOST`); it is not added.
 3. **Check each machine**: each machine discovery found, whose Docker, GPU and
-   links to every other machine discovery verified, is asked for the same
+   links to the machines it is cabled to discovery verified, is asked for the same
    prerequisites over SSH with discovery's strict host-key policy.
 4. **Save**: configuration's fresh checks and its question.
 5. **Identities**: the SSH identity check, and recording them
@@ -365,10 +377,51 @@ interactive terminal with Gum.
 ### Inspect or change membership
 
 `show` reads saved membership without probing. `check` checks every saved node's
-identity, confirmed control endpoint, platform readiness and pairwise fabric
-connectivity. Its JSON distinguishes missing, invalid and blocked state from
+identity, confirmed control endpoint, platform readiness and the connectivity of
+every saved link, each ping bound to the link's own interface. Its JSON distinguishes missing, invalid and blocked state from
 ready; a saved row alone does not establish current readiness. These observations
 do not prepare files, choose model geometry or promise a model can start.
+
+Discovery saves one of two shapes. A *full mesh* has every node cabled to
+every other. A *ring* is four or more nodes in a closed loop, each cabled to
+its two *neighbours*; its ranks follow the cables from this node, and a later
+discovery keeps their direction while the cables still match. Anything else,
+such as an open chain or a ring with a dead *cable*, is saved as the largest
+group in which every node is cabled to every other, and the report names each
+machine that answered but was left out, with the reason. Start needs every
+pair of a recipe's nodes cabled, with at least the links the recipe needs. On a
+ring a two-node recipe starts on this node and its neighbour at rank 1, or on
+two neighbours named with `--placement-nodes` (see [Start on named
+nodes](#start-on-named-nodes)); a recipe on three or more nodes does not start,
+because some of its nodes share no link. Start names those two machines, and the Serve list and **Why will a
+model not start?** say the same. Stop never depends on the shape.
+
+A recipe whose ranks pass data around a closed loop, each to the next and the
+last back to the first, declares it in its own spec: exactly one `NCCL_ALGO`
+entry in `container_env` whose whole value is `Ring`, in any case. Any other
+value, such as `Ring,Tree`, keeps the rule above. Start then needs only each of
+the recipe's nodes cabled to the next and the last to the first, in role order.
+On a ring that is every machine of the ring in an order that follows the
+cables, such as the default order, or two neighbours, which are a loop of their
+own. Three or more machines that are not the whole ring, or an order that skips
+a cable, are refused, and Start names the first two machines in role order that
+share no cable. Each rank uses the
+adapters on both of its cables, and preflight checks only the pairs of the
+loop. On a full mesh such a recipe starts like any other.
+
+Copies of model files follow the cables. Prepare, Move, Archive and Restore
+copy to or from a node that is not this node's neighbour through the
+neighbours between them: still one copy over SSH, with one SSH connection per
+cable, each on that cable's own addresses and checked against the cluster's
+recorded host keys. Nothing is staged on a neighbour, no key or agent is passed
+to it, and a copy never falls back to the control network. Their plans and the
+copy's log say so: "copies to echo pass through bravo". Before the plan offers
+the copy, and again before the copy starts, Pulsar checks each cable's route on
+both of its ends and connects once through each hop. If one fails, the plan is
+blocked and names the hop; a neighbour whose SSH server does not allow
+forwarding (`AllowTcpForwarding`) is named as such. A copy between two other
+nodes streams through this node, so each of its two legs may pass through a
+neighbour.
 
 `detect` probes local, advertised, explicitly supplied and previously confirmed
 nodes without saving membership or enrolling new SSH trust. Repeat `--candidate`
@@ -431,11 +484,17 @@ until Prepare records them again. Prepare takes over a copy made before the
 membership changed when it is on a node that still serves the spec and its
 files still verify: the plan shows the action `rebind` ("take over verified
 files prepared before the cluster's membership changed"), and only the records
-change, on the node and on this controller. Nothing is copied or deleted, the
+change, on the node and on this controller. Prepare takes over a copy the same
+way when only the role order changed: the same nodes were prepared under the
+same saved cluster in another order. The plan and Prepare's progress then say
+"prepared for these nodes in another role order" instead. Nothing is copied or deleted, the
 copy needs no free space, and a pin stays. A copy whose files no longer verify,
 or that a container still mounts, is reported as before (`changed-copy`,
 `pinned` or `container-reference`), to be purged before it is prepared again.
-A copy on a node that no longer serves the spec is left as it is; purge removes
+When the container that mounts it is left from an earlier saved cluster, which
+Stop refuses, the blocker's Fix gives the `docker rm -f` that removes it on its
+node instead of Stop, and the menu offers no Stop for it; a container of the
+current saved cluster keeps the Stop fix. A copy on a node that no longer serves the spec is left as it is; purge removes
 it with the spec's other copies. A save also writes membership without recorded
 SSH identities, so every node, not only a new one, is enrolled again with
 `./pulsar ssh-trust enroll`.
@@ -807,7 +866,13 @@ Without `--plan` or `--yes`, staging checks the nodes and changes nothing: an
 image already present on every node is reported as such, and a missing one is
 refused with the nodes that lack it and the `--plan` command to run next.
 Staging finishes by checking the exact image reference on every selected node.
-It does not start or replace a service. For a verified image held on the
+It does not start or replace a service. Without `--pull` it copies the image
+from this machine. On a node whose Docker uses the containerd image store, a
+copy can arrive without the pinned name; the `--plan` preview warns of this on
+stderr. Staging then exits 1 and says the content arrived on those nodes and
+only the pinned name is missing, with the next command: the same selection with
+`--pull --yes`, which contacts the registry, adds the name and reuses the
+content already there. For a verified image held on the
 controller, `--export-tag TAG` instead of `--pull` selects a named export to
 the other serving nodes. The tag must be in the pinned image's repository and
 resolve to that exact digest and image ID. A destination tag conflict fails;
@@ -828,6 +893,10 @@ in private configuration, never a published spec or example. See
 
 The dry run checks prerequisites without launching or staging an image. It
 identifies checks deferred to actual start, including the multi-node preflight.
+For a multi-node spec it shows the `fabric` check, judged from the saved links
+between the serving nodes; an actual start's preflight then pings those links
+and, without `--verbose`, prints one line under `preflight cluster OK` with how
+many of them answered both ways between each pair of serving nodes.
 Actual start rechecks its prerequisites; ordinary start prints `READY` only
 after the service answers a test completion. Its output includes the served
 model name and API URL. A refusal or failed launch needs inspection before a
@@ -839,6 +908,54 @@ missing image by implication. After inspecting the current service, pass
 when staging the selected digest-pinned image is also approved. Start asks no
 confirmation: `start --yes` is deprecated, grants neither permission and is
 removed in CLI contract 2.
+
+#### Start on named nodes
+
+A multi-node recipe starts in the default node order: rank N on the node saved
+at position N, this node first. It can also start on saved nodes you name, one
+per rank, in role order; the first node named runs the API:
+
+```sh
+./pulsar start <spec-id> --placement-nodes <node>,<node>[,<node>…]
+```
+
+The named nodes must be cabled as the recipe needs, which the launch check
+reads from saved membership: on a full mesh any nodes are; on a ring a two-node
+recipe needs two neighbours, a recipe that sets `NCCL_ALGO=Ring` needs each node
+cabled to the next and the last to the first, in the order named, and any other
+recipe on three or more nodes cannot start. On a ring, **Serve a model…** asks
+for the pair of a two-node recipe and passes it to Prepare and Start in the same
+order (see [Serve a model…](#serve-a-model)); on a full mesh the menu serves on
+the default order, and the command line names other nodes. The named nodes may
+leave out this node, or make it a rank other than the first. Every check, the
+preflight and the launch then run on those nodes only; a node outside them that
+does not answer does not block it. Start refuses, before any node is contacted
+and with the reason, nodes that are not cabled as the recipe needs, a node that
+is not a saved member, and a spec with a serving guard, which runs only as a
+guarded trial. Nodes that are not cabled as the recipe needs fail the `fabric`
+check, which names them, and are reported like any other blocker
+(`fabric_incomplete`, with no fix and a note), in a dry run too. Each node's prepared copy serves one rank, so the same nodes in
+another order need **Prepare** again in that order (`./pulsar model prepare
+<spec-id> --placement-nodes <node>,<node> --yes`), after stopping a service
+that still runs on the copies.
+
+A spec runs as one service. Start reads the saved service records first: when
+the spec is recorded on other nodes, in another order or under an earlier saved
+cluster, it refuses (`service_recorded_elsewhere`) and names those nodes and
+`./pulsar stop <spec-id>`, which stops that service or clears a record whose
+containers are gone. A failed multi-node start retires its service's record
+once it confirmed every container gone (below), so it blocks nothing. A record of the same service that is kept does not block a retry on
+the same nodes. `--replace` replaces a service on the
+default node order only: with a placement off it, stop the service, then start
+it.
+
+The service's API is on its first node. Start checks health, sends its test
+completion and reports `url` at that node's own control address, and uses the
+loopback address only when the first node is this machine, so another service
+listening here on the same port can never answer for it. The API key, when set,
+goes only to the first node, in the command that starts its container. Status
+and stop find the service from its record: suggested `status` and `stop`
+commands take no `--placement-nodes`, and a suggested start keeps it.
 
 ### Recipe identity and deployment settings
 
@@ -925,6 +1042,11 @@ printed. It has no `--json` form; `status --json` reports the service's state.
 A failed multi-node start removes its containers, so only the logs that start
 printed remain.
 
+`inventory` lists each service with one section per container, headed by its
+node's hostname. A multi-node service's nodes are listed in role order, each
+with its rank, and the first is marked `serves the API`, as in
+`spark-3 · rank 0, serves the API`. `inventory --json` keeps its own order.
+
 In the menu, **Running services…** on home shows what runs and offers these
 commands by what they do: **Check it now** (`status`), **How to connect**,
 **Logs** (`logs`), **Restart…**, **Switch to another model…**, **Stop…** and
@@ -953,6 +1075,14 @@ which finds the containers by their Pulsar labels on every node, and its
 question adds `This service was started outside this catalog.` It is offered
 only when the inventory established safe ownership and every confirmed node
 answered.
+
+Inventory and Stop ask the same ownership question of every container. For a
+service whose saved launch record places it off the default node order (see
+[Stop and reclaim storage](#stop-and-reclaim-storage)), each container is
+judged against that record: its name, launch plan and spec, and the node and
+saved cluster its labels name. A service that matches reads as running on the
+nodes its record names, and Stop is offered; one that does not is a mismatch,
+with the reason in `inventory --json`.
 
 The frame names, one line each, the containers this menu cannot act on, by
 what they serve, their state and their owner, such as `vllm-port80 · running ·
@@ -1133,12 +1263,52 @@ Stop a service independently of storage cleanup:
 ./pulsar stop <spec-id> --node <node>
 ```
 
-Omit `--node` for a multi-node service. For a guarded trial, follow its
+Omit `--node` for a multi-node service: it stops on all its nodes together.
+For a guarded trial, follow its
 [owned stop procedure](GUARDED_SERVING.md#observe-and-stop).
+
+Start places a multi-node service in the default node order: rank N on the
+node saved at position N of membership, this node first. Stop finds such a
+service's containers there by their labels. A service whose saved launch
+record places it on other nodes is stopped on exactly the nodes that record
+names. Stop first checks that every confirmed node answers. On each recorded
+node it removes only the container with the recorded name and launch plan
+whose labels name that node and the saved cluster. It removes nothing when a
+node does not answer, membership changed, or such a container does not match
+its record, and says why. It retires the service's record only after each
+recorded node shows its container gone; a record with no container left is
+retired, and the output says so. A container with the service's name but
+another launch plan is left and named, and `--node` is refused for such a
+service.
+
+A record saved under an earlier saved cluster, a one-node or multi-node
+service's or a guarded trial's whose controller has exited, names containers
+whose labels name that cluster, so Pulsar never removes them. Stop looks on
+every node of the current cluster for the recorded container: its recorded
+name and launch plan, and for a guarded trial its guard-run as well. When every
+node answers and none has it, Stop retires that record only and says so; a
+guarded trial's run directory keeps its own result. When one is found, Stop
+removes nothing, keeps the record, and names the container, its node, the
+`docker rm -f` command that removes it, and the stop to rerun. When a node does
+not answer, nothing changes. A record, one-node or multi-node, that names a
+machine no longer in the saved cluster is retired the same way when no node of
+the saved cluster has its container; Stop warns that it did not check that
+machine and to remove any container left there with Docker. A running guarded
+controller is still refused first.
 
 Stopping one spec asks no confirmation. To stop every Stack-managed service on
 all confirmed nodes, run `./pulsar stop --all --yes`; without `--yes` it warns
-and still runs until CLI contract 2 requires it.
+and still runs until CLI contract 2 requires it. It stops each service recorded
+off the default node order first, as above, then every other Stack-managed
+container. A container off the default order that no record names is left:
+the output names it, its node and the reason, and stop exits with status 1. So
+is a container whose labels name an earlier saved cluster: the output says it
+is left from an earlier saved cluster, that Pulsar does not remove it, and the
+`docker rm -f` that removes it on its node. Inventory's page says the same
+under that container.
+While a guarded trial is recorded off the default order or under an earlier
+saved cluster, `stop --all` refuses and names it with the `./pulsar stop` that
+clears it.
 
 In the menu, **Running services… → Stop…** and **Stop every service…** run
 these commands after the same questions as before: Stop's names the nodes the
@@ -1361,10 +1531,25 @@ checks early, because later checks need every node or would be distorted by
 the running service. A check that could not run is reported as such
 (`*_check_failed`), never as the condition it checks. With `--pull-image`, the
 image is staged only after every other check passes, so a start that is
-blocked anyway changes nothing.
+blocked anyway changes nothing. It then copies the image from this machine
+when this machine holds it, whichever nodes lack it, and calls the registry
+only to add the pinned name on a node where the copy did not keep it (a node
+that already holds the content under another name gets that call and no
+copy). When this machine does not hold it, each node that lacks it pulls it
+from its registry. The dry run's `image` line says which it would do. When
+the pinned image is missing on a serving node and this machine holds it, the
+`image_missing` line also offers a copy
+from this machine on the same nodes: `./pulsar image stage <spec-id>
+[--node <node> | --placement-nodes <list>] --plan`, then the same command with
+`--yes`.
 
 With `--replace`, start rechecks the image, removes the previous service
 (ownership still proven), then rechecks memory and the port before launching.
+Start's port check binds the port as the service does: a port held only by
+connections that are still closing after a stop, for about a minute, counts as
+free, and one a program still listens on counts as `port_in_use`. A node where
+the check cannot run, for example because SSH fails, is `port_check_failed`:
+whether its port is free is not known.
 If a recheck or the launch then fails, nothing is running for the spec, and
 start says so. After launch, start releases its locks while the service loads,
 so `stop`, `status` and model-file work are not blocked; the containers'
@@ -1377,7 +1562,38 @@ multi-node start that never became healthy removes its containers. Where a
 container remains, the note names `./pulsar logs <spec-id>` for more than the
 last lines printed. It says
 they were removed only after confirming it on every node; otherwise it names
-the nodes left and suggests `./pulsar stop`. The same blockers appear in `start --json`
+the nodes left and suggests `./pulsar stop`. A multi-node start saves its
+service record before its first container, or points the service's existing
+record (a retry, or `--replace`) at its new plan. When it then fails and
+confirms every container gone on every node the record names, it retires that
+record and says so in one line; a record that names another plan by then is
+kept, and the line says so. When a node could not be checked or a container
+remains, the record is kept, and one line says so, why, and names `./pulsar
+stop <spec-id>`, which clears it. An interrupted start removes nothing and keeps its record.
+
+One multi-node start at a time launches a service: the same spec, saved
+cluster and nodes in role order, which share one record and one container
+name. Its launcher holds the service from the container check until it exits,
+through the record save, every rank's start, the health wait and a failed
+launch's clean-up. A second start of the same service at the same time is
+refused before it checks containers or saves anything, with `BLOCKED
+start_in_progress` and `./pulsar status <spec-id>`, and an error line that
+names the start that holds the service. Wait for that start to finish, as it
+reports whether the service is ready, or interrupt it in its terminal if it is
+no longer needed. A start that comes after the service's containers exist is
+refused by its checks as `service_exists`, as before. `--replace` also waits
+for the start that holds the service: while that start still waits for its
+service to become healthy, `--replace` is refused with `start_in_progress` and
+removes nothing.
+
+When a failed rank's container log (its last 400 lines, read once before the
+clean-up removes the container; the last 80 or 120 are shown, as before) holds
+the engine's own refusal for free GPU memory at its startup
+(vLLM's `Free memory on device … on startup is less than desired GPU memory
+utilization`), Start quotes that line once with the node and rank and says
+that the engine measures free GPU memory when it starts, that the reading
+varies from one start to the next, and that a retry can pass. Start's own
+memory check before launch is separate and unchanged. The same blockers appear in `start --json`
 error details; see [the public contract](CONTRACT.md). A spec with a serving
 guard is refused by ordinary start before any check as `guard_unsupported`.
 Use the separately owned [bounded guarded serving](GUARDED_SERVING.md) path
@@ -1476,13 +1692,31 @@ needs, which the operator approves once.
    nothing differs), with one readiness phrase: `running on …`, `ready to
    start`, `needs copying to … · …`, `needs its files checked`, `needs
    restoring from its archive`, `needs downloading · …` or `needs …; the
-   cluster has …` (see the [Serve labels](#catalog-labels)). The phrases come
+   cluster has …` (see the [Serve labels](#catalog-labels)). On a saved ring
+   a recipe on one or two nodes names its machines, such as `needs its files
+   checked on … · copies recorded on …`. The phrases come
    from saved records and one service inventory, which the menu reuses while
    it is under a minute old.
 3. **The machine.** A one-node recipe asks which machine serves it, starting
-   on the one its files are on. A multi-node recipe serves on the saved node
-   order, as `./pulsar start` does; serving nodes are never chosen from
-   discovery.
+   on the one its files are on. On a saved ring, a two-node recipe asks which
+   two neighbouring machines serve it, one choice per cable: this machine
+   and its neighbour at rank 1 first, which is what Start uses when no
+   machines are named and where the cursor starts; then this machine and its
+   other neighbour; then the other pairs in cable order. Each choice names
+   both machines and the one that serves the API: the one earlier in the
+   saved order, unless this saved cluster's records show the recipe's copies
+   complete only in the other order, which Prepare used; that order is
+   offered instead, so Start finds each rank's copy. Each choice also says
+   what saved records and the service inventory taken on entry already show
+   there: its copies recorded in that order, its model files on one of them,
+   a service running. The plan's first line names the pair again, and its
+   Prepare, serving image and Start steps name it with `--placement-nodes`,
+   in that order, unless it is the pair Start uses without naming machines. **Back**
+   or Esc returns to the list with nothing planned. Any other multi-node
+   recipe, a recipe that passes data around a loop of its nodes
+   (`NCCL_ALGO=Ring`), and every recipe on a full mesh serve on the saved
+   node order, as `./pulsar start` does, and ask nothing; serving nodes are
+   never chosen from discovery.
 4. **The plan.** The previews that can run now, in order: a model files scan
    when a required snapshot has no home, the restore plan, the `hf`
    prerequisites of the node a download goes to (one Hub request; a missing or
@@ -1490,12 +1724,28 @@ needs, which the operator approves once.
    login warns, an unreachable Hub is not checked), the prepare plan once
    every snapshot has a home, the image plan and Start's dry run. Missing
    files come from files found on a node that no record names, then the
-   archive, then a download to the first serving node. The steps follow in a
+   archive, then a download to the first serving node. Download and Restore
+   take a multi-node recipe's home only on a saved rank below its node
+   count, so for a pair at other saved ranks of a ring the files go to the
+   first of those nodes and Prepare copies them to the pair. The steps follow in a
    fixed order: files, copies (Prepare takes over copies that still verify and
-   counts them as not copied), the serving image, then **Stop** of whatever is
+   counts them as not copied; where another recipe's prepared copy already
+   holds the same files on a serving node, Prepare records it for this recipe
+   too, nothing is copied, and the two recipes share it; the step is left out
+   only when every copy is already recorded for this recipe), the serving
+   image, then **Stop** of whatever is
    in the way, then **Start**, so a failed download or copy leaves the running
    service running. Stopping a service and pulling an image from its registry
    are always their own steps; nothing passes `--replace` or `--pull-image`.
+   On a serving node, a service this plan cannot stop (containers Pulsar did
+   not start, or a Pulsar service the inventory found unsafe to stop) blocks
+   the plan while any of its containers runs or the inventory could not say.
+   Containers Pulsar did not start that have all exited hold no port and no
+   GPU memory, so the plan names them in a note, leaves them alone and stays
+   runnable; Start checks the port and memory itself. GPU processes Pulsar did
+   not start are notes too. A plan that only gets the model ready (**Get it
+   ready, but do not start**, or **Get a model ready ahead of time…**) starts
+   nothing, so none of these block it or are named in it.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
    after a blocking check) are named as estimates. A memory warning that
    Start's dry run accepted is shown before approval: Start itself refuses on
@@ -1504,7 +1754,8 @@ needs, which the operator approves once.
    complete ID; the outcome shows a catalog spec's 12-character prefix where
    the command accepts one. Choices: **Cancel**
    (where the cursor starts), **Go ahead**, **Get it ready, but do not start**
-   (the same plan without Stop and Start), **Change…** (the serving machine,
+   (the same plan without Stop and Start), **Change…** (a one-node recipe's
+   serving machine; for another pair, **Cancel** and choose the recipe again;
    the archive or a download, the node that keeps the files, and the serving
    image's source where both are possible: **Pull the serving image from its
    registry instead** when this machine was seen holding it, and **Copy the
@@ -1570,7 +1821,7 @@ and offered nothing. The choices:
 | **Check it now** | Asks the service: its output, then the card with its API, key and health. | `./pulsar status SPEC` |
 | **How to connect (a first request to copy)** | The Connect card from the last check, checking first when there is none. | `./pulsar status SPEC` |
 | **Logs** | Its containers' output in the pager. | `./pulsar logs SPEC` |
-| **Restart…** | Stop then Start of the same recipe on the same nodes, as a two-step plan that starts on **Cancel** and runs as **Serve a model…**'s plans do. Not offered for a modified recipe, or when Start would use other nodes; the card says why. | `./pulsar stop SPEC`, then `./pulsar start SPEC` |
+| **Restart…** | Stop then Start of the same recipe on the same nodes, as a two-step plan that starts on **Cancel** and runs as **Serve a model…**'s plans do. A pair Start ran on named nodes starts again on them, in the same order. Not offered for a modified recipe, or when Start would not run it on the nodes it runs on; the card says why. | `./pulsar stop SPEC`, then `./pulsar start SPEC` (with `--placement-nodes` for a pair on named nodes) |
 | **Switch to another model…** | The Serve list; the plan it builds stops this service directly before Start, even when the new recipe uses other nodes. | the plan's commands |
 | **Stop…** | Today's question, then Stop; model files, pins and archives are kept. | `./pulsar stop SPEC` |
 | **Stop every service…** | Today's question naming each service it removes, then Stop. | `./pulsar stop --all --yes` |
@@ -1680,7 +1931,8 @@ the page, and the page itself says on which nodes it found such files. Its plan:
   reuse (`model acquire SPEC [--snapshot NAME] --node NODE`). The step holds
   only if Download's preview answers `reuse` for that node; it never
   downloads. A recipe that serves on several nodes keeps its home on one of
-  them, so the folder must be on one of its serving nodes.
+  them that is on a saved rank below its node count (on a ring, a pair at
+  other ranks keeps it on such a node instead), so the folder must be there.
 - `Take over the copies of MODEL found on NODES after checking every file`, one
   step per recipe: `model prepare SPEC --adopt-unrecorded` (see [Prepare all
   serving nodes](#prepare-all-serving-nodes)), the only place the menu passes
@@ -1750,8 +2002,18 @@ when a saved record changed. Its choices:
   warning and blocking issue with its fix; `hf` findings are warnings),
   memory, disk and services, then the archive and API key settings, the
   sources that could not be observed, and a verdict. A long report opens in
-  the pager. Its findings are saved beside the changes noticed, so home and
-  this frame show them later. Under the report: **Review what changed…** when
+  the pager. When the pager closes, one line for this check stays on screen,
+  for example
+  `Checked   16:13:05 · no blocking issue · 4 of 4 answered · 3 warnings`:
+  when it started and what the verdict counts, with the nodes that did not
+  answer named. Blocking issues, nodes that did not answer or were not
+  observed, and checks not observed come first, and when a node or a check
+  was not observed the line does not say "no blocking issue". So the frame
+  above, which still shows the check saved before, is not the only result in
+  view. **Check again** prints a new line; **Show the report again** does
+  not, because the line is still on screen when the pager closes. Its findings are
+  saved beside the changes noticed, so home and this frame show them later.
+  Under the report: **Review what changed…** when
   discovery noticed a change, **Show the report again**, **Check again** and
   **Back**. It replaces the earlier home menu's **Cluster overview**.
 - **Review what changed…**, shown when the saved changes hold a change, shows
@@ -1973,7 +2235,16 @@ Every outcome ends with the command that does the same, such as `Same as:
 repeated or scripted. It is the command the menu ran, in its operator form:
 the spec as a 12-character prefix where the command accepts one, and nodes by
 hostname. `--yes` and `--accept-memory-warn` appear only when the menu passed
-them; a failed preview names its `--plan` command.
+them; a failed preview names its `--plan` command. A command that fits the
+line stays on one line. A longer command breaks only between its arguments,
+never between an option and its value, and every line but the last ends with
+` \`, so the lines paste as one command:
+
+```text
+Same as:
+  ./pulsar start 139908cf23bb \
+    --placement-nodes node-a,node-b,node-c,node-d
+```
 
 ### Interruptions and recorded checks
 
@@ -2048,7 +2319,7 @@ lead to it:
 | Blocker | Choice |
 | --- | --- |
 | `topology_incomplete` | Open Cluster topology, where membership can be set up or changed |
-| `fabric_incomplete`, `node_unreachable` | Check saved nodes and fabric |
+| `fabric_incomplete`, `node_unreachable`, `port_check_failed` | Check saved nodes and fabric; none when two of the chosen nodes of a ring share no cable, which no check or menu operation changes |
 | `docker_unavailable`, `container_start_failed` | Host diagnostics |
 | `image_missing` | Stage serving image |
 | `model_files_not_ready` | Download, Restore or Prepare, as the saved records indicate |
@@ -2074,7 +2345,9 @@ the service's containers on every node; for a service outside the catalog,
 the question says so. The refused spec's own service is `service_exists`,
 with its own choices. Containers Pulsar does not manage, managed services the
 inventory could not establish as safe to stop, and GPU processes Pulsar did
-not start are named above the choices, read-only, with no choice. When the
+not start are named above the choices, read-only, with no choice. Containers
+Pulsar did not start that have all exited are named with `they hold no port
+or GPU memory`, since they cannot be what refused the start. When the
 inventory cannot be taken or read, the choices are the ones in the table.
 
 Each choice runs the existing operation with its own selections, preview and
@@ -2211,7 +2484,12 @@ without that grouping. Each node's section ends with its
 [prerequisites](#installation-prerequisites). Every
 styled part also reads without color. `NO_COLOR` removes the colors and keeps
 bold and underline; `PULSAR_COLOR=never` prints no styles;
-`PULSAR_COLOR=always` keeps them in output that is not a terminal. The menu's
+`PULSAR_COLOR=always` keeps them in output that is not a terminal. With either
+setting that turns colors off, a yes/no question still marks the answer Enter
+gives: it is bold and underlined, and the keys are named under the question;
+a menu marks its choice with `>`; a text prompt shows where typing goes with a
+reverse-video block and gives its example above the field as `Example: …`,
+never inside it. The menu's
 pager runs its pages with `always`, so they keep their styles there. Without
 `always`, piped output stays plain; `--json` output never carries styles.
 Menus set `PULSAR_COLOR=always` for the commands they run, unless it is
@@ -2225,9 +2503,12 @@ Long storage operations report each phase on stderr, such as
 and stdout, including `--json` results, is unchanged.
 
 While a started service loads, Start says how many health checks it allows
-and how far apart they are. On a terminal, one stderr line then updates after
-each check, for example `loading: 2:14 elapsed · health check 14 of 90 ·
-container running`. For a multi-node service it shows each rank's container
+and how far apart they are: by default 240 checks 5 s apart on one node and
+120 checks 10 s apart on several, about 20 minutes either way, since a first
+load on a node reads every model file. A service that answers, or a container
+that exits, ends the wait at once. On a terminal, one stderr line then updates
+after each check, for example `loading: 2:14 elapsed · health check 14 of
+240 · container running`. For a multi-node service it shows each rank's container
 state, or `all 3 ranks running` when they agree. Each check also waits for its
 probes, so the limit is a number of checks, not a time. The line is cleared
 before any later message. Captured or piped output gets the same text as a

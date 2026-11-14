@@ -1,0 +1,143 @@
+{
+  "rejected": [],
+  "result": "ok",
+  "schema_version": 1,
+  "topology": {
+    "generated_at": "2026-01-02T03:04:05+00:00",
+    "links": [
+      {
+        "rails": [
+          {
+            "a": {
+              "hca": "roce0",
+              "ip": "198.51.100.10",
+              "netdev": "fabric0"
+            },
+            "b": {
+              "hca": "roce0",
+              "ip": "198.51.100.11",
+              "netdev": "fabric0"
+            },
+            "network": "198.51.100.0/24"
+          }
+        ],
+        "ranks": [
+          0,
+          1
+        ]
+      },
+      {
+        "rails": [
+          {
+            "a": {
+              "hca": "roce0",
+              "ip": "198.51.100.10",
+              "netdev": "fabric0"
+            },
+            "b": {
+              "hca": "roce0",
+              "ip": "198.51.100.12",
+              "netdev": "fabric0"
+            },
+            "network": "198.51.100.0/24"
+          }
+        ],
+        "ranks": [
+          0,
+          2
+        ]
+      },
+      {
+        "rails": [
+          {
+            "a": {
+              "hca": "roce0",
+              "ip": "198.51.100.11",
+              "netdev": "fabric0"
+            },
+            "b": {
+              "hca": "roce0",
+              "ip": "198.51.100.12",
+              "netdev": "fabric0"
+            },
+            "network": "198.51.100.0/24"
+          }
+        ],
+        "ranks": [
+          1,
+          2
+        ]
+      }
+    ],
+    "nodes": [
+      {
+        "control": {
+          "interface": "mgmt0",
+          "ip": "192.0.2.10"
+        },
+        "gpu": "NVIDIA GB10",
+        "hostname": "fixture-rank-0",
+        "node_id": "fixture-node-0",
+        "rank": 0,
+        "rdma": [
+          {
+            "cidrs": [
+              "198.51.100.10/24"
+            ],
+            "hca": "roce0",
+            "netdev": "fabric0"
+          }
+        ],
+        "ssh_host": "local"
+      },
+      {
+        "control": {
+          "interface": "mgmt0",
+          "ip": "192.0.2.11"
+        },
+        "gpu": "NVIDIA GB10",
+        "hostname": "fixture-rank-1",
+        "node_id": "fixture-node-1",
+        "rank": 1,
+        "rdma": [
+          {
+            "cidrs": [
+              "198.51.100.11/24"
+            ],
+            "hca": "roce0",
+            "netdev": "fabric0"
+          }
+        ],
+        "ssh_host": "alias-1"
+      },
+      {
+        "control": {
+          "interface": "mgmt0",
+          "ip": "192.0.2.12"
+        },
+        "gpu": "NVIDIA GB10",
+        "hostname": "fixture-rank-2",
+        "node_id": "fixture-node-2",
+        "rank": 2,
+        "rdma": [
+          {
+            "cidrs": [
+              "198.51.100.12/24"
+            ],
+            "hca": "roce0",
+            "netdev": "fabric0"
+          }
+        ],
+        "ssh_host": "alias-2"
+      }
+    ],
+    "schema_version": 1,
+    "topology_id": "b399280224c4fa8e591049076e634eccd07333f8622b82fecdd3859ca3737781",
+    "validation": {
+      "class": "roce-full-mesh",
+      "connectivity_verified": false,
+      "full_mesh": true,
+      "min_rails_per_pair": 1
+    }
+  }
+}

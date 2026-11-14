@@ -64,7 +64,7 @@ PY
   fi
   all_views=$(merged_views all) || die "shared-copy dependencies are unobservable"
   all_views=$(json_fields "$all_views" views)
-  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || die "purge planning failed"
+  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || die "purge planning failed"
   if [ "$PLAN" -eq 1 ]; then emit_result "$(model_json plan: "$plan" incomplete_preparations: "$transactions")"; return; fi
   [ "$YES" -eq 1 ] || die "purge requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
@@ -77,7 +77,7 @@ PY
   observations=$(all_observations) || die "could not recheck all nodes before purge"
   all_views=$(merged_views all) || die "shared-copy dependencies became unobservable"
   all_views=$(json_fields "$all_views" views)
-  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || return 2
+  plan=$(model_ctl "$(model_json operation plan-purge spec_id "$SPEC_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" views: "$views" all_views: "$all_views" node_ids: "$(all_node_ids)" observations: "$observations")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   while IFS= read -r row; do
     select_record_manifest "$row" || die "record references an undeclared snapshot"
@@ -115,19 +115,31 @@ remove_home() {
   require_cluster_nodes 1 >/dev/null || die "home removal requires confirmed topology"
   observations=$(all_observations) || die "cannot inspect every node"
   dependencies=$(snapshot_dependencies) || die "snapshot dependencies are unobservable"
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || die "home removal planning failed"
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || die "home removal planning failed"
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "home removal requires --yes"
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   observations=$(all_observations) || die "cannot recheck nodes before home removal"
   dependencies=$(snapshot_dependencies) || die "cannot recheck snapshot dependencies"
-  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || return 2
+  plan=$(model_ctl "$(model_json operation plan-remove snapshot_manifest_id "$MANIFEST_ID" topology_id "${CLUSTER_TOPOLOGY_ID:-}" node_ids: "$(all_node_ids)" observations: "$observations" views: "$(json_fields "$dependencies" views)" transactions: "$(json_fields "$dependencies" transactions)")") || return 2
   [ "$(json_fields "$plan" eligible)" = true ] || { emit_result "$plan"; return 1; }
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   "$REPO_DIR/scripts/guard-storage.sh" --node "$(json_fields "$HOME_JSON" node_id)" --path "$(json_fields "$HOME_JSON" hub_path)" --json >/dev/null || die "home acquired a container reference"
   model_node "$rank" "$(model_node_request remove-home hub_path "$(json_fields "$HOME_JSON" hub_path)" verification: "$(json_fields "$HOME_JSON" verification)")" >/dev/null || die "home removal did not complete"
   model_ctl "$(model_json operation forget-home home: "$HOME_JSON")" >/dev/null || die "home bytes removed but record remains; inspect state"
   emit_result "$(model_json snapshot_manifest_id "$MANIFEST_ID" removed: true archive_untouched: true)"
+}
+
+# move_destination_present RANK: whether the home folder of this snapshot is
+# already on that node, from a cheap look at the path; the run verifies every
+# file before it reuses them. Unknown counts as absent, so the route is checked.
+move_destination_present() {
+  local roots hub state
+  roots=$(model_node "$1" "$(model_node_request roots)") || return 1
+  hub=$(python3 -c 'import json,sys; from model_library.local import location; print(location(sys.argv[1],json.loads(sys.argv[2])))' \
+    "$(json_fields "$roots" home_root)" "$MANIFEST_JSON") || return 1
+  state=$(model_node "$1" "$(model_node_request path-state path "$hub")") || return 1
+  [ "$(json_fields "$state" state)" = present ]
 }
 
 move_home() {
@@ -147,6 +159,17 @@ move_home() {
   route=direct-ssh-roce
   if [ "$source_rank" -eq "$target_rank" ]; then route=already-home; elif [ "$source_rank" -gt 0 ] && [ "$target_rank" -gt 0 ]; then route=controller-stream-relay; fi
   plan=$(model_json kind pulsar-home-move-plan snapshot_manifest_id "$MANIFEST_ID" source_node "$(json_fields "$HOME_JSON" node_id)" destination_node "$target_node" transfer_route "$route")
+  ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  if [ "$route" != already-home ] && [ "$PLAN" -eq 1 ] && move_destination_present "$target_rank"; then
+    # A retry after a copy that finished: the run verifies the files already
+    # there and copies nothing, so the plan has no copy route to check.
+    plan=$(printf '%s' "$plan" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["destination_present"]=True; print(json.dumps(d))')
+  elif [ "$route" != already-home ]; then
+    # Between nodes that share no cable the copy passes through the nodes between.
+    . "$REPO_DIR/scripts/model-transfer.sh"
+    model_transfer_plan_route "$source_rank" "$target_rank" || true
+    plan=$(model_transfer_route_plan "$plan" "$target_node") || die "could not check the copy route"
+  fi
   if [ "$PLAN" -eq 1 ]; then emit_result "$plan"; return; fi
   [ "$YES" -eq 1 ] || die "move requires --yes after reviewing destination and transfer route"
   phase 1 3 "verifying the home on $(human_node_name "$source_rank")"
@@ -165,6 +188,8 @@ move_home() {
   if [ "$(json_fields "$existing" exists)" = true ]; then
     result=$(printf '%s' "$existing" | python3 -c 'import json,sys; from pathlib import Path; from model_library.local import home_record; d=json.load(sys.stdin); print(json.dumps({"home":home_record(json.loads(sys.argv[1]),sys.argv[2],Path(d["hub_path"]),d["verification"])}))' "$MANIFEST_JSON" "$target_node")
   else
+    # Only a copy needs its route; recovering a home already moved does not.
+    [ -z "$ROUTE_REFUSAL" ] || die "$ROUTE_REFUSAL; nothing was moved"
     phase 2 3 "copying the home to $(human_node_name "$target_rank")"
     stage=$(model_node "$target_rank" "$(model_node_request begin-home)") || die "destination already has files; inspect before reuse or movement"
     . "$REPO_DIR/scripts/model-transfer.sh"

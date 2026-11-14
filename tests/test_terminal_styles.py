@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,62 @@ class Cards(unittest.TestCase):
         self.assertEqual(ANSI.sub("", styled), plain)
         self.assertIn("\n\x1b[1;94mConnect\x1b[0m\n  API:    http://192.0.2.10:8000/v1\n", styled)
         self.assertIn("\x1b[1;94mFirst request:\x1b[0m\n\x1b[36mcurl --fail-with-body", styled)
+
+
+class SameAsCommands(unittest.TestCase):
+    """A command under Same as pastes as it is shown at every width."""
+
+    SPEC = "ab" * 32
+    LONG = f"./pulsar image stage {SPEC} --placement-nodes node-a,node-b,node-c --pull --yes"
+
+    def test_a_command_that_fits_is_one_line_as_before(self):
+        from scripts.terminal_format import command_lines
+        command = "./pulsar start abababababab --node node-a --dry-run"
+        self.assertEqual(command_lines(command, 80, "Same as: ", "  "), [f"Same as: {command}"])
+
+    def test_a_long_command_breaks_between_arguments_and_keeps_each_option_with_its_value(self):
+        from scripts.terminal_format import command_lines
+        for width in (32, 44, 60, 80):
+            with self.subTest(width=width):
+                lines = command_lines(self.LONG, width, "  ", "    ")
+                self.assertGreater(len(lines), 1)
+                self.assertTrue(all(line.endswith(" \\") for line in lines[:-1]), lines)
+                self.assertFalse(lines[-1].endswith("\\"), lines)
+                # Joined again it is the same command, word for word.
+                joined = " ".join(line.strip().removesuffix(" \\") for line in lines)
+                self.assertEqual(joined, self.LONG)
+                # No line starts with a value whose option ends the line before.
+                self.assertTrue(any(line.strip().startswith("--placement-nodes node-a,") for line in lines), lines)
+                self.assertFalse(any(line.endswith("--placement-nodes \\") for line in lines), lines)
+                # Only an argument (or option and value) wider than the line by
+                # itself makes a line overflow, and it is then alone on its line.
+                whole = (self.SPEC, "--placement-nodes node-a,node-b,node-c")
+                self.assertTrue(all(len(line) <= width or line.strip().removesuffix(" \\") in whole
+                                    for line in lines), lines)
+        self.assertEqual(command_lines(self.LONG, 60, "  ", "    "),
+                         ["  ./pulsar image stage \\", f"    {self.SPEC} \\",
+                          "    --placement-nodes node-a,node-b,node-c --pull --yes"])
+        # A "#" is part of its argument, not the start of a comment.
+        self.assertEqual(command_lines("./pulsar start abababababab --label a#b --node node-a", 40, "  ", "    "),
+                         ["  ./pulsar start abababababab \\", "    --label a#b --node node-a"])
+        # shlex.join writes /mnt/Bob's models as adjacent quoted parts: they stay one argument.
+        argv = ["./pulsar", "model", "move", "abababababab", "--to", "/mnt/Bob's models", "--yes"]
+        lines = command_lines(shlex.join(argv), 40, "  ", "    ")
+        self.assertEqual(lines, ["  ./pulsar model move abababababab \\",
+                                 "    --to '/mnt/Bob'\"'\"'s models' --yes"])
+        self.assertEqual(shlex.split(" ".join(line.removesuffix(" \\") for line in lines)), argv)
+
+    def test_the_shell_menus_print_it_the_same_way_styled_or_plain(self):
+        command = "./pulsar start abababababab --placement-nodes node-a,node-b,node-c,node-d --dry-run"
+        run = lambda **values: subprocess.run(  # noqa: E731
+            [sys.executable, "-m", "scripts.terminal_format", "--same-as", command], cwd=ROOT, text=True,
+            capture_output=True, env=environment(COLUMNS="48", **values), timeout=60)
+        plain = run().stdout
+        self.assertEqual(plain, "Same as: ./pulsar start abababababab \\\n"
+                                "  --placement-nodes node-a,node-b,node-c,node-d \\\n  --dry-run\n")
+        styled = run(PULSAR_COLOR="always").stdout
+        self.assertEqual(ANSI.sub("", styled), plain)
+        self.assertIn("\x1b[", styled)
 
 
 class ParsedOutput(unittest.TestCase):

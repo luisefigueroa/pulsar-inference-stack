@@ -94,7 +94,33 @@ if [ -n "$EXPORT_TAG" ]; then
     done <<<"$ids"
   done
 fi
+# pull_name_command — the stage that adds the pinned name where a copy did not
+# keep it: the operator's selection with --pull and --yes, never a fallback or
+# export mode.
+pull_name_command() {
+  local -a flags=() kept=(${selection_flags[@]+"${selection_flags[@]}"})
+  local i=0
+  while [ "$i" -lt "${#kept[@]}" ]; do
+    case "${kept[$i]}" in
+      --pull|--pull-if-stream-incomplete) ;;
+      --export-tag) i=$((i + 1)) ;;
+      *) flags+=("${kept[$i]}") ;;
+    esac
+    i=$((i + 1))
+  done
+  printf './pulsar image stage %s --pull --yes\n' \
+    "$(python3 -c 'import shlex,sys; print(shlex.join(sys.argv[1:]))' "$NAME" ${flags[@]+"${flags[@]}"})"
+}
 if [ "$PLAN" = 1 ]; then
+  if [ "$mode" = stream-from-controller ] && [ -z "$EXPORT_TAG" ] \
+      && printf '%s' "$report" | python3 -c 'import json,sys; raise SystemExit(0 if any(r["state"] in ("missing","other-name") for r in json.load(sys.stdin)["ranks"]) else 1)'; then
+    # Said on stderr: stdout is the preview's JSON.
+    if [ "$PULL_FALLBACK" = 1 ]; then
+      warn "a copy from this machine can arrive without the pinned name, on a node whose Docker uses the containerd image store; --pull-if-stream-incomplete then calls the registry on that node to add the name, reusing the content the copy brought"
+    else
+      warn "a copy from this machine can arrive without the pinned name, on a node whose Docker uses the containerd image store; staging then ends with the content there and the name missing, and $(pull_name_command) adds the name: it contacts the registry and reuses the content already there"
+    fi
+  fi
   printf '%s' "$report" | python3 -c 'import json,sys; d=json.load(sys.stdin);d["operation"]="stage-image";d.update(mode=sys.argv[1],export_reference=sys.argv[2],source_image_id=sys.argv[3] or None);print(json.dumps(d,indent=2))' "$mode" "$export_image" "$source_image_id"
   exit 0
 fi
@@ -137,7 +163,12 @@ if [ "$PULL" = 0 ]; then
   # a registry pull unless the caller passed --pull-if-stream-incomplete.
   "$PULSAR_DOCKER" image inspect "$IMAGE" >/dev/null 2>&1 || die "controller lacks pinned image; choose --pull --yes or acquire it explicitly"
 fi
-mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]')
+# A node that holds the pinned content under another name gets no second copy
+# when a pull may follow (--pull-if-stream-incomplete): the pull adds the name
+# and reuses the content already there.
+copy_states='"missing","other-name"'
+[ "$PULL" = 1 ] || [ "$PULL_FALLBACK" != 1 ] || copy_states='"missing"'
+mapfile -t missing < <(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["topology_index"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ('"$copy_states"',)]')
 for physical in "${missing[@]}"; do
   if [ "$PULL" = 1 ]; then
     if [ "$physical" = 0 ]; then "$PULSAR_DOCKER" pull "$IMAGE" >&2; else ssh_node "$physical" "$(shell_join_q docker pull "$IMAGE")" >&2; fi
@@ -158,6 +189,21 @@ for physical in "${missing[@]}"; do
 done
 if ! "$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json >/dev/null; then
   if [ "$PULL" != 0 ] || [ "$PULL_FALLBACK" != 1 ]; then
+    if [ "$PULL" = 0 ] && [ -z "$EXPORT_TAG" ]; then
+      # A copy whose content arrived but whose pinned name Docker did not keep
+      # (the containerd image store): the check finds the content by digest.
+      report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json || true)
+      lacking=$(printf '%s' "$report" | python3 -c 'import json,sys; [print(r["rank"], r["topology_index"], r["state"]) for r in json.load(sys.stdin)["ranks"] if r["state"] in ("missing","other-name")]' 2>/dev/null || true)
+      arrived="" still_missing=""
+      while read -r rank physical lacking_state; do
+        [ -n "$rank" ] || continue
+        if [ "$lacking_state" = other-name ]; then arrived+="${arrived:+, }$(human_node_name "$physical") (rank $rank)"
+        else still_missing+="${still_missing:+, }$(human_node_name "$physical") (rank $rank)"; fi
+      done <<<"$lacking"
+      if [ -n "$arrived" ] && [ -z "$still_missing" ]; then
+        die "the image content arrived on $arrived, but Docker there did not record the pinned name, so the pinned image is not established yet. Next: $(pull_name_command), which contacts the registry to add the pinned name and reuses the content already there"
+      fi
+    fi
     die "staging did not establish the pinned digest on every node; rerun with --pull to pull the exact digest"
   fi
   report=$("$REPO_DIR/scripts/check-image.sh" "$NAME" "${placement[@]}" --json || true)

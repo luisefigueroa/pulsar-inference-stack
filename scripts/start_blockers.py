@@ -75,8 +75,21 @@ BLOCKERS = {
     "service_exists": Kind("a service for this spec already exists",
                            "./pulsar status {spec} {candidate}{placement}",
                            note="To replace it, rerun start with --replace, only with explicit replacement approval."),
+    # Stop takes no placement: it stops the spec's service wherever its record says.
+    "service_recorded_elsewhere": Kind("a service of this spec is recorded on other nodes",
+                                       "./pulsar stop {spec} {candidate}",
+                                       note="A spec runs as one service. Stop it first; stop also clears a record "
+                                            "whose containers are gone."),
+    # The launcher found another Start of the same service (spec, saved
+    # cluster and nodes) still running; that Start reports its own outcome.
+    "start_in_progress": Kind("another start of this service is running", "./pulsar status {spec} {candidate}",
+                              note="Wait for that start to finish; it reports whether the service is ready. If it "
+                                   "is no longer needed, interrupt it in its terminal."),
     "port_in_use": Kind("the service port is already in use", "./pulsar inventory",
                         note="Free the port, or change the deployment port."),
+    # Unknown is not in use: SSH or the probe failed, so the port's state is not known.
+    "port_check_failed": Kind("the port check could not complete on the node", "./pulsar topology check",
+                              note="Whether the port is free is not known; start again once the node answers."),
     "preflight_failed": Kind("the multi-node preflight failed", START, adds="--verbose"),
     # Ordinary start cannot resolve these; the note explains the supported path.
     "guard_unsupported": Kind("this spec requires serving-guard enforcement (recipe.container.guard), "
@@ -163,6 +176,9 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         raise ValueError(f"unknown start blocker: {code}")
     kind = BLOCKERS[code]
     placement = placement.strip() + " " if placement.strip() else ""
+    # Stop and status take --node for a one-node service and nothing else: a
+    # multi-node service is found from its record, wherever it runs.
+    service_placement = placement if placement.startswith("--node ") else ""
     candidate = _args(("--spec-file", spec_file))
     carried = [flag for flag in start_flags.split() if flag in CARRIED_START_FLAGS and flag != kind.adds]
     start_args = (candidate
@@ -175,7 +191,10 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
     fix = None
     resolved_note = kind.note
     if kind.command and not no_command:
-        fix = kind.command.format(spec=shown, placement=placement, candidate=candidate, start_args=start_args)
+        command_placement = (service_placement if kind.command.startswith(("./pulsar status", "./pulsar stop"))
+                             else placement)
+        fix = kind.command.format(spec=shown, placement=command_placement, candidate=candidate,
+                                  start_args=start_args)
         if code == "model_files_not_ready":
             download = _files_command(spec, shown, spec_file=spec_file, candidate=candidate, placement=placement,
                                       home_node=home_node, state_root=state_root)
@@ -194,9 +213,9 @@ def blocker(code: str, *, spec: str = "", placement: str = "", node: str | None 
         resolved_note = resolved_note.replace("{logs}", LOGS.format(spec=shown))
     if resolved_note and "{stop}" in resolved_note:
         resolved_note = resolved_note.replace(
-            "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split()))
+            "{stop}", " ".join(STOP.format(spec=shown, candidate=candidate, placement=service_placement).split()))
     if unconfirmed:
-        fix = " ".join(STOP.format(spec=shown, candidate=candidate, placement=placement).split())
+        fix = " ".join(STOP.format(spec=shown, candidate=candidate, placement=service_placement).split())
         resolved_note = f"Removing its containers could not be confirmed on {unconfirmed}; stop removes what remains."
     elif after_replace and (kind.stage == "check" or kind.nothing_runs):
         resolved_note = f"{resolved_note} {AFTER_REPLACE_NOTE}" if resolved_note else AFTER_REPLACE_NOTE

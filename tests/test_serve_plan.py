@@ -243,6 +243,10 @@ class Compose(unittest.TestCase):
                                             "in_catalog": True, "node": None,
                                             "restart": ["./pulsar", "start", OTHER],
                                             "restart_shown": f"./pulsar start {OTHER[:12]}"}])
+        # Off the saved order, it starts again on the nodes it ran on, in role order.
+        moved = self.plan(state, live=other_running(("w2", "w1", "head")), previews={"start": start_blocked("port_in_use")})
+        self.assertEqual(moved["stopped"][0]["restart"],
+                         ["./pulsar", "start", OTHER, "--placement-nodes", "spark-3,spark-2,spark-1"])
         # A modified recipe, or one outside the catalog, is not offered to start again.
         live = other_running()
         live["services"][0]["matches_selected_spec"] = False
@@ -313,6 +317,19 @@ class Compose(unittest.TestCase):
                                            "not copied again.")
         self.assertEqual(step["facts"], {"copy_to": ["n2"]})
 
+    def test_a_copy_to_a_node_that_shares_no_cable_says_what_it_passes_through(self):
+        state = checked(home=HOME, local_state="missing")
+        prepare = prepare_plan(("n2", "copy"))
+        prepare["actions"][0]["passes_through"] = [{"copies": "to", "node_id": "n2", "through": ["n1"]}]
+        step = self.plan(state, previews={"prepare": envelope(prepare)})["steps"][0]
+        self.assertEqual(step["sentence"].replace(serve.KEEP, " "), "Copy the model files from spark-1 to spark-3 "
+                         "(212 GiB). Copies to spark-3 pass through spark-2.")
+        # A copy with no node in between reads as before.
+        prepare["actions"][0].pop("passes_through")
+        step = self.plan(state, previews={"prepare": envelope(prepare)})["steps"][0]
+        self.assertEqual(step["sentence"].replace(serve.KEEP, " "), "Copy the model files from spark-1 to spark-3 "
+                         "(212 GiB).")
+
     def test_a_node_with_one_snapshots_home_still_gets_a_copy_of_the_other_snapshot(self):
         # The target's home is on n0 and the draft's files were found on n1. Every serving node needs
         # both snapshots, so n0 and n1 each get a copy too; Prepare's own plan would be refused as a
@@ -380,6 +397,13 @@ class Compose(unittest.TestCase):
         restore["destination_space"]["available"] = 100 * GIB
         plan = self.plan(state, sources=sources, previews={"restore:None": envelope(restore)})
         self.assertIn("spark-1 has 100 GiB free; restoring the model files needs 212 GiB.", plan["blocked"])
+        # A copy route that cannot be proven makes Restore's own plan ineligible: the plan says so.
+        restore.update(destination_space={"available": 1400 * GIB}, eligible=False,
+                       blockers=["n2: no proven route through the neighbours"])
+        plan = self.plan(state, sources=sources, previews={"restore:None": envelope(restore)})
+        self.assertIn("Restoring the model files to spark-1 cannot run: spark-3: no proven route through the "
+                      "neighbours.", plan["blocked"])
+        self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
 
     def test_start_blockers_no_step_resolves_block_the_plan_and_unrun_checks_are_said(self):
         state = checked(home=HOME, local_state="ready")
@@ -431,6 +455,31 @@ class Compose(unittest.TestCase):
         plan = self.plan(state, unanswered=["n2"])
         self.assertTrue(plan["blocked"][0].startswith("spark-3 did not answer the last cluster check"))
         self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
+
+    def test_a_recipe_running_on_other_machines_than_the_ones_chosen_says_so(self):
+        elsewhere = ("org/model already runs on {running}, not on {chosen}. A recipe runs as one service: to serve "
+                     "it on {chosen}, stop it first with Running services… → Stop…, then serve it again. Restart… "
+                     "there starts it again where it runs.")
+        one = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        two = checked(home=HOME, local_state="ready", geometry={"nodes": 2, "tp": 2, "pp": 1})
+        cases = (
+            # One node: another machine, then the one it runs on.
+            (one, ["w1"], "n2", elsewhere.format(running="spark-2", chosen="spark-3")),
+            (one, ["w1"], "n1", "org/model is already running on spark-2."),
+            # A pair: other machines, the same machines in the other role order, then the same order.
+            (two, ["w1", "w2"], "n0,n2", elsewhere.format(running="spark-2 and spark-3", chosen="spark-1 and spark-3")),
+            (two, ["w1", "w2"], "n2,n1", elsewhere.format(running="spark-2 and spark-3", chosen="spark-3 and spark-2")),
+            (two, ["w1", "w2"], "n1,n2", "org/model is already running on spark-2 and spark-3."),
+        )
+        for state, keys, node, expected in cases:
+            with self.subTest(node=node):
+                plan = self.plan(state, node=node, live=inventory((SPEC, "running", keys)))
+                self.assertEqual(plan["already"], expected)
+                self.assertEqual(serve.choices(plan), [("cancel", "Cancel"), ("details", "Details")])
+                for width in (80, 60):
+                    text = serve.render(plan, width=width)
+                    self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                    self.assertEqual("Nothing to do." in " ".join(text.split()), not plan.get("elsewhere"), text)
 
     def test_a_running_recipe_has_nothing_to_do_and_leftovers_are_their_own_step(self):
         state = checked(home=HOME, local_state="ready")
@@ -531,6 +580,149 @@ class Compose(unittest.TestCase):
         self.assertLessEqual(len(serve.render(plan, width=80).splitlines()) + 1 + len(serve.choices(plan)) + 5, 34)
 
 
+class PrepareThatOnlyRecords(unittest.TestCase):
+    """A Prepare whose preview copies nothing still runs when it would record a copy for this recipe."""
+    plan = Compose.plan
+    BIND = ("Check the files on spark-2 and record them for this recipe; nothing is copied. spark-2 already holds "
+            "them as another recipe's prepared copy, which this recipe will share.")
+
+    def one_node(self, *actions, set_plan=False, start=None):
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        document = prepare_plan(*actions)
+        if set_plan:
+            document = {"kind": "pulsar-preparation-set-plan", "eligible": True, "snapshots": [document]}
+        previews = {"prepare": envelope(document), "image": envelope(image_plan((1, "ok")))}
+        if start is not None:
+            previews["start"] = start
+        return self.plan(state, node="n1", previews=previews)
+
+    def test_a_bind_keeps_the_step_and_says_the_copy_is_shared(self):
+        for set_plan in (False, True):
+            with self.subTest(set_plan=set_plan):
+                plan = self.one_node(("n1", "bind"), set_plan=set_plan)
+                self.assertEqual([step["kind"] for step in plan["steps"]], ["prepare", "start"])
+                prepare = plan["steps"][0]
+                self.assertEqual(prepare["sentence"], self.BIND)
+                self.assertEqual(prepare["changes"], "records only")
+                self.assertEqual(prepare["command"][-1], "--yes")
+
+    def test_start_refused_until_prepare_records_the_copy_is_not_a_blocker(self):
+        plan = self.one_node(("n1", "bind"), start=start_blocked("model_files_not_ready"))
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(("go", "Go ahead"), serve.choices(plan))
+        # Without the Prepare step that refusal would be the plan's blocker.
+        dropped = self.one_node(("n1", "reuse"), start=start_blocked("model_files_not_ready"))
+        self.assertEqual(dropped["blocked"], ["model_files_not_ready found."])
+
+    def test_every_action_that_writes_a_record_keeps_the_step(self):
+        for action in ("home-view", "bind", "rebind", "adopt", "copy"):
+            with self.subTest(action=action):
+                plan = self.one_node(("n1", action))
+                self.assertEqual(plan["steps"][0]["kind"], "prepare")
+
+    def test_only_reuse_writes_nothing_so_its_step_goes(self):
+        plan = self.one_node(("n1", "reuse"))
+        self.assertEqual([step["kind"] for step in plan["steps"]], ["start"])
+
+    def test_the_bind_sentence_renders_at_80_and_60_columns(self):
+        plan = self.one_node(("n1", "bind"))
+        for width in (80, 60):
+            with self.subTest(width=width):
+                text = serve.render(plan, width=width)
+                self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                self.assertIn(f"1. {self.BIND}", " ".join(text.split()))
+
+
+def foreign(key, state="stale", running=False, name="vllm-port80"):
+    """A container Pulsar did not start on node KEY, as the inventory reports one; RUNNING is
+    what the inventory observed for its rank (left out when None)."""
+    rank = {"rank": None, "node": key, "container_name": name, "stale": state == "stale",
+            **({"running": running} if running is not None else {})}
+    return {"service_id": f"unknown:{key}:{name}", "conf": None, "profile": None, "state": state,
+            "ownership": "unknown", "safe_to_stop": False, "container_name": name, "ranks": [rank],
+            "reasons": ["unknown vLLM container (read-only)"]}
+
+
+class ForeignContainers(unittest.TestCase):
+    """A container Pulsar did not start on a serving node blocks the plan unless all of it has exited."""
+    NOTE = ("On spark-1: vllm-port80 · exited containers · not started by Pulsar · read-only; they hold no port or "
+            "GPU memory. The plan leaves them alone; Start checks the port and memory itself.")
+    plan = Compose.plan
+
+    def one_node(self, *services, node="n0"):
+        document = inventory()
+        document["services"] = list(services)
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        return self.plan(state, node=node, live=document)
+
+    def test_a_plan_that_only_gets_the_model_ready_names_none_of_them_and_is_not_blocked(self):
+        # Nothing starts, so neither exited nor running containers on its node matter to it.
+        state = checked(home=HOME, local_state="missing", geometry={"nodes": 1, "tp": 1, "pp": 1})
+        prepare = {"prepare": envelope(prepare_plan(("n1", "copy")))}
+        for service in (foreign("w1"), foreign("w1", state="running", running=True)):
+            with self.subTest(state=service["state"]):
+                document = inventory()
+                document["services"] = [service]
+                document["unmanaged_gpu_processes"] = [{"node": "w1", "pid": 7, "process_name": "p",
+                                                        "used_memory_mib": 512}]
+                plan = self.plan(state, node="n1", live=document, ready_only=True, previews=prepare)
+                self.assertEqual([step["kind"] for step in plan["steps"]], ["prepare"])
+                self.assertEqual(plan["blocked"], [])
+                self.assertFalse(any("not started by Pulsar" in note for note in plan["notes"]), plan["notes"])
+                self.assertIn(("ready", "Go ahead"), serve.choices(plan))
+                # The plan that also starts it still names them.
+                full = self.plan(state, node="n1", live=document, previews=prepare)
+                self.assertTrue(any("vllm-port80" in line for line in full["notes"] + full["blocked"]))
+
+    def test_exited_containers_on_the_serving_node_are_a_note_and_the_plan_runs(self):
+        plan = self.one_node(foreign("head"))
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(self.NOTE, plan["notes"])
+        self.assertIn(("go", "Go ahead"), serve.choices(plan))
+        # A stopped state with every container observed not running is the same.
+        self.assertEqual(self.one_node(foreign("head", state="stopped"))["blocked"], [])
+
+    def test_a_running_container_blocks_as_before(self):
+        plan = self.one_node(foreign("head", state="running", running=True))
+        self.assertEqual(plan["blocked"], ["On spark-1: vllm-port80 · running · not started by Pulsar · read-only. "
+                                           "Pulsar cannot stop it from this plan."])
+        self.assertNotIn(("go", "Go ahead"), serve.choices(plan))
+
+    def test_unknown_is_not_exited_so_it_blocks(self):
+        for service in (foreign("head", state="unknown"), foreign("head", running=None),
+                        foreign("head", state="degraded"), {**foreign("head"), "ranks": []},
+                        # The inventory's state says exited, but a container was seen running.
+                        foreign("head", running=True)):
+            with self.subTest(state=service["state"], ranks=service["ranks"]):
+                plan = self.one_node(service)
+                self.assertEqual(len(plan["blocked"]), 1 if service["ranks"] else 0, plan["blocked"])
+                self.assertFalse(any("leaves them alone" in note for note in plan["notes"]))
+
+    def test_containers_on_a_node_the_plan_does_not_use_are_not_named(self):
+        plan = self.one_node(foreign("w1"), foreign("w2", state="running", running=True))
+        self.assertEqual(plan["blocked"], [])
+        self.assertFalse(any("vllm-port80" in note for note in plan["notes"]))
+
+    def test_a_two_node_plan_names_the_node_it_shares_with_them(self):
+        document = inventory()
+        document["services"] = [foreign("w1")]
+        state = checked(home=HOME, local_state="ready", geometry={"nodes": 2, "tp": 2, "pp": 1})
+        plan = self.plan(state, live=document)
+        self.assertEqual(plan["blocked"], [])
+        self.assertIn(self.NOTE.replace("spark-1", "spark-2"), plan["notes"])
+        document["services"] = [foreign("w1", state="running", running=True)]
+        self.assertEqual(len(self.plan(state, live=document)["blocked"]), 1)
+
+    def test_the_note_renders_at_80_and_60_columns(self):
+        plan = self.one_node(foreign("head"))
+        for width in (80, 60):
+            with self.subTest(width=width):
+                text = serve.render(plan, width=width)
+                self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+                self.assertIn(self.NOTE, " ".join(text.split()))
+                self.assertNotIn("Blocked", text)
+
+
 class CheckStep(unittest.TestCase):
     """A step's own preview, run when its turn comes, against the approved plan."""
 
@@ -573,6 +765,9 @@ class CheckStep(unittest.TestCase):
                          ("same", ""))
         self.assertEqual(self.check(plan, envelope({"kind": "pulsar-restore-plan", "selected_node": "n2"}))[0],
                          "differs")
+        blocked = {"kind": "pulsar-restore-plan", "selected_node": "n0", "eligible": False,
+                   "blockers": ["n0: no proven route"]}
+        self.assertEqual(self.check(plan, envelope(blocked)), ("blocked", "spark-1: no proven route"))
 
     def test_prepare_that_is_blocked_or_copies_to_an_unlisted_node_stops_the_run(self):
         plan = self.plan(self.step("prepare", copy_to=["n1"]))

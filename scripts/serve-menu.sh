@@ -11,7 +11,11 @@
 #    list), from saved records and one service inventory, reused while it is
 #    under a minute old.
 # 3. A one-node recipe asks which machine serves it, starting where its files
-#    are; a multi-node recipe serves on the saved node order, as Start does.
+#    are. A two-node recipe on a saved ring asks which two neighbours serve
+#    it, starting on this machine and its rank-1 neighbour, the order Start
+#    uses when no machines are named; the plan then names the pair to
+#    Prepare, the image and Start (--placement-nodes) unless it is that order.
+#    Any other multi-node recipe serves on the saved node order, as Start does.
 # 4. The plan: the previews that can run now, composed into ordered steps
 #    (scripts/serve_plan.py compose). Cancel first, then Go ahead, Get it
 #    ready but do not start, Change… and Details.
@@ -89,6 +93,7 @@ trap 'rm -rf -- "$WORK"; [ -z "$SHARED" ] || printf "%s\n" "$INVENTORY_AT" >"$SH
 COLUMNS_SEEN=$(_ui_terminal_columns) || COLUMNS_SEEN=""
 serve_plan() { python3 -m scripts.serve_plan "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
 text() { python3 -m scripts.terminal_format --text; }
+same_as() { python3 -m scripts.terminal_format --same-as "$1"; }
 
 # resolve COMMAND...: prints the composed command one argument per line, with
 # ./pulsar as this checkout's.
@@ -258,18 +263,23 @@ read_cards() {
   done
 }
 
-# choose_node SPEC: a one-node recipe's machine, as its node_id; nothing for a
-# multi-node recipe. Returns 1 on Back, 130 on Ctrl-C.
+# choose_node SPEC: a one-node recipe's machine, as its node_id; a two-node
+# recipe's pair of neighbours on a ring, as their node_ids in role order
+# (ID,ID); nothing for any other recipe, which serves on the saved node order.
+# A choice too wide continues on "line" rows. Returns 1 on Back, 130 on Ctrl-C.
 choose_node() {
   local spec="$1" kind first second title="" default="" start="" index
-  local -a ids=() labels=()
+  local -a ids=() labels=() inventory=()
+  # What runs on each pair, from the capture the list used; nothing when it failed.
+  [ -n "$INVENTORY_ERROR" ] || [ ! -s "$INVENTORY" ] || inventory=(--inventory "$INVENTORY")
   while IFS=$'\t' read -r kind first second; do
     case "$kind" in
       title) title=$first ;;
       default) default=$first ;;
       node) ids+=("$first"); labels+=("$second") ;;
+      line) [ "${#labels[@]}" -eq 0 ] || labels[-1]+=$'\n'"$first" ;;
     esac
-  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec")
+  done < <(printf '%s' "$CATALOG" | serve_plan nodes --spec-id "$spec" --pairs "${inventory[@]}")
   [ "${#ids[@]}" -gt 0 ] || return 0
   for index in "${!ids[@]}"; do [ "${ids[$index]}" != "$default" ] || start=$index; done
   index=$(PULSAR_CHOOSE_DEFAULT="$start" choose_index "$title" "${labels[@]}" "Back") || return $?
@@ -317,7 +327,10 @@ build_plan() {
   rm -f -- "$WORK"/preview-*.json "$WORK/hf.json"
   while [ "$again" = 1 ]; do
     again=0
-    while IFS= read -r line; do
+    # The list arrives on descriptor 3 and each preview reads /dev/null: a
+    # preview that reads its standard input (ssh to a remote node does) must
+    # not take the previews still to run. Gum's spinner keeps the terminal.
+    while IFS= read -r -u 3 line; do
       name=${line%%$'\t'*} rest=${line#*$'\t'}
       IFS=$'\t' read -r -a command <<<"$rest"
       rc=0
@@ -325,26 +338,26 @@ build_plan() {
         files)
           # The sources depend on it: run it, then ask again which previews to run.
           resolve "${command[@]}"
-          spin "$(preview_title files)" bash -c '"$@" 2>"$0"' "$WORK/files.err" "${COMMAND[@]}" \
+          spin "$(preview_title files)" bash -c '"$@" 2>"$0" </dev/null' "$WORK/files.err" "${COMMAND[@]}" \
             >"$WORK/files.json" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           args+=(--files "$WORK/files.json")
           again=1
           break ;;
         hf)
-          spin "$(preview_title hf)" bash -c '"$@" 2>"$0"' "$WORK/hf.err" \
+          spin "$(preview_title hf)" bash -c '"$@" 2>"$0" </dev/null' "$WORK/hf.err" \
             "$REPO_DIR/scripts/node-prerequisites.sh" "${command[0]}" >"$WORK/hf.json" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           hf=(--hf "$WORK/hf.json") ;;
         *)
           file="$WORK/preview-${name//[^A-Za-z0-9_-]/_}.json"
           resolve "${command[@]}"
-          spin "$(preview_title "$name")" bash -c '"$@" 2>"$0"' "$WORK/preview.err" "${COMMAND[@]}" \
+          spin "$(preview_title "$name")" bash -c '"$@" 2>"$0" </dev/null' "$WORK/preview.err" "${COMMAND[@]}" \
             >"$file" || rc=$?
           [ "$rc" -ne 130 ] || return 130
           previews+=(--preview "$name=$file") ;;
       esac
-    done < <(printf '%s' "$CATALOG" | serve_plan previews "${args[@]}")
+    done 3< <(printf '%s' "$CATALOG" | serve_plan previews "${args[@]}")
   done
   mapfile -t inventory < <(inventory_args)
   COMPOSE_ARGS=("${args[@]}" "${previews[@]}" "${hf[@]}" "${inventory[@]}")
@@ -381,7 +394,8 @@ change_menu() {
       destination) destinations+=("$a"); names+=("$b") ;;
     esac
   done < <(serve_plan facts --plan "$PLAN")
-  if [ -n "$NODE" ]; then labels+=("Serve it on another machine…"); actions+=(node); fi
+  # A one-node recipe's machine; a pair of a two-node recipe is chosen again from the list.
+  if [ -n "$NODE" ] && [[ "$NODE" != *,* ]]; then labels+=("Serve it on another machine…"); actions+=(node); fi
   if [ "$files" = 1 ] && [ "$source" = restore ]; then
     labels+=("Download the files instead of restoring them"); actions+=(download)
   elif [ "$files" = 1 ] && [ "$archive" = 1 ]; then
@@ -396,7 +410,10 @@ change_menu() {
   elif [ "$copy" = 1 ] && [ "$image" = pull ]; then
     labels+=("Copy the serving image from this machine instead"); actions+=(copy)
   fi
-  if [ "${#labels[@]}" -eq 0 ]; then
+  if [ "${#labels[@]}" -eq 0 ] && [[ "$NODE" == *,* ]]; then
+    printf '\nNothing else in this plan can be changed. To serve it on another pair, choose Cancel and the recipe again.\n' | text
+    return 0
+  elif [ "${#labels[@]}" -eq 0 ]; then
     printf '\nNothing in this plan can be changed: it serves on the saved node order.\n' | text
     return 0
   fi
@@ -470,7 +487,7 @@ reload_catalog() {
 
 serve_recipe() {
   SPEC="$1" NODE="" SOURCE="" FILES_NODE="" IMAGE_SOURCE="" NOT_FOUND=()
-  local rc=0 action label choice
+  local rc=0 action label choice rebuild=1
   local -a actions=() labels=()
   if [ "$MODE" = restart ]; then
     # The node it runs on, as Running services… saw it; Start uses the saved order otherwise.
@@ -479,7 +496,12 @@ serve_recipe() {
     NODE=$(choose_node "$SPEC") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   fi
   while true; do
-    build_plan "$SPEC" || { rc=$?; [ "$rc" -ne 130 ] || return 130; wait_continue "Plan not made" || return $?; return 0; }
+    # Details changes nothing, so the plan already made shows again without
+    # its previews; Change… and a run plan again from the state as it is now.
+    if [ "$rebuild" = 1 ]; then
+      build_plan "$SPEC" || { rc=$?; [ "$rc" -ne 130 ] || return 130; wait_continue "Plan not made" || return $?; return 0; }
+    fi
+    rebuild=1
     actions=() labels=()
     while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done \
       < <(serve_plan choices --plan "$PLAN")
@@ -497,7 +519,7 @@ serve_recipe() {
         run_plan || rc=$?; [ "$rc" -eq 5 ] || return "$rc"
         reload_catalog || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }; continue ;;
       change) change_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
-      details) details_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; } ;;
+      details) details_menu || { rc=$?; [ "$rc" -ne 130 ] || return 130; }; rebuild=0 ;;
       *) return 0 ;;
     esac
   done
@@ -511,7 +533,7 @@ serve_recipe() {
 # when it ran (the outcome was shown), 5 to plan again, 130 on Ctrl-C.
 run_plan() {
   local index kind preview snapshot sentence verdict reason rc interrupted done=0 total
-  local failed="" halted="" choice action label
+  local failed="" halted="" choice action label name
   local -a indexes=() kinds=() previews=() snapshots=() sentences=() ran=() actions=() labels=()
   while IFS=$'\t' read -r index kind _ preview snapshot sentence; do
     indexes+=("$index"); kinds+=("$kind"); previews+=("$preview"); snapshots+=("$snapshot")
@@ -593,11 +615,14 @@ run_plan() {
     restart:*)
       mapfile -t COMMAND < <(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}")
       resolve "${COMMAND[@]}"
-      printf '\n→ Starting %s again.\n' "${labels[$choice]#Start }" | text
+      # The label is "Start MODEL again": the sentence names the model once, with one "again".
+      name=${labels[$choice]#Start } name=${name% again}
+      printf '\n→ Starting %s again.\n' "$name" | text
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       forget_inventory
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)" | text
+      echo
+      same_as "$(serve_plan command --plan "$PLAN" --restart "${actions[$choice]#restart:}" --shown)"
       wait_continue "Start again" || return $? ;;
     memory)
       # Start's own acknowledgement of its memory warning, chosen here by name;
@@ -608,12 +633,14 @@ run_plan() {
       "$REPO_DIR/scripts/with-connect-card.sh" "${COMMAND[@]}" || rc=$?
       forget_inventory
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: %s\n' "$(serve_plan command --plan "$PLAN" --accept-memory-warning --shown)" | text
+      echo
+      same_as "$(serve_plan command --plan "$PLAN" --accept-memory-warning --shown)"
       wait_continue "Start" || return $? ;;
     inspect)
       "$REPO_DIR/pulsar" models check "${SPEC:0:12}" || rc=$?
       [ "$rc" -ne 130 ] || return 130
-      printf '\nSame as: ./pulsar models check %s\n' "${SPEC:0:12}" | text
+      echo
+      same_as "./pulsar models check ${SPEC:0:12}"
       wait_continue "Files checked" || return $? ;;
     status)
       page_output "Checking the service…" "$REPO_DIR/pulsar" status "${SPEC:0:12}" || rc=$?

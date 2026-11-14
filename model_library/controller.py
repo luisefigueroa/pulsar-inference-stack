@@ -150,12 +150,12 @@ def run(store: Store, repo: Path, request: dict) -> dict | list:
     if op=='prepare-candidates':
         return preparation_candidates(spec=request['spec'],home=request['home'],node_id=request['node_id'],views=request['views'],transactions=request.get('transactions',()))
     if op=='plan-purge':
-        return purge_plan(views=request.get('views',store.views(spec_id=request['spec_id'])),node_ids=request['node_ids'],observations=request['observations'],all_views=request.get('all_views'))
+        return purge_plan(views=request.get('views',store.views(spec_id=request['spec_id'])),node_ids=request['node_ids'],observations=request['observations'],all_views=request.get('all_views'),topology_id=request.get('topology_id') or None)
     if op=='plan-remove':
         home=store.home(request['snapshot_manifest_id'])
         if home is None:
             raise StorageError('no registered home')
-        plan=removal_plan(home=home,views=request.get('views',store.views(manifest_id=request['snapshot_manifest_id'])),node_ids=request['node_ids'],observations=request['observations'])
+        plan=removal_plan(home=home,views=request.get('views',store.views(manifest_id=request['snapshot_manifest_id'])),node_ids=request['node_ids'],observations=request['observations'],topology_id=request.get('topology_id') or None)
         if request.get('transactions'):
             plan['eligible']=False
             plan['blockers'].append('incomplete preparations still depend on this snapshot; explicitly purge them first')

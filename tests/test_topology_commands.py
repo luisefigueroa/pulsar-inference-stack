@@ -202,8 +202,12 @@ class TopologyCommands(unittest.TestCase):
         self.fixture.env.update(TERM='xterm-256color', GUM_BIN=str(self.fixture.root/'bin/gum'), **answers)
 
     def gum_prompts(self, kind):
-        """Headers of Gum menus or questions of Gum confirmations, in order."""
-        return [args[args.index('--header')+1].split('\n')[0] if kind == 'choose' else args[-1]
+        """Headers of Gum menus or questions of Gum confirmations, in order, each as one line.
+
+        The fixture's terminal is COLUMNS=48 wide (its pty reports no size), and
+        scripts/ui.sh wraps a title or question wider than that between words, so
+        the rows are joined again; a menu header's last row is the key hint."""
+        return [' '.join((args[args.index('--header')+1].rsplit('\n', 1)[0] if kind == 'choose' else args[-1]).split())
                 for tool, args in self.fixture.calls() if tool == 'gum' and args[:1] == [kind]]
 
     def probes(self):
@@ -439,7 +443,7 @@ class TopologyCommands(unittest.TestCase):
                       'hf CLI ✓', step1)
         self.assertIn('WARN hf is not logged in to the Hub on this machine; public models download without a login.', step1)
         step3 = text.split(steps[2], 1)[1].split(steps[3], 1)[0]
-        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every other machine ✓', step3)
+        self.assertIn('fixture-rank-1 Docker and GPU ✓ · links to every machine it is cabled to ✓', step3)
         self.assertIn('FAIL rsync not found; install rsync on this machine', step3)
         self.assertIn('WARN hf CLI not found, so models cannot be downloaded to this machine; it can still serve.', step3)
         # Before they are members they are machines; discovery's own output is unchanged.

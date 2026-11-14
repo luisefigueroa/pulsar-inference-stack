@@ -30,8 +30,8 @@ from .catalog import (NOT_CHECKED, ROOT, age_seconds, age_text, archive_facts, a
                       recipe_text)
 from .published_results import collect as published_results, frame_line as published_line
 from .node_names import NodeNames
-from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, preparation_estimate,
-                     projected_headroom, short_size, size_text)
+from .render import (HOME_REMOVAL_RECOVERY, blocker_detail_text, blocker_message, copy_route_lines,
+                     preparation_estimate, projected_headroom, short_size, size_text)
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, cut_middle, terminal_width
 
 MAIN = ("check", "acquire", "restore", "prepare", "start", "status", "observe", "logs", "stop")
@@ -1169,7 +1169,7 @@ def memory_warning_only(records: list[dict]) -> bool:
 # and confirmation; none adds --replace or --pull-image.
 START_CHOICES = {
     "topology_incomplete": ("topology-menu",), "fabric_incomplete": ("topology-check",),
-    "node_unreachable": ("topology-check",),
+    "node_unreachable": ("topology-check",), "port_check_failed": ("topology-check",),
     "docker_unavailable": ("doctor",), "container_start_failed": ("doctor",),
     "image_missing": ("image-stage",),
     "model_files_not_ready": ("files",),
@@ -1182,9 +1182,12 @@ START_CHOICES = {
 }
 # Codes that get no choice here: the memory-warning retry is offered on its
 # own, an interrupted Start's outcome names the next inspection, and the rest
-# have no menu operation that resolves them.
+# have no menu operation that resolves them. service_recorded_elsewhere names
+# ./pulsar stop SPEC, which also clears a record with no container; the menu's
+# Stop is offered only for containers the inventory sees, so it is not offered.
+# start_in_progress waits on the other Start, which reports its own outcome.
 START_NO_CHOICE = frozenset({"memory_warning", "start_interrupted", "guard_unsupported", "historical_spec",
-                             "service_stopped"})
+                             "service_stopped", "service_recorded_elsewhere", "start_in_progress"})
 START_CHOICE_LABELS = {
     "topology-menu": "Open Cluster topology (membership)",
     "topology-check": "Check saved nodes and fabric (checks nodes now)",
@@ -1211,6 +1214,10 @@ def start_choices(records: list[dict], row: dict, archive_location: str,
         if not isinstance(record, dict):
             continue
         kinds = START_CHOICES.get(record.get("blocker"), ())
+        # Two chosen nodes of a ring that share no cable: Start recorded no
+        # command, since checking the nodes again cannot change the cabling.
+        if record.get("blocker") == "fabric_incomplete" and record.get("fix") is None and record.get("note"):
+            kinds = ()
         # A failed launch's record says whether its containers remain: none
         # to inspect, read or stop once every rank's was seen removed, and
         # Stop clears what an unconfirmed removal may have left.
@@ -1279,6 +1286,30 @@ def gib_text(mib: int | float) -> str:
     return f"{gib:.0f} GiB" if gib >= 10 else f"{gib:.1f} GiB"
 
 
+class Note(str):
+    """A note on something this menu cannot stop on a serving node. BLOCKS
+    says whether it stands in the way of a plan: true unless it is certain
+    that it holds no port and no GPU memory Start needs. EXITED marks
+    containers Pulsar did not start that have all exited."""
+    blocks: bool
+    exited: bool
+
+    def __new__(cls, text: str, *, blocks: bool = True, exited: bool = False) -> "Note":
+        note = super().__new__(cls, text)
+        note.blocks, note.exited = blocks, exited
+        return note
+
+
+def all_exited(service: dict) -> bool:
+    """Whether every container of an inventory service has exited: the
+    inventory's exited (stale) or stopped state, and each rank observed not
+    running. A rank whose running state was not observed, another state or
+    any running container is not certain, so it is not exited."""
+    ranks = [rank for rank in service.get("ranks") or [] if isinstance(rank, dict)]
+    return (service.get("state") in ("stale", "stopped") and bool(ranks)
+            and all(rank.get("running") is False for rank in ranks))
+
+
 def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog: list[dict],
                         ports: list[int] = ()) -> tuple[list[dict], list[str]]:
     """Services on the refused spec's serving nodes, from a service inventory taken just now.
@@ -1291,8 +1322,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
     measured. Services on a busy port come first, then the most memory.
     Notes name, with no choice, what this menu cannot stop there: managed
     services without safe ownership, containers Pulsar does not manage and
-    GPU processes Pulsar did not start. CATALOG rows hold spec_id, model_id
-    and nodes; nothing here probes.
+    GPU processes Pulsar did not start. Each is a Note whose BLOCKS says
+    whether a plan must wait for it: GPU processes do not (Start measures the
+    memory), nor do containers Pulsar does not manage that have all exited
+    (all_exited), which hold no port and no GPU memory; every other note
+    does. CATALOG rows hold spec_id, model_id and nodes; nothing here probes.
     """
     from scripts.inventory_menu import SPEC_ID, project, project_others, read_only_line
     services = project(inventory, catalog)
@@ -1314,7 +1348,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
             continue
         where = ", ".join(dict.fromkeys(host(rank.get("node")) for rank in here))
         if service.get("ownership") != "managed" or not (isinstance(conf, str) and SPEC_ID.fullmatch(conf)):
-            notes.append(f"On {where}: {read_only_line(service)}")
+            if all_exited(service):
+                notes.append(Note(f"On {where}: {read_only_line(service)}; they hold no port or GPU memory",
+                                  blocks=False, exited=True))
+            else:
+                notes.append(Note(f"On {where}: {read_only_line(service)}"))
             continue
         projected = services.get(conf) or others.get(conf)
         if projected is None:
@@ -1323,8 +1361,8 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
             # Inventory's own reason when it found ownership unsafe; else the menu's.
             reasons = service.get("reasons") if service.get("safe_to_stop") is not True else None
             reason = clean(reasons[0]) if isinstance(reasons, list) and reasons and reasons[0] else projected["stop_reason"]
-            notes.append(f"On {where}: {clean(projected['model_id'])} [{conf[:12]}] · no Stop offered: "
-                         f"{reason.rstrip('.')}")
+            notes.append(Note(f"On {where}: {clean(projected['model_id'])} [{conf[:12]}] · no Stop offered: "
+                              f"{reason.rstrip('.')}"))
             continue
         measured = [(rank.get("gpu_memory") if isinstance(rank.get("gpu_memory"), dict) else {}).get("measured_mib")
                     for rank in ranks]
@@ -1338,10 +1376,11 @@ def services_in_the_way(inventory: dict, row: dict, node_ids: list[str], catalog
         name = str(process.get("process_name") or "?").rstrip("/").rpartition("/")[2] or "?"
         mib = process.get("used_memory_mib")
         size = f" · {gib_text(mib)}" if type(mib) is int and mib >= 0 else ""
-        notes.append(f"On {host(process.get('node'))}: GPU process {clean(name)} (PID {process.get('pid') or '?'})"
-                     f"{size} · not started by Pulsar · read-only")
+        notes.append(Note(f"On {host(process.get('node'))}: GPU process {clean(name)} "
+                          f"(PID {process.get('pid') or '?'}){size} · not started by Pulsar · read-only",
+                          blocks=False))
     if len(processes) > 3:
-        notes.append(f"and {len(processes) - 3} more GPU processes not started by Pulsar")
+        notes.append(Note(f"and {len(processes) - 3} more GPU processes not started by Pulsar", blocks=False))
     return stops, notes
 
 
@@ -1560,13 +1599,16 @@ def plan_effect(action: str, plan: dict) -> dict:
                   for index, member in enumerate(members) for step in member.get("actions") or []
                   if step.get("action") == "copy"}
         # A takeover (rebind) copies nothing: it records files made before the
-        # cluster's membership changed under the current membership.
+        # cluster's membership changed, or for the same nodes in another role
+        # order, under the current membership and order.
         taken = sum(1 for step in steps if step.get("action") == "rebind")
+        reordered = sum(1 for member in members for step in member.get("actions") or []
+                        if step.get("action") == "rebind" and rebind_reason(step, member) == "order")
         # An adoption (--adopt-unrecorded) copies nothing either: it records a
         # folder no record named once every file matches (D7).
         adopted = sum(1 for step in steps if step.get("action") == "adopt")
         return {"copied": len(copies), "reused": len(steps) - len(copies) - taken - adopted, "taken_over": taken,
-                "adopted": adopted, "nothing": bool(steps) and not copies}
+                "taken_over_reordered": reordered, "adopted": adopted, "nothing": bool(steps) and not copies}
     if action == "purge":
         removed = sum(1 for step in steps if step.get("action") == "remove-copy")
         pending = len(plan.get("incomplete_preparations") or [])
@@ -1596,16 +1638,38 @@ def plan_effect(action: str, plan: dict) -> dict:
     return {"nothing": False}
 
 
-def _taken_over(count: int, beside_copies: bool = False) -> str:
+def rebind_reason(step: dict, plan: dict) -> str:
+    """Why a takeover (rebind) STEP of preparation PLAN takes over its copy:
+    "membership" when the copy was made under another saved cluster, "order"
+    when it was made under this one for another role order of its nodes."""
+    previous = step.get("previous") if isinstance(step.get("previous"), dict) else {}
+    same = previous.get("topology_id") and previous.get("topology_id") == plan.get("topology_id")
+    return "order" if same else "membership"
+
+
+def taken_over_reason(count: int, reordered: int = 0) -> str:
+    """What COUNT taken-over copies were made under, REORDERED of them for
+    another role order of the same nodes: the words after "N copies"."""
+    membership = "made before the cluster's membership changed"
+    order = "prepared for these nodes in another role order"
+    if not reordered:
+        return membership
+    if reordered >= count:
+        return order
+    return f"({count - reordered} {membership}, {reordered} {order})"
+
+
+def _taken_over(count: int, reordered: int = 0, beside_copies: bool = False) -> str:
     """The sentence for Prepare's takeovers: copies made before the cluster's
-    membership changed, whose files still verify, recorded for the current
-    membership without copying or deleting anything. With BESIDE_COPIES the
-    same plan also writes new copies, so the sentence speaks of the copies it
-    takes over and not of the whole plan."""
+    membership changed, or for the same nodes in another role order, whose
+    files still verify, recorded for the current membership and order without
+    copying or deleting anything. With BESIDE_COPIES the same plan also writes
+    new copies, so the sentence speaks of the copies it takes over and not of
+    the whole plan."""
     copies = "copy" if count == 1 else "copies"
     kept = ("nothing is copied or deleted" if not beside_copies
             else ("that copy is" if count == 1 else "those copies are") + " not copied again or deleted")
-    return f"It takes over {count} {copies} made before the cluster's membership changed; {kept}."
+    return f"It takes over {count} {copies} {taken_over_reason(count, reordered)}; {kept}."
 
 
 def _adopted(count: int) -> str:
@@ -1642,8 +1706,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     """Menu choices for a blocked plan's Pulsar container blockers, as (kind, spec, model, label).
 
     Stop for each catalog spec whose Pulsar container mounts the files, then
-    Live service inventory. A container that Pulsar did not start gets no
-    choice: its fix is to remove it or its mount, which the menu never does.
+    Live service inventory. A container that Pulsar did not start, or one of an
+    earlier saved cluster, which Stop refuses, gets no choice: its fix is to
+    remove it (or its mount) with Docker, which the menu never does.
     Neither does a folder at a prepared copy's path that no record names: the
     fix names Look for model files Pulsar has no record of…, which takes it
     over after checking every file (D7), or the operator removes it outside
@@ -1652,7 +1717,9 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     specs: list[str] = []
     for item in _plan_document(plan).get("blocker_details") or []:
         container = item.get("container") if isinstance(item, dict) else None
-        if isinstance(container, dict) and container.get("spec_id") and container["spec_id"] not in specs:
+        # Stop refuses a container of an earlier saved cluster; its fix is Docker's.
+        if (isinstance(container, dict) and container.get("spec_id") and not container.get("earlier_cluster")
+                and container["spec_id"] not in specs):
             specs.append(str(container["spec_id"]))
     models = {entry["spec_id"]: entry["model_id"] for entry in entries}
     choices = [("stop", spec, models[spec], f"Stop {models[spec]} ({spec[:12]})") for spec in specs if spec in models]
@@ -1685,11 +1752,17 @@ def menu_fix(detail: dict) -> str:
     return str(detail.get("fix") or "")
 
 
+def copy_route_sentences(plan: dict, names: NodeNames) -> list[str]:
+    """What a plan's copies pass through, as the copy's log says it: "Copies to
+    echo pass through bravo." None for copies with no node in between."""
+    return [line[0].upper() + line[1:] + "." for line in copy_route_lines(_plan_document(plan), names)]
+
+
 def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None = None) -> list[str]:
     """One to three lines that lead a storage preview, built from its plan.
 
     What changes, where, how much, and the projected headroom; or why the plan
-    is blocked. Sizes use binary units; exact byte counts stay in the full
+    is blocked. A copy that passes through other nodes adds a line per leg. Sizes use binary units; exact byte counts stay in the full
     preview (model_library.render).
     """
     names = names or NodeNames()
@@ -1723,7 +1796,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
             lines = [f"Nothing to copy: {what} already on {_node_list(list(nodes), names)}. "
                      "Prepare verifies the files and records them."]
             if effect["taken_over"]:
-                lines.append(_taken_over(effect["taken_over"]))
+                lines.append(_taken_over(effect["taken_over"], effect["taken_over_reordered"]))
             if effect["adopted"]:
                 lines.append(_adopted(effect["adopted"]))
             return lines
@@ -1734,6 +1807,7 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
                  + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
                  + (f", {_count(effect['adopted'], 'folder')} no record named taken over after checking every file"
                     if effect["adopted"] else "") + ")."]
+        lines += copy_route_sentences(plan, names)
         after = [(projected_headroom(nodes[node]["budgets"], nodes[node]["new_copy"]), node) for node in copying]
         if after and all(value is not None for value, _ in after):
             low, node = min(after, key=lambda item: item[0])
@@ -1767,19 +1841,22 @@ def plan_summary(action: str, row: dict, plan: dict, *, names: NodeNames | None 
         source = names(document["source_node"]) if document.get("source_node") else "its current node"
         routes = {"direct-ssh-roce": "a direct copy over the confirmed RoCE rail",
                   "controller-stream-relay": "streamed through this node over RoCE; this node keeps no copy"}
+        if document.get("passes_through"):
+            routes["direct-ssh-roce"] = "a copy over confirmed RoCE cables, through the nodes between"
         route = routes.get(document.get("transfer_route"), document.get("transfer_route") or "route not stated")
-        return [f"Move the home from {source} to {target}: {route}."]
+        return [f"Move the home from {source} to {target}: {route}.", *copy_route_sentences(plan, names)]
     if action == "archive":
         home = document.get("home") or {}
         where = names(home["node_id"]) if home.get("node_id") else "its node"
         root = document.get("archive_root")
         return [f"Copy the home on {where} into the archive{' at ' + root if root else ''}; "
-                "an archive already there is verified, never replaced."]
+                "an archive already there is verified, never replaced.", *copy_route_sentences(plan, names)]
     if action == "restore":
         target = names(document["selected_node"]) if document.get("selected_node") else "the selected node"
         size, count = document.get("total_bytes"), document.get("file_count")
         available = (document.get("destination_space") or {}).get("available")
-        lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}."]
+        lines = [f"Copy {_amount(size, count, 'the snapshot')} from the archive to {target}.",
+                 *copy_route_sentences(plan, names)]
         if type(available) is int and type(size) is int and available >= 0 and size >= 0:
             after = available - size
             lines.append(f"Short by about {size_text(-after)} on {target}." if after < 0
@@ -1853,11 +1930,12 @@ def question(action: str, row: dict, *, plan: dict | None = None, snapshot: str 
         steps = _plan_actions(plan)
         effect = plan_effect(action, plan)
         where = _node_list([str(step["node_id"]) for step in steps if step.get("node_id")], names) or place or "its nodes"
-        taken = (f" {_taken_over(effect['taken_over'])}" if effect["taken_over"] else "")
+        taken = (f" {_taken_over(effect['taken_over'], effect['taken_over_reordered'])}" if effect["taken_over"] else "")
         if effect["nothing"]:
             return (f"Prepare {model} on {where}? Nothing is copied; Prepare verifies and records the files "
                     f"already there.{taken}")
-        beside = f" {_taken_over(effect['taken_over'], beside_copies=True)}" if effect["taken_over"] else ""
+        beside = (f" {_taken_over(effect['taken_over'], effect['taken_over_reordered'], beside_copies=True)}"
+                  if effect["taken_over"] else "")
         return (f"Prepare {model} on {where}? {_count(effect['copied'], 'new copy', 'new copies')}, "
                 f"{effect['reused']} reused" + (f", {effect['taken_over']} taken over" if effect["taken_over"] else "")
                 + f".{beside}")

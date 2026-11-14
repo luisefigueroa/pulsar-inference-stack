@@ -177,10 +177,16 @@ load_docker_argv_from_plan "$PLAN_FILE" 0 CMD "$([ -n "$DETACH" ] && echo 1 || e
 
 port_host=""
 [ "$SINGLE_NODE_REMOTE" != 1 ] || port_host="$SINGLE_NODE_SSH_HOST"
-if ! port_free "$PORT" ${port_host:+"$port_host"}; then
+port_rc=0
+port_free "$PORT" ${port_host:+"$port_host"} || port_rc=$?
+if [ "$port_rc" = 1 ]; then
   START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_in_use --node "${SINGLE_NODE_HOSTNAME:-}" \
     --node-id "${SINGLE_NODE_ID:-}" --detail "port $PORT"
   refuse_launch "port $PORT is unavailable on $(single_node_display); refusing launch"
+elif [ "$port_rc" != 0 ]; then
+  START_BLOCKER_SPEC="$MODEL_NAME" start_blocker port_check_failed --node "${SINGLE_NODE_HOSTNAME:-}" \
+    --node-id "${SINGLE_NODE_ID:-}" --detail "port $PORT"
+  refuse_launch "port $PORT could not be checked on $(single_node_display); refusing launch"
 fi
 
 log "$MODEL_NAME ($MODEL) on $(single_node_display), port $PORT, image $IMAGE container=$CONTAINER"
