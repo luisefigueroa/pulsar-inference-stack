@@ -60,7 +60,8 @@ PY_RECORDED
   while IFS=$'\t' read -r recorded_spec recorded_plan recorded_cluster; do
     [ -n "$recorded_plan" ] || continue
     step=0
-    stop_recorded_service "$recorded_spec" "$recorded_plan" "./pulsar stop --all --yes" || step=$?
+    # Its probes run SSH, which reads standard input: keep the rows of this loop from them.
+    stop_recorded_service "$recorded_spec" "$recorded_plan" "./pulsar stop --all --yes" </dev/null || step=$?
     [ "$step" != 0 ] || continue
     if [ "$recorded_cluster" = earlier ] && [ "$step" = 3 ]; then
       earlier_left=1

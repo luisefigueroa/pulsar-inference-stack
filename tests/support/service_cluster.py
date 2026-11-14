@@ -281,7 +281,11 @@ if command.startswith("python3 ") and "probe" in command:
     sys.stdin.read()
     print(open(os.path.join(root, f"probe-{mapping[alias]}.json")).read())
     sys.exit(0)
-sys.exit(subprocess.call(["bash", "-c", command], env=dict(os.environ, SERVICE_NODE=node, SERVICE_VIA_SSH="1")))
+# Real ssh without -n passes its standard input to the remote command. With
+# SERVICE_SSH_READS_STDIN the double does too, so a caller's loop rows can be taken.
+data = sys.stdin.buffer.read() if os.environ.get("SERVICE_SSH_READS_STDIN") else None
+sys.exit(subprocess.run(["bash", "-c", command], input=data,
+                        env=dict(os.environ, SERVICE_NODE=node, SERVICE_VIA_SSH="1")).returncode)
 '''
 
 NVIDIA_SMI = '#!/bin/sh\nexit 0\n'

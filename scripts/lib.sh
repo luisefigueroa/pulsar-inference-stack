@@ -2392,7 +2392,8 @@ container_ownership_inspect_remote() {
   remote_cmd+="printf 'PRESENT\\n%s\\n' \"\$meta\"; exit 0; fi; "
   remote_cmd+="printf '%s\\n' ABSENT; exit 0"
 
-  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null); then
+  # A probe reads nothing; without the redirect SSH would take a caller's loop input.
+  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null </dev/null); then
     return 1
   fi
   status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r')
@@ -2652,7 +2653,8 @@ list_managed_container_ids_remote() {
   remote_cmd+="printf '%s\\n' OK; "
   remote_cmd+="if [ -n \"\$ids\" ]; then printf '%s\\n' \"\$ids\"; fi"
 
-  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null); then
+  # A probe reads nothing; without the redirect SSH would take a caller's loop input.
+  if ! out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$remote_cmd" 2>/dev/null </dev/null); then
     return 1
   fi
   status=$(printf '%s\n' "$out" | head -n1 | tr -d '\r')

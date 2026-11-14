@@ -371,6 +371,17 @@ class StopAll(Cluster):
         self.assertEqual(c.remaining(), [])
         self.assertEqual([c.recorded(item) for item in (plan, default)], [False, False])
 
+    def test_a_probe_over_ssh_does_not_take_the_next_records_rows(self):
+        # Real ssh reads standard input unless it is redirected. The rows of the
+        # record loop must reach every recorded service, not the first probe.
+        c = self.cluster
+        _, first, _ = self.pair()
+        _, second, _ = self.pair(variant=1)
+        result = c.pulsar('stop', '--all', '--yes', SERVICE_SSH_READS_STDIN='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(c.remaining(), [])
+        self.assertEqual([c.recorded(item) for item in (first, second)], [False, False])
+
     def test_a_record_with_no_container_left_is_retired(self):
         c = self.cluster
         spec, plan, _ = self.pair(run=False)
