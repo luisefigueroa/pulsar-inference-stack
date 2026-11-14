@@ -208,7 +208,12 @@ def render(document: dict, writer: TerminalWriter | None = None) -> None:
 def apply(document: dict, root: Path, clock=None) -> dict:
     """Copy every planned file into a new private folder under ROOT, then
     remove it. A file that changed since the plan stops before anything is
-    removed. Saved observations are removed under their own locks."""
+    removed. Saved observations are removed under their own locks.
+
+    A copy is named by what the file is (its name in REMOVED), never by the
+    file's own name: configured paths can share a file name, or have the name
+    of the backup's list, `forgotten.json`. REMOVED's names are distinct, so
+    no copy replaces another. The list gives each copy's original path."""
     present = [item for item in document["remove"] if item["present"]]
     for item in present:
         if _digest(Path(item["path"])) != item["sha256"]:
@@ -224,13 +229,13 @@ def apply(document: dict, root: Path, clock=None) -> dict:
             suffix += 1
             folder = root / f"{BACKUP_PREFIX}{stamp}-{suffix}"
     os.chmod(folder, 0o700)
-    for item in present:
-        target = folder / Path(item["path"]).name
-        shutil.copyfile(item["path"], target, follow_symlinks=False)
+    files = [{"name": item["name"], "path": item["path"], "file": item["name"], "sha256": item["sha256"]}
+             for item in present]
+    for copy in files:
+        target = folder / copy["file"]
+        shutil.copyfile(copy["path"], target, follow_symlinks=False)
         os.chmod(target, 0o600)
-    manifest = {"schema_version": SCHEMA_VERSION, "kind": f"{KIND}-backup",
-                "files": [{"name": item["name"], "path": item["path"], "file": Path(item["path"]).name,
-                           "sha256": item["sha256"]} for item in present]}
+    manifest = {"schema_version": SCHEMA_VERSION, "kind": f"{KIND}-backup", "files": files}
     (folder / "forgotten.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     os.chmod(folder / "forgotten.json", 0o600)
     records = {saved_observations.INVENTORY_NAME, saved_observations.BUDGET_NAME, saved_observations.CHANGES_NAME}

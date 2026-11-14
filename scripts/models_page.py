@@ -43,6 +43,7 @@ Download's own reuse (it holds only if `model acquire … --plan --json` answers
 from __future__ import annotations
 
 import argparse
+import copy
 import io
 import json
 from pathlib import Path
@@ -77,6 +78,8 @@ STATUS_WORDS = {
     "home-copy": "(also its copy there)",
     "copies-on": "copies on",
     "no-copies": "no copies on serving nodes",
+    "files-missing": "files not found on",
+    "files-unknown": "files could not be checked on",
     "kept": "kept",
     "not-kept": "not kept",
     "archived": "archived,",
@@ -266,6 +269,33 @@ class Cluster:
         return STATUS_WORDS["no-archive"]
 
     def readiness(self, spec: str) -> str:
+        """What the page says of SPEC's readiness: Serve a model…'s phrase (saved_readiness), except
+        that "ready to start" is the result of the last saved check, which the scan does not repeat.
+        Where the scan, which is newer, did not find a home or a copy the records name for SPEC, or
+        could not check one, the page says that instead. A "ready to start" that stays carries the
+        saved check's own age, since the page's first line gives only the scan's. A record on a
+        node outside confirmed membership does not count: no scan reads that node, and Start does
+        not use it."""
+        from model_library.catalog import _checked
+        from model_library.file_inventory import OUTSIDE_MEMBERSHIP
+        from scripts.serve_plan import READINESS
+        phrase = self.saved_readiness(spec)
+        # Only a phrase that says ready to start rests on the saved check; the others claim no readiness.
+        if not phrase.startswith(READINESS["ready"]):
+            return phrase
+        outside = {node["node_id"] for node in self.nodes if node.get("error") == OUTSIDE_MEMBERSHIP}
+        locations = [location for location in self.homes(spec).values() if location]
+        locations += [location for _, location in self.bound(spec)]
+        locations = [location for location in locations if location["node_id"] not in outside]
+        missing = [location["node_id"] for location in locations if location.get("state") == "missing"]
+        unknown = [location["node_id"] for location in locations if location.get("state") not in ("present", "missing")]
+        if missing:
+            return f"{STATUS_WORDS['files-missing']} {self.hosts(missing)}"
+        if unknown:
+            return f"{STATUS_WORDS['files-unknown']} {self.hosts(unknown)}"
+        return f"{phrase} ({_checked(self.catalog[spec].get('observation_age_seconds'))})"
+
+    def saved_readiness(self, spec: str) -> str:
         """Serve a model…'s readiness phrase, from saved records, with the scan's sizes."""
         from scripts.serve_plan import readiness
         sizes = {name: (self.entry(manifest) or {}).get("payload_bytes")
@@ -1118,6 +1148,28 @@ def _purge_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     plan["done"] = (f"the unfinished copies of {name} are cleared" if clear else f"{name} is removed from {where}")
 
 
+def _after_purges(cluster: Cluster, specs: list[str]) -> Cluster:
+    """CLUSTER as the scan would read once Purge ran for SPECS: their bindings are gone, and so is
+    each prepared copy only they used. A copy another recipe shared with them alone is then that
+    recipe's own, which its Purge deletes. CLUSTER itself is not changed."""
+    if not specs:
+        return cluster
+    snapshots = []
+    for entry in cluster.snapshots:
+        locations = []
+        for location in entry.get("locations") or []:
+            bindings = location.get("bindings") or []
+            left = [binding for binding in bindings if binding.get("spec_id") not in specs]
+            if bindings and not left and location.get("kind") == "prepared":
+                continue
+            locations.append({**location, "bindings": left})
+        snapshots.append({**entry, "locations": locations})
+    later = copy.copy(cluster)
+    later.snapshots = snapshots
+    later.by_manifest = {entry["snapshot_manifest_id"]: entry for entry in snapshots}
+    return later
+
+
 def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     row = _spec(cluster, spec)
     facts = {other: purge_facts(cluster, other) for other in cluster.catalog}
@@ -1151,8 +1203,10 @@ def _cluster_plan(cluster: Cluster, plan: dict, spec: str) -> None:
                 ["./pulsar", "model", "archive", "create", spec, *args, "--plan", "--json"],
                 {"spec": spec, "snapshot": snapshot, "node": location["node_id"], "changes": "writes the archive"},
                 authority=False, entries=cluster.entries))
-    for other in purged:
-        fact = facts.get(other)
+    for index, other in enumerate(purged):
+        # Each Purge finds the bindings the steps before it left. A copy two of these recipes share
+        # is released by the first and deleted by the last, so the last one's step names that node.
+        fact = purge_facts(_after_purges(cluster, purged[:index]), other)
         if not fact:
             continue
         where = cluster.hosts(fact["freed"]) if fact["freed"] else "its nodes"
