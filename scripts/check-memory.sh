@@ -169,12 +169,13 @@ for ((rank = 0; rank < NODES; rank++)); do
 done
 # The recipe's --gpu-memory-utilization; every catalog spec states it (release_consumer.py).
 utilization="${GPU_MEM_UTIL:-}"
-declare -a rank_engine_need=() rank_engine_margin=()
+declare -a rank_engine_need=() rank_engine_margin=() rank_engine_below_margin=()
 for ((rank = 0; rank < NODES; rank++)); do
   if [ "$rank" -eq 0 ]; then rank_engine_margin[$rank]="$ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB"
   else rank_engine_margin[$rank]="$ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB"; fi
   rank_engine_need[$rank]=""
-  # vLLM needs ceil(total x utilization) free at its startup, read as MemAvailable on a unified-memory GPU.
+  rank_engine_below_margin[$rank]=0
+  # vLLM v0.32.0 needs ceil(total x utilization) free at its startup, read as MemAvailable on a unified-memory GPU.
   if [ -n "$utilization" ] && [ -n "${rank_total[$rank]}" ]; then
     rank_engine_need[$rank]=$(awk -v t="${rank_total[$rank]}" -v u="$utilization" \
       'BEGIN{n=t*u; c=int(n*100); if (c < n*100) c++; printf "%.2f", c/100}')
@@ -219,19 +220,25 @@ check_node_cold() {
   fi
 }
 
-# The engine's own startup check: it reads free memory after Start's own
-# processes on that rank have started, and refuses below total x utilization.
+# The engine's own startup check (vLLM v0.32.0): it reads free memory after
+# Start's own processes on that rank have started, and refuses below
+# total x utilization. Only that certain refusal fails the check. The
+# platform's margin is what those processes took in measured starts; it
+# depends on the recipe, so falling inside it is information, never a warning.
+engine_info=""
 check_node_engine() {
-  local label="$1" avail="$2" need="$3" margin="$4" total="$5"
+  local rank="$1" label="$2" avail="$3" need="$4" margin="$5" total="$6" headroom
   [ -n "$need" ] || return 0
   if awk -v a="$avail" -v n="$need" 'BEGIN{exit !(a+0 < n)}'; then
     result=fail
     reason="${reason}${label}: available ${avail} GiB < ${need} GiB that the engine needs free at its startup (gpu-memory-utilization ${utilization} of ${total} GiB), so the engine would refuse; "
     return
   fi
+  [ -n "$margin" ] || return 0
   if awk -v a="$avail" -v n="$need" -v m="$margin" 'BEGIN{exit !(a+0 < n+m)}'; then
-    if [ "$result" = pass ]; then result=warn; fi
-    reason="${reason}${label}: available ${avail} GiB < ${need} GiB the engine needs at its startup + ${margin} GiB that Start's own processes on this rank took before the engine read memory, as measured on this platform; the engine may refuse; "
+    rank_engine_below_margin[$rank]=1
+    headroom=$(awk -v a="$avail" -v n="$need" 'BEGIN{printf "%.2f", a-n}')
+    engine_info="${engine_info}${label}: ${avail} GiB free is ${headroom} GiB more than the ${need} GiB the engine needs at its startup; in measured starts on this platform, Start's own processes took up to ${margin} GiB on this rank before the engine read memory, so the engine may refuse; "
   fi
 }
 
@@ -261,7 +268,7 @@ if [ "$topology_ready" = 1 ]; then
     for ((rank = 0; rank < NODES; rank++)); do
       check_label=$(memory_node_name "$rank")
       check_node_cold "$check_label" "${rank_avail[$rank]}" "${rank_footprints[$rank]}" "${rank_start_needs[$rank]}"
-      check_node_engine "$check_label" "${rank_avail[$rank]}" "${rank_engine_need[$rank]}" \
+      check_node_engine "$rank" "$check_label" "${rank_avail[$rank]}" "${rank_engine_need[$rank]}" \
         "${rank_engine_margin[$rank]}" "${rank_total[$rank]}"
     done
   fi
@@ -289,6 +296,8 @@ if [ "$JSON" = 1 ]; then
   ENGINE_TOTALS_V="$(IFS=,; printf '%s' "${rank_total[*]}")" \
   ENGINE_NEEDS_V="$(IFS=,; printf '%s' "${rank_engine_need[*]}")" \
   ENGINE_MARGINS_V="$(IFS=,; printf '%s' "${rank_engine_margin[*]}")" \
+  ENGINE_BELOW_MARGIN_V="$(IFS=,; printf '%s' "${rank_engine_below_margin[*]}")" \
+  ENGINE_INFO_V="${engine_info%; }" \
   python3 - "$NODES" "${rank_avail[@]}" "$NAME" "$result" "$mode" "$already" \
     "$already_how" "$need_footprint" "$need_start" "$weights" "$w_rank" "$kv" \
     "$overhead" "$buffer" "$spike" "$floor" "$mml" "$kv_fixed" "$note" "$reason" <<'PY'
@@ -312,8 +321,10 @@ document=dict(schema_version=1,kind="pulsar-memory-check",model=name,result=resu
 number=lambda v: float(v) if v else None
 utilization=os.environ.get("ENGINE_UTILIZATION_V") or None
 document["gpu_memory_utilization"]=float(utilization) if utilization else None
-for row,total,need,margin in zip(ranks,*(os.environ.get(k,"").split(",") for k in ("ENGINE_TOTALS_V","ENGINE_NEEDS_V","ENGINE_MARGINS_V"))):
- row.update(total_gib=number(total),engine_startup_need_gib=number(need),engine_startup_margin_gib=number(margin))
+document["engine_startup_info"]=os.environ.get("ENGINE_INFO_V") or None
+for row,total,need,margin,below in zip(ranks,*(os.environ.get(k,"").split(",") for k in ("ENGINE_TOTALS_V","ENGINE_NEEDS_V","ENGINE_MARGINS_V","ENGINE_BELOW_MARGIN_V"))):
+ row.update(total_gib=number(total),engine_startup_need_gib=number(need),engine_startup_margin_gib=number(margin),
+            engine_startup_below_margin=below=="1")
 if os.environ.get('PULSAR_MEMORY_ESTIMATE_JSON'):
  from release_spec.memory_estimate import weights_gib
  estimate=json.loads(os.environ['PULSAR_MEMORY_ESTIMATE_JSON'])
@@ -361,11 +372,13 @@ else
         fi
         ;;
     esac
+    [ -z "$engine_info" ] || print_hanging "INFO  engine    " "${engine_info%; }"
   else
     log "$NAME result=$result mode=$mode footprint=${need_footprint} GiB/rank start_need=${need_start} (w_rank=$w_rank kv=$kv oh=$overhead +spike=$spike; buffer_target=$buffer)"
     [ "$NODES" -eq 1 ] && log "placement=$(single_node_display)"
     log "available:${availability_summary}"
-    [ -z "${rank_engine_need[0]}" ] || log "engine startup: needs ${rank_engine_need[0]} GiB free (gpu-memory-utilization ${utilization} of ${rank_total[0]} GiB) + margin ${rank_engine_margin[0]} GiB on rank 0${rank_engine_margin[1]:+, ${rank_engine_margin[1]} GiB on the others}"
+    [ -z "${rank_engine_need[0]}" ] || log "engine startup: needs ${rank_engine_need[0]} GiB free (gpu-memory-utilization ${utilization} of ${rank_total[0]} GiB)"
+    [ -z "$engine_info" ] || log "engine startup: ${engine_info%; }"
     [ "$already" = 1 ] && log "already loaded: $already_how"
     [ -n "$mml" ] && log "max-model-len=${mml}${OVERRIDE_LEN:+ (override)}"
     [ -n "$note" ] && log "$note"

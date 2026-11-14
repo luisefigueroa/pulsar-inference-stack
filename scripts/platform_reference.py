@@ -46,6 +46,10 @@ MEMORY_FIELDS = (
     "overhead_gib_default",
     "preflight_warn_available_gib",
     "cold_start_footprint_slack",
+)
+# Optional, so that a platform file written before them still loads: without
+# them the memory check states no startup margin.
+OPTIONAL_MEMORY_FIELDS = (
     "engine_startup_margin_first_rank_gib",
     "engine_startup_margin_other_rank_gib",
 )
@@ -84,11 +88,14 @@ def _require_object(value: Any, label: str) -> dict[str, Any]:
 
 
 def _require_exact_keys(
-    document: dict[str, Any], fields: tuple[str, ...], label: str
+    document: dict[str, Any],
+    fields: tuple[str, ...],
+    label: str,
+    optional: tuple[str, ...] = (),
 ) -> None:
     expected = set(fields)
     observed = set(document)
-    extra = observed - expected
+    extra = observed - expected - set(optional)
     missing = expected - observed
     if extra:
         fail(f"{label}: unknown field(s): {', '.join(sorted(extra))}")
@@ -118,6 +125,10 @@ def _require_nonneg_number(value: Any, label: str) -> int | float:
     if value < 0:
         fail(f"{label}: must be >= 0")
     return value
+
+
+def _optional_shell_number(value: int | float | None) -> str:
+    return "" if value is None else _shell_number(value)
 
 
 def _shell_number(value: int | float) -> str:
@@ -174,7 +185,7 @@ def validate_platform_reference(value: Any) -> dict[str, Any]:
     if not verbs.startswith("/dev/"):
         fail("rdma.verbs_device must be a /dev path")
     memory = _require_object(document.get("memory"), "memory")
-    _require_exact_keys(memory, MEMORY_FIELDS, "memory")
+    _require_exact_keys(memory, MEMORY_FIELDS, "memory", OPTIONAL_MEMORY_FIELDS)
     model = _require_text(memory.get("model"), "memory.model")
     if model != MEMORY_MODEL:
         fail(f"memory.model must be {MEMORY_MODEL}")
@@ -200,17 +211,16 @@ def validate_platform_reference(value: Any) -> dict[str, Any]:
         fail("memory.cold_start_footprint_slack: expected a number")
     if not 0 < float(slack) <= 1:
         fail("memory.cold_start_footprint_slack must be in (0, 1]")
-    # What Start's own processes take on a rank before the engine reads free
-    # memory at its startup: the first rank also runs the API server and the
-    # engine core. Measured values, not an allocation cap.
-    first_margin = _require_nonneg_number(
-        memory.get("engine_startup_margin_first_rank_gib"),
-        "memory.engine_startup_margin_first_rank_gib",
-    )
-    other_margin = _require_nonneg_number(
-        memory.get("engine_startup_margin_other_rank_gib"),
-        "memory.engine_startup_margin_other_rank_gib",
-    )
+    # What Start's own processes took on a rank before the engine read free
+    # memory at its startup, in measured starts: the first rank also runs the
+    # API server and the engine core. Information for the operator, never a
+    # gate, and not an allocation cap.
+    margins = {
+        field: None
+        if field not in memory
+        else _require_nonneg_number(memory[field], f"memory.{field}")
+        for field in OPTIONAL_MEMORY_FIELDS
+    }
     return {
         "schema_version": version,
         "kind": kind,
@@ -231,8 +241,7 @@ def validate_platform_reference(value: Any) -> dict[str, Any]:
             "overhead_gib_default": overhead,
             "preflight_warn_available_gib": warn_gib,
             "cold_start_footprint_slack": slack,
-            "engine_startup_margin_first_rank_gib": first_margin,
-            "engine_startup_margin_other_rank_gib": other_margin,
+            **margins,
         },
     }
 
@@ -310,11 +319,11 @@ def export_shell(document: dict[str, Any] | None = None) -> str:
         "PULSAR_COLD_START_FOOTPRINT_SLACK": _shell_number(
             memory["cold_start_footprint_slack"]
         ),
-        "PULSAR_ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB": _shell_number(
-            memory["engine_startup_margin_first_rank_gib"]
+        "PULSAR_ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB": _optional_shell_number(
+            memory.get("engine_startup_margin_first_rank_gib")
         ),
-        "PULSAR_ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB": _shell_number(
-            memory["engine_startup_margin_other_rank_gib"]
+        "PULSAR_ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB": _optional_shell_number(
+            memory.get("engine_startup_margin_other_rank_gib")
         ),
     }
     lines = [

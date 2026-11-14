@@ -55,28 +55,32 @@ weight, footprint, startup and projected-residual values.
 ## The engine's own startup check
 
 Independent of any estimate, the preflight also judges each serving node as
-the engine judges it. On a unified-memory GPU such as GB10, vLLM reads the
-node's `MemAvailable` (which counts reclaimable page cache as free) once, after
-NCCL starts and before it loads weights, and refuses to start when it is below
-`ceil(MemTotal × --gpu-memory-utilization)`. At 0.75 of 121.69 GiB that is
-91.27 GiB. So the preflight:
+the engine judges it. On a unified-memory GPU such as GB10, vLLM v0.32.0 reads
+the node's `MemAvailable` (which counts reclaimable page cache as free) once,
+after NCCL starts and before it loads weights, and refuses to start when it is
+below `ceil(MemTotal × --gpu-memory-utilization)`. At 0.75 of 121.69 GiB that
+is 91.27 GiB. Other engine versions can read memory differently.
 
-- fails a node whose `MemAvailable` is already below that need: the engine
-  would refuse;
-- warns when `MemAvailable` is below that need plus the platform's startup
-  margin: what Start's own processes on that rank take before the engine reads
-  memory. The first rank also runs the API server and the engine core. The
-  GB10 platform file sets `engine_startup_margin_first_rank_gib: 26` and
-  `engine_startup_margin_other_rank_gib: 6`, measured on one recipe and image,
-  where the first rank's engine read up to 25.8 GiB less than the preflight
-  had read and the other ranks about 6 GiB less. A recipe whose API server
-  holds more needs more.
+- A node whose `MemAvailable` is already below that need fails the check: the
+  engine would refuse.
+- A node above the need but within the platform's startup margin passes. The
+  check adds an `INFO  engine` line that names the node, its headroom and the
+  margin. The margin is what Start's own processes on that rank took before
+  the engine read memory, in measured starts. The first rank also runs the API
+  server, whose multimodal warmup can still run when the engine reads memory.
+  The GB10 platform file sets `engine_startup_margin_first_rank_gib: 26` and
+  `engine_startup_margin_other_rank_gib: 6`, measured with one recipe and
+  image. The real amount depends on the recipe, so the margin informs the
+  operator and never warns or blocks.
 
-JSON rank entries add `total_gib`, `engine_startup_need_gib` and
-`engine_startup_margin_gib`, and the document adds `gpu_memory_utilization`.
-A node whose total cannot be read is not judged by this rule, and the note
-says so. Dropping the page cache does not raise `MemAvailable` by much, so it
-is not a fix for this refusal.
+Both margin fields are optional; a platform file without them loads, and the
+check then states no margin. JSON rank entries add `total_gib`,
+`engine_startup_need_gib`, `engine_startup_margin_gib` and
+`engine_startup_below_margin`; the document adds `gpu_memory_utilization` and
+`engine_startup_info` (null when no node is within its margin). A node whose
+total cannot be read is not judged by this rule, and the note says so.
+Dropping the page cache does not raise `MemAvailable` by much, so it is not a
+fix for this refusal.
 
 Warnings remain warnings. A dry run may report them without starting anything.
 An actual launch still requires separately authorized `--accept-memory-warn`
