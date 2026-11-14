@@ -1,5 +1,6 @@
 """Real command routing with synthetic nodes; never contacts serving hardware."""
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 import pty
@@ -1287,12 +1288,16 @@ class TopologyCommands(unittest.TestCase):
         self.assertRegex(backup.name, r'^forgotten-cluster-\d{8}T\d{6}Z$')
         self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
         self.assertIn(f'Backup{backup}', ''.join(result.stdout.split()))
-        for path, contents in files.items():
-            copy = backup/path.name
-            self.assertEqual(copy.read_bytes(), contents)
-            self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
         listed = json.loads((backup/'forgotten.json').read_text())
         self.assertEqual({item['path'] for item in listed['files']}, {str(path) for path in files})
+        # Each copy is named by what the file is, and the list says which copy is which.
+        self.assertEqual([item['file'] for item in listed['files']],
+                         ['membership', 'ssh-config', 'service-inventory', 'storage-budget', 'cluster-changes'])
+        copies = {item['path']: backup/item['file'] for item in listed['files']}
+        for path, contents in files.items():
+            copy = copies[str(path)]
+            self.assertEqual(copy.read_bytes(), contents)
+            self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
         # Kept: model-library records and the overlay.
         self.assertEqual((f.root/'model-library/record.json').read_text(), '{"kept": true}')
         self.assertTrue((f.root/'overlay.json').exists())
@@ -1389,6 +1394,44 @@ class TopologyCommands(unittest.TestCase):
                 topology_forget.apply(plan, f.root/'state/cluster-backups')
         self.assertTrue(f.config.exists())
         self.assertFalse((f.root/'state/cluster-backups').exists())
+
+    def test_forget_gives_each_file_its_own_backup_copy(self):
+        # Configured state files can share a file name in different
+        # directories, and one can be named like the backup's own list.
+        sys.path.insert(0, str(ROOT))
+        from scripts import topology_forget
+        for membership, config in (('one/state', 'two/state'), ('one/forgotten.json', 'two/ssh-config')):
+            with self.subTest(membership=membership, config=config):
+                temporary = tempfile.TemporaryDirectory()
+                self.addCleanup(temporary.cleanup)
+                self.fixture = f = Fixture(Path(temporary.name))
+                self.cluster_state()
+                moved = {f.path: f.root/membership, f.config: f.root/config}
+                for source, target in moved.items():
+                    target.parent.mkdir()
+                    source.rename(target)
+                files = {path: path.read_bytes()
+                         for path in (*moved.values(), *sorted((f.root/'state').glob('*.json')))}
+                self.assertEqual(len(set(files.values())), len(files))
+                with unittest.mock.patch.dict(os.environ, f.env):
+                    plan = topology_forget.plan(f.root, *moved.values(), f.root/'overlay.json')
+                    result = topology_forget.apply(plan, Path(plan['backup_root']))
+                backup = Path(result['backup'])
+                self.assertEqual(backup.parent, f.root/'state/cluster-backups')
+                self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o700)
+                listed = {item['path']: item for item in json.loads((backup/'forgotten.json').read_text())['files']}
+                self.assertEqual(set(listed), {str(path) for path in files})
+                for path, contents in files.items():
+                    item = listed[str(path)]
+                    copy = backup/item['file']
+                    self.assertEqual(copy.read_bytes(), contents, f'{item["name"]} copy at {copy.name}')
+                    self.assertEqual(item['sha256'], hashlib.sha256(contents).hexdigest())
+                    self.assertEqual(stat.S_IMODE(copy.stat().st_mode), 0o600)
+                    self.assertFalse(path.exists(), path)
+                # One copy for each file, and the list beside them.
+                self.assertEqual(sorted(entry.name for entry in backup.iterdir()),
+                                 sorted(['forgotten.json', *(item['file'] for item in listed.values())]))
+                self.assertEqual(len({item['file'] for item in listed.values()}), len(files))
 
     def test_narrow_human_observation(self):
         f = self.fixture
