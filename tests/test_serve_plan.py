@@ -330,6 +330,7 @@ class Compose(unittest.TestCase):
         apart = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
                                "draft": {**member, "home": {**HOME, "node_id": "n1"},
                                          "snapshot_manifest_id": "2" * 64}})
+        self.assertEqual(serve.nodes_needing_copies(apart, ["n0", "n1", "n2"]), ["n0", "n1", "n2"])
         self.assertEqual(serve.copies_needed(apart, ["n0", "n1", "n2"]), 3)
         together = row(snapshots={"target": {**member, "home": HOME, "snapshot_manifest_id": "1" * 64},
                                   "draft": {**member, "home": HOME, "snapshot_manifest_id": "2" * 64}})

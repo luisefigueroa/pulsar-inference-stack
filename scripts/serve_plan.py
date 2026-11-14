@@ -200,7 +200,7 @@ def readiness(row: dict, *, order: list[str], archive_location: str, sizes: dict
     return READINESS["copy"].format(count=node_count(count), size=text)
 
 
-def copies_needed(row: dict, serving: list[str]) -> int:
+def nodes_needing_copies(row: dict, serving: list[str]) -> list[str]:
     """Serving nodes still to receive a copy, from saved records: those that hold
     neither the home of every required snapshot nor a prepared copy recorded
     for this recipe. A node with one snapshot's home still needs a copy of a
@@ -208,8 +208,13 @@ def copies_needed(row: dict, serving: list[str]) -> int:
     still verifies; the plan's own preview says."""
     homes = [(member.get("home") or {}).get("node_id") for member in members(row).values()]
     copied = {view.get("node_id") for view in row.get("prepared_copies") or []}
-    return len([node for node in serving
-                if not (homes and all(home == node for home in homes)) and node not in copied])
+    return [node for node in serving
+            if not (homes and all(home == node for home in homes)) and node not in copied]
+
+
+def copies_needed(row: dict, serving: list[str]) -> int:
+    """How many serving nodes still need a copy, from saved records."""
+    return len(nodes_needing_copies(row, serving))
 
 
 def _facts(rows: list[dict]) -> dict[str, list[str]]:
@@ -587,7 +592,7 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
     placed = {name: (member.get("home") or {}).get("node_id") for name, member in members(row).items()}
     placed.update({found["snapshot"]: found["node"] for found in sources or []})
 
-    def lacking(nodes: list[str]) -> list[str]:
+    def without_every_snapshot(nodes: list[str]) -> list[str]:
         """The serving nodes that lack a required snapshot. Each node needs every
         snapshot, so a node that holds one snapshot's home still needs a copy of
         a snapshot whose home is on another node."""
@@ -636,12 +641,12 @@ def compose(row: dict, entries: list[dict], *, names: NodeNames, node: str | Non
         elif prepare is not None:
             error = error or {"message": "its preview did not return a plan"}
             blocked.append(f"Copying the files cannot be planned: {clean(error.get('message') or 'its preview failed')}.")
-            step["facts"] = {"copy_to": lacking(serving)}
+            step["facts"] = {"copy_to": without_every_snapshot(serving)}
             step["sentence"] = "Copy the model files to the serving nodes that lack them."
             step["changes"] = "writes prepared copies"
         else:
             # No home yet, or no preview: Prepare's own plan runs when its turn comes.
-            targets = lacking(serving)
+            targets = without_every_snapshot(serving)
             step["facts"] = {"copy_to": targets}
             if targets:
                 step["sentence"] = copy_sentence(targets, "; a copy there that still verifies is taken over, not "
