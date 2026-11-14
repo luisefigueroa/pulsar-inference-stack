@@ -658,6 +658,8 @@ class BundledGumServe(BundledGum):
                 self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["inventory --json"])
 
 
+@unittest.skipUnless(platform.system() == "Linux" and platform.machine() == "aarch64",
+                     "the bundled Gum requires Linux arm64")
 class BundledGumModels(BundledGum):
     """Models and disk space… with real Gum over fixture records and the ./pulsar double: Esc leaves
     every screen, so nothing is approved."""
