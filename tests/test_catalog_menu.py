@@ -2164,7 +2164,10 @@ class PlanSummary(unittest.TestCase):
         self.assertEqual(self.summary("prepare", mixed)[0], "Copy 2.00 GiB to spark-2 (1 new copy, 0 reused, 1 taken over).")
         self.assertEqual(menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES),
                          "Prepare org/model on spark-1, spark-2? 1 new copy, 0 reused, 1 taken over. It takes over "
-                         "1 copy made before the cluster's membership changed; nothing is copied or deleted.")
+                         "1 copy made before the cluster's membership changed; that copy is not copied again or "
+                         "deleted.")
+        # A plan that writes new copies never says that nothing is copied.
+        self.assertNotIn("nothing is copied", menu.question("prepare", checked(home=HOME), plan=mixed, names=NAMES))
         # Under the same saved cluster only the role order changed, and it says so.
         reordered = preparation(("n0", "rebind"), ("n1", "rebind"), topology_id="d" * 64)
         reordered["actions"][0]["previous"] = {"topology_id": "d" * 64, "rank": 1}
