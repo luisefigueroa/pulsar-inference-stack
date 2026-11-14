@@ -520,6 +520,28 @@ class ApiKey(unittest.TestCase):
             (repo / ".env").symlink_to(repo / "elsewhere")
             self.assertEqual(cluster_status.api_key_source(repo, {}), ("unreadable", "dotenv"))
 
+    def test_a_key_set_by_a_shell_expression_is_not_known(self):
+        # Start sources .env, so `${SERVICE_API_KEY:-}` with no SERVICE_API_KEY is an empty key;
+        # the menu reads .env as data and must not call that expression a configured key.
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            for line in ('VLLM_API_KEY="${SERVICE_API_KEY:-}"', "export VLLM_API_KEY=$(cat key-file)",
+                         "VLLM_API_KEY=`cat key-file`", '[ -r key-file ] && VLLM_API_KEY="fixture-secret"'):
+                (repo / ".env").write_text(line + "\n")
+                self.assertEqual(cluster_status.api_key_source(repo, {}), ("VLLM_API_KEY", "expression"), line)
+                self.assertEqual(cluster_status.api_key_source(repo, {"API_KEY": "x"}),
+                                 ("VLLM_API_KEY", "expression"), line)
+            # A literal value, a quoted '$' and a comment that names the key stay literal.
+            (repo / ".env").write_text("# VLLM_API_KEY=$(cat key-file)\nVLLM_API_KEY='fixture-$secret'\n")
+            self.assertEqual(cluster_status.api_key_source(repo, {}), ("VLLM_API_KEY", "dotenv"))
+            (repo / ".env").write_text("API_KEY=${SERVICE_API_KEY:-}\n")
+            self.assertEqual(cluster_status.api_key_source(repo, {"VLLM_API_KEY": "x"}), ("VLLM_API_KEY", "process"))
+            self.assertEqual(cluster_status.api_key_source(repo, {}), ("API_KEY", "expression"))
+            text = " ".join(cluster_status.api_key_text(repo, width=44, environ={}).split())
+            self.assertIn("not known", text)
+            self.assertIn("API_KEY with a shell expression", text)
+            self.assertNotIn("configured:", text)
+
 
 class Screens(unittest.TestCase):
     """The renderers fit 80, 60 and 44 columns and strip back to plain text."""

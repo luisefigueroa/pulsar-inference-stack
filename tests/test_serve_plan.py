@@ -505,6 +505,11 @@ class Compose(unittest.TestCase):
         plan = self.plan(checked(home=HOME, local_state="ready"), api_key="this checkout's .env file")
         self.assertIn("The API will require the key set in this checkout's .env file.",
                       plan["steps"][-1]["sentence"].replace(serve.KEEP, " "))
+        unknown = self.plan(checked(home=HOME, local_state="ready"), api_key=serve.KEY_FROM_EXPRESSION)
+        sentence = unknown["steps"][-1]["sentence"].replace(serve.KEEP, " ")
+        self.assertIn("Whether the API will require a key is not known", sentence)
+        self.assertNotIn("without a key", sentence)
+        self.assertNotIn("will require the key set", sentence)
 
     def test_the_screen_fits_80_60_and_44_columns(self):
         state = row()

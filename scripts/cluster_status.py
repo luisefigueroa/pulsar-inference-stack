@@ -672,31 +672,44 @@ def review(records: Records, *, width: int | None = None, serve: bool = False,
 # ---------------------------------------------------------------------------
 
 _KEY_ASSIGNMENT = re.compile(r"^\s*(?:export\s+)?(VLLM_API_KEY|API_KEY)\s*=(.*)$")
+# An assignment of either name elsewhere in a line, such as after `&&`: start may or may not run it.
+_KEY_ELSEWHERE = re.compile(r"(?<![\w$])(VLLM_API_KEY|API_KEY)=")
 
 
 def api_key_source(repo: Path, environ: dict | None = None) -> tuple[str | None, str | None]:
-    """Where the API key start uses is configured: (variable, "process" | "dotenv"), or (None, None).
+    """Where the API key start uses is configured: (variable, "process" | "dotenv" | "expression"),
+    or (None, None).
 
     As `pulsar_api_key` in scripts/lib.sh reads it: `VLLM_API_KEY`, else
     `API_KEY`, after this checkout's .env is sourced over the environment, so
-    an assignment in .env wins, even an empty one. The value is never returned
-    or printed. A .env that cannot be read gives ("unreadable", "dotenv")."""
+    an assignment in .env wins, even an empty one. The menu reads .env as data
+    and never runs it: an assignment that is not a literal value, such as
+    `"${OTHER:-}"` or one after `&&`, gives (variable, "expression"), because
+    only start, which sources the file, knows its value. The value is never
+    returned or printed. A .env that cannot be read gives ("unreadable", "dotenv")."""
     env = os.environ if environ is None else environ
-    from model_library.configuration import _read
+    from model_library.configuration import _decode, _read
     from model_library.integrity import StorageError
     try:
         data, _ = _read(Path(repo))
         text = data.decode("utf-8")
     except (StorageError, OSError, UnicodeError):
         return "unreadable", "dotenv"
-    assigned = {}
+    assigned: dict[str, bool | None] = {}  # None: not a literal value
     for line in text.splitlines():
         match = _KEY_ASSIGNMENT.match(line)
         if match:
-            value = match.group(2).split("#", 1)[0].strip().strip("'\"").strip()
-            assigned[match.group(1)] = bool(value)
+            try:
+                assigned[match.group(1)] = bool(_decode(match.group(2)))
+            except StorageError:
+                assigned[match.group(1)] = None
+        elif not line.lstrip().startswith("#"):
+            for name in _KEY_ELSEWHERE.findall(line):
+                assigned[name] = None
     for name in ("VLLM_API_KEY", "API_KEY"):
         if name in assigned:
+            if assigned[name] is None:
+                return name, "expression"
             if assigned[name]:
                 return name, "dotenv"
         elif env.get(name):
@@ -712,6 +725,9 @@ def api_key_text(repo: Path, *, width: int | None = None, environ: dict | None =
     if name == "unreadable":
         value = ("not known: this checkout's .env file could not be read. Fix the file; the menu does not "
                  "read or take the key.")
+    elif source == "expression":
+        value = (f"not known: this checkout's .env file sets `{name}` with a shell expression. Start reads its "
+                 "value when it sources the file; the menu does not run the file. The menu takes no secret.")
     elif name:
         value = (f"configured: `{name}` is set in {where[source]}. Clients send it as a bearer token. "
                  "The menu takes no secret: change it there, then start the service again.")
