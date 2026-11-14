@@ -176,7 +176,7 @@ stop_save_continue() {
     [ -n "$conf" ] || continue
     if [ "$conf" = refused ]; then refused+=("$name"); continue; fi
     confs+=("$conf"); names+=("$name"); lines+=("Stop $name on $hosts. Its model files are kept.")
-  done < <(python3 -m model_library.catalog list --json 2>/dev/null | serve_plan running --inventory "$INVENTORY")
+  done < <("$REPO_DIR/pulsar" models list --json 2>/dev/null | serve_plan running --inventory "$INVENTORY")
   if [ "${#refused[@]}" -gt 0 ] || [ "${#confs[@]}" -eq 0 ]; then
     { echo; printf '✗ Pulsar cannot stop what runs from here: %s\n' "${refused[*]:-no running service was identified}"; } | text
     wait_continue "Not saved" || return $?
@@ -440,8 +440,8 @@ details_menu() {
       || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     rc=0
     case "$choice" in
-      0) page_output "" python3 -m model_library.catalog show "$SPEC" || rc=$? ;;
-      1) page_output "" python3 -m model_library.catalog results "$SPEC" || rc=$? ;;
+      0) page_output "" "$REPO_DIR/pulsar" models show "$SPEC" || rc=$? ;;
+      1) page_output "" "$REPO_DIR/pulsar" models results "$SPEC" || rc=$? ;;
       2) compare_menu || rc=$? ;;
       *) return 0 ;;
     esac
@@ -456,7 +456,7 @@ RAN=4
 # and a plan from the earlier records would list that step a second time.
 reload_catalog() {
   local fresh rc=0
-  if ! fresh=$(python3 -m model_library.catalog list --json); then
+  if ! fresh=$("$REPO_DIR/pulsar" models list --json); then
     printf '\n✗ The catalog could not be read; the reason is above.\n'
     wait_continue "Catalog error" || rc=$?
     [ "$rc" -ne 130 ] || return 130
@@ -624,7 +624,7 @@ run_plan() {
 SPEC=""
 rc=0
 if [ "$MODE" = restart ]; then
-  if ! CATALOG=$(python3 -m model_library.catalog list --json); then
+  if ! CATALOG=$("$REPO_DIR/pulsar" models list --json); then
     printf '\n✗ The catalog could not be read; the reason is above.\n'
     wait_continue "Catalog error" || exit $?
     exit 0
@@ -637,7 +637,7 @@ entry_check || rc=$?
 [ "$rc" -ne 130 ] || exit 130
 [ "$rc" -eq 0 ] || exit 0
 while true; do
-  if ! CATALOG=$(python3 -m model_library.catalog list --json); then
+  if ! CATALOG=$("$REPO_DIR/pulsar" models list --json); then
     printf '\n✗ The catalog could not be read; the reason is above.\n'
     wait_continue "Catalog error" || exit $?
     exit 0

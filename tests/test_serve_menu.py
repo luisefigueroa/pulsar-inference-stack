@@ -101,6 +101,11 @@ confirm() {
 # call) or KEY.json, exits with KEY.N.rc or KEY.rc (default 0), and
 # after a successful call with KEY.inventory, that becomes the inventory.
 PULSAR_DOUBLE = r'''#!/usr/bin/env bash
+# The catalog is read as the real ./pulsar reads it, after .env is loaded: models list, show and
+# results run model_library.catalog. A read is not an operation, so it is not logged.
+case "${1:-} ${2:-}" in
+  "models list"|"models show"|"models results") shift; PULSAR_CATALOG_READ=pulsar exec python3 -m model_library.catalog "$@" ;;
+esac
 printf '%s\n' "$*" >> "$PULSAR_LOG"
 case "$*" in
   "inventory --json") key=inventory ;;
@@ -194,6 +199,7 @@ def build_root(root: Path, menus=("serve-menu.sh", "cluster-review.sh"), *, gum:
     python = binary / "python3"
     python.write_text('#!/usr/bin/env bash\n'
                       'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ]; then\n'
+                      '  [ "${PULSAR_CATALOG_READ:-}" = pulsar ] || { echo "a menu read the catalog without ./pulsar models, so without .env" >&2; exit 97; }\n'
                       '  case "${3:-}" in list) exec cat "$CATALOG_FILE" ;; *) echo "catalog ${*:3}"; exit 0 ;; esac\n'
                       f'fi\nexec {sys.executable} "$@"\n')
     python.chmod(0o755)
@@ -663,6 +669,7 @@ class NeedsEverything(Harness):
         shim = self.root / "bin" / "python3"
         shim.write_text('#!/usr/bin/env bash\n'
                         'if [ "${1:-}" = -m ] && [ "${2:-}" = model_library.catalog ] && [ "${3:-}" = list ]; then\n'
+                        '  [ "${PULSAR_CATALOG_READ:-}" = pulsar ] || { echo "a menu read the catalog without ./pulsar models, so without .env" >&2; exit 97; }\n'
                         f'  if grep -q "^model acquire .* --yes$" "$PULSAR_LOG" 2>/dev/null; then exec cat "{after}"; fi\n'
                         '  exec cat "$CATALOG_FILE"\n'
                         f'fi\nexec {sys.executable} "$@"\n')

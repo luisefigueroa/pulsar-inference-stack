@@ -30,7 +30,7 @@ reasons() { python3 -m scripts.start_reasons "$@" ${COLUMNS_SEEN:+--width "$COLU
 text() { python3 -m scripts.terminal_format --text; }
 TITLE="Why will a model not start?"
 
-if ! CATALOG=$(python3 -m model_library.catalog list --json); then
+if ! CATALOG=$("$REPO_DIR/pulsar" models list --json); then
   printf '\n✗ The catalog could not be read; the reason is above.\n'
   wait_continue "Catalog error" || exit $?
   exit 0

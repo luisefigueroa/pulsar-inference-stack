@@ -55,7 +55,7 @@ resolve() {
   [ "${COMMAND[0]:-}" != ./pulsar ] || COMMAND[0]="$REPO_DIR/pulsar"
 }
 
-if ! CATALOG=$(python3 -m model_library.catalog list --json); then
+if ! CATALOG=$("$REPO_DIR/pulsar" models list --json); then
   printf '\n✗ The catalog could not be read, so services cannot be named; the reason is above.\n'
   wait_continue "Catalog error" || exit $?
   exit 0

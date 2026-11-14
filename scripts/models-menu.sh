@@ -75,7 +75,7 @@ READ=(--files "$FILES" --budget "$BUDGET" --catalog "$CATALOG")
 capture() {
   local rc=0
   [ "$FILES_AT" -eq 0 ] || return 0
-  if ! python3 -m model_library.catalog list --json >"$CATALOG"; then
+  if ! "$REPO_DIR/pulsar" models list --json >"$CATALOG"; then
     FILES_ERROR="the catalog could not be read; the reason is above"
     return 0
   fi
