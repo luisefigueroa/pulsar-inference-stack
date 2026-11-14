@@ -5,12 +5,15 @@ archive_create() {
   require_cluster_nodes 1 >/dev/null || die "archive creation requires confirmed topology"
   require_archive_root
   require_home
-  local rank result stage
+  local rank result stage exists
   ROUTE_PASSES='[]' ROUTE_REFUSAL=""
+  # An existing archive is never replaced: the run verifies it and copies nothing.
+  exists=$(python3 -c 'from pathlib import Path; import sys; from model_library.local import location; import json; p=location(sys.argv[1],json.loads(sys.argv[2]),archive=True); print(int(p.exists() or p.is_symlink()))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   # A home on another node is copied to this machine, through the nodes
-  # between when they share no cable. A home outside the membership previews
-  # as before; the run below refuses it.
-  if rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)" 2>/dev/null) && [ "$rank" -ne 0 ]; then
+  # between when they share no cable; only that copy has a route. A home
+  # outside the membership previews as before; the run below refuses it.
+  if [ "$exists" -eq 0 ] && rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)" 2>/dev/null) \
+      && [ "$rank" -ne 0 ]; then
     . "$REPO_DIR/scripts/model-transfer.sh"
     model_transfer_plan_route "$rank" 0 || true
   fi
@@ -26,8 +29,6 @@ archive_create() {
   HOME_JSON=$(verify_record "$HOME_JSON") || die "home verification failed"
   rank=$(model_physical_rank "$(json_fields "$HOME_JSON" node_id)")
   # An existing archive is never replaced. Corruption requires explicit inspection.
-  local exists
-  exists=$(python3 -c 'from pathlib import Path; import sys; from model_library.local import location; import json; p=location(sys.argv[1],json.loads(sys.argv[2]),archive=True); print(int(p.exists() or p.is_symlink()))' "$PULSAR_COLD_ROOT" "$MANIFEST_JSON")
   if [ "$exists" -eq 1 ]; then
     phase 2 3 "an archive already exists; verifying it instead of replacing it"
     result=$(archive_verify) || die "existing archive did not verify; it was not replaced"

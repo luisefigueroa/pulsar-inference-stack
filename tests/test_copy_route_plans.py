@@ -215,6 +215,15 @@ class PlanAndCopyAgree(unittest.TestCase):
         result = self.f.run('archive', 'create', '--yes', spec=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(through(archive['passes_through'], self.hostnames)[0], result.stderr)
+        # The archive exists now: a second archive verifies it and copies nothing, so no
+        # route, even one that cannot be proven, blocks its plan.
+        self.f.cfg['wrong_route'] = True
+        self.f.save()
+        again = json.loads(self.f.run('archive', 'create', '--plan', spec=True).stdout)
+        self.assertNotIn('passes_through', again)
+        self.assertNotEqual(again.get('eligible'), False, again)
+        self.f.cfg['wrong_route'] = False
+        self.f.save()
         # With the home removed, restoring the archive to the opposite node copies through the neighbour.
         result = self.f.run('remove', '--yes', spec=True)
         self.assertEqual(result.returncode, 0, result.stderr)
