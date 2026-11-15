@@ -81,6 +81,8 @@ MIN_OS_BUFFER_GIB="${MIN_OS_BUFFER_GIB:-$PULSAR_MIN_OS_BUFFER_GIB}"
 HARD_FLOOR_AVAILABLE_GIB="${HARD_FLOOR_AVAILABLE_GIB:-$PULSAR_HARD_FLOOR_AVAILABLE_GIB}"
 LAUNCH_SPIKE_GIB="${LAUNCH_SPIKE_GIB:-$PULSAR_LAUNCH_SPIKE_GIB}"
 OVERHEAD_GIB_DEFAULT="${OVERHEAD_GIB_DEFAULT:-$PULSAR_OVERHEAD_GIB_DEFAULT}"
+ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB="${ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB:-${PULSAR_ENGINE_STARTUP_MARGIN_FIRST_RANK_GIB:-}}"
+ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB="${ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB:-${PULSAR_ENGINE_STARTUP_MARGIN_OTHER_RANK_GIB:-}}"
 
 # Human messages: results and progress on stdout, "warning:" and "error:"
 # lines on stderr. The internal script tag is shown only with PULSAR_VERBOSE=1
@@ -980,6 +982,24 @@ PY
   echo "0"
 }
 
+
+# mem_total_gib_local — MemTotal in GiB, or nothing where /proc/meminfo
+# (or PULSAR_MEMINFO_FILE) cannot be read: the total is then unknown.
+mem_total_gib_local() {
+  local meminfo="${PULSAR_MEMINFO_FILE:-/proc/meminfo}" kb
+  [ -r "$meminfo" ] || return 0
+  kb=$(awk '/MemTotal:/ {print $2}' "$meminfo" 2>/dev/null)
+  [ -z "$kb" ] || awk -v kb="$kb" 'BEGIN { printf "%.2f", kb / 1048576 }'
+}
+
+# mem_total_gib_remote HOST — MemTotal in GiB; fails like mem_available_gib_remote.
+mem_total_gib_remote() {
+  local host="${1:?}" out
+  out=$("$PULSAR_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" \
+    "awk '/MemTotal:/ {printf \"%.2f\", \$2/1048576}' /proc/meminfo" 2>/dev/null </dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
 
 # mem_available_gib_remote HOST — MemAvailable in GiB. Fails, printing nothing,
 # when the node cannot be read; an unreadable node is not a node with 0 GiB.

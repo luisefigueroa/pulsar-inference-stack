@@ -130,6 +130,18 @@ remove_home() {
   emit_result "$(model_json snapshot_manifest_id "$MANIFEST_ID" removed: true archive_untouched: true)"
 }
 
+# move_destination_present RANK: whether the home folder of this snapshot is
+# already on that node, from a cheap look at the path; the run verifies every
+# file before it reuses them. Unknown counts as absent, so the route is checked.
+move_destination_present() {
+  local roots hub state
+  roots=$(model_node "$1" "$(model_node_request roots)") || return 1
+  hub=$(python3 -c 'import json,sys; from model_library.local import location; print(location(sys.argv[1],json.loads(sys.argv[2])))' \
+    "$(json_fields "$roots" home_root)" "$MANIFEST_JSON") || return 1
+  state=$(model_node "$1" "$(model_node_request path-state path "$hub")") || return 1
+  [ "$(json_fields "$state" state)" = present ]
+}
+
 move_home() {
   require_home
   [ -n "$NODE" ] || die "move requires an explicit destination --node"
@@ -148,7 +160,11 @@ move_home() {
   if [ "$source_rank" -eq "$target_rank" ]; then route=already-home; elif [ "$source_rank" -gt 0 ] && [ "$target_rank" -gt 0 ]; then route=controller-stream-relay; fi
   plan=$(model_json kind pulsar-home-move-plan snapshot_manifest_id "$MANIFEST_ID" source_node "$(json_fields "$HOME_JSON" node_id)" destination_node "$target_node" transfer_route "$route")
   ROUTE_PASSES='[]' ROUTE_REFUSAL=""
-  if [ "$route" != already-home ]; then
+  if [ "$route" != already-home ] && [ "$PLAN" -eq 1 ] && move_destination_present "$target_rank"; then
+    # A retry after a copy that finished: the run verifies the files already
+    # there and copies nothing, so the plan has no copy route to check.
+    plan=$(printf '%s' "$plan" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["destination_present"]=True; print(json.dumps(d))')
+  elif [ "$route" != already-home ]; then
     # Between nodes that share no cable the copy passes through the nodes between.
     . "$REPO_DIR/scripts/model-transfer.sh"
     model_transfer_plan_route "$source_rank" "$target_rank" || true
