@@ -80,7 +80,9 @@ not mean importing former experiment evidence or serving catalog entries.
 Do not perform physical downloads, launches, service replacement, destructive
 cleanup, or remote publication outside the maintainer's explicitly agreed scope.
 Starting is non-replacing by default; image staging and replacement require
-their own explicit flags and authority.
+their own explicit flags and authority, as do accepting a memory warning
+(`--accept-memory-warn`) and skipping the cluster preflight
+(`--skip-preflight`).
 Do not claim physical serving results from mocked tests. Resolve significant
 changes to the agreed plan with the maintainer before implementing them.
 
