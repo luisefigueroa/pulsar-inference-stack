@@ -337,6 +337,40 @@ class GuardContracts(unittest.TestCase):
             self.assertIn("no service record of this run's launch plan was active", controller.summary(output, result, plan))
 
 
+class GuardRecords(unittest.TestCase):
+    def test_a_record_appears_only_when_it_is_complete(self):
+        # guarded stop reads controller.json as soon as the name exists, so the
+        # name must not exist while its content is still being written.
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'controller.json'
+            seen = []
+            real_dump = json.dump
+            def dump(value, stream, **kwargs):
+                seen.append(path.exists())
+                real_dump(value, stream, **kwargs)
+            with patch.object(controller.json, 'dump', dump):
+                controller.write(path, {'run_id': 'a' * 64})
+            self.assertEqual(seen, [False])
+            self.assertEqual(json.loads(path.read_text()), {'run_id': 'a' * 64})
+            self.assertEqual(sorted(p.name for p in Path(temp).iterdir()), ['controller.json'])
+
+    def test_a_record_never_replaces_an_earlier_one(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'result.json'
+            controller.write(path, {'status': 'stopped'})
+            with self.assertRaises(FileExistsError):
+                controller.write(path, {'status': 'passed'})
+            self.assertEqual(json.loads(path.read_text()), {'status': 'stopped'})
+            self.assertEqual(sorted(p.name for p in Path(temp).iterdir()), ['result.json'])
+
+    def test_a_record_that_cannot_be_written_leaves_no_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp)/'context.json'
+            with self.assertRaises(TypeError):
+                controller.write(path, {'value': object()})
+            self.assertEqual(list(Path(temp).iterdir()), [])
+
+
 class GuardRuntime(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)

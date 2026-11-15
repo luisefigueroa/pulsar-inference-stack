@@ -23,10 +23,22 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def write(path, value):
-    """Publish a fresh invocation record; never replace previous evidence."""
-    with path.open("x") as stream:
-        json.dump(value, stream, indent=2)
-        stream.write("\n")
+    """Publish a fresh invocation record; never replace previous evidence.
+
+    The record is written under a temporary name and then linked to its own
+    name, so a reader that finds the name (guarded stop reads controller.json
+    as soon as it exists) reads the whole record. The link fails when the name
+    exists, so an earlier record is never replaced.
+    """
+    path = Path(path)
+    temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temp.open("x") as stream:
+            json.dump(value, stream, indent=2)
+            stream.write("\n")
+        os.link(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def read_regular(path, limit=64 * 1024**2, *, dir_fd=None):
