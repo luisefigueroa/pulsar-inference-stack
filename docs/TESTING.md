@@ -82,17 +82,32 @@ CI runs two kinds of job on every pull request and on `workflow_dispatch`: the
 checks job (checks-only mode, then the diff, changed-catalog and commit-metadata
 checks of a pull request) and the unit tests, split into shards that each run
 `scripts/parallel_unittest.py --shard INDEX/COUNT` with one process per runner
-CPU. A shard is a fixed slice of the sorted test list, so every shard of one run
-sees the same partition whatever durations its runner has saved. Each shard
-restores the durations it saved last time, from the pull request's own earlier
-run or else from a run on `main`, and saves what it measured at the end, so its
-slowest tests start first from the second run on. Run the workflow on `main` by
-hand once to seed the durations that new pull requests start from. The `selftest`
-job passes only when the checks and every shard passed; it is the check the
-`main` ruleset requires, so keep its name. There is no push or scheduled
-trigger, and a new push to a pull request cancels the run for its previous
-commit. Workflow enablement is an operator setting, separate from these event
-rules.
+CPU. The test durations committed in `tests/shard-durations.json` split the
+tests into shards of about equal time, so every shard of one run computes the
+same partition from the commit whatever durations its runner has saved. Each
+shard restores the durations it saved last time, from the pull request's own
+earlier run or else from a run on `main`, and saves what it measured at the end;
+those only set the start order, so the slowest tests start first. Run the
+workflow on `main` by hand once to seed the durations that new pull requests
+start from. The `selftest` job passes only when the checks and every shard
+passed; it is the check the `main` ruleset requires, so keep its name. There is
+no push or scheduled trigger, and a new push to a pull request cancels the run
+for its previous commit. Workflow enablement is an operator setting, separate
+from these event rules.
+
+`tests/shard-durations.json` lists the tests that take a second or more; any
+other test counts as 0.2 seconds. A file that is out of date still runs every
+test once, but the shards become less even. Refresh it after a change that adds
+or slows long tests: run the full suite, then write the file from the durations
+that run saved and commit it.
+
+```sh
+scripts/selftest.sh --jobs "$(nproc)"
+python3 scripts/parallel_unittest.py --write-shard-durations
+```
+
+The written durations come from the machine that ran the suite; only their
+ratios matter for the split.
 
 ## Existing regression coverage
 
