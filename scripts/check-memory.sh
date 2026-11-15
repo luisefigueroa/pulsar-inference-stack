@@ -151,9 +151,10 @@ if [ "$NODES" -gt 1 ]; then
     fi
   done
 fi
-# The engine's startup check needs each node's total; unknown skips that check.
+# The engine's startup check needs each node's total; unknown skips that check
+# for that node only, as an unreadable local total does.
 remote_total_gib() {
-  mem_total_gib_remote "$1" || die "cannot read total memory on $1" 3
+  mem_total_gib_remote "$1" || true
 }
 declare -a rank_total=()
 for ((rank = 0; rank < NODES; rank++)); do

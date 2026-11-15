@@ -104,6 +104,19 @@ mem_total_gib_remote() { echo 121.69; }
         self.assertIsNone(value["engine_startup_info"])
         self.assertEqual([row["engine_startup_below_margin"] for row in value["rank_available_gib"]], [False] * 3)
 
+    def test_an_unreadable_remote_total_skips_only_that_nodes_engine_check(self):
+        with Path(self.base.env["BASH_ENV"]).open("a") as out:
+            out.write("""
+mem_total_gib_remote() { [ "$1" != alias-1 ] && echo 121.69; }
+""")
+        result, value = self.check(**{"0": 118, "1": 50, "2": 118})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value["result"], "pass")
+        rows = value["rank_available_gib"]
+        self.assertEqual([row["total_gib"] for row in rows], [121.69, None, 121.69])
+        self.assertEqual([row["engine_startup_need_gib"] for row in rows], [91.27, None, 91.27])
+        self.assertIsNone(value["engine_startup_info"])
+
     def test_a_lower_utilization_needs_less(self):
         self.spec = self.recipe("0.6")
         result, value = self.check(**{"0": 100})
