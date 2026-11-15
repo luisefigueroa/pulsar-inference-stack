@@ -347,6 +347,55 @@ def tool(kind, argv):
     raise RuntimeError("unknown fixture tool: " + kind)
 
 
+# The python3 on the fixture's PATH. The product runs python3 hundreds of times
+# in one test (lib.sh alone runs it each time a Bash process starts), so this
+# fast path runs the real interpreter directly instead of starting the full
+# Python double first. It only approves: it runs the real interpreter when every
+# absolute argument passes the same check as contained(), and it sends
+# everything else to the full Python double (tool("python")), unchanged. That
+# includes the controller, whose events and faults the double owns, a changed
+# fixture environment and any argument that this script cannot approve, so the
+# double still gives every refusal. Keep this /bin/sh: the fixture's BASH_ENV
+# sources lib.sh, which runs python3, so a Bash double would start itself
+# without end.
+PYTHON3_SHIM = r'''newline='
+'
+approve() {
+  count=$#
+  while [ "$count" -gt 0 ]; do
+    argument=$1; shift; count=$((count - 1))
+    case $argument in
+      "$support") continue ;;
+      /*) ;;
+      *) continue ;;
+    esac
+    # Only plain spellings below the root; the double decides '//', '.' and '..'.
+    case $argument in
+      *"$newline"*|*//*|*/./*|*/.|*/../*|*/..) return 1 ;;
+      "$root"|"$root"/*) set -- "$@" "$argument" ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$#" -eq 0 ] && return 0
+  # Below the root after symlinks resolve, as Path.resolve() checks.
+  resolved=$("$realpath" -m -- "$@" 2>/dev/null) || return 1
+  set -f; IFS=$newline; lines=0
+  for path in $resolved; do
+    case $path in
+      "$root"|"$root"/*) lines=$((lines + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$lines" -eq "$#" ]
+}
+case ${1-} in -m) case ${2-} in model_library.controller) exec "$double" "$@" ;; esac ;; esac
+if [ "${MODEL_LIBRARY_FIXTURE-}" = "$config" ] && [ "${MODEL_LIBRARY_FIXTURE_ROOT-}" = "$root_setting" ] && approve "$@"; then
+  exec "$real" "$@"
+fi
+exec "$double" "$@"
+'''
+
+
 class Fixture:
     def __init__(self, root, nodes=1):
         self.root = Path(root)
@@ -390,11 +439,19 @@ class Fixture:
                        "available": True, "containers": []} for i, n in enumerate(topology["nodes"])]}
         self.save()
         binary = self.root / "bin"; binary.mkdir()
+        doubles = self.root / "doubles"; doubles.mkdir()
         support = Path(__file__).resolve()
-        for name, kind in (("python3", "python"), ("hf", "hf"), ("docker", "docker"), ("ip", "ip"), ("rsync", "rsync"), ("ssh", "ssh"), ("node-python", "node-python")):
-            target = binary / name
+        # The full Python double of python3 is off PATH: only the shim runs it.
+        for target, kind in ((doubles / "python3", "python"), (binary / "hf", "hf"), (binary / "docker", "docker"), (binary / "ip", "ip"),
+                             (binary / "rsync", "rsync"), (binary / "ssh", "ssh"), (binary / "node-python", "node-python")):
             target.write_text('#!'+sys.executable+'\nimport runpy,sys\nm=runpy.run_path('+repr(str(support))+')\nraise SystemExit(m["tool"]('+repr(kind)+',sys.argv[1:]))\n')
             target.chmod(0o700)
+        settings = {"real": sys.executable, "double": str(doubles / "python3"), "support": str(support),
+                    "config": str(self.config_path), "root_setting": str(self.root), "root": str(self.root.resolve()),
+                    "realpath": shutil.which("realpath") or "realpath"}
+        (binary / "python3").write_text("#!/bin/sh\n# The python3 double's fast path; see PYTHON3_SHIM in " + support.name + ".\n" + "".join(
+            f"{name}={shlex.quote(value)}\n" for name, value in settings.items()) + PYTHON3_SHIM)
+        (binary / "python3").chmod(0o700)
         module_root = self.root / "modules"; hub = module_root / "huggingface_hub"; hub.mkdir(parents=True)
         imports = 'import runpy\n_m=runpy.run_path('+repr(str(support))+')\nHfApi=_m["HfApi"]\nRepoFile=_m["RepoFile"]\n'
         (hub / "__init__.py").write_text(imports)

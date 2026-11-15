@@ -788,6 +788,29 @@ class ModelLibraryCLI(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     node_request({"path": path}, f.cfg, f.cfg["nodes"][0])
 
+    def test_fixture_python3_refuses_what_contained_refuses(self):
+        # The python3 on the fixture's PATH is a shell fast path in front of the
+        # full Python double; every argument gets the check of contained().
+        f = self.fixture()
+        inside = f.root / "inside"; inside.mkdir()
+        (f.root / "link").symlink_to("/etc")
+        def python3(*paths):
+            return subprocess.run([str(f.root / "bin/python3"), "-c", "import sys; print(sys.argv[1:])", *paths],
+                                  env=f.env, cwd=f.repo, text=True, capture_output=True, timeout=60)
+        for path in ("/outside-model-data", f"{inside}/../../etc", str(f.root / "link/passwd"), "/" + str(inside)):
+            with self.subTest(refused=path):
+                result = python3(str(inside), path)
+                self.assertEqual((result.returncode, result.stdout), (1, ""))
+                self.assertIn("fixture refused data path outside temporary root: " + path, result.stderr)
+        for path in (str(inside), f"{inside}/", f"{f.root}//inside", f"{inside}/./model"):
+            with self.subTest(accepted=path):
+                result = python3(path)
+                self.assertEqual((result.returncode, result.stdout), (0, repr([path]) + "\n"), result.stderr)
+        # A contained call runs the real interpreter directly; a refusal is the double's.
+        (f.root / "doubles/python3").write_text("#!/bin/sh\nexit 99\n")
+        self.assertEqual(python3(str(inside)).returncode, 0)
+        self.assertEqual(python3("/outside-model-data").returncode, 99)
+
     def catalog(self, fixture):
         # A synthetic catalog fixture exercises retention without metadata gates.
         # This is never published and does not claim physical qualification.
