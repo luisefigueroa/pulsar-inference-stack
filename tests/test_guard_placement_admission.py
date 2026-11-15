@@ -42,6 +42,8 @@ estimate_weights_ram_gib() { echo 80; }
 estimate_kv_gib() { echo 1; }
 mem_available_gib_local() { echo 16; }
 mem_available_gib_remote() { echo 16; }
+mem_total_gib_local() { echo 16; }
+mem_total_gib_remote() { echo 16; }
 container_running_exact() { fixture_container running 0 "$1"; }
 container_running_exact_remote() { fixture_container running "${1##*-}" "$2"; }
 container_ownership_inspect_local() { fixture_container inspect 0 "$1"; }

@@ -81,6 +81,8 @@ require_cluster_nodes() {{ load_cluster_topology; [ "$1" -le "$CLUSTER_TOPOLOGY_
 require_topology_ssh_trust() {{ load_cluster_topology; }}
 mem_available_gib_local() {{ if [ "$DIAG_MODE" = memory-low ]; then echo 0; else echo 120; fi; }}
 mem_available_gib_remote() {{ [ "$DIAG_MODE" != remote-memory-unreadable ] || return 1; echo 120; }}
+mem_total_gib_local() {{ echo 100; }}
+mem_total_gib_remote() {{ echo 100; }}
 profile_service_is_proven_running() {{ return 1; }}
 probe_node_json_for_rank() {{
  if [ "${{2:-}}" = --prerequisites-only ]; then

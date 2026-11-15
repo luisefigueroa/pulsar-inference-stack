@@ -130,6 +130,9 @@ mem_available_gib_local() { echo "${TEST_MEM_0:-120}"; }
 mem_available_gib_remote() {
   case "$1" in alias-1) echo "${TEST_MEM_1:-120}";; *) echo "${TEST_MEM_2:-120}";; esac
 }
+# A total whose engine startup need stays below these thresholds (tests.test_engine_startup_memory covers it).
+mem_total_gib_local() { echo "${TEST_TOTAL:-100}"; }
+mem_total_gib_remote() { echo "${TEST_TOTAL:-100}"; }
 """)
 
     def check(self, weights=None, extra=None, flags=()):

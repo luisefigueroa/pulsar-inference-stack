@@ -9,6 +9,8 @@
   "kind": "pulsar-platform-reference",
   "memory": {
     "cold_start_footprint_slack": 0.92,
+    "engine_startup_margin_first_rank_gib": 26,
+    "engine_startup_margin_other_rank_gib": 6,
     "hard_floor_available_gib": 4,
     "launch_spike_gib": 3,
     "min_os_buffer_gib": 8,
