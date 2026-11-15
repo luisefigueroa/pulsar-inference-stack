@@ -111,11 +111,14 @@ class TransferShell(unittest.TestCase):
                 changed.write_bytes(b'x' * before.st_size)
                 os.utime(changed, ns=(before.st_atime_ns, before.st_mtime_ns))
             dest=root/('.pending-'+'b'*32)/'snapshots'/('a'*40);dest.mkdir(parents=True)
+            # The doubles write their argv under a temporary name and rename it:
+            # a failed stream stops the others with SIGTERM, and one stopped
+            # between creating and writing the file would leave an empty .argv.
             mock=root/'rsync.py';mock.write_text('''#!/usr/bin/env python3
 import json,os,pathlib,shutil,sys,time
 root=pathlib.Path(os.environ['TRANSFER_FIXTURE']);args=sys.argv[1:]
 listfile=pathlib.Path(next(a.split('=',1)[1] for a in args if a.startswith('--files-from=')))
-(root/(listfile.stem+'.argv')).write_text(json.dumps(args))
+argv=root/(listfile.stem+'.argv');temp=argv.with_name(argv.name+'.tmp');temp.write_text(json.dumps(args));os.replace(temp,argv)
 if os.environ['TRANSFER_MODE']=='stream-failure' and listfile.stem=='stream-2':sys.exit(23)
 source,dest=args[-2:]
 if not source.startswith('/'):source=source.split(':',1)[1]
@@ -129,7 +132,7 @@ for name in listfile.read_bytes().split(b'\\0'):
 import json,os
 print(json.dumps([dict(dev='mgmt0' if os.environ['TRANSFER_MODE']=='local-route' else 'fabric0',prefsrc='198.51.100.10')]))
 ''');ip.chmod(0o755)
-            ssh=root/'ssh.py';ssh.write_text("#!/usr/bin/env python3\nimport base64,json,os,pathlib,shlex,subprocess,sys,uuid\nroot=pathlib.Path(os.environ['TRANSFER_FIXTURE']);args=sys.argv[1:]\n(root/('ssh-'+uuid.uuid4().hex+'.argv')).write_text(json.dumps(args))\ncommand=shlex.split(args[-1]);mode=command[-3]\nfiles=json.loads(base64.b64decode(command[-1]))\nif os.environ['TRANSFER_MODE']=='sender-failure' and mode=='send' and any(f['path']=='part-2.bin' for f in files):sys.exit(23)\nif os.environ['TRANSFER_MODE']=='receiver-failure' and mode=='receive' and any(f['path']=='part-2.bin' for f in files):sys.exit(23)\nraise SystemExit(subprocess.run(command).returncode)\n");ssh.chmod(0o755)
+            ssh=root/'ssh.py';ssh.write_text("#!/usr/bin/env python3\nimport base64,json,os,pathlib,shlex,subprocess,sys,uuid\nroot=pathlib.Path(os.environ['TRANSFER_FIXTURE']);args=sys.argv[1:]\nargv=root/('ssh-'+uuid.uuid4().hex+'.argv');temp=argv.with_name(argv.name+'.tmp');temp.write_text(json.dumps(args));os.replace(temp,argv)\ncommand=shlex.split(args[-1]);mode=command[-3]\nfiles=json.loads(base64.b64decode(command[-1]))\nif os.environ['TRANSFER_MODE']=='sender-failure' and mode=='send' and any(f['path']=='part-2.bin' for f in files):sys.exit(23)\nif os.environ['TRANSFER_MODE']=='receiver-failure' and mode=='receive' and any(f['path']=='part-2.bin' for f in files):sys.exit(23)\nraise SystemExit(subprocess.run(command).returncode)\n");ssh.chmod(0o755)
             remote=nodes-1
             body=f'''
 set -euo pipefail
