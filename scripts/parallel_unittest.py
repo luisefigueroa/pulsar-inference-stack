@@ -6,7 +6,8 @@ own top level, then tests from the repository root. Each test runs in a fresh
 process, so tests share no interpreter state; tests whose class or module
 defines fixtures run together in one process, so those fixtures run once.
 Processes start longest first, using durations saved by earlier runs, so the
-slowest tests never start last.
+slowest tests never start last. With --shard, the durations committed in
+tests/shard-durations.json split the tests into parts of about equal time.
 
 Names (modules, classes or test IDs, as `python3 -m unittest` takes them) run
 only those tests, loaded from the repository root.
@@ -29,6 +30,12 @@ PASSES = (("release_spec/tests", "release_spec/tests"), ("tests", "."))
 DURATIONS = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "pulsar" / "selftest-durations.json"
 # A test without a saved duration starts first: it may be the slowest.
 UNKNOWN_SECONDS = float("inf")
+# Durations that split the shards, committed so that every shard of one CI run
+# computes the same split from the commit, whatever durations its runner saved.
+SHARD_DURATIONS = Path("tests/shard-durations.json")
+# The file lists the tests that take at least this long; others count as below.
+LISTED_SECONDS = 1.0
+UNLISTED_SECONDS = 0.2
 
 
 def _cases(suite):
@@ -171,6 +178,46 @@ def save_durations(path, durations):
         print(f"Test durations were not saved to {path}: {exc}", file=sys.stderr)
 
 
+def load_shard_durations(path):
+    """The committed durations; none when the file is absent, an error when it is invalid."""
+    try:
+        found = json.loads(Path(path).read_text())
+    except FileNotFoundError:
+        return {}
+    if not isinstance(found, dict) or not all(
+            isinstance(key, str) and isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value < float("inf") for key, value in found.items()):
+        raise ValueError("expected an object of test IDs and seconds")
+    return {key: float(value) for key, value in found.items()}
+
+
+def write_shard_durations(path, jobs, saved):
+    """Commit-ready durations: the saved ones of the tests discovered now that take a second or more."""
+    current = {test_id for _, ids in jobs for test_id in ids}
+    listed = {test_id: round(seconds, 1) for test_id, seconds in saved.items()
+              if test_id in current and seconds >= LISTED_SECONDS}
+    path.write_text(json.dumps(dict(sorted(listed.items())), indent=0) + "\n")
+    print(f"Wrote the durations of {len(listed)} tests to {SHARD_DURATIONS}; "
+          f"{len(current - saved.keys())} of the {len(current)} tests found have no saved duration.")
+    return 0
+
+
+def split(jobs, count, durations):
+    """COUNT lists of jobs of about equal time. The same jobs and durations always give the same lists.
+
+    Each job, longest first, goes to the list with the least time so far. When
+    every job takes the same time, this is every COUNT-th job of the sorted list.
+    """
+    def seconds(job):
+        return sum(durations.get(test_id, UNLISTED_SECONDS) for test_id in job[1])
+    parts, totals = [[] for _ in range(count)], [0.0] * count
+    for job in sorted(jobs, key=lambda job: (-seconds(job), job[0], job[1][0])):
+        index = min(range(count), key=lambda part: (totals[part], part))
+        parts[index].append(job)
+        totals[index] += seconds(job)
+    return parts
+
+
 def minutes(seconds):
     return f"{int(seconds // 60)}m{int(seconds % 60):02d}s" if seconds >= 60 else f"{seconds:.1f}s"
 
@@ -193,7 +240,11 @@ def main(argv=None):
     parser.add_argument("--durations-file", default=str(DURATIONS),
                         help="saved test durations that set the start order (default: %(default)s)")
     parser.add_argument("--shard", type=shard, metavar="INDEX/COUNT",
-                        help="run only one of COUNT fixed slices of the test list, such as 2/4 on a CI runner")
+                        help=f"run only one of COUNT parts of about equal time, split by {SHARD_DURATIONS}, "
+                             "such as 2/8 on a CI runner")
+    parser.add_argument("--write-shard-durations", action="store_true",
+                        help=f"write {SHARD_DURATIONS} from the saved durations of the tests found now, "
+                             "without running them")
     parser.add_argument("--root", default=str(ROOT), help=argparse.SUPPRESS)
     parser.add_argument("--list", nargs=2, metavar=("TOP", "START"), help=argparse.SUPPRESS)
     parser.add_argument("--run", nargs=2, metavar=("TOP", "OUTPUT"), help=argparse.SUPPRESS)
@@ -206,6 +257,8 @@ def main(argv=None):
         return run_job(root, *options.run, options.names)
     if options.jobs < 1:
         parser.error("--jobs must be at least 1")
+    if options.write_shard_durations and (options.shard or options.names):
+        parser.error("--write-shard-durations needs every test: give no --shard and no names")
 
     began = time.monotonic()
     pool = Pool(root)
@@ -218,16 +271,23 @@ def main(argv=None):
             print(f"Tests could not be listed from {start or 'the names given'}.", file=sys.stderr)
             return 1
         jobs += [(top, ids) for ids in json.loads(output.splitlines()[-1])]
+    saved = load_durations(options.durations_file)
+    if options.write_shard_durations:
+        return write_shard_durations(root / SHARD_DURATIONS, jobs, saved)
+    try:
+        committed = load_shard_durations(root / SHARD_DURATIONS)
+    except (OSError, ValueError) as exc:
+        print(f"The durations in {SHARD_DURATIONS} could not be read: {exc}", file=sys.stderr)
+        return 1
     note = ""
     if options.shard:
         index, count = options.shard
-        # A slice of the sorted test list: every shard of one CI run sees the
-        # same partition, whatever durations each runner has saved.
-        jobs.sort(key=lambda job: (job[0], job[1][0]))
-        jobs = jobs[index - 1::count]
+        jobs = split(jobs, count, committed)[index - 1]
         note = f", shard {index} of {count}"
-    durations = load_durations(options.durations_file)
-    jobs.sort(key=lambda job: -sum(durations.get(test_id, UNKNOWN_SECONDS) for test_id in job[1]))
+
+    def expected(test_id):
+        return saved.get(test_id, committed.get(test_id, UNKNOWN_SECONDS))
+    jobs.sort(key=lambda job: -sum(expected(test_id) for test_id in job[1]))
     total = sum(len(ids) for _, ids in jobs)
     print(f"Running {total} tests in {len(jobs)} processes, {options.jobs} at a time{note}.", flush=True)
 
@@ -272,7 +332,7 @@ def main(argv=None):
         print("Interrupted; the remaining tests were not run.", file=sys.stderr)
         return 130
     executor.shutdown()
-    save_durations(options.durations_file, {**durations, **measured})
+    save_durations(options.durations_file, {**saved, **measured})
 
     for kind, name, detail in sorted(problems, key=lambda problem: problem[1]):
         print("=" * 70 + f"\n{kind}: {name}\n" + "-" * 70 + f"\n{detail}")

@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "scripts" / "parallel_unittest.py"
+_spec = importlib.util.spec_from_file_location("parallel_unittest", RUNNER)
+runner = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(runner)
 
 # A synthetic checkout: each test records its process ID and start order in LOG.
 TESTS = {
@@ -145,6 +149,58 @@ class ParallelRunner(unittest.TestCase):
         self.assertEqual(len(with_fixture), 1)
         self.assertEqual(with_fixture[0].count("shared"), 2)
         self.assertIn("setUpClass", with_fixture[0])
+
+    def test_committed_durations_give_a_long_test_a_shard_of_its_own(self):
+        first = "tests.test_outcomes.Separate.test_first"
+        (self.root / "tests" / "shard-durations.json").write_text(json.dumps({first: 100}))
+        counts, notes = [], []
+        for index in (1, 2):
+            result = self.run_tests("--shard", f"{index}/2")
+            counts.append(int(re.search(r"Ran (\d+) tests", result.stdout).group(1)))
+            notes.append(sorted(name for name, _ in self.notes()))
+            self.log.unlink()
+        self.assertEqual(counts, [1, 9])
+        self.assertEqual(notes[0], ["first"])
+        self.assertNotIn("first", notes[1])
+
+    def test_an_unreadable_durations_file_stops_before_any_test(self):
+        for text in ("not json", "[1, 2]", '{"a": "slow"}', '{"a": -1}', '{"a": true}'):
+            (self.root / "tests" / "shard-durations.json").write_text(text)
+            result = self.run_tests("--shard", "1/2")
+            self.assertEqual(result.returncode, 1, text)
+            self.assertIn("The durations in tests/shard-durations.json could not be read", result.stderr)
+            self.assertFalse(self.log.exists(), text)
+
+    def test_written_durations_keep_the_tests_found_now_that_take_a_second_or_more(self):
+        first, second = "tests.test_outcomes.Separate.test_first", "tests.test_outcomes.Separate.test_second"
+        self.durations.write_text(json.dumps({first: 2.345, second: 0.5, "tests.test_gone.Gone.test_gone": 9.0}))
+        result = self.run_tests("--write-shard-durations")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads((self.root / "tests" / "shard-durations.json").read_text()), {first: 2.3})
+        self.assertIn("8 of the 10 tests found have no saved duration", result.stdout)
+        self.assertFalse(self.log.exists())
+        for args in (["--shard", "1/2"], [first]):
+            result = self.run_tests("--write-shard-durations", *args)
+            self.assertEqual(result.returncode, 2, args)
+            self.assertIn("--write-shard-durations needs every test", result.stderr)
+
+    def test_a_split_has_every_job_once_and_depends_only_on_its_input(self):
+        jobs = [(top, [f"{top}.test_{n}"]) for top in ("release_spec/tests", ".") for n in range(11)]
+        jobs.append((".", ["m.Shared.test_a", "m.Shared.test_b"]))
+        durations = {f"..test_{n}": float(n * n) for n in range(11)} | {"m.Shared.test_a": 30.0}
+        for count in range(1, 6):
+            for known in ({}, durations):
+                parts = runner.split(jobs, count, known)
+                self.assertEqual(len(parts), count)
+                self.assertCountEqual([job for part in parts for job in part], jobs)
+                self.assertEqual(runner.split(list(reversed(jobs)), count, dict(known)), parts)
+            # Jobs of the same time are split as every COUNT-th job of the sorted list.
+            single = [job for job in jobs if len(job[1]) == 1]
+            ordered = sorted(single, key=lambda job: (job[0], job[1][0]))
+            self.assertEqual(runner.split(single, count, {}), [ordered[i::count] for i in range(count)])
+        seconds = [sum(durations.get(i, runner.UNLISTED_SECONDS) for _, ids in part for i in ids)
+                   for part in runner.split(jobs, 3, durations)]
+        self.assertLess(max(seconds) - min(seconds), 30.0)
 
     def test_a_shard_outside_its_count_is_rejected(self):
         for value in ("0/2", "3/2", "two", "1/2/3"):
