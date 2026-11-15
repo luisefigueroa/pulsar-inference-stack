@@ -25,7 +25,7 @@ Match the run to the stage of the work:
 | --- | --- |
 | Fixing one behavior | The affected test IDs, such as `python3 -m unittest tests.test_file_inventory.FileInventory.test_internal_node_state_symlink_is_never_read`, or `-k PATTERN` on one module. Rerun only what failed. |
 | After a coherent change | The modules that import or call the changed code: search `tests/` for the changed functions, operations and scripts, not for a subsystem name. Run several at once with `python3 scripts/parallel_unittest.py MODULE...`. A selection that includes `tests.test_model_library_cli` takes as long as the full suite, so run that instead. |
-| Before opening a pull request | `scripts/selftest.sh --jobs "$(nproc)"`, once. CI runs the same suite on the pull request. |
+| Before opening a pull request | The tests selected for the branch's changes, as in the row above, and the required checks. CI runs the full suite on the pull request; do not run it locally first. |
 
 `tests.test_model_library_cli` takes most of the serial suite: about 50 of its
 60 minutes when measured in November 2026. Select it when the change reaches
@@ -42,13 +42,12 @@ passes serially.
 
 ## Full-suite triggers and evidence reuse
 
-Run the full suite, `scripts/selftest.sh --jobs "$(nproc)"`, once before
-opening a pull request; no reason is needed, and CI runs it again on the pull
-request. During iteration, selected tests answer most questions in seconds; run
-the full suite then only for a broad cross-subsystem behavior change, a
-dependency change that affects execution, an interaction risk that selected
-tests cannot cover, or an explicitly requested regression check, and say which
-applies. Editing a shared helper is not alone a reason: inspect the affected
+CI runs the full suite on every pull request, so a local run before opening one
+repeats it. Selected tests answer most questions in seconds. Run the full
+suite, `scripts/selftest.sh --jobs "$(nproc)"`, only for a broad
+cross-subsystem behavior change, a dependency change that affects execution, an
+interaction risk that selected tests cannot cover, or an explicitly requested
+regression check, and say which applies. Editing a shared helper is not alone a reason: inspect the affected
 callers and their coverage first. A review comment, approval exchange or new
 agent is not a test trigger by itself.
 

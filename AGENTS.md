@@ -118,11 +118,12 @@ a coherent change. Select coverage by changed behavior and callers, searching
 tests for the changed code rather than a subsystem name; see
 [running selected tests quickly](docs/TESTING.md#run-the-selected-tests-quickly).
 Reuse passing validation while its relevant code, fixtures, dependencies and
-environment match. Run the full suite, `scripts/selftest.sh --jobs N`, once
-before opening a pull request; CI runs it again there. During iteration run it
-only when selected tests cannot answer the question, such as a broad
-cross-subsystem change or a dependency that affects execution, and say so. A
-review comment or new approval is not itself a test trigger.
+environment match. Before opening a pull request, run the tests selected for
+the branch's changes; CI runs the full suite on the pull request, so do not run
+it locally first. Run the full suite, `scripts/selftest.sh --jobs N`, only when
+selected tests cannot answer the question, such as a broad cross-subsystem
+change or a dependency that affects execution, and say so. A review comment or
+new approval is not itself a test trigger.
 
 Before commit or publication, review the selected coverage and run fast privacy
 and diff checks, including the required staged checks. Prose-only changes need
