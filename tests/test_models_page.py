@@ -231,10 +231,10 @@ class Page(unittest.TestCase):
     def test_the_choices_follow_a_models_life_on_the_cluster_in_four_groups(self):
         found = cluster([recipe()], files([ready_model()]))
         self.assertEqual([[action for action, _ in group] for group in mp.page_groups(found)],
-                         [["download", "ready"], ["keep", "backup", "check"], ["free"], ["find", "again", "back"]])
+                         [["download", "ready", "move"], ["keep", "backup", "check"], ["free"], ["find", "again", "back"]])
         self.assertEqual([label for _, label in mp.page_choices(found)],
                          ["Download a model that has no recipe yet…", "Get a model with a recipe ready to serve…",
-                          "Keep a model on the cluster…", "Back up a model to the archive…",
+                          "Move a model to another node…", "Keep a model on the cluster…", "Back up a model to the archive…",
                           "Check the archive copies…", "Free up space…", "Record model files found on the nodes…",
                           "Look again (checks nodes now)", "Back"])
 
@@ -245,7 +245,9 @@ class Page(unittest.TestCase):
                                              "    files and hashes only, to one node"])
         # The last choice of a group ends with an empty line; the last group does not.
         self.assertEqual(cards["ready"], ["Get a model with a recipe ready to serve…",
-                                          "    files, copies and image; nothing starts", ""])
+                                          "    files, copies and image; nothing starts"])
+        self.assertEqual(cards["move"], ["Move a model to another node…",
+                                         "    copies, checks, then frees the old node", ""])
         self.assertEqual(cards["check"], ["Check the archive copies…", "    compares hashes; changes nothing", ""])
         self.assertEqual(cards["free"], ["Free up space…", "    remove a model's files or move them", ""])
         # A label that says it all has no second line.
@@ -1004,6 +1006,92 @@ class FilesWithNoRecipe(unittest.TestCase):
                 texts.append(mp.render(mp.compose(found, f"files:{NEW}", archive_first=True), width=width))
                 for text in texts:
                     self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
+
+
+class MoveAModel(unittest.TestCase):
+    """Move a model to another node…: Move home at any time, to the node the operator names."""
+
+    def found(self, **extra):
+        rows = [recipe(), recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)]
+        document = files([ready_model(), entry(OTHER_FILES, "org/other", [home("n0")], 60 * G, specs=[OTHER]),
+                          new_model(), entry(LOOSE, "org/forgotten", [home("n2")], 50 * G)])
+        return cluster(rows, document, saved={NEW: NEW_FILE}, **extra)
+
+    def test_each_home_is_offered_or_says_why_it_stays(self):
+        choices, lines = mp.move_page_options(self.found())
+        self.assertEqual(choices, [(f"pick:{OTHER_FILES}", "Move org/other from spark-1"),
+                                   (f"pick:{NEW}", "Move new/model @ cccccccc from spark-2"), ("back", "Back")])
+        self.assertEqual([flat(line) for line in lines], [
+            "org/model (212 GiB) stays on spark-1: its copies on spark-1, spark-2 and spark-3 depend on it, and a "
+            "move never removes them. Free up space… removes them first.",
+            "org/other: 60.0 GiB on spark-1.",
+            "new/model @ cccccccc: 100 GiB on spark-2.",
+            "org/forgotten @ cccccccc (50.0 GiB) stays on spark-3: no recipe in this catalog uses these files, and "
+            "their manifest, the list of the files and their hashes, is not saved in this checkout. Download a "
+            "model that has no recipe yet… saves it: choose it for the same model, commit and node; it keeps the "
+            "files there and downloads nothing."])
+        text = flat(mp.intent_screen(self.found(), "move", width=100))
+        self.assertTrue(text.startswith("Move a model to another node Pulsar copies a model's home, the copy it "
+                                        "keeps, to the node you choose, checks every file there, then deletes it on "
+                                        "the old node."), text)
+        for _, label in choices:
+            self.assertIsNone(FORBIDDEN.search(label), label)
+
+    def test_a_home_in_use_or_not_checked_stays(self):
+        cases = {"tool mounts these files": home("n1", users=[served("n1", managed=False, name="tool")]),
+                 "the containers there could not be checked": home("n1", container_references=None),
+                 "its files there were not found": home("n1", state="missing"),
+                 "its files there could not be checked": home("n1", state="unknown")}
+        for reason, location_ in cases.items():
+            with self.subTest(reason=reason):
+                found = cluster([recipe()], files([new_model(location_)]), saved={NEW: NEW_FILE})
+                choices, lines = mp.move_page_options(found)
+                self.assertEqual(choices, [("back", "Back")])
+                self.assertEqual(flat(lines[0]), f"new/model @ cccccccc (100 GiB) stays on spark-2: {reason}.")
+
+    def test_a_node_that_did_not_answer_offers_no_move(self):
+        document = files([new_model()], nodes=[node("n0", "spark-1"), node("n1", "spark-2"),
+                                               node("n2", "spark-3", unread=True)])
+        choices, lines = mp.move_page_options(cluster([recipe()], document, saved={NEW: NEW_FILE}))
+        self.assertEqual(choices, [("back", "Back")])
+        self.assertIn("spark-3 could not be checked, and a move needs every node to answer, so nothing is offered.",
+                      flat(lines[0]))
+
+    def test_the_nodes_offered_can_take_the_home_and_never_include_its_own(self):
+        found = self.found()
+        # Files no recipe uses: any other node with room. The label says the room after the reserve.
+        self.assertEqual(mp.move_destinations(found, NEW),
+                         [(f"move-files:{NEW}:n0", "spark-1 (1.80 TiB free after its reserve)"),
+                          (f"move-files:{NEW}:n2", "spark-3 (1.80 TiB free after its reserve)")])
+        self.assertEqual([target for target, _ in mp.move_destinations(found, OTHER_FILES)],
+                         [f"move:{OTHER_FILES}:n1", f"move:{OTHER_FILES}:n2"])
+        # A node whose homes folder is known to lack the room is not offered; one not observed is.
+        small = [node("n0", "spark-1", free=250 * G), node("n1", "spark-2"), node("n2", "spark-3")]
+        tight = cluster([recipe()], files([new_model()], nodes=small), saved={NEW: NEW_FILE})
+        self.assertEqual([target for target, _ in mp.move_destinations(tight, NEW)], [f"move-files:{NEW}:n2"])
+        unseen = mp.Cluster([recipe()], files([new_model()]), None, names=NAMES, saved={NEW: NEW_FILE}, now=NOW)
+        self.assertEqual(mp.move_destinations(unseen, NEW)[0], (f"move-files:{NEW}:n0", "spark-1 (room not observed)"))
+        # No node can take it: the page says so instead of offering a choice with no answer.
+        full = [node("n0", "spark-1", free=250 * G), node("n1", "spark-2"), node("n2", "spark-3", free=250 * G)]
+        none = cluster([recipe()], files([new_model()], nodes=full), saved={NEW: NEW_FILE})
+        self.assertEqual(mp.move_page_options(none)[0], [("back", "Back")])
+        self.assertIn("no other node can take it", mp.move_page_options(none)[1][0])
+        self.assertEqual(mp.move_destinations(found, "x" * 64), [])
+
+    def test_a_target_is_the_plan_free_up_space_makes_for_the_same_move(self):
+        found = self.found()
+        plan = mp.compose(found, f"move:{OTHER_FILES}:n2")
+        self.assertEqual(plan["steps"][0]["command"], ["./pulsar", "model", "move", OTHER, "--node", "spark-3", "--yes"])
+        plan = mp.compose(found, f"move-files:{NEW}:n0")
+        self.assertEqual(plan["steps"][0]["command"],
+                         ["./pulsar", "model", "move", "--manifest", NEW_FILE, "--node", "spark-1", "--yes"])
+        self.assertIn("Nothing is lost: the files on spark-2 are deleted only after the copy on spark-1 verifies.",
+                      flat(mp.render(plan)))
+
+    def test_its_screen_fits_80_60_and_44_columns(self):
+        for width in (80, 60, 44):
+            text = mp.intent_screen(self.found(), "move", width=width)
+            self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
 
 
 class Widths(unittest.TestCase):

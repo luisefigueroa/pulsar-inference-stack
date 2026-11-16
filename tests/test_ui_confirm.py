@@ -970,16 +970,17 @@ class BundledGumModels(BundledGum):
         exports = "".join(f"export {key}={shlex.quote(value)}\n" for key, value in root_environment(root).items())
         return root, exports + f'exec bash {shlex.quote(str(root / "scripts/models-menu.sh"))}\n'
 
-    def test_the_page_draws_room_and_models_above_its_choices_at_80_by_24(self):
+    def test_the_page_draws_room_and_models_above_its_choices_on_a_short_terminal(self):
         root, script = self.fixture()
+        # 25 rows: the page's 11, a blank line, the 8 labels and Gum's five.
         for columns in (80, 60):
             with self.subTest(columns=columns):
                 (root / "pulsar.log").unlink(missing_ok=True)
-                code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns)
+                code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns, rows=25)
                 self.assertEqual(code, 0, output)
-                screen = views(output, 24, columns)[-2]
+                screen = views(output, 25, columns)[-2]
                 text = "\n".join(screen)
-                # 24 rows do not hold the page and each choice's second line, so the labels stand alone.
+                # These rows do not hold the page and each choice's second line, so the labels stand alone.
                 for line in ("Models and disk space · checked less than a minute ago", "Models and disk space",
                              "> Download a model that has no recipe yet…", "  Keep a model on the cluster…",
                              "  Free up space…", "  Back"):
@@ -994,7 +995,7 @@ class BundledGumModels(BundledGum):
 
     def test_with_room_each_choice_has_its_second_line_and_a_blank_line_ends_each_group(self):
         root, script = self.fixture()
-        for columns, rows in ((80, 40), (60, 40), (44, 46)):
+        for columns, rows in ((80, 40), (60, 40), (44, 46)):  # 44 columns: 21 page rows, 17 of choices
             with self.subTest(columns=columns):
                 code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns, rows=rows)
                 self.assertEqual(code, 0, output)
@@ -1006,6 +1007,8 @@ class BundledGumModels(BundledGum):
                                         "    files and hashes only, to one node",
                                         "  Get a model with a recipe ready to serve…",
                                         "    files, copies and image; nothing starts",
+                                        "  Move a model to another node…",
+                                        "    copies, checks, then frees the old node",
                                         "",
                                         "  Keep a model on the cluster…",
                                         "    Free up space never removes it",
@@ -1029,8 +1032,8 @@ class BundledGumModels(BundledGum):
 
     def test_a_choice_with_a_second_line_is_one_cursor_stop(self):
         root, script = self.fixture()
-        # Three moves down from the first choice reach Free up space…, the fourth choice.
-        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\r", ready=b"Look again", rows=40,
+        # Four moves down from the first choice reach Free up space…, the fifth choice.
+        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\x1b[B\r", ready=b"Look again", rows=40,
                                   then=[(b"> Remove org/model from the cluster", b"\x1b"),
                                         (b"Look again", b"\x1b")])
         self.assertEqual(code, 0, output)
@@ -1042,7 +1045,8 @@ class BundledGumModels(BundledGum):
         from tests.test_models_menu import NEW, acquire_plan  # noqa: PLC0415
         root, script = self.fixture()
         (root / "fixtures" / "acquire-plan.json").write_text(json.dumps(acquire_plan()))
-        code, output = self.drive(script, b"\r", ready=b"Look again", columns=columns,
+        # 30 rows: the page stays above its choices, so the menu is drawn at once.
+        code, output = self.drive(script, b"\r", ready=b"Look again", columns=columns, rows=30,
                                   then=[(b"Which model on Hugging Face?", NEW.encode() + b"\r"),
                                         (b"Which commit, branch or tag", b"main\r"),
                                         (b"Which node should keep the files?", b"\x1b[B\r"),
@@ -1055,7 +1059,7 @@ class BundledGumModels(BundledGum):
             with self.subTest(columns=columns):
                 root, code, output = self.download_screens(columns)
                 self.assertEqual(code, 0, output)
-                shots = views(output, 24, columns)
+                shots = views(output, 30, columns)
                 asked = "\n".join(line for shot in shots for line in shot)
                 # Without colour the example is said above the field, never drawn in it.
                 for line in ("Which model on Hugging Face?", "Example: ORG/NAME", "Example: main",
@@ -1077,12 +1081,12 @@ class BundledGumModels(BundledGum):
 
     def test_a_free_up_space_plan_prints_above_its_choices_with_the_cursor_on_cancel(self):
         root, script = self.fixture()
-        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\r", ready=b"Look again",
+        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\x1b[B\r", ready=b"Look again", rows=30,
                                   then=[(b"> Remove org/model from the cluster", b"\x1b[B\r"), (b"> Cancel", b"\x1b"),
                                         (b"> Remove org/model from the cluster", b"\x1b"),
                                         (b"> Download a model", b"\x1b")])
         self.assertEqual(code, 0, output)
-        plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
+        plan = next(shot for shot in views(output, 30, 80) if "> Cancel" in shot)
         text = "\n".join(plan)
         for line in ("Remove org/model from spark-2 and spark-3", "Pulsar will:", "> Cancel", "  Go ahead"):
             self.assertIn(line, plan, text)

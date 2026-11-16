@@ -1955,6 +1955,7 @@ it is too short for the labels too, the page opens in the pager first.
 | --- | --- | --- |
 | **Download a model that has no recipe yet…** | Asks for the model on Hugging Face, the commit, branch or tag, and the node; shows the command's own preview and starts on **Cancel**; then downloads and checks the files, or keeps files already on that node, and saves their manifest. The command refuses a second copy before it downloads; see [Download a model before it has a spec](#download-a-model-before-it-has-a-spec). | `./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --manifest-out FILE --yes` |
 | **Get a model with a recipe ready to serve…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. A change found on entry opens Review with **Get it ready on the cluster as saved**, never a Stop to save it, since nothing would start after it. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
+| **Move a model to another node…** | Lists each *home* on the cluster. One that nothing depends on is offered as **Move MODEL from NODE**; the menu then asks which node should keep the files, of the nodes that can take them, and shows the plan with the cursor on **Cancel**. A home with copies, a container that mounts it, or files that could not be checked is named with why it stays. No plan chooses the node. | `./pulsar model move SPEC --node NODE`, or `--manifest FILE` for files no recipe uses |
 | **Keep a model on the cluster…** | **Keep MODEL on the cluster** marks its copies as kept (pins them) so **Free up space…** never offers them; **Stop keeping MODEL** lifts it. Nothing is copied or deleted. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
 | **Back up a model to the archive…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME`, or `--manifest FILE` |
 | **Check the archive copies…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME`, or `--manifest FILE` |
@@ -1984,7 +1985,8 @@ it is too short for the labels too, the page opens in the pager first.
   only when a node is past its storage budget's reserve, another node's homes
   folder has room for the files after its reserve, and nothing depends on the
   home: Move home refuses a home with copies. The move is a named step the
-  operator approves; no plan moves a home on its own.
+  operator approves; no plan moves a home on its own. **Move a model to
+  another node…** moves a home at any time, to the node the operator names.
 - `Clear N unfinished copies of MODEL on NODES: frees an unknown amount`, for a
   recipe whose only records are copies that never finished. The scan gives no
   size for them.
@@ -2014,6 +2016,8 @@ recipe yet…** saves it:
   files back, and without one its plan offers **Back it up first, then remove
   it**. A node past its reserve also gets `Move the files of MODEL @ COMMIT
   from NODE to NODE`; with no recipe, any node with room can keep them.
+- **Move a model to another node…** offers `Move MODEL @ COMMIT from NODE` at
+  any time, for a download that went to the wrong node.
 - **Back up a model to the archive…** offers `Back up MODEL @ COMMIT` while no
   archive is recorded, and **Check the archive copies…** offers `Check the
   archive of MODEL @ COMMIT` once one is.

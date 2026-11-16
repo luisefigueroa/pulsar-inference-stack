@@ -21,6 +21,10 @@
 #   Get a model with a recipe ready to serve…
 #                       Serve a model…'s plan without its Start
 #                       (scripts/serve-menu.sh --ready)
+#   Move a model to another node…
+#                       model move to the node the operator names, at any time
+#                       (Free up space… offers a move only off a node past its
+#                       reserve): each home nothing depends on, or why it stays
 #
 #   Keep a model on the cluster…
 #                       model pin, or model unpin to stop keeping it
@@ -280,8 +284,20 @@ intent_page() {
     show "$(choice_rows "${labels[@]}")" screen "$intent" "${READ[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     choice=$(choose_index "$title" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "${targets[$choice]}" != back ] || return 0
+    target=${targets[$choice]}
+    if [[ "$target" == pick:* ]]; then
+      # Move a model to another node…: the operator names the node; no plan chooses it.
+      local -a places=() hosts=()
+      while IFS=$'\t' read -r target label; do places+=("$target"); hosts+=("$label"); done \
+        < <(view destinations --manifest "${targets[$choice]#pick:}")
+      [ "${#places[@]}" -gt 0 ] || continue
+      choice=$(choose_index "Which node should keep the files?" "${hosts[@]}" "Back") \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; continue; }
+      [ "$choice" -lt "${#places[@]}" ] || continue
+      target=${places[$choice]}
+    fi
     rc=0
-    plan_page "$title" "${targets[$choice]}" || rc=$?
+    plan_page "$title" "$target" || rc=$?
     [ "$rc" -ne 130 ] || return 130
     [ "$rc" -ne "$CHANGED" ] || return "$CHANGED"
   done
@@ -430,6 +446,7 @@ while true; do
   case "${actions[$choice]}" in
     free) intent_page free "Free up space" || rc=$? ;;
     keep) intent_page keep "Keep a model on the cluster" || rc=$? ;;
+    move) intent_page move "Move a model to another node" || rc=$? ;;
     backup) intent_page backup "Back up a model to the archive" || rc=$? ;;
     check) intent_page check "Check the archive copies" || rc=$? ;;
     # One plan from the page's scan: what it can record, then what it cannot.

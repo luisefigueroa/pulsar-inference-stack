@@ -80,11 +80,13 @@ KEEP_LABEL = "Keep a model on the cluster…"
 BACKUP_LABEL = "Back up a model to the archive…"
 CHECK_LABEL = "Check the archive copies…"
 FIND_LABEL = "Record model files found on the nodes…"
+MOVE_LABEL = "Move a model to another node…"
 # What a choice does, where its label cannot say it: a second line under the label, in lower case
 # with no full stop, at most 40 characters so that it stays one line at 44 columns. It names what
 # the operator sees and does, never a low-level noun (tests/test_cluster_menu.FORBIDDEN).
 HINTS = {"download": "files and hashes only, to one node",
          "ready": "files, copies and image; nothing starts",
+         "move": "copies, checks, then frees the old node",
          "keep": "Free up space never removes it",
          "check": "compares hashes; changes nothing",
          "free": "remove a model's files or move them",
@@ -512,8 +514,8 @@ def model_lines(cluster: Cluster, spec: str, room: int | None = None) -> list[st
 
 
 def page(cluster: Cluster, *, width: int | None = None) -> str:
-    """Room on each node, then each model on the cluster: compact, so one or two models and the
-    page's choices fit 80x24; a longer page opens in the pager."""
+    """Room on each node, then each model on the cluster: compact, so three nodes, one model and
+    the page's labels fit 80x25; a longer page opens in the pager."""
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
     age = age_text(age_seconds(cluster.files.get("observed_at"), cluster.now)) \
@@ -574,7 +576,8 @@ def page_groups(cluster: Cluster) -> list[list[tuple[str, str]]]:
     protect = [("keep", KEEP_LABEL)]
     if cluster.archive_location == "configured":
         protect += [("backup", BACKUP_LABEL), ("check", CHECK_LABEL)]
-    return [[("download", DOWNLOAD_LABEL), ("ready", READY_LABEL)], protect, [("free", "Free up space…")],
+    return [[("download", DOWNLOAD_LABEL), ("ready", READY_LABEL), ("move", MOVE_LABEL)], protect,
+            [("free", "Free up space…")],
             [("find", FIND_LABEL), ("again", "Look again (checks nodes now)"), ("back", "Back")]]
 
 
@@ -943,6 +946,74 @@ def move_spec(cluster: Cluster, entry: dict, node: str) -> tuple[str, Any] | Non
     return None
 
 
+def move_destinations(cluster: Cluster, manifest: str) -> list[tuple[str, str]]:
+    """(target, label) for each node that can take the home of MANIFEST's files: every node that
+    answered but its own, where a recipe of the files may keep its home (move_spec; any node for
+    files no recipe uses) and whose homes folder is not known to lack the room. TARGET is what
+    compose takes; the command's own preview still decides."""
+    entry = cluster.entry(manifest)
+    home = next((location for location in (entry or {}).get("locations") or []
+                 if location.get("registered_home")), None)
+    if home is None:
+        return []
+    size, found = entry.get("payload_bytes"), []
+    kind = "move" if entry.get("catalog_specs") else "move-files"
+    for node in cluster.ordered(item["node_id"] for item in cluster.nodes):
+        if node == home["node_id"] or node in cluster.unread:
+            continue
+        if kind == "move" and move_spec(cluster, entry, node) is None:
+            continue
+        room = home_room(cluster, node)
+        if room is not None and type(size) is int and room < size:
+            continue
+        note = f"{_size(room)} free after its reserve" if room is not None else "room not observed"
+        found.append((f"{kind}:{manifest}:{node}", f"{cluster.host(node)} ({note})".replace(KEEP, " ")))
+    return found
+
+
+def move_page_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
+    """(choices, lines) of Move a model to another node…: each home on the cluster, offered when
+    Move home can run for it (nothing depends on it, as the command requires) and a node can take
+    it, else with why it stays. A choice's target is `pick:MANIFEST`: the menu asks the node next."""
+    choices, lines = [], []
+    if cluster.unread:
+        hosts = cluster.hosts(cluster.unread)
+        lines.append(f"{hosts} could not be checked, and a move needs every node to answer, so nothing is offered. "
+                     "Choose Look again on the page before this one.")
+        return [("back", "Back")], lines
+    for entry in cluster.snapshots:
+        locations = entry.get("locations") or []
+        home = next((location for location in locations if location.get("registered_home")), None)
+        if home is None:
+            continue
+        specs = [item.get("spec_id") for item in entry.get("catalog_specs") or [] if item.get("spec_id") in cluster.catalog]
+        name = cluster.model_name(specs) if specs else _model(entry)
+        host, size = cluster.host(home["node_id"]), _size(entry.get("payload_bytes"))
+        bound = cluster.ordered(location["node_id"] for location in locations if location.get("bindings"))
+        users = cluster.users([home])
+        if home.get("state") != "present":
+            stays = "its files there " + ("were not found" if home.get("state") == "missing" else "could not be checked")
+        elif bound:
+            stays = (f"its copies on {cluster.hosts(bound)} depend on it, and a move never removes them. Free up "
+                     "space… removes them first")
+        elif users:
+            stays = f"{_list([item['name'] for item in users])} mounts these files"
+        elif home.get("container_references") != []:
+            stays = "the containers there could not be checked"
+        elif not entry.get("catalog_specs") and entry["snapshot_manifest_id"] not in cluster.saved:
+            stays = f"{STATUS_WORDS['unused']}, and {NO_MANIFEST}. {SAVE_MANIFEST.rstrip('.')}"
+        elif not move_destinations(cluster, entry["snapshot_manifest_id"]):
+            stays = "no other node can take it: none has room for it, or none serves its recipe"
+        else:
+            stays = None
+        if stays:
+            lines.append(f"{name} ({size}) stays on {host}: {stays}.")
+        else:
+            lines.append(f"{name}: {size} on {host}.")
+            choices.append(("pick:" + entry["snapshot_manifest_id"], f"Move {name} from {host}"))
+    return choices + [("back", "Back")], lines
+
+
 def free_screen(cluster: Cluster, *, width: int | None = None) -> str:
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
@@ -1065,9 +1136,16 @@ INTENTS = {"keep": (KEEP_LABEL.rstrip("…"),
            "backup": (BACKUP_LABEL.rstrip("…"),
                       "Pulsar copies every required set of a model's files from its home into the archive. An "
                       "archive already there is verified, never replaced."),
+           "move": (MOVE_LABEL.rstrip("…"),
+                    "Pulsar copies a model's home, the copy it keeps, to the node you choose, checks every file "
+                    "there, then deletes it on the old node. Nothing is lost if the move stops."),
            "check": (CHECK_LABEL.rstrip("…"),
                      "Pulsar reads each archive of a model and compares it with its expected file hashes. "
                      "Nothing is changed.")}
+
+
+INTENT_OPTIONS = {"keep": keep_options, "backup": backup_options, "check": check_options,
+                  "move": move_page_options}
 
 
 def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) -> str:
@@ -1076,7 +1154,7 @@ def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) ->
     output = io.StringIO()
     out = TerminalWriter(width=width, stream=output)
     title, explain = INTENTS[intent]
-    _, lines = {"keep": keep_options, "backup": backup_options, "check": check_options}[intent](cluster)
+    _, lines = INTENT_OPTIONS[intent](cluster)
     out.emit(title, role="heading")
     out.blank()
     out.emit(explain)
@@ -1087,6 +1165,7 @@ def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) ->
     out.blank()
     if not lines:
         out.emit({"keep": "No model has copies on the cluster to keep.",
+                  "move": "No model has a home on the cluster to move.",
                   "backup": "No model has files on the cluster to back up.",
                   "check": f"No model has an archive recorded. {BACKUP_LABEL} makes one."}[intent])
     for line in lines:
@@ -1229,7 +1308,7 @@ def find_items(cluster: Cluster) -> dict:
 def intent_choices(cluster: Cluster, intent: str) -> list[tuple[str, str]]:
     if intent == "free":
         return free_choices(cluster)
-    return {"keep": keep_options, "backup": backup_options, "check": check_options}[intent](cluster)[0]
+    return INTENT_OPTIONS[intent](cluster)[0]
 
 
 # ---------------------------------------------------------------------------
@@ -1950,8 +2029,11 @@ def main(argv: list[str] | None = None) -> int:
         readers.append(sub.add_parser(name))
     for name in ("screen", "options"):
         command = sub.add_parser(name)
-        command.add_argument("intent", choices=("free", "keep", "backup", "check"))
+        command.add_argument("intent", choices=("free", "keep", "backup", "check", "move"))
         readers.append(command)
+    destinations = sub.add_parser("destinations")
+    destinations.add_argument("--manifest", required=True)
+    readers.append(destinations)
     for name in ("previews", "compose"):
         command = sub.add_parser(name)
         command.add_argument("--target", required=True)
@@ -1989,7 +2071,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     width = max(MIN_WIDTH, min(MAX_WIDTH, args.width or terminal_width()))
     try:
-        if args.command in ("page", "choices", "screen", "options", "previews", "compose"):
+        if args.command in ("page", "choices", "screen", "options", "previews", "compose", "destinations"):
             if args.catalog:
                 with open(args.catalog, encoding="utf-8") as stream:
                     entries = _entries(stream)
@@ -2005,6 +2087,9 @@ def main(argv: list[str] | None = None) -> int:
                 for action, label, card in page_cards(cluster, width,
                                                       lambda line: writer.paint(line, ["choice"] * len(line))):
                     print(f"{action}\t{label}\t{card}")
+            elif args.command == "destinations":
+                for target, label in move_destinations(cluster, args.manifest):
+                    print(f"{target}\t{label}")
             elif args.command == "screen":
                 sys.stdout.write(intent_screen(cluster, args.intent, width=width))
             elif args.command == "options":

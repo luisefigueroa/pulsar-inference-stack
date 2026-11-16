@@ -20,6 +20,7 @@ from tests.test_serve_plan import envelope  # noqa: E402
 FIND = "Record model files found on the nodes…"
 DOWNLOAD = "Download a model that has no recipe yet…"
 READY = "Get a model with a recipe ready to serve…"
+MOVE = "Move a model to another node…"
 KEEP = "Keep a model on the cluster…"
 BACKUP = "Back up a model to the archive…"
 CHECK = "Check the archive copies…"
@@ -31,7 +32,8 @@ def page_menu(*, archives=False, second_lines=True):
     if archives:
         protect += [BACKUP, CHECK, "    compares hashes; changes nothing"]
     lines = ["Models and disk space", DOWNLOAD, "    files and hashes only, to one node",
-             READY, "    files, copies and image; nothing starts", *protect,
+             READY, "    files, copies and image; nothing starts",
+             MOVE, "    copies, checks, then frees the old node", *protect,
              "Free up space…", "    remove a model's files or move them",
              FIND, "    files Pulsar has no record of", "Look again (checks nodes now)", "Back"]
     return [line for line in lines if second_lines or not line.startswith(" ")]
@@ -107,14 +109,14 @@ class ThePage(Menu):
         logged = self.choose_log.read_text().split("-- end of menu --")[0].splitlines()[1:]
         groups = [group.splitlines() for group in "\n".join(logged).split("\n\n")]
         self.assertEqual([[line for line in group if not line.startswith(" ")] for group in groups],
-                         [[DOWNLOAD, READY], [KEEP, BACKUP, CHECK], ["Free up space…"],
+                         [[DOWNLOAD, READY, MOVE], [KEEP, BACKUP, CHECK], ["Free up space…"],
                           [FIND, "Look again (checks nodes now)", "Back"]])
 
     def test_a_short_terminal_shows_the_labels_alone_so_the_page_stays_above_its_choices(self):
         page_log = self.root / "paged.log"
         result = self.run_menu(["Back"])
         page = len(result.stdout.strip("\n").splitlines())
-        cards, labels = 15, 7  # the menu's rows with and without second lines and group gaps
+        cards, labels = 17, 8  # the menu's rows with and without second lines and group gaps
         # Rows for the page, a blank line, the choices and Gum's five rows.
         for rows, second_lines, paged in ((page + 1 + cards + 5, True, False),
                                           (page + 1 + cards + 4, False, False),
@@ -401,6 +403,45 @@ class FilesWithNoRecipe(Menu):
         self.assertIn("✓ Done: the archive of new/model @ cccccccc matched its expected file hashes.",
                       self.text(result))
         self.assert_plain_choices()
+
+    def test_move_a_model_asks_the_node_and_runs_the_move_the_operator_named(self):
+        self.fixture("move-plan", envelope({"kind": "pulsar-home-move-plan", "snapshot_manifest_id": self.files_id,
+                                            "source_node": "n1", "destination_node": "n2",
+                                            "transfer_route": "controller-stream-relay"}))
+        result = self.run_menu([MOVE, "Move new/model @ cccccccc from spark-2",
+                                "spark-3 (1.80 TiB free after its reserve)", "Go ahead", "Continue", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.text(result)
+        # org/model has copies that depend on its home, so it is named with why it stays, not offered.
+        self.assertEqual(self.menus()[1], ["Move a model to another node", "Move new/model @ cccccccc from spark-2",
+                                           "Back"])
+        self.assertIn("org/model (212 GiB) stays on spark-1: its copies on spark-1, spark-2 and spark-3 depend on it",
+                      text)
+        self.assertEqual(self.menus()[2], ["Which node should keep the files?",
+                                           "spark-1 (1.80 TiB free after its reserve)",
+                                           "spark-3 (1.80 TiB free after its reserve)", "Back"])
+        self.assertEqual(self.menus()[3], ["Move a model to another node", "Cancel", "Go ahead"])
+        self.assertIn("Move a model to another node\t0", self.default_log.read_text())
+        self.assertEqual(self.ran(), [f"model move --manifest {self.manifest} --node spark-3 --yes"])
+        self.assertIn("✓ Done: the files of new/model @ cccccccc are on spark-3.", text)
+        self.assert_plain_choices()
+        self.assert_no_unapproved_authority()
+
+    def test_move_a_model_runs_nothing_on_back_or_cancel(self):
+        for answers in ([MOVE, "Back", "Back"],
+                        [MOVE, "Move new/model @ cccccccc from spark-2", "Back", "Back", "Back"],
+                        [MOVE, "Move new/model @ cccccccc from spark-2", "esc", "Back", "Back"],
+                        [MOVE, "Move new/model @ cccccccc from spark-2", "spark-1 (1.80 TiB free after its reserve)",
+                         "Cancel", "Back", "Back"]):
+            with self.subTest(answers=answers):
+                self.again()
+                result = self.run_menu(answers)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.ran(), [])
+                # No move is previewed before the operator names the node.
+                self.assertEqual([line for line in self.commands() if line.startswith("model move")],
+                                 [] if answers[-3] != "Cancel" else
+                                 [f"model move --manifest {self.manifest} --node spark-1 --plan --json"])
 
     def test_it_moves_off_a_node_past_its_reserve_by_the_same_file(self):
         self.fixture("budget", envelope(budget(short=("n1",))))
