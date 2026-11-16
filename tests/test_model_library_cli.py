@@ -1233,6 +1233,85 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(Store(f.state).home(manifest_id)["node_id"], "node-1")
         self.assertEqual(len(f.events("download")), 1)
 
+    def test_a_home_without_a_spec_is_backed_up_removed_and_restored_by_its_manifest(self):
+        f = self.fixture(nodes=2)
+        acquired = self.success(f.acquire(0))
+        manifest_id = acquired["manifest"]["manifest_id"]
+        self.success(f.run("archive", "create", "--manifest", f.manifest_path, "--yes"))
+        archived = f.archive / "pulsar-snapshots" / manifest_id / "manifest.json"
+        self.assertEqual(json.loads(archived.read_text()), acquired["manifest"])
+        self.success(f.run("remove", "--manifest", f.manifest_path, "--yes"))
+        self.assertIsNone(Store(f.state).home(manifest_id))
+        # The archive's own manifest selects the restore; the Hub is not asked.
+        f.cfg["hub_unavailable"] = True; f.save()
+        plan = self.success(f.run("restore", "--manifest", archived, "--node", "rank-1", "--plan"))
+        self.assertEqual(plan["kind"], "pulsar-restore-plan")
+        restored = self.success(f.run("restore", "--manifest", archived, "--node", "rank-1", "--yes"))
+        self.assertEqual(restored["home"]["node_id"], "node-1")
+        self.assertEqual(len(f.events("download")), 1)
+
+    def test_a_download_without_a_spec_stops_before_the_hub_when_the_archive_holds_the_files(self):
+        f = self.fixture(nodes=2)
+        acquired = self.acquire_candidate(f, nodes=1)
+        commit = ["--model-id", f.cfg["model_id"], "--model-commit", f.cfg["revision"]]
+        self.success(f.run("archive", "create", "--manifest", f.manifest_path, "--yes"))
+        self.success(f.run("remove", "--manifest", f.manifest_path, "--yes"))
+        archived = f.archive / "pulsar-snapshots" / acquired["manifest"]["manifest_id"] / "manifest.json"
+        # An exact commit is refused with the Hub out of reach: it was never asked.
+        f.cfg["hub_unavailable"] = True; f.save()
+        for mode in ("--plan", "--yes"):
+            refused = f.run("acquire", *commit, "--node", "rank-1", mode)
+            self.failure(refused, "an archive already holds example/synthetic-storage")
+            self.assertIn(f"Next: ./pulsar model restore --manifest {archived} --node rank-1 --plan", refused.stderr)
+        f.cfg["hub_unavailable"] = False; f.save()
+        # A branch is resolved first, then refused the same way.
+        self.failure(f.run("acquire", "--model-id", f.cfg["model_id"], "--model-commit", "main", "--plan"),
+                     "an archive already holds")
+        self.assertEqual(len(f.events("download")), 1)
+        self.assertEqual(Store(f.state).records("homes"), [])
+        # With its spec the same download runs: Serve's "download instead of restoring" depends on it.
+        plan = self.success(f.run("acquire", "--node", "rank-1", "--plan", spec=True))
+        self.assertEqual((plan["action"], plan["archive_search"]), ("download", None))
+        self.success(f.run("acquire", "--node", "rank-1", "--yes", spec=True))
+        self.assertEqual(len(f.events("download")), 2)
+
+    def test_a_download_without_a_spec_says_what_it_does_and_reuses_a_home_where_it_is(self):
+        f = self.fixture(nodes=2)
+        commit = ["--model-id", f.cfg["model_id"], "--model-commit", f.cfg["revision"]]
+        plan = self.success(f.run("acquire", *commit, "--node", "rank-1", "--plan"))
+        self.assertEqual((plan["action"], plan["archive_search"]["state"], plan["archive_search"]["archives"]),
+                         ("download", "searched", []))
+        # A manifest file that exists stops the run before the download, not after it.
+        f.manifest_path.write_text("{}")
+        self.failure(f.acquire(1), "exists and is never replaced; nothing was changed")
+        self.assertFalse(f.events("download"))
+        f.manifest_path.unlink()
+        self.success(f.acquire(1))
+        # The home is reused where it is, with or without --node, and the manifest is saved again.
+        for node in (["--node", "rank-1"], []):
+            reuse = self.success(f.run("acquire", *commit, *node, "--plan"))
+            self.assertEqual((reuse["action"], reuse["home"]["node_id"]), ("reuse", "node-1"))
+        f.manifest_path.unlink()
+        self.assertEqual(self.success(f.acquire(1))["home"]["node_id"], "node-1")
+        self.assertTrue(f.manifest_path.exists())
+        # Named for another node, it is refused in the preview too, and names the node that has it.
+        for mode in ("--plan", "--yes"):
+            self.failure(f.run("acquire", *commit, "--node", "rank-0", mode),
+                         "already has a home on rank-1; nothing was downloaded. Next: run this command with --node rank-1")
+        self.assertEqual(len(f.events("download")), 1)
+
+    def test_an_archive_location_that_cannot_be_read_is_said_and_does_not_stop_the_download(self):
+        f = self.fixture(nodes=1)
+        f.env["PULSAR_COLD_ROOT"] = str(f.root / "not-mounted")
+        commit = ["--model-id", f.cfg["model_id"], "--model-commit", f.cfg["revision"]]
+        plan = self.success(f.run("acquire", *commit, "--plan"))
+        self.assertEqual(plan["archive_search"]["state"], "unreadable")
+        done = f.run("acquire", *commit, "--yes")
+        self.success(done)
+        self.assertIn("the archive location could not be read, so whether it holds these files is unknown", done.stderr)
+        f.env["PULSAR_COLD_ROOT"] = ""
+        self.assertEqual(self.success(f.run("acquire", *commit, "--plan"))["action"], "reuse")
+
     def test_home_operations_refuse_a_node_selector_that_names_no_node_or_several(self):
         f = self.fixture(nodes=2)
         self.acquire_candidate(f, nodes=2, home=1)

@@ -100,7 +100,7 @@ source copy, called its **home**:
 ./pulsar model acquire SPEC --snapshot target --node NODE --yes
 ```
 
-To download a model before a recipe exists for it, name the model and commit
+To download a model before a spec exists for it, name the model and commit
 instead of a spec; see [Download a model before it has a spec](docs/OPERATIONS.md#download-a-model-before-it-has-a-spec).
 
 If you have an archive, [configure its location](docs/OPERATIONS.md#archive-location)

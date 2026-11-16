@@ -989,6 +989,44 @@ class BundledGumModels(BundledGum):
                 self.assertEqual((root / "pulsar.log").read_text().splitlines(),
                                  ["model files --json", "model budget --json"])
 
+    def download_screens(self, columns):
+        """Download a model that has no recipe yet…, typed and then cancelled: (root, exit, output)."""
+        from tests.test_models_menu import NEW, acquire_plan  # noqa: PLC0415
+        root, script = self.fixture()
+        (root / "fixtures" / "acquire-plan.json").write_text(json.dumps(acquire_plan()))
+        code, output = self.drive(script, b"\x1b[B\x1b[B\r", ready=b"Look again", columns=columns,
+                                  then=[(b"Which model on Hugging Face?", NEW.encode() + b"\r"),
+                                        (b"Which commit, branch or tag", b"main\r"),
+                                        (b"Which node should keep the files?", b"\x1b[B\r"),
+                                        (b"> Cancel", b"\x1b"), (b"Look again", b"\x1b")])
+        return root, code, output
+
+    def test_a_download_without_a_recipe_asks_in_plain_words_and_starts_on_cancel(self):
+        from tests.test_models_menu import COMMIT, NEW  # noqa: PLC0415
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                root, code, output = self.download_screens(columns)
+                self.assertEqual(code, 0, output)
+                shots = views(output, 24, columns)
+                asked = "\n".join(line for shot in shots for line in shot)
+                # Without colour the example is said above the field, never drawn in it.
+                for line in ("Which model on Hugging Face?", "Example: ORG/NAME", "Example: main",
+                             "Which node should keep the files?", "> spark-1"):
+                    self.assertIn(line, asked)
+                plan = next(shot for shot in shots if "> Cancel" in shot)
+                text = "\n".join(plan)
+                self.assertIn("  Download 212 GiB to spark-2", plan, text)
+                self.assertIn("Pulsar will:", plan, text)
+                self.assertTrue(any(line.startswith(f"  1. Download {NEW} at commit cccccccccccc") for line in plan), text)
+                self.assertIn("Nothing is prepared for serving and nothing starts.", " ".join(text.split()))
+                self.assertNotIn("\x1b[?1049h", output)
+                # Only the preview ran, with what was typed; the cancel ran nothing.
+                self.assertEqual((root / "pulsar.log").read_text().splitlines(),
+                                 ["model files --json", "model budget --json",
+                                  f"model acquire --model-id {NEW} --model-commit main --node spark-2 --plan --json"])
+                self.assertFalse((root / ".pulsar").exists())
+                self.assertNotIn(COMMIT + " --yes", output)
+
     def test_a_free_up_space_plan_prints_above_its_choices_with_the_cursor_on_cancel(self):
         root, script = self.fixture()
         code, output = self.drive(script, b"\r", ready=b"Look again",

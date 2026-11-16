@@ -422,6 +422,7 @@ MENUS = {
     ("services-menu.sh", '"Running services"'): ["tests.test_services_menu"],
     ("models-menu.sh", '"Models and disk space"'): ["tests.test_models_page", "tests.test_models_menu"],
     ("models-menu.sh", '"$title"'): ["tests.test_models_page", "tests.test_models_menu"],
+    ("models-menu.sh", '"Which node should keep the files?"'): ["tests.test_models_menu"],
     ("why-not-start.sh", '"$title"'): ["tests.test_why_not_start"],
     ("why-not-start.sh", '"$TITLE"'): ["tests.test_why_not_start"],
     # Set up this cluster…'s review of the machines found (topology setup).
