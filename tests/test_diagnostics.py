@@ -97,8 +97,11 @@ probe_node_json_for_rank() {{
   return
  fi
  [ "$DIAG_MODE" != remote-probe-fail ] || return 1
+ if [ "$DIAG_MODE" = remote-probe-unreadable ] && [ "$1" != 0 ]; then echo '[]'; return 0; fi
  local docker=true; [ "$DIAG_MODE" != remote-docker-down ] || [ "$1" = 0 ] || docker=false
- printf '{{"gpu":"NVIDIA GB10","arch":"aarch64","docker_ok":%s,"docker_nvidia":%s,"qualified":true,"node_id":"node-%s"}}\\n' "$docker" "$docker" "$1"
+ local qualified=true node="node-$1"
+ if [ "$DIAG_MODE" = remote-unqualified ] && [ "$1" != 0 ]; then qualified=false; node=other; fi
+ printf '{{"gpu":"NVIDIA GB10","arch":"aarch64","docker_ok":%s,"docker_nvidia":%s,"qualified":%s,"node_id":"%s"}}\\n' "$docker" "$docker" "$qualified" "$node"
 }}
 ssh_node() {{
  local rank="$1" cmd="$2"
@@ -182,6 +185,48 @@ ssh_node() {{
         rows = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'], 'remote-docker-down').stdout)['checks']}
         self.assertEqual(rows['rank_1_memory']['message'], 'rank-1: MemAvailable 120 GiB')
         self.assertNotIn('`', json.dumps(rows))
+
+    def test_a_path_with_a_backtick_is_reported_exactly(self):
+        # Marks are added to what people read, never removed from a value.
+        home = self.root / 'ho`mes'
+        home.mkdir()
+        rows = [c for c in json.loads(self.run_tool('doctor.sh', ['--json'], extra={'PULSAR_HOME_ROOT': str(home)})
+                                      .stdout)['checks'] if c['id'] == 'model_storage']
+        self.assertEqual(rows[0]['message'], f'Managed storage directory accessible: {home}')
+        styled = self.run_tool('doctor.sh', extra={'PULSAR_HOME_ROOT': str(home), 'PULSAR_COLOR': 'always',
+                                                   'NO_COLOR': '', 'COLUMNS': '400'}).stdout
+        self.assertIn(f'Managed storage directory accessible: {home}\n', styled)
+
+    def test_a_remote_value_with_a_backtick_is_reported_exactly(self):
+        # A node's own words reach JSON unchanged; only the template loses its marks.
+        canned = {'prerequisites': {'python': {'ok': True, 'version': '3.12`x'}, 'flock': False, 'rsync': True,
+                                    'hf': {'state': 'ok', 'version': '1.0', 'login': 'missing'}}}
+        rows = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'], extra={
+            'DIAG_PREREQ_JSON_1': json.dumps(canned)}).stdout)['checks']}
+        self.assertEqual(rows['rank_1_python']['message'], 'rank-1: Python 3.12`x')
+        self.assertEqual(rows['rank_1_flock']['message'], 'rank-1: flock not found; install util-linux on this node '
+                                                          '(docs/OPERATIONS.md#installation-prerequisites)')
+        self.assertTrue(rows['rank_1_hf_login']['message'].endswith('To add one, run hf auth login on this node'))
+        human = self.run_tool('doctor.sh', extra={'DIAG_PREREQ_JSON_1': json.dumps(canned), 'COLUMNS': '400'}).stdout
+        self.assertIn('ok    Python 3.12`x\n', human)
+
+    def test_remote_rows_mark_commands_for_people_and_not_in_json(self):
+        rows = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'], 'remote-unqualified').stdout)['checks']}
+        self.assertEqual(rows['rank_1_qualified']['message'],
+                         'rank-1: platform or RDMA prerequisites not verified; run ./pulsar topology check')
+        self.assertEqual(rows['rank_2_node_id']['message'],
+                         'rank-2: node identity differs from saved membership; run ./pulsar topology check')
+        styled = self.run_tool('doctor.sh', mode='remote-unqualified',
+                               extra={'PULSAR_COLOR': 'always', 'NO_COLOR': '', 'COLUMNS': '100'}).stdout
+        self.assertIn('node identity differs from saved membership; run \x1b[36m./pulsar topology check\x1b[0m', styled)
+        # A probe answer that is not an object becomes one row, worded the same way.
+        unreadable = {c['id']: c for c in json.loads(self.run_tool('doctor.sh', ['--json'],
+                                                                   'remote-probe-unreadable').stdout)['checks']}
+        self.assertEqual(unreadable['rank_1_probe']['message'],
+                         'rank-1: Unreadable remote hardware probe; run ./pulsar topology check')
+        self.assertNotIn('`', json.dumps(rows) + json.dumps(unreadable))
+        human = self.run_tool('doctor.sh', mode='remote-probe-unreadable', extra={'COLUMNS': '100'}).stdout
+        self.assertIn('FAIL  Unreadable remote hardware probe; run ./pulsar topology check', human)
 
     def test_doctor_marks_commands_and_counts_warnings(self):
         result = self.run_tool('doctor.sh', mode='memory-low', extra={'PULSAR_COLOR': 'always', 'NO_COLOR': '',
