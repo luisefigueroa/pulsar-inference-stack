@@ -1250,6 +1250,24 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(restored["home"]["node_id"], "node-1")
         self.assertEqual(len(f.events("download")), 1)
 
+    def test_a_home_without_a_spec_is_moved_and_its_archive_verified_by_its_manifest(self):
+        """What Models and disk space… runs for a home no recipe uses, and the plan fields it compares."""
+        f = self.fixture(nodes=2)
+        manifest_id = self.success(f.acquire(0))["manifest"]["manifest_id"]
+        selector = ("--manifest", f.manifest_path)
+        plan = self.success(f.run("move", *selector, "--node", "rank-1", "--plan"))
+        self.assertEqual((plan["kind"], plan["snapshot_manifest_id"], plan["source_node"], plan["destination_node"]),
+                         ("pulsar-home-move-plan", manifest_id, "node-0", "node-1"))
+        self.success(f.run("move", *selector, "--node", "rank-1", "--yes"))
+        self.assertEqual(Store(f.state).home(manifest_id)["node_id"], "node-1")
+        for action, kind in ((("archive", "create"), "pulsar-archive-plan"), (("remove",), "pulsar-home-removal-plan")):
+            plan = self.success(f.run(*action, *selector, "--plan"))
+            self.assertEqual((plan["kind"], plan["snapshot_manifest_id"], plan["home"]["node_id"]),
+                             (kind, manifest_id, "node-1"))
+        self.success(f.run("archive", "create", *selector, "--yes"))
+        self.success(f.run("archive", "verify", *selector))
+        self.assertEqual(len(f.events("download")), 1)
+
     def test_a_download_without_a_spec_stops_before_the_hub_when_the_archive_holds_the_files(self):
         f = self.fixture(nodes=2)
         acquired = self.acquire_candidate(f, nodes=1)

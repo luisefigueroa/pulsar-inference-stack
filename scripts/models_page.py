@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Models and disk space…: room on each node, the models on the cluster, and
-the plans that free space, keep a model ready, back it up and check its archives.
+the plans that free space, keep a model, back it up and check its archives.
 
     python3 -m scripts.models_page page|choices --files FILE [--budget FILE] < CATALOG_JSON
     python3 -m scripts.models_page screen|options free|keep|backup|check --files FILE
@@ -15,8 +15,19 @@ the plans that free space, keep a model ready, back it up and check its archives
 
 Every fact comes from the catalog's saved records, one model files scan
 (`./pulsar model files --json`) and one storage budget (`./pulsar model budget
---json`), taken on entering the page and reused until a plan runs. Nothing here
-contacts a node; the menu (scripts/models-menu.sh) runs every command.
+--json`), taken on entering the page and reused until a plan runs, and from the
+manifest files saved under `.pulsar/manifests` of the checkout
+(saved_manifests). Nothing here contacts a node; the menu
+(scripts/models-menu.sh) runs every command.
+
+The page's choices follow a model's life on the cluster in four groups
+(page_groups). A choice whose label cannot say what it does carries a second
+line (HINTS), and `choices` prints each as ACTION, its label and its card.
+
+A home no recipe in the catalog uses (loose_homes) has no spec to select it:
+its plans pass `--manifest FILE` with the saved file, are offered only while
+that file is saved and verifies, and each step's own preview must name the
+same manifest when its turn comes.
 
 Sizes are what the commands would free: Purge's from the estimate the Model
 files page uses (model_library.file_inventory purge_estimate), a home's from
@@ -33,7 +44,7 @@ whether it still does what the plan said (`same`, `skip`, `differs` or
 `blocked`). No plan unpins on its own, deletes an archive, deletes files no
 record names, or moves a home unless the operator chose that move.
 
-Look for model files Pulsar has no record of… (`compose --target find`) is one
+Record model files found on the nodes… (`compose --target find`) is one
 plan from the same scan: a step per home folder no record names, through
 Download's own reuse (it holds only if `model acquire … --plan --json` answers
 `reuse`), then a step per recipe whose prepared copies no record names, through
@@ -64,6 +75,20 @@ from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, termin
 
 PLAN_KIND = "pulsar-storage-plan"
 DOWNLOAD_LABEL = "Download a model that has no recipe yet…"
+READY_LABEL = "Get a model with a recipe ready to serve…"
+KEEP_LABEL = "Keep a model on the cluster…"
+BACKUP_LABEL = "Back up a model to the archive…"
+CHECK_LABEL = "Check the archive copies…"
+FIND_LABEL = "Record model files found on the nodes…"
+# What a choice does, where its label cannot say it: a second line under the label, in lower case
+# with no full stop, at most 40 characters so that it stays one line at 44 columns. It names what
+# the operator sees and does, never a low-level noun (tests/test_cluster_menu.FORBIDDEN).
+HINTS = {"download": "files and hashes only, to one node",
+         "ready": "files, copies and image; nothing starts",
+         "keep": "Free up space never removes it",
+         "check": "compares hashes; changes nothing",
+         "free": "remove a model's files or move them",
+         "find": "files Pulsar has no record of"}
 LABEL_WIDTH = 10
 # A no-break space keeps a size together when a sentence wraps; it prints as a space.
 KEEP = "\u00a0"
@@ -146,12 +171,37 @@ def budget_nodes(path: str | None) -> list[dict] | None:
     return [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else None
 
 
+def saved_manifests(repo_root: Path) -> dict[str, str]:
+    """The manifest files saved under `.pulsar/manifests` of the checkout, by manifest ID.
+
+    Download a model that has no recipe yet… saves them there. Only a file the shared verifier
+    accepts counts: the commands that take the file with --manifest refuse any other. Of two files
+    with the same manifest, the first by path is used."""
+    from model_library.integrity import verify_manifest
+    folder = Path(repo_root) / ".pulsar" / "manifests"
+    found: dict[str, str] = {}
+    try:
+        paths = sorted(folder.rglob("*.json")) if folder.is_dir() else []
+    except OSError:
+        return found
+    for path in paths:
+        try:
+            document = verify_manifest(load_json(str(path)))
+        except (ValueError, OSError, TypeError, KeyError):
+            continue
+        found.setdefault(document["manifest_id"], str(path))
+    return found
+
+
 class Cluster:
-    """The catalog joined to one files scan and one storage budget."""
+    """The catalog joined to one files scan and one storage budget. SAVED is saved_manifests: with
+    its file, the commands can select a home that no recipe in the catalog uses."""
 
     def __init__(self, entries: list[dict], files: dict, budget: list[dict] | None, *,
                  names: NodeNames | None = None, archive_location: str = "not-configured", now=None,
-                 pairs: list[tuple[str, str]] = (), topology_id: str | None = None):
+                 pairs: list[tuple[str, str]] = (), topology_id: str | None = None,
+                 saved: dict[str, str] | None = None):
+        self.saved = dict(saved or {})
         from model_library.file_inventory import _unread
         # A saved ring's neighbouring pairs (serve_plan.ring_pairs) and the saved
         # cluster's topology_id: with them, readiness names a ring's placements.
@@ -324,6 +374,77 @@ class Cluster:
 
 
 # ---------------------------------------------------------------------------
+# Homes that no recipe in the catalog uses
+# ---------------------------------------------------------------------------
+
+NO_MANIFEST = "their manifest, the list of the files and their hashes, is not saved in this checkout"
+# What saves it: Download's own reuse writes the manifest of files it finds on the node it is given.
+SAVE_MANIFEST = (f"{DOWNLOAD_LABEL} saves it: choose it for the same model, commit and node; it keeps the files "
+                 "there and downloads nothing.")
+
+
+
+def _model(entry: dict) -> str:
+    return f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]}"
+
+
+def loose_homes(cluster: Cluster) -> list[dict]:
+    """Each home in the scan that no recipe in this catalog uses, as a download before its recipe
+    leaves it: its name, node, size, saved manifest file (None when not saved), archive record and
+    why its home cannot be removed or moved now (None when it can).
+
+    Without a recipe a command selects these files with `--manifest FILE`, so every choice for them
+    needs the saved file, and its own preview must name the same manifest when its turn comes."""
+    found = []
+    for entry in cluster.snapshots:
+        locations = entry.get("locations") or []
+        home = next((location for location in locations if location.get("registered_home")), None)
+        if entry.get("catalog_specs") or home is None:
+            continue
+        record = entry.get("archive") if isinstance(entry.get("archive"), dict) else None
+        host = cluster.host(home["node_id"])
+        users = cluster.users([home])
+        if cluster.unread:
+            stays = None  # the page says once that nothing is offered until every node answers
+        elif home.get("state") != "present":
+            stays = f"its files on {host} " + ("were not found" if home.get("state") == "missing" else
+                                               "could not be checked")
+        elif any(location.get("bindings") for location in locations):
+            stays = "copies made for a recipe outside this catalog use these files"
+        elif users:
+            stays = f"{_list([item['name'] for item in users])} on {host} mounts these files"
+        elif home.get("container_references") != []:
+            stays = f"the containers on {host} could not be checked"
+        elif entry["snapshot_manifest_id"] not in cluster.saved:
+            stays = NO_MANIFEST
+        else:
+            stays = None
+        found.append({"id": entry["snapshot_manifest_id"], "entry": entry, "name": _model(entry), "home": home,
+                      "node": home["node_id"], "size": entry.get("payload_bytes"),
+                      "file": cluster.saved.get(entry["snapshot_manifest_id"]),
+                      "archived": record is not None,
+                      "age": age_seconds(record.get("verified_at"), cluster.now) if record else None,
+                      "stays": stays})
+    return found
+
+
+def loose_home(cluster: Cluster, manifest: str) -> dict:
+    item = next((item for item in loose_homes(cluster) if item["id"] == manifest), None)
+    if item is None:
+        raise ValueError("those files are not in the scan")
+    if not item["file"]:
+        raise ValueError("the manifest file of those files is no longer saved in this checkout")
+    return item
+
+
+def _archive_words(item: dict) -> str:
+    if not item["archived"]:
+        return STATUS_WORDS["no-archive"]
+    age = item["age"]
+    return f"{STATUS_WORDS['archived']} verified {age_text(age) if age is not None else '(age unknown)'}"
+
+
+# ---------------------------------------------------------------------------
 # The page
 # ---------------------------------------------------------------------------
 
@@ -418,13 +539,15 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         lines = model_lines(cluster, spec, out.width - len(more))
         out.emit(f"{cluster.name(spec)} · {lines[0]}", label(), more)
         out.emit(lines[1], more, more)
+    loose = {item["id"]: item for item in loose_homes(cluster)}
     for entry in cluster.snapshots:
         if entry.get("catalog_specs") or not any(location.get("state") != "missing"
                                                  for location in entry.get("locations") or []):
             continue
         where = cluster.hosts(location["node_id"] for location in entry.get("locations") or [])
-        out.emit(f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]} · "
-                 f"{_size(entry.get('payload_bytes'))} on {where} · {STATUS_WORDS['unused']}", label(), more)
+        item = loose.get(entry["snapshot_manifest_id"])
+        out.emit(f"{_model(entry)} · {_size(entry.get('payload_bytes'))} on {where} · {STATUS_WORDS['unused']}"
+                 + (f" · {_archive_words(item)}" if item else ""), label(), more)
     found = find_items(cluster)
     holders = [item["node"] for item in found["register"]] + [node for item in found["adopt"] for node in item["nodes"]]
     if holders:
@@ -432,8 +555,8 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         out.emit(f"Files Pulsar has no record of are on {cluster.hosts(holders)}; {FIND_LABEL} records them.",
                  label(), more)
     if first:
-        out.emit("No model in the catalog has files on the cluster. Serve a model… or Get a model ready ahead of "
-                 "time… brings one.", label(), indent)
+        out.emit(f"No model in the catalog has files on the cluster. Serve a model… or {READY_LABEL} brings one.",
+                 label(), indent)
     others = [row for row in cluster.entries if row["spec_id"] not in shown_specs]
     if others and shown_specs:
         out.emit(f"{_count(len(others), 'other recipe')} in the catalog {'has' if len(others) == 1 else 'have'} no "
@@ -445,13 +568,42 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
     return output.getvalue().replace(KEEP, " ")
 
 
-def page_choices(cluster: Cluster) -> list[tuple[str, str]]:
-    """The page's choices: Free up space… first, then the intents, Look again and Back."""
-    found = [("free", "Free up space…"), ("ready", "Get a model ready ahead of time…"),
-             ("download", DOWNLOAD_LABEL), ("keep", "Keep a model ready…")]
+def page_groups(cluster: Cluster) -> list[list[tuple[str, str]]]:
+    """The page's choices in the order of a model's life on the cluster, a group for each stage:
+    bring its files, protect them, make room, then look at what is there."""
+    protect = [("keep", KEEP_LABEL)]
     if cluster.archive_location == "configured":
-        found += [("backup", "Back up a model…"), ("check", "Check the archives…")]
-    return found + [("find", FIND_LABEL), ("again", "Look again (checks nodes now)"), ("back", "Back")]
+        protect += [("backup", BACKUP_LABEL), ("check", CHECK_LABEL)]
+    return [[("download", DOWNLOAD_LABEL), ("ready", READY_LABEL)], protect, [("free", "Free up space…")],
+            [("find", FIND_LABEL), ("again", "Look again (checks nodes now)"), ("back", "Back")]]
+
+
+def page_choices(cluster: Cluster) -> list[tuple[str, str]]:
+    return [choice for group in page_groups(cluster) for choice in group]
+
+
+def page_cards(cluster: Cluster, width: int, paint=None) -> list[tuple[str, str, str]]:
+    """(action, label, card) for each choice. The card is the label, in the choice role where PAINT
+    is given, then its second line (HINTS) two columns further in; lines are joined by the unit
+    separator, as choice_label joins them, and a card that ends a group ends with one, which the
+    menu draws as a blank line. A line too long for WIDTH wraps between words."""
+    import textwrap
+    found = []
+    groups = page_groups(cluster)
+    for index, group in enumerate(groups):
+        for action, label in group:
+            # Gum draws its cursor gutter before a card's first line only: later lines come at their
+            # screen columns, a label's own two columns in and a second line two more.
+            lines = textwrap.wrap(label, max(width - 2, 8), subsequent_indent="  ", break_long_words=False,
+                                  break_on_hyphens=False)
+            lines = [lines[0]] + ["  " + line for line in lines[1:]]
+            lines = [paint(line) if paint else line for line in lines]
+            if action in HINTS:
+                lines += textwrap.wrap(HINTS[action], max(width, 10), initial_indent="    ",
+                                       subsequent_indent="    ", break_long_words=False, break_on_hyphens=False)
+            ends = action == group[-1][0] and index < len(groups) - 1
+            found.append((action, label, "\x1f".join(lines) + ("\x1f" if ends else "")))
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -549,8 +701,8 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
         if fact["in_use_on"]:
             blocked += _users_text(cluster, spec, fact["users"])
         if fact["pinned_on"]:
-            blocked.append((f"{name} is kept ready on {cluster.hosts(fact['pinned_on'])}, so Free up space… does not "
-                            "offer it.", ("unkeep:" + spec, f"Stop keeping {name} ready")))
+            blocked.append((f"{name} is kept on {cluster.hosts(fact['pinned_on'])}, so Free up space… does not "
+                            "offer it.", ("unkeep:" + spec, f"Stop keeping {name}")))
         if fact["in_use_on"] or fact["pinned_on"]:
             continue
         if fact["unknown_on"]:
@@ -592,14 +744,27 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
             blocked.append((f"{_count(len(loose), 'unfinished download or copy', 'unfinished downloads or copies')} on "
                             f"{cluster.host(item['node_id'])} {'has' if len(loose) == 1 else 'have'} no record "
                             "naming a recipe. Pulsar never deletes files it has no record of.", None))
+    loose = {item["id"]: item for item in loose_homes(cluster)}
     for entry in cluster.snapshots:
         if entry.get("catalog_specs") or not entry.get("locations"):
             continue
         where = cluster.hosts(location["node_id"] for location in entry["locations"])
-        blocked.append((f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]} "
-                        f"on {where} ({_size(entry.get('payload_bytes'))}): {STATUS_WORDS['unused']}, so this page "
-                        "does not remove them. With their manifest, ./pulsar model remove --manifest FILE --plan "
-                        f"previews that; {DOWNLOAD_LABEL} saves that file.", None))
+        item = loose.get(entry["snapshot_manifest_id"])
+        what = f"{_model(entry)} on {where} ({_size(entry.get('payload_bytes'))}): {STATUS_WORDS['unused']}"
+        if item is None:
+            # Copies with no home recorded: no command of this page selects them.
+            blocked.append((f"{what}, and they have no home recorded, so this page does not remove them.", None))
+        elif item["stays"] == NO_MANIFEST:
+            blocked.append((f"{what}, and {NO_MANIFEST}, so this page does not remove them. {SAVE_MANIFEST}",
+                            None))
+        elif item["stays"]:
+            blocked.append((f"{what}. They stay: {item['stays']}.", None))
+        else:
+            label = f"Remove {item['name']} from the cluster: frees {_size(item['size'])}"
+            removable.append({"target": "files:" + item["id"], "label": label, "size": item["size"],
+                              "text": f"{label}. {STATUS_WORDS['unused'][0].upper() + STATUS_WORDS['unused'][1:]}. "
+                                      f"It deletes its home on {cluster.host(item['node'])}, the copy Pulsar keeps. "
+                                      f"{files_archive_after(cluster, item, plan=False)}"})
     removable.sort(key=lambda option: (option["size"] is None, -(option["size"] or 0)))
     return removable, blocked
 
@@ -669,20 +834,30 @@ def archive_after(cluster: Cluster, spec: str, *, plan: bool, archive_first: boo
     """What getting SPEC back after it leaves the cluster takes: its archive, when every required
     snapshot has a verified one and the archive location is set, or a download."""
     archives = cluster.archives(spec)
+    ages = [age for _, age in archives.values()]
+    return _archive_after(cluster, all(kind == "verified" for kind, _ in archives.values()),
+                          None if None in ages else max(ages), cluster.size(spec), plan=plan,
+                          archive_first=archive_first)
+
+
+def files_archive_after(cluster: Cluster, item: dict, *, plan: bool, archive_first: bool = False) -> str:
+    """archive_after for a home no recipe uses (loose_homes): its one archive record decides."""
+    return _archive_after(cluster, item["archived"], item["age"], item["size"], plan=plan,
+                          archive_first=archive_first)
+
+
+def _archive_after(cluster: Cluster, archived: bool, age, size, *, plan: bool, archive_first: bool) -> str:
     configured = cluster.archive_location == "configured"
     if archive_first:
         return "Its archive is made first and stays, so it can be restored without the internet."
-    if all(kind == "verified" for kind, _ in archives.values()):
-        ages = [age for _, age in archives.values()]
-        age = None if None in ages else max(ages)
+    if archived:
         verified = f"verified {age_text(age)}" if age is not None else "verified (age unknown)"
         if configured:
             return (f"Its archive stays, {verified}, so it can be restored without the internet." if plan else
                     f"Its archive was {verified}, so it can be restored without the internet.")
         return (f"Its archive was {verified}, but the archive location is not set, so restoring it first needs "
                 "Cluster… → Settings….")
-    text = (f"It has no verified archive, so getting it back means downloading it again "
-            f"({_size(cluster.size(spec))}).")
+    text = f"It has no verified archive, so getting it back means downloading it again ({_size(size)})."
     if plan:
         return text
     return text + (" Its plan offers to back it up first." if configured else
@@ -714,7 +889,8 @@ def home_room(cluster: Cluster, node_id: str) -> int | None:
 def move_options(cluster: Cluster) -> list[dict]:
     """Move a home off a node past its reserve to one with room for it: only a home no copy and no
     unfinished copy depends on, as Move home itself requires, and only to a node a recipe of it can
-    keep its home on."""
+    keep its home on. A home no recipe in the catalog uses can go to any node with room, when its
+    manifest file is saved (loose_homes)."""
     found = []
     for short in short_nodes(cluster):
         for entry in cluster.snapshots:
@@ -730,15 +906,20 @@ def move_options(cluster: Cluster) -> list[dict]:
                 room = home_room(cluster, node)
                 if node == short or room is None or room < size:
                     continue
-                choice = move_spec(cluster, entry, node)
-                if choice is None:
-                    continue
-                spec, _ = choice
-                name = cluster.name(spec)
+                if entry.get("catalog_specs"):
+                    choice = move_spec(cluster, entry, node)
+                    if choice is None:
+                        continue
+                    name, kind = cluster.name(choice[0]), "move"
+                elif entry["snapshot_manifest_id"] in cluster.saved:
+                    # No recipe limits where these files may be kept; the command takes their manifest.
+                    name, kind = _model(entry), "move-files"
+                else:
+                    break
                 label = (f"Move the files of {name} from {cluster.host(short)} to {cluster.host(node)}: frees "
                          f"{_size(size)} on {cluster.host(short)}")
                 left = can_still_copy(cluster.budget[short])
-                found.append({"target": f"move:{entry['snapshot_manifest_id']}:{node}", "label": label, "size": size,
+                found.append({"target": f"{kind}:{entry['snapshot_manifest_id']}:{node}", "label": label, "size": size,
                               "text": f"{label}. {cluster.host(short)} is {_size(-left)} past its reserve and "
                                       f"{cluster.host(node)} has room. Its home, the copy Pulsar keeps, moves; "
                                       "nothing is lost."})
@@ -805,11 +986,11 @@ def free_choices(cluster: Cluster) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# Keep a model ready…, Back up a model…, Check the archives…
+# Keep a model on the cluster…, Back up a model to the archive…, Check the archive copies…
 # ---------------------------------------------------------------------------
 
 def keep_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
-    """(choices, lines): Keep … ready for a recipe with copies not kept, Stop keeping … ready for one
+    """(choices, lines): Keep … on the cluster for a recipe with copies not kept, Stop keeping … for one
     with kept copies; the lines say where each stands."""
     choices, lines = [], []
     for spec in cluster.catalog:
@@ -821,17 +1002,17 @@ def keep_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
             if cluster.bound(spec):
                 lines.append(f"{name}: whether its copies are kept could not be read.")
             else:
-                lines.append(f"{name} has no copies on its serving nodes, so there is nothing to keep yet; Get a "
-                             "model ready ahead of time… makes them.")
+                lines.append(f"{name} has no copies on its serving nodes, so there is nothing to keep yet; "
+                             f"{READY_LABEL} makes them.")
             continue
         if loose:
             lines.append(f"{name}: {STATUS_WORDS['not-kept']} on {cluster.hosts(loose)}"
                          + (f"; {STATUS_WORDS['kept']} on {cluster.hosts(pinned)}." if pinned else "."))
-            choices.append(("keep:" + spec, f"Keep {name} ready"))
+            choices.append(("keep:" + spec, f"Keep {name} on the cluster"))
         else:
             lines.append(f"{name}: {STATUS_WORDS['kept']} on {cluster.hosts(pinned)}.")
         if pinned:
-            choices.append(("unkeep:" + spec, f"Stop keeping {name} ready"))
+            choices.append(("unkeep:" + spec, f"Stop keeping {name}"))
     return choices + [("back", "Back")], lines
 
 
@@ -847,6 +1028,13 @@ def backup_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
         lines.append(f"{name}: {cluster.archive_words(spec)}.")
         if missing:
             choices.append(("backup:" + spec, f"Back up {name}"))
+    for item in loose_homes(cluster):
+        line = f"{item['name']} ({STATUS_WORDS['unused']}): {_archive_words(item)}."
+        if not item["archived"] and item["file"] and item["home"].get("state") == "present":
+            choices.append(("backup-files:" + item["id"], f"Back up {item['name']}"))
+        elif not item["archived"] and not item["file"]:
+            line += f" This page cannot back it up: {NO_MANIFEST}. {SAVE_MANIFEST}"
+        lines.append(line)
     return choices + [("back", "Back")], lines
 
 
@@ -859,15 +1047,27 @@ def check_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
         name = cluster.name(spec)
         lines.append(f"{name}: {cluster.archive_words(spec)}.")
         choices.append(("check:" + spec, f"Check the archives of {name}"))
+    for item in loose_homes(cluster):
+        if not item["archived"]:
+            continue
+        line = f"{item['name']} ({STATUS_WORDS['unused']}): {_archive_words(item)}."
+        if item["file"]:
+            choices.append(("check-files:" + item["id"], f"Check the archive of {item['name']}"))
+        else:
+            line += f" This page cannot check it: {NO_MANIFEST}. {SAVE_MANIFEST}"
+        lines.append(line)
     return choices + [("back", "Back")], lines
 
 
-INTENTS = {"keep": ("Keep a model ready", "Pulsar marks a model's copies as kept (pinned), so Free up space… never "
-                                          "offers them and Purge refuses them until you stop keeping it."),
-           "backup": ("Back up a model", "Pulsar copies every required set of a model's files from its home into "
-                                         "the archive. An archive already there is verified, never replaced."),
-           "check": ("Check the archives", "Pulsar reads each archive of a model and compares it with its "
-                                           "expected file hashes. Nothing is changed.")}
+INTENTS = {"keep": (KEEP_LABEL.rstrip("…"),
+                    "Pulsar marks a model's copies as kept (pinned), so Free up space… never offers them and "
+                    "Purge refuses them until you stop keeping it."),
+           "backup": (BACKUP_LABEL.rstrip("…"),
+                      "Pulsar copies every required set of a model's files from its home into the archive. An "
+                      "archive already there is verified, never replaced."),
+           "check": (CHECK_LABEL.rstrip("…"),
+                     "Pulsar reads each archive of a model and compares it with its expected file hashes. "
+                     "Nothing is changed.")}
 
 
 def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) -> str:
@@ -888,18 +1088,17 @@ def intent_screen(cluster: Cluster, intent: str, *, width: int | None = None) ->
     if not lines:
         out.emit({"keep": "No model has copies on the cluster to keep.",
                   "backup": "No model has files on the cluster to back up.",
-                  "check": "No model has an archive recorded. Back up a model… makes one."}[intent])
+                  "check": f"No model has an archive recorded. {BACKUP_LABEL} makes one."}[intent])
     for line in lines:
         out.emit(line, "  ", "    ")
     return output.getvalue().replace(KEEP, " ")
 
 
 # ---------------------------------------------------------------------------
-# Look for model files Pulsar has no record of…
+# Record model files found on the nodes…
 # ---------------------------------------------------------------------------
 
-FIND_LABEL = "Look for model files Pulsar has no record of…"
-GET_BACK = "Get a model ready ahead of time… restores it from the archive or downloads it instead"
+GET_BACK = f"{READY_LABEL} restores it from the archive or downloads it instead"
 
 
 def _folder_recipe(cluster: Cluster, entry: dict, location: dict) -> tuple[str, Any] | None:
@@ -920,9 +1119,6 @@ def _folder_recipe(cluster: Cluster, entry: dict, location: dict) -> tuple[str, 
             return spec, item.get("snapshot")
     return None
 
-
-def _model(entry: dict) -> str:
-    return f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]}"
 
 
 def find_items(cluster: Cluster) -> dict:
@@ -1010,7 +1206,7 @@ def find_items(cluster: Cluster) -> dict:
                        and cluster.manifests(spec).get(snapshot) not in registered]
             if missing:
                 cannot.append(f"A copy of {recipe} on {cluster.host(node)}: the model has no home on the cluster, "
-                              "the copy Pulsar keeps, to record it against. Get a model ready ahead of time… "
+                              f"the copy Pulsar keeps, to record it against. {READY_LABEL} "
                               "restores or downloads it; then this choice can take the copy over.")
                 continue
             key = (spec, None if nodes > 1 else node)
@@ -1072,12 +1268,13 @@ def compose(cluster: Cluster, target: str, *, previews: dict | None = None, arch
     kind, _, rest = target.partition(":")
     plan = {"kind": PLAN_KIND, "target": target, "intent": kind, "title": "", "steps": [], "blocked": [],
             "notes": [], "footer": [], "choices": [], "done": "", "archive_first": archive_first}
-    if cluster.unread and kind in ("purge", "cluster", "move", "clear", "keep", "unkeep"):
+    if cluster.unread and kind in ("purge", "cluster", "move", "clear", "keep", "unkeep", "files", "move-files"):
         plan["blocked"].append(f"{cluster.hosts(cluster.unread)} could not be checked, and this needs every node "
                                "to answer. Choose Look again once it does.")
     builder = {"purge": _purge_plan, "clear": _purge_plan, "cluster": _cluster_plan, "move": _move_plan,
                "keep": _pin_plan, "unkeep": _pin_plan, "backup": _backup_plan, "check": _check_plan,
-               "find": _find_plan}.get(kind)
+               "find": _find_plan, "files": _files_plan, "move-files": _files_move_plan,
+               "backup-files": _files_backup_plan, "check-files": _files_check_plan}.get(kind)
     if builder is None:
         raise ValueError(f"no plan for {target}")
     builder(cluster, plan, rest)
@@ -1135,7 +1332,7 @@ def _purge_plan(cluster: Cluster, plan: dict, spec: str) -> None:
                                {"spec": spec, "nodes": list(fact["freed"]), "clear": clear, "changes": changes},
                                authority=True, entries=cluster.entries))
     if fact["pinned_on"]:
-        plan["blocked"].append(f"{name} is kept ready on {cluster.hosts(fact['pinned_on'])}. Stop keeping it ready "
+        plan["blocked"].append(f"{name} is kept on {cluster.hosts(fact['pinned_on'])}. Stop keeping it "
                                "first; this plan never does that on its own.")
     if fact.get("unknown_on") and not cluster.unread:
         plan["blocked"].append(f"Its files on {cluster.hosts(fact['unknown_on'])} could not be fully checked, so what "
@@ -1278,6 +1475,101 @@ def _move_plan(cluster: Cluster, plan: dict, rest: str) -> None:
     plan["done"] = f"the files of {name} are on {cluster.host(node)}"
 
 
+def _files_command(action: list[str], item: dict, *extra: str) -> tuple[list[str], list[str]]:
+    """(command, preview) of ACTION for a home no recipe uses: its saved manifest file selects it."""
+    command = ["./pulsar", "model", *action, "--manifest", item["file"], *extra]
+    return [*command, "--yes"], [*command, "--plan", "--json"]
+
+
+def _files_archive_step(cluster: Cluster, item: dict) -> dict:
+    command, preview = _files_command(["archive", "create"], item)
+    return _step("archive", f"Copy the files of {item['name']} from its home on {cluster.host(item['node'])} into "
+                            f"the archive ({_size(item['size'])}). An archive already there is verified, never "
+                            "replaced.", command, preview,
+                 {"manifest": item["id"], "node": item["node"], "changes": "writes the archive"},
+                 authority=False, entries=cluster.entries)
+
+
+def _files_plan(cluster: Cluster, plan: dict, manifest: str) -> None:
+    """Remove a home no recipe in the catalog uses, with its archive made first when asked."""
+    item = loose_home(cluster, manifest)
+    host, size = cluster.host(item["node"]), _size(item["size"])
+    plan["title"] = f"Remove {item['name']} from the cluster"
+    if item["stays"]:
+        plan["blocked"].append(f"Its home cannot go: {item['stays']}.")
+    archive_first = plan["archive_first"] and not item["archived"]
+    if archive_first:
+        if cluster.archive_location != "configured":
+            plan["blocked"].append("Backing it up needs the archive location; Cluster… → Settings… sets it.")
+        plan["steps"].append(_files_archive_step(cluster, item))
+    command, preview = _files_command(["remove"], item)
+    plan["steps"].append(_step(
+        "remove", f"Delete the home of {item['name']} on {host} ({size}), the copy Pulsar downloaded or restored "
+                  "and keeps.", command, preview,
+        {"manifest": item["id"], "node": item["node"], "changes": "deletes the home"},
+        authority=True, entries=cluster.entries, summary=f"Delete the home of {item['name']} on {host} ({size})"))
+    plan["footer"].append(files_archive_after(cluster, item, plan=True, archive_first=archive_first))
+    if not item["archived"] and not archive_first:
+        if cluster.archive_location == "configured":
+            plan["choices"].append(("archive-first", "Back it up first, then remove it"))
+        else:
+            plan["notes"].append("Backing it up first needs the archive location; Cluster… → Settings… sets it.")
+    plan["footer"].append("No archive is deleted, and the saved manifest file stays. If a step fails, the steps "
+                          "before it stay done and the plan stops there.")
+    plan["done"] = f"{item['name']} is removed from the cluster"
+
+
+def _files_move_plan(cluster: Cluster, plan: dict, rest: str) -> None:
+    manifest, _, node = rest.partition(":")
+    item = loose_home(cluster, manifest)
+    source, size = item["node"], _size(item["size"])
+    if not any(known["node_id"] == node for known in cluster.nodes) or node == source:
+        raise ValueError("those files cannot be moved there")
+    plan["title"] = f"Move the files of {item['name']} to {cluster.host(node)}"
+    if item["stays"]:
+        plan["blocked"].append(f"Its home cannot move: {item['stays']}.")
+    command, preview = _files_command(["move"], item, "--node", cluster.host(node))
+    plan["steps"].append(_step(
+        "move", f"Move the files of {item['name']} from {cluster.host(source)} to {cluster.host(node)} ({size}). "
+                f"Pulsar copies them to {cluster.host(node)}, checks them there, then deletes them on "
+                f"{cluster.host(source)}. They stay its home, the copy Pulsar keeps.", command, preview,
+        {"manifest": item["id"], "from": source, "to": node, "changes": f"frees {size} on {cluster.host(source)}"},
+        authority=True, entries=cluster.entries))
+    plan["footer"] = [f"Nothing is lost: the files on {cluster.host(source)} are deleted only after the copy on "
+                      f"{cluster.host(node)} verifies. If the move stops, the files stay on {cluster.host(source)}."]
+    plan["done"] = f"the files of {item['name']} are on {cluster.host(node)}"
+
+
+def _files_backup_plan(cluster: Cluster, plan: dict, manifest: str) -> None:
+    item = loose_home(cluster, manifest)
+    plan["title"] = f"Back up {item['name']}"
+    if cluster.archive_location != "configured":
+        plan["blocked"].append("Backups need the archive location; Cluster… → Settings… sets it.")
+    if item["archived"]:
+        plan["notes"].append(f"Archived already; {_archive_words(item)}. {CHECK_LABEL} checks it again.")
+    else:
+        plan["steps"].append(_files_archive_step(cluster, item))
+    plan["footer"] = ["Nothing on the nodes changes. No archive is replaced or deleted."]
+    plan["done"] = f"{item['name']} is backed up"
+
+
+def _files_check_plan(cluster: Cluster, plan: dict, manifest: str) -> None:
+    item = loose_home(cluster, manifest)
+    plan["title"] = f"Check the archive of {item['name']}"
+    if cluster.archive_location != "configured":
+        plan["blocked"].append("Checking archives needs the archive location; Cluster… → Settings… sets it.")
+    if not item["archived"]:
+        plan["notes"].append(f"No archive recorded; {BACKUP_LABEL} makes one.")
+    else:
+        plan["steps"].append(_step(
+            "verify", f"Read the archive of {item['name']} ({_size(item['size'])}) and compare it with its expected "
+                      "file hashes. This can take a while; nothing is changed.",
+            ["./pulsar", "model", "archive", "verify", "--manifest", item["file"]], None,
+            {"manifest": item["id"], "changes": "nothing"}, authority=False, entries=cluster.entries))
+    plan["footer"] = ["Nothing is changed. If the archive does not match, Pulsar says so and the plan stops there."]
+    plan["done"] = f"the archive of {item['name']} matched its expected file hashes"
+
+
 def _pin_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     _spec(cluster, spec)
     name = cluster.name(spec)
@@ -1286,13 +1578,13 @@ def _pin_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     nodes = loose if pin else pinned
     where = cluster.hosts(nodes) or "its serving nodes"
     if pin:
-        plan["title"] = f"Keep {name} ready"
-        sentence = (f"Keep the copies of {name} on {where} ready: Pulsar marks them as kept (pins them), so Free up "
+        plan["title"] = f"Keep {name} on the cluster"
+        sentence = (f"Keep the copies of {name} on {where}: Pulsar marks them as kept (pins them), so Free up "
                     "space… never offers them and Purge refuses them until you stop keeping it. It checks them "
                     "first; nothing is copied or deleted.")
     else:
-        plan["title"] = f"Stop keeping {name} ready"
-        sentence = (f"Stop keeping the copies of {name} on {where} ready: Pulsar unmarks them (unpins them), so Free "
+        plan["title"] = f"Stop keeping {name}"
+        sentence = (f"Stop keeping the copies of {name} on {where}: Pulsar unmarks them (unpins them), so Free "
                     "up space… can offer to remove them. Nothing is deleted now.")
     verb = "pin" if pin else "unpin"
     plan["steps"].append(_step(verb, sentence, ["./pulsar", "model", verb, spec, "--yes"],
@@ -1300,10 +1592,10 @@ def _pin_plan(cluster: Cluster, plan: dict, spec: str) -> None:
                                {"spec": spec, "nodes": nodes, "changes": f"marks copies on {where}"},
                                authority=False, entries=cluster.entries))
     if not pinned and not loose:
-        plan["blocked"].append(f"{name} has no copies on its serving nodes to keep; Get a model ready ahead of time… "
+        plan["blocked"].append(f"{name} has no copies on its serving nodes to keep; {READY_LABEL} "
                                "makes them.")
     plan["footer"] = ["Nothing is copied or deleted."]
-    plan["done"] = f"{name} is kept ready" if pin else f"{name} is no longer kept ready"
+    plan["done"] = f"{name} is kept on the cluster" if pin else f"{name} is no longer kept"
 
 
 def _backup_plan(cluster: Cluster, plan: dict, spec: str) -> None:
@@ -1317,7 +1609,7 @@ def _backup_plan(cluster: Cluster, plan: dict, spec: str) -> None:
         what = _what(row, snapshot)
         if kind == "verified":
             plan["notes"].append(f"{what[0].upper() + what[1:]}: archived already, verified "
-                                 f"{age_text(age) if age is not None else '(age unknown)'}; Check the archives… checks "
+                                 f"{age_text(age) if age is not None else '(age unknown)'}; {CHECK_LABEL} checks "
                                  "it again.")
             continue
         location = homes.get(snapshot)
@@ -1348,7 +1640,7 @@ def _check_plan(cluster: Cluster, plan: dict, spec: str) -> None:
     for snapshot, (kind, _) in cluster.archives(spec).items():
         what = _what(row, snapshot)
         if kind not in ("verified", "present"):
-            plan["notes"].append(f"{what[0].upper() + what[1:]}: no archive recorded; Back up a model… makes one.")
+            plan["notes"].append(f"{what[0].upper() + what[1:]}: no archive recorded; {BACKUP_LABEL} makes one.")
             continue
         size = _size(cluster.snapshot_size(spec, snapshot))
         args = _snapshot_args(row, snapshot)
@@ -1432,6 +1724,10 @@ def assess(step: dict, preview: Any, rc: int = 0, names: NodeNames | None = None
         lines = plan_summary(action, {"model_id": "it"}, document, names=names)
         return "blocked", " ".join(line.removeprefix("Blocked: ").rstrip(".") for line in lines)
     inner = _plan_document(document)
+    if facts.get("manifest") and kind in ("remove", "move", "archive") \
+            and document.get("snapshot_manifest_id") != facts["manifest"]:
+        # The file selects the files; it was read again for this preview and may have changed.
+        return "differs", "its manifest file names other files now than when the plan was made"
     if kind == "purge":
         if inner.get("kind") != "pulsar-purge-plan":
             return "blocked", "Purge's preview did not return its plan"
@@ -1561,7 +1857,7 @@ def render(plan: dict, *, width: int | None = None) -> str:
             out.emit(line)
         projected = [index + 1 for index in plan.get("projected") or []]
         if projected:
-            # Look for model files' footer already says that each step checks first.
+            # Record model files' footer already says that each step checks first.
             checks = ("." if plan["intent"] == "find" else ": each step checks first, and Pulsar stops and asks "
                       "again if one is blocked or would do more than it says.")
             out.emit(f"{'Step' if len(projected) == 1 else 'Steps'} {_list([str(n) for n in projected])} "
@@ -1642,7 +1938,8 @@ def _cluster(args, entries: list[dict]) -> Cluster:
     if names.ring:
         from scripts.serve_plan import _saved_topology, _topology_id, ring_pairs
         ring = {"pairs": ring_pairs(_saved_topology(args.repo_root)), "topology_id": _topology_id(args.repo_root)}
-    return Cluster(entries, files, budget_nodes(args.budget), names=names, archive_location=location, **ring)
+    return Cluster(entries, files, budget_nodes(args.budget), names=names, archive_location=location,
+                   saved=saved_manifests(args.repo_root), **ring)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1702,8 +1999,12 @@ def main(argv: list[str] | None = None) -> int:
             if args.command == "page":
                 sys.stdout.write(page(cluster, width=width))
             elif args.command == "choices":
-                for action, label in page_choices(cluster):
-                    print(f"{action}\t{label}")
+                # ACTION, the label alone, then its card. Only the card's label carries styles
+                # (PULSAR_COLOR=always in menus), and the menu passes it to Gum without parsing it.
+                writer = TerminalWriter(width=width, stream=sys.stdout)
+                for action, label, card in page_cards(cluster, width,
+                                                      lambda line: writer.paint(line, ["choice"] * len(line))):
+                    print(f"{action}\t{label}\t{card}")
             elif args.command == "screen":
                 sys.stdout.write(intent_screen(cluster, args.intent, width=width))
             elif args.command == "options":

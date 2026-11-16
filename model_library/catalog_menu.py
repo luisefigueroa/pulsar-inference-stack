@@ -1710,7 +1710,7 @@ def blocked_choices(plan: dict, entries: list[dict]) -> list[tuple[str, str, str
     earlier saved cluster, which Stop refuses, gets no choice: its fix is to
     remove it (or its mount) with Docker, which the menu never does.
     Neither does a folder at a prepared copy's path that no record names: the
-    fix names Look for model files Pulsar has no record of…, which takes it
+    fix names Record model files found on the nodes…, which takes it
     over after checking every file (D7), or the operator removes it outside
     Pulsar.
     """
@@ -1739,8 +1739,8 @@ def _amount(size: object, count: object, unknown: str) -> str:
 # Inside the menu, the fix for a folder no record names names the choice that
 # takes it over (D7), not Prepare's flag: no menu Prepare passes the flag
 # except that choice's own approved step.
-UNRECORDED_MENU_FIX = ("Pulsar has no record of this folder and never deletes files it did not record. Look for "
-                       "model files Pulsar has no record of… on Models and disk space… checks every file and takes "
+UNRECORDED_MENU_FIX = ("Pulsar has no record of this folder and never deletes files it did not record. Record "
+                       "model files found on the nodes… on Models and disk space… checks every file and takes "
                        "it over if all of them match; if it is not needed, remove it outside Pulsar.")
 
 

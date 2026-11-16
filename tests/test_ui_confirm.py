@@ -979,9 +979,12 @@ class BundledGumModels(BundledGum):
                 self.assertEqual(code, 0, output)
                 screen = views(output, 24, columns)[-2]
                 text = "\n".join(screen)
+                # 24 rows do not hold the page and each choice's second line, so the labels stand alone.
                 for line in ("Models and disk space · checked less than a minute ago", "Models and disk space",
-                             "> Free up space…", "  Keep a model ready…", "  Back"):
+                             "> Download a model that has no recipe yet…", "  Keep a model on the cluster…",
+                             "  Free up space…", "  Back"):
                     self.assertIn(line, screen, text)
+                self.assertNotIn("    files and hashes only, to one node", screen, text)
                 self.assertTrue(any(line.startswith("Room      spark-1  2.00 TiB free") for line in screen), text)
                 self.assertTrue(any(line.startswith("Models    org/model · 212 GiB") for line in screen), text)
                 self.assertNotIn("\x1b[?1049h", output)
@@ -989,12 +992,57 @@ class BundledGumModels(BundledGum):
                 self.assertEqual((root / "pulsar.log").read_text().splitlines(),
                                  ["model files --json", "model budget --json"])
 
+    def test_with_room_each_choice_has_its_second_line_and_a_blank_line_ends_each_group(self):
+        root, script = self.fixture()
+        for columns, rows in ((80, 40), (60, 40), (44, 46)):
+            with self.subTest(columns=columns):
+                code, output = self.drive(script, b"\x1b", ready=b"Look again", columns=columns, rows=rows)
+                self.assertEqual(code, 0, output)
+                screen = views(output, rows, columns)[-2]
+                text = "\n".join(screen)
+                menu = screen[screen.index("↑/↓ move · enter choose · esc back") + 1:]
+                menu = menu[:menu.index("  Back") + 1]
+                self.assertEqual(menu, ["> Download a model that has no recipe yet…",
+                                        "    files and hashes only, to one node",
+                                        "  Get a model with a recipe ready to serve…",
+                                        "    files, copies and image; nothing starts",
+                                        "",
+                                        "  Keep a model on the cluster…",
+                                        "    Free up space never removes it",
+                                        "",
+                                        "  Free up space…",
+                                        "    remove a model's files or move them",
+                                        "",
+                                        "  Record model files found on the nodes…",
+                                        "    files Pulsar has no record of",
+                                        "  Look again (checks nodes now)",
+                                        "  Back"], text)
+                # The page stays on screen above its choices.
+                self.assertTrue(any(line.startswith("Room      spark-1  2.00 TiB free") for line in screen), text)
+                self.assertTrue(all(len(line) <= columns for line in screen))
+                # Without colour a label is bold and its second line is plain: the two differ by
+                # more than their place.
+                self.assertIn("\x1b[1mDownload a model that has no recipe yet…\x1b[0m", output)
+                self.assertIn("\x1b[1mBack\x1b[0m", output)
+                self.assertNotIn("\x1b[1m    files and hashes only", output)
+                self.assertNotIn("\x1b[1mfiles and hashes only", output)
+
+    def test_a_choice_with_a_second_line_is_one_cursor_stop(self):
+        root, script = self.fixture()
+        # Three moves down from the first choice reach Free up space…, the fourth choice.
+        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\r", ready=b"Look again", rows=40,
+                                  then=[(b"> Remove org/model from the cluster", b"\x1b"),
+                                        (b"Look again", b"\x1b")])
+        self.assertEqual(code, 0, output)
+        self.assertTrue(any("What can go, largest gain first:" in shot for shot in views(output, 40, 80)), output)
+        self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["model files --json", "model budget --json"])
+
     def download_screens(self, columns):
         """Download a model that has no recipe yet…, typed and then cancelled: (root, exit, output)."""
         from tests.test_models_menu import NEW, acquire_plan  # noqa: PLC0415
         root, script = self.fixture()
         (root / "fixtures" / "acquire-plan.json").write_text(json.dumps(acquire_plan()))
-        code, output = self.drive(script, b"\x1b[B\x1b[B\r", ready=b"Look again", columns=columns,
+        code, output = self.drive(script, b"\r", ready=b"Look again", columns=columns,
                                   then=[(b"Which model on Hugging Face?", NEW.encode() + b"\r"),
                                         (b"Which commit, branch or tag", b"main\r"),
                                         (b"Which node should keep the files?", b"\x1b[B\r"),
@@ -1029,10 +1077,10 @@ class BundledGumModels(BundledGum):
 
     def test_a_free_up_space_plan_prints_above_its_choices_with_the_cursor_on_cancel(self):
         root, script = self.fixture()
-        code, output = self.drive(script, b"\r", ready=b"Look again",
+        code, output = self.drive(script, b"\x1b[B\x1b[B\x1b[B\r", ready=b"Look again",
                                   then=[(b"> Remove org/model from the cluster", b"\x1b[B\r"), (b"> Cancel", b"\x1b"),
                                         (b"> Remove org/model from the cluster", b"\x1b"),
-                                        (b"> Free up space", b"\x1b")])
+                                        (b"> Download a model", b"\x1b")])
         self.assertEqual(code, 0, output)
         plan = next(shot for shot in views(output, 24, 80) if "> Cancel" in shot)
         text = "\n".join(plan)

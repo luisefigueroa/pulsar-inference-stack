@@ -240,12 +240,12 @@ below are for reading.
 | Models: past its reserve | The node's disk is below its storage budget's reserve by that amount. **Free up space…** offers to move a home off it when another node has room. |
 | Models: not checked, so its files and room are unknown | The node did not answer the scan, so what is on it is unknown, not absent. Removing, moving or keeping files needs every node, so **Free up space…** offers nothing until it answers; choose **Look again**. |
 | Models: home on, (also its copy there) | Where the model's *home* is: the copy Pulsar downloaded or restored and keeps, from which serving nodes are given copies. *also its copy there* means that node serves straight from the home. |
-| Models: copies on, no copies on serving nodes | The serving nodes that hold a *prepared copy* of the model, the files a service reads there; or none yet. **Get a model ready ahead of time…** makes them. |
+| Models: copies on, no copies on serving nodes | The serving nodes that hold a *prepared copy* of the model, the files a service reads there; or none yet. **Get a model with a recipe ready to serve…** makes them. |
 | Models: ready to start (checked … ago) | **Serve a model…**'s *ready to start*, with the same age of the saved check it comes from. The scan on this page lists the files and does not repeat that check, so the age in the page's first line is the scan's, not the check's. `./pulsar models check SPEC` (**Check now** in the catalog menu) saves a new check. `check time unknown` stands for the age when the saved check's time cannot be read. |
-| Models: files not found on …, files could not be checked on … | The last saved check found the model ready to start, but the scan on this page is newer. It did not find a home or a copy that Pulsar's records name on that node; or it could not check one there, because the node did not answer or the folder could not be read as a complete copy. The page says so instead of *ready to start*. A record on a machine outside the saved membership does not count. Could not be checked is unknown, not absent: choose **Look again** once the node answers. **Serve a model…** and **Get a model ready ahead of time…** check the files again when they make a plan, and the plan names what is in the way. |
-| Models: kept, not kept | Whether the model's copies are kept ready (pinned): **Free up space…** never offers a kept model and Purge refuses it. **Keep a model ready…** keeps it or stops keeping it. |
+| Models: files not found on …, files could not be checked on … | The last saved check found the model ready to start, but the scan on this page is newer. It did not find a home or a copy that Pulsar's records name on that node; or it could not check one there, because the node did not answer or the folder could not be read as a complete copy. The page says so instead of *ready to start*. A record on a machine outside the saved membership does not count. Could not be checked is unknown, not absent: choose **Look again** once the node answers. **Serve a model…** and **Get a model with a recipe ready to serve…** check the files again when they make a plan, and the plan names what is in the way. |
+| Models: kept, not kept | Whether the model's copies are kept (pinned): **Free up space…** never offers a kept model and Purge refuses it. **Keep a model on the cluster…** keeps it or stops keeping it. |
 | Models: archived, verified … ago | Every required set of the model's files has an archive, with the age of its last verification. A removed model comes back from it without the internet. |
-| Models: partly archived, archive seen, not verified, no archive recorded | Only some of its files have a verified archive; an archive was seen at the last check but not verified; or Pulsar has no record of an archive. **Back up a model…** makes the missing ones; **Check the archives…** verifies them. |
+| Models: partly archived, archive seen, not verified, no archive recorded | Only some of its files have a verified archive; an archive was seen at the last check but not verified; or Pulsar has no record of an archive. **Back up a model to the archive…** makes the missing ones; **Check the archive copies…** verifies them. |
 | Models: in use by a container | A container mounts the model's files, even a stopped one. **Free up space…** does not offer them; **Running services…** stops a Pulsar service, and Pulsar never removes a container it did not start. |
 | Models: no recipe in this catalog uses these files | Files on the nodes that no catalog recipe needs, such as a model downloaded before it has a recipe. The page names them read-only; with their manifest file, `./pulsar model remove --manifest FILE --plan` and `./pulsar model archive create --manifest FILE --plan` select them. |
 | Models: size unknown | The size could not be read, for example of a copy that never finished. It is not zero. |
@@ -254,7 +254,7 @@ below are for reading.
 | Disk: not observed yet, saved budget unreadable | No storage budget is saved yet, or it could not be read. **Models and disk space…** reads one. |
 | Attention: the archive location setting could not be read | The archive location setting in `.env` or the environment is not a readable literal path. **Cluster…** → **Settings…** says where it is set. |
 | Attention: and … more | More items need attention than home shows; **Cluster…** shows them all. |
-| Attention: no model has files recorded yet | No recipe in the catalog has a *home* recorded, from Pulsar's saved records alone; the nodes may still hold model files, for example after the controller's records were lost. **Models and disk space…** → **Look for model files Pulsar has no record of…** scans the nodes and records what verifies. |
+| Attention: no model has files recorded yet | No recipe in the catalog has a *home* recorded, from Pulsar's saved records alone; the nodes may still hold model files, for example after the controller's records were lost. **Models and disk space…** → **Record model files found on the nodes…** scans the nodes and records what verifies. |
 | State: candidate | A label the maintainer sets: the spec is published with no claim yet about its quality or readiness. It is not a test result and does not affect serving. |
 | State: measured or released | A label the maintainer set by hand after review. It is not a test result itself; **Published results** shows the measurements. |
 | Review: experimental, stable, validated or failed | An advisory review the maintainer recorded, with its date. Launch checks still apply. |
@@ -832,8 +832,13 @@ unknown, not absent: the plan says the archive was not read in full, and
 <spec-id>` is unchanged, so a download chosen in place of a restore still runs.
 
 While no spec names the files, select them with the saved manifest:
-`./pulsar model archive create --manifest <file> --plan` backs them up and
-`./pulsar model remove --manifest <file> --plan` removes the home.
+`./pulsar model archive create --manifest <file> --plan` backs them up,
+`./pulsar model archive verify --manifest <file>` checks that archive,
+`./pulsar model move --manifest <file> --node <hostname> --plan` moves the home
+and `./pulsar model remove --manifest <file> --plan` removes it. In the menu,
+**Models and disk space…** offers the same four for a home whose manifest is
+saved under `.pulsar/manifests/` of the checkout; see
+[files that no recipe uses](#files-that-no-recipe-uses).
 
 In the menu this is **Models and disk space… → Download a model that has no
 recipe yet…**. It asks for the model, the commit, branch or tag, and the node,
@@ -890,8 +895,8 @@ for a large model, and records the folder as that rank's prepared copy only
 when every file matches. A folder that does not match is left as it is: nothing
 in it is deleted, moved or written, and Prepare exits 1. If the run is
 interrupted after a node recorded the folder, the next Prepare reuses that
-record, as after an interrupted copy. In the menu, **Look for model files Pulsar
-has no record of…** on **Models and disk space…** lists each such folder as its
+record, as after an interrupted copy. In the menu, **Record model files found
+on the nodes…** on **Models and disk space…** lists each such folder as its
 own step; Serve and Get ready never take a folder over on their own. When the
 folder is not needed, remove it outside Pulsar, then prepare again, which copies
 and verifies the files.
@@ -1234,12 +1239,13 @@ verifies existing bytes or a transfer before changing the home record.
 Archives and restoration run in the foreground; failures remain explicit.
 No background archive-job or receipt-recovery service is required.
 
-In the menu, **Models and disk space… → Back up a model…** covers every
+In the menu, **Models and disk space… → Back up a model to the archive…** covers every
 required snapshot of a model in one plan: one `archive create` step per
 snapshot that has no verified archive, each with its own preview at its turn.
 Snapshots already archived are named and left alone, since an existing archive
 is never replaced, and a snapshot with no home blocks the plan. **Check the
-archives…** is one plan of `archive verify` steps, one per archived snapshot.
+archive copies…** is one plan of `archive verify` steps, one per archived
+snapshot.
 Both need the archive location; without it the page says where it is set. A
 home moves from the menu only as **Free up space…**'s `Move the files of …`
 line, when a node is past its reserve and another has room; see
@@ -1288,8 +1294,8 @@ node's records were lost with the controller's, Prepare stops at that folder;
 hashing every file, and never changes a folder that does not match (see
 [Prepare all serving nodes](#prepare-all-serving-nodes)).
 
-From the menu, **Models and disk space…** → **Look for model files Pulsar has
-no record of…** does both from one scan: a step per home folder found, through
+From the menu, **Models and disk space…** → **Record model files found on the
+nodes…** does both from one scan: a step per home folder found, through
 Download's reuse, then a step per recipe whose copies no record names, with
 what it cannot record and why. Home's **Attention** line suggests it while no
 model has its files recorded; see [Models and disk
@@ -1386,7 +1392,7 @@ model from its serving nodes (Purge), removing it from the cluster (Purge, then
 Remove home, with its archive state said and an offer to back it up first),
 moving a home off a node past its reserve, and clearing unfinished copies.
 What cannot go is listed with its reason: a serving model, a kept model, a
-shared copy, or a container Pulsar did not start. **Keep a model ready…** is
+shared copy, or a container Pulsar did not start. **Keep a model on the cluster…** is
 Pin and Unpin by that name. See [Models and disk space…](#models-and-disk-space).
 
 ### Pin or reclaim prepared copies
@@ -1505,7 +1511,7 @@ unregistered files with no catalog spec are *view only*: the page is all the
 menu shows for them, and discovery does not authorize deletion. A prepared copy
 whose records were lost appears as a copy marked *not in Pulsar's records*.
 Pulsar never deletes it; if Prepare for its spec is blocked by that folder,
-**Look for model files Pulsar has no record of…** takes it over after checking
+**Record model files found on the nodes…** takes it over after checking
 every file, or remove it outside Pulsar when it is not needed (see
 [Prepare all serving nodes](#prepare-all-serving-nodes)).
 
@@ -1565,7 +1571,7 @@ remain explicit decisions.
 | Pinned image missing | `./pulsar image check <spec-id> --node <node>` | Review [image staging](#check-and-stage-the-image) for the same spec and nodes. |
 | Model files missing or not prepared | `./pulsar model info <spec-id> --node <node>` | Acquire or restore missing homes, then prepare every required snapshot and rank. |
 | Too little storage | `./pulsar model budget` and the operation's `--plan` | Review [storage cleanup](#stop-and-reclaim-storage); a preview does not reserve capacity. |
-| Prepare blocked by a folder that no Pulsar record names | `./pulsar model prepare <spec-id> --plan`, which names the node and the folder | Inspect the folder on that node. To keep its files, prepare with `--adopt-unrecorded` (in the menu, **Look for model files Pulsar has no record of…**), which records it only if every file matches; if it is not needed, remove it outside Pulsar, then prepare again. Purge cannot remove it; see [Prepare all serving nodes](#prepare-all-serving-nodes). |
+| Prepare blocked by a folder that no Pulsar record names | `./pulsar model prepare <spec-id> --plan`, which names the node and the folder | Inspect the folder on that node. To keep its files, prepare with `--adopt-unrecorded` (in the menu, **Record model files found on the nodes…**), which records it only if every file matches; if it is not needed, remove it outside Pulsar, then prepare again. Purge cannot remove it; see [Prepare all serving nodes](#prepare-all-serving-nodes). |
 | Insufficient memory or a memory warning | `./pulsar inventory` and the failed start's memory report | Insufficient memory blocks start. `--accept-memory-warn` acknowledges only a warning; see [memory estimates](MEMORY_ESTIMATES.md) for the optional exact-spec estimate. |
 | Existing service or port in use | `./pulsar inventory` and `./pulsar status <spec-id>` | Identify the owner; stopping, replacement, and a deployment-port change are separate choices. |
 | `guard_unsupported` | `./pulsar models show <spec-id>` | Use the separately scoped [guarded serving](GUARDED_SERVING.md) procedure. |
@@ -1708,8 +1714,8 @@ continuations, so it fits on an 80×24 terminal with the menu (see the
   only down, a blocking issue the last check found, or an archive location
   setting that cannot be read. It shows two items and counts the rest; the
   last one names where to look. When no catalog recipe has a home recorded, a
-  last row suggests **Models and disk space… → Look for model files Pulsar has
-  no record of…**; more than two other items then show one and count the
+  last row suggests **Models and disk space… → Record model files found on the
+  nodes…**; more than two other items then show one and count the
   rest, so the block still fits 80×24. It comes from the catalog's saved records: an empty
   or unreadable catalog suggests nothing.
 
@@ -1805,7 +1811,7 @@ needs, which the operator approves once.
    GPU memory, so the plan names them in a note, leaves them alone and stays
    runnable; Start checks the port and memory itself. GPU processes Pulsar did
    not start are notes too. A plan that only gets the model ready (**Get it
-   ready, but do not start**, or **Get a model ready ahead of time…**) starts
+   ready, but do not start**, or **Get a model with a recipe ready to serve…**) starts
    nothing, so none of these block it or are named in it.
    Steps whose preview cannot run yet (Prepare before a home exists, Start
    after a blocking check) are named as estimates. A memory warning that
@@ -1928,22 +1934,32 @@ start* is the result of the last saved check, which the scan does not repeat,
 so it carries that check's own age. Where the scan, which is newer, did not
 find a home or a copy that the records name, or could not check one, the page
 says `files not found on NODE` or `files could not be checked on NODE`
-instead. Files no catalog recipe uses are named read-only. A node that did not
+instead. Files no catalog recipe uses are named with their archive state; see
+[files that no recipe uses](#files-that-no-recipe-uses). A node that did not
 answer is unknown, not absent, and since Purge, Remove home, Move home and Pin
 need every node, nothing that changes files is offered while one does not
 answer. Without an archive location the page says that **Cluster… →
-Settings…** sets it instead of offering **Back up a model…** and **Check the
-archives…**.
+Settings…** sets it instead of offering **Back up a model to the archive…** and
+**Check the archive copies…**.
+
+The choices follow a model's life on the cluster, in four groups with a blank
+line between them: bring its files, protect them, make room, then look at what
+is there. A choice whose label cannot say what it does has a second line under
+it, indented, in lower case: `files and hashes only, to one node` under
+**Download a model that has no recipe yet…**. A choice and its second line are
+one cursor stop. When the terminal is too short for the page and these lines
+together, the labels are shown alone, so the page stays above its choices; when
+it is too short for the labels too, the page opens in the pager first.
 
 | Choice | Does | Same as |
 | --- | --- | --- |
-| **Free up space…** | What can go, largest gain first, each with what it frees and what it costs to get back; then what cannot go and why. Each line opens its plan. | `./pulsar model purge SPEC`, `model remove SPEC`, `model move SPEC --node NODE` |
-| **Get a model ready ahead of time…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. A change found on entry opens Review with **Get it ready on the cluster as saved**, never a Stop to save it, since nothing would start after it. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
 | **Download a model that has no recipe yet…** | Asks for the model on Hugging Face, the commit, branch or tag, and the node; shows the command's own preview and starts on **Cancel**; then downloads and checks the files, or keeps files already on that node, and saves their manifest. The command refuses a second copy before it downloads; see [Download a model before it has a spec](#download-a-model-before-it-has-a-spec). | `./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --manifest-out FILE --yes` |
-| **Keep a model ready…** | **Keep MODEL ready** marks its copies as kept so **Free up space…** never offers them; **Stop keeping MODEL ready** lifts it. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
-| **Back up a model…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME` |
-| **Check the archives…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME` |
-| **Look for model files Pulsar has no record of…** | One plan from the same scan: record each home folder found through Download's own reuse, then take over each recipe's copies no record names after checking every file; what neither can record is listed with why. | `./pulsar model acquire SPEC --node NODE`, `./pulsar model prepare SPEC --adopt-unrecorded` |
+| **Get a model with a recipe ready to serve…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. A change found on entry opens Review with **Get it ready on the cluster as saved**, never a Stop to save it, since nothing would start after it. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
+| **Keep a model on the cluster…** | **Keep MODEL on the cluster** marks its copies as kept (pins them) so **Free up space…** never offers them; **Stop keeping MODEL** lifts it. Nothing is copied or deleted. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
+| **Back up a model to the archive…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME`, or `--manifest FILE` |
+| **Check the archive copies…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME`, or `--manifest FILE` |
+| **Free up space…** | What can go, largest gain first, each with what it frees and what it costs to get back; then what cannot go and why. Each line opens its plan. | `./pulsar model purge SPEC`, `model remove SPEC`, `model move SPEC --node NODE`; with `--manifest FILE` in place of `SPEC` for files no recipe uses |
+| **Record model files found on the nodes…** | One plan from the same scan: record each home folder found through Download's own reuse, then take over each recipe's copies no record names after checking every file; what neither can record is listed with why. | `./pulsar model acquire SPEC --node NODE`, `./pulsar model prepare SPEC --adopt-unrecorded` |
 | **Look again (checks nodes now)** | A new scan and budget. | `./pulsar model files`, `./pulsar model budget` |
 
 **Free up space…** lists outcomes, not operations:
@@ -1975,14 +1991,46 @@ archives…**.
 
 Under them, what cannot go, with its reason and the choice that lifts it: a
 serving model (stop it through **Running services…**), a kept model (**Stop
-keeping MODEL ready**, its own plan), copies another recipe shares (their files
+keeping MODEL**, its own plan), copies another recipe shares (their files
 stay), a container Pulsar did not start that mounts the files (named,
 read-only), a model whose copies could not all be checked on a node that
 answered (what it would free there is unknown, so nothing is offered for it),
-unfinished downloads no record names, and files no catalog recipe uses. Nothing that is kept stops being kept on its
-own, no archive is deleted, and no file Pulsar has no record of is deleted.
+unfinished downloads no record names, and files no catalog recipe uses when
+their home cannot go. Nothing that is kept stops being kept on its own, no
+archive is deleted, and no file Pulsar has no record of is deleted.
 
-**Look for model files Pulsar has no record of…** is for files the nodes hold
+#### Files that no recipe uses
+
+A model downloaded before it has a recipe, or one whose recipe left the
+catalog, has a home that no catalog recipe names. The page shows it as `MODEL @
+COMMIT`, with its size, its node and its archive state. Without a recipe a
+command selects these files with `--manifest FILE`, so the page offers a choice
+for them only when a valid manifest of the same files is saved under
+`.pulsar/manifests/` of the checkout, where **Download a model that has no
+recipe yet…** saves it:
+
+- **Free up space…** offers `Remove MODEL @ COMMIT from the cluster: frees
+  SIZE`, one Remove home step. It says whether a verified archive brings the
+  files back, and without one its plan offers **Back it up first, then remove
+  it**. A node past its reserve also gets `Move the files of MODEL @ COMMIT
+  from NODE to NODE`; with no recipe, any node with room can keep them.
+- **Back up a model to the archive…** offers `Back up MODEL @ COMMIT` while no
+  archive is recorded, and **Check the archive copies…** offers `Check the
+  archive of MODEL @ COMMIT` once one is.
+
+Each step runs its own preview when its turn comes. The manifest file is read
+again then, and a step stops before it changes anything when the file names
+other files than when the plan was made. The home stays, with the reason said,
+while copies made for a recipe outside the catalog use it, a container mounts
+it, or its files or containers could not be checked. Without the saved file
+the page says so and offers nothing for these files. **Download a model that
+has no recipe yet…** saves the file: chosen for the same model, commit and
+node, it keeps the files that are there and downloads nothing. The saved
+manifest file is never deleted. To get removed files back from their archive,
+choose **Download a model that has no recipe yet…** for the same model and
+commit: the command refuses the download and names the restore command.
+
+**Record model files found on the nodes…** is for files the nodes hold
 that Pulsar's records do not name, for example after the controller's records,
 or a node's, were lost. Home's **Attention** line suggests it when membership
 is saved and no catalog recipe has a home recorded. It reads the same scan as
@@ -2010,11 +2058,12 @@ with why and what gets the model back: the same files found on two nodes
 (Download records one home), files that could not be read as a complete copy,
 a copy whose model has no home to record it against, a copy on a node that
 does not serve its recipe, files and copies of recipes outside this catalog,
-and unfinished downloads or copies. **Get a model ready ahead of time…**
-restores or downloads a model instead. A node that did not answer is named:
-its files are unknown, not absent, and nothing is offered there. Nothing is
-downloaded, deleted or moved. When **Serve a model…** or **Get a model ready
-ahead of time…** meets such a copy, its plan stops and names this choice.
+and unfinished downloads or copies. **Get a model with a recipe ready to
+serve…** restores or downloads a model instead. A node that did not answer is
+named: its files are unknown, not absent, and nothing is offered there. Nothing
+is downloaded, deleted or moved. When **Serve a model…** or **Get a model with
+a recipe ready to serve…** meets such a copy, its plan stops and names this
+choice.
 
 Every plan has the form **Serve a model…**'s has: the steps and what each
 changes, a sentence on what stays and what a failure leaves, **Cancel** where

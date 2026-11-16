@@ -2343,7 +2343,7 @@ class PlanSummary(unittest.TestCase):
         # Inside the menu the fix names the choice that takes it over, not Prepare's flag (D7).
         detail["fix"] = UNRECORDED_DESTINATION_FIX
         text = " ".join(self.summary("prepare", plan))
-        self.assertIn("Look for model files Pulsar has no record of… on Models and disk space… checks every file "
+        self.assertIn("Record model files found on the nodes… on Models and disk space… checks every file "
                       "and takes it over if all of them match", text)
         self.assertNotIn("--adopt-unrecorded", text)
 

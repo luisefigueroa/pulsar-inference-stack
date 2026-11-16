@@ -8,28 +8,46 @@
 # reuses them until a plan runs or Look again is chosen, so no screen probes
 # twice in a row. A node that did not answer makes its files and room
 # unknown, not absent, and nothing destructive is offered while it does not
-# answer (scripts/models_page.py). The choices:
-#   Free up space…      what can go, largest gain first, each with what it
-#                       frees and what it costs to get back, then what cannot
-#                       go and why: model purge, model remove, model move
-#   Get a model ready ahead of time…
-#                       Serve a model…'s plan without its Start
-#                       (scripts/serve-menu.sh --ready)
+# answer (scripts/models_page.py). The choices follow a model's life on the
+# cluster, in four groups. Each is here because the page's own words send the
+# operator to it; only Get a model with a recipe ready to serve… is also
+# reached another way (Serve a model…, without its Start):
 #   Download a model that has no recipe yet…
 #                       model acquire --model-id ORG/NAME --model-commit COMMIT:
 #                       it asks the model, the commit and the node, shows the
 #                       command's own preview, then runs it with the exact
 #                       commit and saves the manifest (scripts/download_page.py).
 #                       The command refuses a second copy before it downloads.
-#   Keep a model ready… model pin, or model unpin to stop keeping it
-#   Back up a model…    model archive create, one step per required snapshot
-#   Check the archives… model archive verify, one step per archived snapshot
-#   Look for model files Pulsar has no record of…
+#   Get a model with a recipe ready to serve…
+#                       Serve a model…'s plan without its Start
+#                       (scripts/serve-menu.sh --ready)
+#
+#   Keep a model on the cluster…
+#                       model pin, or model unpin to stop keeping it
+#   Back up a model to the archive…
+#                       model archive create, one step per required snapshot
+#   Check the archive copies…
+#                       model archive verify, one step per archived snapshot
+#
+#   Free up space…      what can go, largest gain first, each with what it
+#                       frees and what it costs to get back, then what cannot
+#                       go and why: model purge, model remove, model move
+#
+#   Record model files found on the nodes…
 #                       one plan from the same scan: model acquire (Download's
 #                       own reuse; it never downloads) for each home folder
 #                       found, then model prepare --adopt-unrecorded for each
 #                       recipe's copies no record names (the only choice that
 #                       passes that flag), and what neither can record, with why
+#   Look again (checks nodes now)
+# A choice whose label cannot say what it does has a second line under it
+# (scripts/models_page.py HINTS), and a blank line ends each group; on a
+# terminal too short for the page and those lines, the labels stand alone.
+# A home that no recipe in the catalog uses, as Download a model that has no
+# recipe yet… leaves it, is reached by Free up space…, Back up… and Check… with
+# the manifest file saved under .pulsar/manifests (--manifest FILE in place of
+# a spec); without that file the page says so, names the choice that saves
+# it, and offers nothing for it.
 # Back up and Check need the archive location; without one the page says where
 # it is set instead of offering them. Each plan lists its steps and what each
 # changes, starts on Cancel, runs each step's own preview when its turn comes
@@ -56,10 +74,11 @@ require_gum "Models and disk space…" \
   "./pulsar model pin SPEC --plan" "keep a model ready (model unpin stops keeping it); then --yes" \
   "./pulsar model archive create SPEC --plan" "back up a model; then --yes" \
   "./pulsar model archive verify SPEC" "check a model's archives" \
-  "./pulsar model prepare SPEC --plan" "get a model ready ahead of time; then --yes" \
-  "./pulsar model acquire SPEC --node NODE --plan" "look for model files: record a home found with no record; then --yes" \
+  "./pulsar model prepare SPEC --plan" "get a model with a recipe ready to serve; then --yes" \
+  "./pulsar model acquire SPEC --node NODE --plan" "record model files found on the nodes: a home with no record; then --yes" \
   "./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --plan" "download a model that has no recipe yet; then --manifest-out FILE --yes" \
-  "./pulsar model prepare SPEC --adopt-unrecorded --plan" "look for model files: take over a copy no record names; then --yes"
+  "./pulsar model remove --manifest FILE --plan" "remove files no recipe uses (also: model move, model archive create); then --yes" \
+  "./pulsar model prepare SPEC --adopt-unrecorded --plan" "record model files found on the nodes: take over a copy no record names; then --yes"
 ui_keep_styles
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-models.XXXXXX")
@@ -115,9 +134,15 @@ view() { models "$@" "${READ[@]}"; }
 # line, the screen, Gum's choices and its five rows), else in the pager. The
 # pager runs an executable and renders at its own width.
 show() {
-  local count="$1" screen lines rows rc=0
+  local count="$1" screen
   shift
   screen=$(models "$@") || return 1
+  show_screen "$count" "$screen" "$@"
+}
+# show_screen CHOICE_ROWS SCREEN ARGS...: SCREEN, which ARGS printed, shown as show does.
+show_screen() {
+  local count="$1" screen="$2" lines rows rc=0
+  shift 2
   lines=$(printf '%s\n' "$screen" | wc -l)
   if rows=$(_ui_terminal_rows) && [ $((lines + 1 + count + 5)) -gt "$rows" ]; then
     page_output "" python3 -m scripts.models_page "$@" --repo-root "$REPO_DIR" || rc=$?
@@ -383,18 +408,32 @@ while true; do
     forget
     continue
   fi
-  actions=() labels=()
-  while IFS=$'\t' read -r action label; do actions+=("$action"); labels+=("$label"); done < <(view choices)
-  show "${#labels[@]}" page "${READ[@]}" || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
+  # Each choice is a card: its label, a second line where the label cannot say what it does, and
+  # a blank line after the last choice of a group. When the page and the cards do not fit the
+  # terminal's rows together but the page and the labels alone do, the labels alone are shown,
+  # so the page stays on screen above its choices.
+  actions=() labels=() cards=()
+  while IFS=$'\t' read -r action label card; do
+    actions+=("$action"); labels+=("$label"); cards+=("${card//$'\x1f'/$'\n'}")
+  done < <(view choices)
+  screen=$(view page) || screen=""
+  lines=$(printf '%s\n' "$screen" | wc -l)
+  card_rows=$(choice_rows "${cards[@]}")
+  if ! rows=$(_ui_terminal_rows) || [ $((lines + 1 + card_rows + 5)) -le "$rows" ] \
+      || [ $((lines + 1 + ${#labels[@]} + 5)) -gt "$rows" ]; then
+    labels=("${cards[@]}")
+  fi
+  [ -z "$screen" ] || show_screen "$(choice_rows "${labels[@]}")" "$screen" page "${READ[@]}" \
+    || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
   choice=$(choose_index "Models and disk space" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   rc=0
   case "${actions[$choice]}" in
     free) intent_page free "Free up space" || rc=$? ;;
-    keep) intent_page keep "Keep a model ready" || rc=$? ;;
-    backup) intent_page backup "Back up a model" || rc=$? ;;
-    check) intent_page check "Check the archives" || rc=$? ;;
+    keep) intent_page keep "Keep a model on the cluster" || rc=$? ;;
+    backup) intent_page backup "Back up a model to the archive" || rc=$? ;;
+    check) intent_page check "Check the archive copies" || rc=$? ;;
     # One plan from the page's scan: what it can record, then what it cannot.
-    find) plan_page "Look for model files" find || rc=$? ;;
+    find) plan_page "Record model files" find || rc=$? ;;
     download)
       download_page || rc=$?
       [ "$rc" -eq 130 ] || rc=0 ;;

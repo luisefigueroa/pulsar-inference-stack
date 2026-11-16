@@ -44,6 +44,27 @@ Rewording changes only human output; JSON fields and values stay stable. The
 [pulsar-terminal-output skill](../skills/pulsar-terminal-output/SKILL.md#words) holds the
 working rules, and a test fails when a printable status word has no legend row.
 
+## Menu choices in the order of use, explained in place
+
+A menu's choices follow the order in which an operator uses them, in groups
+with a blank line between: on **Models and disk space…**, bring a model's
+files, protect them, make room, then look at what is there. This replaces an
+earlier order that put **Free up space…** first on the assumption that a full
+disk brings the operator to the page. Every choice needs a purpose an operator
+would name, a function no other choice of that menu has, and a label that says
+what it does to someone who does not know the operations behind it (pin, purge,
+prepare). A choice may repeat one of another menu when the page's own words
+send the operator to it, as **Get a model with a recipe ready to serve…**
+repeats a step of **Serve a model…**. Where
+a label cannot, the choice has one second line under it, as a status word has
+its hint (NN/g heuristics #6 and #10): indented, in lower case, at most 40
+characters, and plain while the label is bold, so the two differ without
+color. A second line is never a paragraph, and a choice whose label says it all
+has none. The page keeps priority over these lines: a terminal too short for
+both shows the labels alone. The
+[pulsar-terminal-output skill](../skills/pulsar-terminal-output/SKILL.md#menus)
+holds the working rules.
+
 ## Spec-contract refactor
 
 Schema 2 extends immutable recipe identity to supported container settings.
