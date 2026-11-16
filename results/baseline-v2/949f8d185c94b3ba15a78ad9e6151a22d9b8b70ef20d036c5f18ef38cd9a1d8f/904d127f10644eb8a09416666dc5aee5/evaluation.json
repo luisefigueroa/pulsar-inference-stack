@@ -1,0 +1,156 @@
+{
+  "diagnostics": {
+    "compare-captures": {
+      "compare-captures": {
+        "diagnostic_verdict": "divergent",
+        "exact_text_count": 26,
+        "hard_disagreement_count": 1,
+        "identical_record_count": 26,
+        "max_matched_prefix_logprob_delta": "0.221568",
+        "mean_prefix_match": "0.885417",
+        "min_prefix_match": "0",
+        "sample_count": 30,
+        "source_digests": {
+          "a": "da41b95c8bd8cfb4152e43bbda718ccb21015f0b90464bdb597db1a8d69d16e5",
+          "b": "825d04ea0a0924928f58753b14c3b197366df8a7492e9c41b97cda05b56b55c7"
+        }
+      },
+      "completion": "complete",
+      "kind": "pulsar-validator-measurement",
+      "operation": "compare-captures",
+      "program": "validate/compare_captures.py",
+      "reason": "completed",
+      "schema_version": 1
+    }
+  },
+  "kind": "pulsar-baseline-evaluation",
+  "measurement_sha256": {
+    "benchmark-serving": "bde7c917d18c60848ca667cb28a8ea4f84af66f243158225fe65ae6803d7282d",
+    "compare-captures": "dac43033797b7b2b97620c1677cba9c068c2588c39830c6cb3dd3ee6a5cd1a2b",
+    "evaluate-gsm8k": "5c7efa6654356cce76c497b24c235897ee57bd6f53ddcf9c73bb91d3f44619fa",
+    "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
+    "verify-snapshot-manifest": "0724fc748178f47b2f44a94ad6d525ba999a1163db8b3e4a2619850e86f4ddcb"
+  },
+  "measurements": [
+    {
+      "criterion_id": "identity-snapshot-manifest",
+      "outcome": "pass",
+      "thresholds": [
+        {
+          "metric": "unmatched_file_count",
+          "operator": "==",
+          "unit": "count",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "criterion_id": "serving-integration-smoke",
+      "outcome": "pass",
+      "thresholds": [
+        {
+          "metric": "health_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        },
+        {
+          "metric": "warmup_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        },
+        {
+          "metric": "completion_smoke_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        }
+      ]
+    },
+    {
+      "criterion_id": "gsm8k-subset",
+      "outcome": "pass",
+      "thresholds": [
+        {
+          "metric": "accuracy",
+          "operator": ">=",
+          "unit": "ratio",
+          "value": "0.5"
+        },
+        {
+          "metric": "measured_sample_count",
+          "operator": ">=",
+          "unit": "count",
+          "value": "100"
+        },
+        {
+          "metric": "dataset_id",
+          "operator": "==",
+          "unit": "id",
+          "value": "openai/gsm8k"
+        },
+        {
+          "metric": "dataset_revision",
+          "operator": "==",
+          "unit": "commit",
+          "value": "740312add88f781978c0658806c59bc2815b9866"
+        },
+        {
+          "metric": "dataset_file_sha256",
+          "operator": "==",
+          "unit": "digest",
+          "value": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59"
+        }
+      ]
+    },
+    {
+      "criterion_id": "soak-60",
+      "outcome": "incomplete",
+      "thresholds": [
+        {
+          "metric": "duration_seconds",
+          "operator": ">=",
+          "unit": "seconds",
+          "value": "3600"
+        },
+        {
+          "metric": "request_error_count",
+          "operator": "==",
+          "unit": "count",
+          "value": "0"
+        },
+        {
+          "metric": "completed_requests",
+          "operator": ">",
+          "unit": "count",
+          "value": "0"
+        }
+      ]
+    },
+    {
+      "criterion_id": "perf-snapshot",
+      "outcome": "pass",
+      "thresholds": [
+        {
+          "metric": "required_levels_complete",
+          "operator": "==",
+          "unit": "boolean",
+          "value": "1"
+        }
+      ]
+    }
+  ],
+  "outcome": "incomplete",
+  "outcomes": {
+    "gsm8k-subset": "pass",
+    "identity-snapshot-manifest": "pass",
+    "perf-snapshot": "pass",
+    "serving-integration-smoke": "pass",
+    "soak-60": "incomplete"
+  },
+  "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+  "schema_version": 2,
+  "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f",
+  "suite": "baseline-v2"
+}

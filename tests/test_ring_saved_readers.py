@@ -184,8 +184,10 @@ class Pages(unittest.TestCase):
             nodes = row['geometry']['nodes']
             phrase = serve_plan.readiness(row, order=self.names.order, archive_location='disabled', sizes={},
                                           service=None, ring=True)
-            if nodes >= 3:
+            if nodes >= 3 and not serve_plan.ring_pattern(row):
                 self.assertEqual(phrase, serve_plan.READINESS['ring'], row['spec_id'])
+            elif nodes >= 3:
+                self.assertNotEqual(phrase, serve_plan.READINESS['ring'], row['spec_id'])
             else:
                 self.assertNotIn('ring', phrase)
         self.assertIn(serve_plan.READINESS['ring'], text)
