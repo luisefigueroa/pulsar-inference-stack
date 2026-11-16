@@ -109,6 +109,9 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
   word is a metavariable: `SPEC_ID`, `SHA256`, `ORG/NAME`.
 - A row with one space before its description is read as a paragraph, not an
   option row.
+- A value can contain a backtick. Give JSON its own exact message and put marks
+  only in the text people read; never strip marks from a string that carries a
+  value. `lit` in `doctor.sh` leaves such a value unmarked.
 - `gum style` strips escape codes, so the recipe frame's text stays plain; only
   its border takes the accent.
 - Without colour Gum marks a question's selected answer with nothing, and under
