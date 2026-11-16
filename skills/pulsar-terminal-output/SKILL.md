@@ -68,8 +68,10 @@ The decision and its reasons are under
   card that ends with a newline).
 - A choice earns its place with a purpose an operator would name and a function
   no other choice of that menu has. It may repeat a choice of another menu
-  only when the page's own words send the operator to it. Say why in the
-  script's header comment.
+  only when the page's own words send the operator to it, and one operation
+  may sit under two choices of a menu only when their purposes differ (a move
+  that makes room, a move to where the operator wants the files). Say why in
+  the script's header comment.
 - A label names the outcome in the operator's words and tells two similar
   choices apart in the same words: `Download a model that has no recipe yet…`,
   `Get a model with a recipe ready to serve…`. It never needs the name of the

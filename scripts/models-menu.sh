@@ -10,8 +10,10 @@
 # unknown, not absent, and nothing destructive is offered while it does not
 # answer (scripts/models_page.py). The choices follow a model's life on the
 # cluster, in four groups. Each is here because the page's own words send the
-# operator to it; only Get a model with a recipe ready to serve… is also
-# reached another way (Serve a model…, without its Start):
+# operator to it. Two operations are reached another way too, each for another
+# purpose: Get a model with a recipe ready to serve… is Serve a model… without
+# its Start, and a home also moves from Free up space…, where the page offers
+# the move that makes room on a node past its reserve:
 #   Download a model that has no recipe yet…
 #                       model acquire --model-id ORG/NAME --model-commit COMMIT:
 #                       it asks the model, the commit and the node, shows the
@@ -288,7 +290,7 @@ intent_page() {
     if [[ "$target" == pick:* ]]; then
       # Move a model to another node…: the operator names the node; no plan chooses it.
       local -a places=() hosts=()
-      while IFS=$'\t' read -r target label; do places+=("$target"); hosts+=("$label"); done \
+      while IFS=$'\t' read -r target label; do places+=("$target"); hosts+=("${label//$'\x1f'/$'\n'}"); done \
         < <(view destinations --manifest "${targets[$choice]#pick:}")
       [ "${#places[@]}" -gt 0 ] || continue
       choice=$(choose_index "Which node should keep the files?" "${hosts[@]}" "Back") \

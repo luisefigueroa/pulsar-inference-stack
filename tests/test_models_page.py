@@ -1088,6 +1088,16 @@ class MoveAModel(unittest.TestCase):
         self.assertIn("Nothing is lost: the files on spark-2 are deleted only after the copy on spark-1 verifies.",
                       flat(mp.render(plan)))
 
+    def test_a_second_set_of_files_a_recipe_loads_is_named_by_its_own_model(self):
+        rows = [recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)]
+        document = files([entry(OTHER_FILES, "org/other", [home("n0")], 60 * G, specs=[OTHER]),
+                          entry(DRAFT, "org/draft", [home("n1")], 4 * G, specs=[OTHER])])
+        choices, lines = mp.move_page_options(cluster(rows, document))
+        self.assertEqual([label for _, label in choices],
+                         ["Move org/other from spark-1", "Move org/draft, which org/other also loads from spark-2",
+                          "Back"])
+        self.assertEqual(len(set(lines)), 2)
+
     def test_its_screen_fits_80_60_and_44_columns(self):
         for width in (80, 60, 44):
             text = mp.intent_screen(self.found(), "move", width=width)

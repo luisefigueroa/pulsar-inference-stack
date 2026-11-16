@@ -988,6 +988,10 @@ def move_page_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str
             continue
         specs = [item.get("spec_id") for item in entry.get("catalog_specs") or [] if item.get("spec_id") in cluster.catalog]
         name = cluster.model_name(specs) if specs else _model(entry)
+        own = clean(entry.get("model_id") or "")
+        if specs and own and all(clean(cluster.catalog[spec]["model_id"]) != own for spec in specs):
+            # A second set of files a recipe loads has a home of its own: named by its own model.
+            name = f"{own}, which {name} also loads"
         host, size = cluster.host(home["node_id"]), _size(entry.get("payload_bytes"))
         bound = cluster.ordered(location["node_id"] for location in locations if location.get("bindings"))
         users = cluster.users([home])
@@ -2089,7 +2093,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{action}\t{label}\t{card}")
             elif args.command == "destinations":
                 for target, label in move_destinations(cluster, args.manifest):
-                    print(f"{target}\t{label}")
+                    print(f"{target}\t{choice_label(label, width)}")
             elif args.command == "screen":
                 sys.stdout.write(intent_screen(cluster, args.intent, width=width))
             elif args.command == "options":

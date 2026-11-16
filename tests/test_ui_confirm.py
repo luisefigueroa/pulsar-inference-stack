@@ -1040,6 +1040,44 @@ class BundledGumModels(BundledGum):
         self.assertTrue(any("What can go, largest gain first:" in shot for shot in views(output, 40, 80)), output)
         self.assertEqual((root / "pulsar.log").read_text().splitlines(), ["model files --json", "model budget --json"])
 
+    def test_move_a_model_asks_the_node_in_plain_words_and_its_plan_starts_on_cancel(self):
+        from tests.test_models_page import G, OTHER, OTHER_FILES, entry, files, home, ready_model, recipe  # noqa: PLC0415
+        from tests.test_serve_plan import envelope  # noqa: PLC0415
+        root, script = self.fixture()
+        (root / "catalog.json").write_text(json.dumps({"entries": [
+            recipe(), recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)]}))
+        (root / "fixtures" / "files.json").write_text(json.dumps(envelope(files([
+            ready_model(), entry(OTHER_FILES, "org/other", [home("n0")], 60 * G, specs=[OTHER])]))))
+        (root / "fixtures" / "move-plan.json").write_text(json.dumps(envelope({
+            "kind": "pulsar-home-move-plan", "source_node": "n0", "destination_node": "n1",
+            "transfer_route": "direct-ssh-roce"})))
+        for columns in (80, 60):
+            with self.subTest(columns=columns):
+                (root / "pulsar.log").unlink(missing_ok=True)
+                code, output = self.drive(script, b"\x1b[B\x1b[B\r", ready=b"Look again", columns=columns, rows=30,
+                                          then=[(b"> Move org/other from spark-1", b"\r"),
+                                                (b"Which node should keep the files?", b"\r"),
+                                                (b"> Cancel", b"\x1b"), (b"> Move org/other from spark-1", b"\x1b"),
+                                                (b"Look again", b"\x1b")])
+                self.assertEqual(code, 0, output)
+                shots = views(output, 30, columns)
+                page = next(shot for shot in shots if "> Move org/other from spark-1" in shot)
+                self.assertIn("Move a model to another node", page)
+                self.assertTrue(any(line.startswith("  org/model (212 GiB) stays on spark-1: its copies") for line in page),
+                                "\n".join(page))
+                asked = next(shot for shot in shots if "Which node should keep the files?" in shot)
+                self.assertIn("> spark-2 (1.80 TiB free after its reserve)", asked, "\n".join(asked))
+                self.assertIn("  spark-3 (1.80 TiB free after its reserve)", asked)
+                plan = next(shot for shot in shots if "> Cancel" in shot)
+                self.assertIn("Pulsar will:", plan, "\n".join(plan))
+                self.assertIn("Move the model files of org/other from spark-1 to spark-2 (60.0 GiB).",
+                              " ".join(" ".join(plan).split()))
+                self.assertTrue(all(len(line) <= columns for shot in shots for line in shot))
+                # Only the scan and the one preview ran; the cancel ran nothing.
+                self.assertEqual((root / "pulsar.log").read_text().splitlines(),
+                                 ["model files --json", "model budget --json",
+                                  f"model move {OTHER} --node spark-2 --plan --json"])
+
     def download_screens(self, columns):
         """Download a model that has no recipe yet…, typed and then cancelled: (root, exit, output)."""
         from tests.test_models_menu import NEW, acquire_plan  # noqa: PLC0415
