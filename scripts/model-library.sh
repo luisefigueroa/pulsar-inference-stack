@@ -44,7 +44,7 @@ Options:
   --node NODE            Home node or one-node placement: hostname or node ID
   --placement-nodes LIST  Ordered confirmed nodes for prepare/info/check
   --manifest FILE       Retained source manifest for lab storage
-  --model-id ORG/NAME --model-commit COMMIT   First acquisition before a spec
+  --model-id ORG/NAME --model-commit COMMIT   Acquire only, before any spec: download, verify and record the home
   --manifest-out FILE   Save the resulting verified source manifest
   --plan                Preview; do not change model files or records
   --yes                 Confirm a model-byte or retention mutation

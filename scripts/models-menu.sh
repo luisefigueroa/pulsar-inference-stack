@@ -52,6 +52,7 @@ require_gum "Models and disk space…" \
   "./pulsar model archive verify SPEC" "check a model's archives" \
   "./pulsar model prepare SPEC --plan" "get a model ready ahead of time; then --yes" \
   "./pulsar model acquire SPEC --node NODE --plan" "look for model files: record a home found with no record; then --yes" \
+  "./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --plan" "download a model before it has a spec; then --manifest-out FILE --yes" \
   "./pulsar model prepare SPEC --adopt-unrecorded --plan" "look for model files: take over a copy no record names; then --yes"
 ui_keep_styles
 
