@@ -378,6 +378,9 @@ class Cluster:
 # ---------------------------------------------------------------------------
 
 NO_MANIFEST = "their manifest, the list of the files and their hashes, is not saved in this checkout"
+# What saves it: Download's own reuse writes the manifest of files it finds on the node it is given.
+SAVE_MANIFEST = (f"{DOWNLOAD_LABEL} saves it: choose it for the same model, commit and node; it keeps the files "
+                 "there and downloads nothing.")
 
 
 
@@ -752,8 +755,8 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
             # Copies with no home recorded: no command of this page selects them.
             blocked.append((f"{what}, and they have no home recorded, so this page does not remove them.", None))
         elif item["stays"] == NO_MANIFEST:
-            blocked.append((f"{what}, and {NO_MANIFEST}, so this page does not remove them. With that file, "
-                            "./pulsar model remove --manifest FILE --plan previews that.", None))
+            blocked.append((f"{what}, and {NO_MANIFEST}, so this page does not remove them. {SAVE_MANIFEST}",
+                            None))
         elif item["stays"]:
             blocked.append((f"{what}. They stay: {item['stays']}.", None))
         else:
@@ -1030,8 +1033,7 @@ def backup_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
         if not item["archived"] and item["file"] and item["home"].get("state") == "present":
             choices.append(("backup-files:" + item["id"], f"Back up {item['name']}"))
         elif not item["archived"] and not item["file"]:
-            line += (f" This page cannot back it up: {NO_MANIFEST}. With that file, ./pulsar model archive create "
-                     "--manifest FILE --plan previews that.")
+            line += f" This page cannot back it up: {NO_MANIFEST}. {SAVE_MANIFEST}"
         lines.append(line)
     return choices + [("back", "Back")], lines
 
@@ -1052,8 +1054,7 @@ def check_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str]]:
         if item["file"]:
             choices.append(("check-files:" + item["id"], f"Check the archive of {item['name']}"))
         else:
-            line += (f" This page cannot check it: {NO_MANIFEST}. With that file, ./pulsar model archive verify "
-                     "--manifest FILE checks it.")
+            line += f" This page cannot check it: {NO_MANIFEST}. {SAVE_MANIFEST}"
         lines.append(line)
     return choices + [("back", "Back")], lines
 

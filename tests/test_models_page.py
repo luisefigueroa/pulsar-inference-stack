@@ -856,13 +856,20 @@ class FilesWithNoRecipe(unittest.TestCase):
         self.assertFalse([item for item in removable if "new/model" in item["label"]])
         self.assertIn("new/model @ cccccccc on spark-2 (100 GiB): no recipe in this catalog uses these files, and "
                       "their manifest, the list of the files and their hashes, is not saved in this checkout, so this "
-                      "page does not remove them. With that file, ./pulsar model remove --manifest FILE --plan "
-                      "previews that.", [flat(text) for text, _ in blocked])
+                      "page does not remove them. Download a model that has no recipe yet… saves it: choose it for "
+                      "the same model, commit and node; it keeps the files there and downloads nothing.",
+                      [flat(text) for text, _ in blocked])
         choices, lines = mp.backup_options(self.found(saved=False))
         self.assertNotIn(f"backup-files:{NEW}", [target for target, _ in choices])
         self.assertTrue(any(line.startswith("new/model @ cccccccc (no recipe in this catalog uses these files): no "
                                             "archive recorded. This page cannot back it up: their manifest")
+                            and line.endswith("it keeps the files there and downloads nothing.")
                             for line in lines), lines)
+        archived_ = self.found(new_model(archive=archived()), saved=False)
+        self.assertEqual(mp.check_options(archived_)[0][-1], ("back", "Back"))
+        self.assertNotIn(f"check-files:{NEW}", [target for target, _ in mp.check_options(archived_)[0]])
+        self.assertTrue(any("This page cannot check it: their manifest" in line
+                            for line in mp.check_options(archived_)[1]))
         with self.assertRaisesRegex(ValueError, "no longer saved in this checkout"):
             mp.compose(self.found(saved=False), f"files:{NEW}")
 

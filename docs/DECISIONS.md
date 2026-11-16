@@ -50,9 +50,12 @@ A menu's choices follow the order in which an operator uses them, in groups
 with a blank line between: on **Models and disk space…**, bring a model's
 files, protect them, make room, then look at what is there. This replaces an
 earlier order that put **Free up space…** first on the assumption that a full
-disk brings the operator to the page. Every choice must be the only place for
-something the operator wants to do, and its label must say what it does to
-someone who does not know the operations behind it (pin, purge, prepare). Where
+disk brings the operator to the page. Every choice needs a purpose an operator
+would name, a function no other choice of that menu has, and a label that says
+what it does to someone who does not know the operations behind it (pin, purge,
+prepare). A choice may repeat one of another menu when the page's own words
+send the operator to it, as **Get a model with a recipe ready to serve…**
+repeats a step of **Serve a model…**. Where
 a label cannot, the choice has one second line under it, as a status word has
 its hint (NN/g heuristics #6 and #10): indented, in lower case, at most 40
 characters, and plain while the label is bold, so the two differ without

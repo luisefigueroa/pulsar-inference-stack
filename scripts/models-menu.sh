@@ -9,7 +9,9 @@
 # twice in a row. A node that did not answer makes its files and room
 # unknown, not absent, and nothing destructive is offered while it does not
 # answer (scripts/models_page.py). The choices follow a model's life on the
-# cluster, in four groups, and each is the only place for what it does:
+# cluster, in four groups. Each is here because the page's own words send the
+# operator to it; only Get a model with a recipe ready to serve… is also
+# reached another way (Serve a model…, without its Start):
 #   Download a model that has no recipe yet…
 #                       model acquire --model-id ORG/NAME --model-commit COMMIT:
 #                       it asks the model, the commit and the node, shows the
@@ -44,7 +46,8 @@
 # A home that no recipe in the catalog uses, as Download a model that has no
 # recipe yet… leaves it, is reached by Free up space…, Back up… and Check… with
 # the manifest file saved under .pulsar/manifests (--manifest FILE in place of
-# a spec); without that file the page says so and offers nothing for it.
+# a spec); without that file the page says so, names the choice that saves
+# it, and offers nothing for it.
 # Back up and Check need the archive location; without one the page says where
 # it is set instead of offering them. Each plan lists its steps and what each
 # changes, starts on Cancel, runs each step's own preview when its turn comes

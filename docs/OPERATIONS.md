@@ -2023,7 +2023,9 @@ again then, and a step stops before it changes anything when the file names
 other files than when the plan was made. The home stays, with the reason said,
 while copies made for a recipe outside the catalog use it, a container mounts
 it, or its files or containers could not be checked. Without the saved file
-the page says so and names the command to run with the manifest. The saved
+the page says so and offers nothing for these files. **Download a model that
+has no recipe yet…** saves the file: chosen for the same model, commit and
+node, it keeps the files that are there and downloads nothing. The saved
 manifest file is never deleted. To get removed files back from their archive,
 choose **Download a model that has no recipe yet…** for the same model and
 commit: the command refuses the download and names the restore command.
