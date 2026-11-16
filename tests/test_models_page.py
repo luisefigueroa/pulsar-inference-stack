@@ -1123,6 +1123,21 @@ class MoveAModel(unittest.TestCase):
                           "Back"])
         self.assertEqual(len(set(lines)), 2)
 
+    def test_an_unfinished_copy_of_one_set_of_files_does_not_hold_the_recipes_other_set(self):
+        # Move home refuses only for the files the unfinished copy is of.
+        stage = {"path": "/fixture/views/.pending-x", "kind": "incomplete", "reason": "incomplete staging",
+                 "preparation_spec_id": OTHER, "preparation_snapshot_manifest_id": DRAFT, "container_references": []}
+        rows = [recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)]
+        document = files([entry(OTHER_FILES, "org/other", [home("n0")], 60 * G, specs=[OTHER]),
+                          entry(DRAFT, "org/draft", [home("n1")], 4 * G, specs=[OTHER])],
+                         nodes=[node("n0", "spark-1"), node("n1", "spark-2"), node("n2", "spark-3", unfinished=[stage])])
+        choices, lines = mp.move_page_options(cluster(rows, document))
+        self.assertEqual([label for _, label in choices], ["Move org/other from spark-1", "Back"])
+        self.assertIn("an unfinished copy on spark-3 depends on it", flat(lines[-1]))
+        short = cluster(rows, document, budget(short=("n0",)))
+        self.assertEqual([item["target"][:len(f"move:{OTHER_FILES}")] for item in mp.free_options(short)[0]
+                          if item["target"].startswith("move")], [f"move:{OTHER_FILES}"])
+
     def test_its_screen_fits_80_60_and_44_columns(self):
         for width in (80, 60, 44):
             text = mp.intent_screen(self.found(), "move", width=width)

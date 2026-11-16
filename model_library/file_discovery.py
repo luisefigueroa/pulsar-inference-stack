@@ -76,7 +76,7 @@ def inspect_files(request: dict, home_root: Path, view_root: Path) -> dict:
         if not (view_root / ".pulsar-node").is_symlink():
             for record in Store(view_root / ".pulsar-node").records("transactions"):
                 if record.get("node_id") == node_id and record.get("stage"):
-                    preparations[record["stage"]] = record["spec_id"]
+                    preparations[record["stage"]] = (record["spec_id"], record.get("snapshot_manifest_id"))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         result["issues"].append("Unfinished preparations could not be read: " + str(exc))
 
@@ -113,7 +113,10 @@ def inspect_files(request: dict, home_root: Path, view_root: Path) -> dict:
                         item = {"path": str(path), "kind": "incomplete",
                                 "reason": "incomplete staging; not a complete snapshot"}
                         if str(path) in preparations:
-                            item["preparation_spec_id"] = preparations[str(path)]
+                            item["preparation_spec_id"], files = preparations[str(path)]
+                            if files:
+                                # Which of the spec's snapshots it copies: Move home refuses for that one only.
+                                item["preparation_snapshot_manifest_id"] = files
                         result["unidentified"].append(item)
                     else:
                         candidates[str(path)] = kind

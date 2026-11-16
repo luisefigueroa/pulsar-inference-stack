@@ -948,10 +948,20 @@ def move_spec(cluster: Cluster, entry: dict, node: str) -> tuple[str, Any] | Non
 
 
 def unfinished_on(cluster: Cluster, entry: dict) -> list[str]:
-    """Nodes with an unfinished copy recorded for a catalog recipe of ENTRY's files. Move home refuses
-    while one exists, as it does for a finished copy."""
-    return cluster.ordered(item["node_id"] for value in entry.get("catalog_specs") or []
-                           for item in cluster.unfinished(value.get("spec_id")))
+    """Nodes with a recorded unfinished copy of ENTRY's files. Move home refuses while one exists, as it
+    does for a finished copy, and only for these files: an unfinished copy of another set of files the
+    same recipe loads does not count. A record that does not name its files counts for every set of its
+    recipe."""
+    specs = {value.get("spec_id") for value in entry.get("catalog_specs") or []}
+    found = []
+    for node in cluster.nodes:
+        for item in node.get("unidentified") or []:
+            if item.get("kind") != "incomplete" or not item.get("preparation_spec_id"):
+                continue
+            files = item.get("preparation_snapshot_manifest_id")
+            if files == entry["snapshot_manifest_id"] or (files is None and item["preparation_spec_id"] in specs):
+                found.append(node["node_id"])
+    return cluster.ordered(found)
 
 
 def move_destinations(cluster: Cluster, manifest: str) -> list[tuple[str, str]]:

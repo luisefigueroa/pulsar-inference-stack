@@ -74,11 +74,13 @@ class FileInventory(unittest.TestCase):
         prepared.mkdir(parents=True)
         download.mkdir(parents=True)
         Store(self.view_root / ".pulsar-node").put("transactions", "d" * 64, {
-            "stage": str(prepared), "node_id": "n0", "spec_id": "fixture-spec", "kind": "pulsar-preparation-staging"})
+            "stage": str(prepared), "node_id": "n0", "spec_id": "fixture-spec", "kind": "pulsar-preparation-staging",
+            "snapshot_manifest_id": "a" * 64})
         Store(self.view_root / ".pulsar-node").put("transactions", "e" * 64, {
             "stage": str(download), "node_id": "other", "spec_id": "elsewhere"})
         by_path = {item["path"]: item for item in self.scan()["unidentified"]}
         self.assertEqual(by_path[str(prepared)]["preparation_spec_id"], "fixture-spec")
+        self.assertEqual(by_path[str(prepared)]["preparation_snapshot_manifest_id"], "a" * 64)
         self.assertNotIn("preparation_spec_id", by_path[str(download)])
         self.assertEqual({item["kind"] for item in by_path.values()}, {"incomplete"})
 
