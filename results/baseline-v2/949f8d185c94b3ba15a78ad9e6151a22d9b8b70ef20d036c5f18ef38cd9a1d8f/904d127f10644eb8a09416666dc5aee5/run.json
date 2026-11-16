@@ -1,0 +1,337 @@
+{
+  "error_codes": [
+    "interrupted"
+  ],
+  "gates": [
+    {
+      "ended_at": "2026-11-16T18:43:23.245457Z",
+      "name": "verify-snapshot-manifest",
+      "rc": 0,
+      "started_at": "2026-11-16T18:43:13.998860Z"
+    },
+    {
+      "ended_at": "2026-11-16T18:43:37.749706Z",
+      "name": "serve-smoke",
+      "rc": 0,
+      "started_at": "2026-11-16T18:43:23.245544Z"
+    },
+    {
+      "ended_at": "2026-11-16T18:48:06.741796Z",
+      "name": "run-gates",
+      "rc": 0,
+      "started_at": "2026-11-16T18:43:37.749722Z"
+    },
+    {
+      "ended_at": "2026-11-16T18:58:59.216012Z",
+      "name": "evaluate-gsm8k",
+      "rc": 0,
+      "started_at": "2026-11-16T18:48:06.741811Z"
+    }
+  ],
+  "input_sha256": {
+    "dataset": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+    "policy": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0"
+  },
+  "kind": "pulsar-baseline-run",
+  "measurement_sha256": {
+    "benchmark-serving": "bde7c917d18c60848ca667cb28a8ea4f84af66f243158225fe65ae6803d7282d",
+    "compare-captures": "dac43033797b7b2b97620c1677cba9c068c2588c39830c6cb3dd3ee6a5cd1a2b",
+    "evaluate-gsm8k": "5c7efa6654356cce76c497b24c235897ee57bd6f53ddcf9c73bb91d3f44619fa",
+    "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
+    "verify-snapshot-manifest": "0724fc748178f47b2f44a94ad6d525ba999a1163db8b3e4a2619850e86f4ddcb"
+  },
+  "observation_complete": true,
+  "outcome": "incomplete",
+  "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+  "ranks_after": [
+    {
+      "boot_witness": "01e77919ceb124d6e187549230d2e15cb60186d3b61cd9dccfbc956356fb0767",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "75fbaacb5148fdb497af9118017f74a2e667d7f8971d2b3aaafa84b042d8878d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 1,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "5b52f66494583250bb3ce10cf0d0bb74d66b450936c65fe65f14a2fdde293f0b",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 2,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "b5f7865fb75679994334886e07e35a14f23ca02607375a18dd33770c50d03c1d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 3,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    }
+  ],
+  "ranks_before": [
+    {
+      "boot_witness": "01e77919ceb124d6e187549230d2e15cb60186d3b61cd9dccfbc956356fb0767",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "75fbaacb5148fdb497af9118017f74a2e667d7f8971d2b3aaafa84b042d8878d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 1,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "5b52f66494583250bb3ce10cf0d0bb74d66b450936c65fe65f14a2fdde293f0b",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 2,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    },
+    {
+      "boot_witness": "b5f7865fb75679994334886e07e35a14f23ca02607375a18dd33770c50d03c1d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": null,
+        "ipc_mode": "host",
+        "memory_limit_bytes": 111669149696,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:268b14f1473ed4ec040dd0e9247018014f8507d540920da2f8c75d30c89a9950",
+      "owned": true,
+      "rank": 3,
+      "running": true,
+      "snapshot_manifest_id": "2bfa27463f6571a475fa7635f68029323432b68a75ba4d8168c484da62ece726",
+      "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f"
+    }
+  ],
+  "run_id": "904d127f10644eb8a09416666dc5aee5",
+  "same_boot": true,
+  "schema_version": 3,
+  "spec_id": "949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f",
+  "stack_observers": [
+    {
+      "stack_commit": "6beeb854b1eac94f0edb5e152937b61daa854277",
+      "working_tree_dirty": true
+    },
+    {
+      "stack_commit": "6beeb854b1eac94f0edb5e152937b61daa854277",
+      "working_tree_dirty": true
+    }
+  ],
+  "workbench_commit": "fc8a218de6fc79b413782136478a99c01a6b877f"
+}
