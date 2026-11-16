@@ -12,7 +12,10 @@ The plan is what `./pulsar model acquire --model-id ORG/NAME --model-commit REF
 --node HOST --plan --json` answered: this module contacts nothing and decides
 nothing about the files. The command refuses a second copy before it downloads
 (a home on another node, or an archive that holds the files), and its refusal
-is shown as it is. `plan` prints the screen and writes FACTS, one line of
+is shown as it is. The menu takes the preview again directly before the run,
+with the exact commit, and runs only when it still says what was approved: a
+plan that kept files already there never becomes a download. `plan` prints the
+screen and writes FACTS, one line of
 ACTION, COMMIT, MANIFEST, SAVE (1 when the run saves the manifest) and the
 choice's label, split by unit separators (0x1F); ACTION is `blocked` when
 nothing can run.
@@ -39,6 +42,7 @@ if str(ROOT) not in sys.path:
 
 from model_library.catalog_menu import clean  # noqa: E402
 from model_library.file_inventory import _unread  # noqa: E402
+from model_library.integrity import verify_manifest  # noqa: E402
 from model_library.render import short_size  # noqa: E402
 from scripts.serve_plan import envelope_result, load_json  # noqa: E402
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, terminal_width  # noqa: E402
@@ -61,12 +65,17 @@ def manifest_path(repo_root: Path, model: str, commit: str) -> Path:
 
 
 def saved_manifest(path: Path, model: str, commit: str) -> str:
-    """`absent`, `same` (PATH is the manifest of MODEL at COMMIT) or `other`."""
+    """`absent`, `same` (PATH is a valid manifest of MODEL at COMMIT) or `other`.
+
+    Only a file the shared verifier accepts is `same`: the commands that take
+    the file with --manifest refuse any other."""
     if not (path.exists() or path.is_symlink()):
         return "absent"
-    document = load_json(str(path))
-    if isinstance(document, dict) and document.get("model_id") == model \
-            and document.get("snapshot_revision") == commit:
+    try:
+        document = verify_manifest(load_json(str(path)))
+    except ValueError:
+        return "other"
+    if document["model_id"] == model and document["snapshot_revision"] == commit:
         return "same"
     return "other"
 

@@ -376,6 +376,8 @@ def acquire_plan(action="download", search="searched", host="n1"):
 class DownloadWithoutARecipe(Menu):
     """Download a model that has no recipe yet…: model acquire with a model and a commit, never a spec."""
     PLAN = f"model acquire --model-id {NEW} --model-commit main --node spark-2 --plan --json"
+    # The same preview again directly before the run, with the exact commit.
+    CHECK = f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --plan --json"
 
     def manifest(self):
         return self.root / ".pulsar" / "manifests" / "org" / f"new-model@{COMMIT[:12]}.json"
@@ -405,7 +407,7 @@ class DownloadWithoutARecipe(Menu):
         self.assertIn("Download a model\t0", self.default_log.read_text())
         run = f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --manifest-out {self.manifest()} --yes"
         # The branch names the preview only; the run names the commit it printed. Then the page looks again.
-        self.assertEqual(self.commands(), SCAN + [self.PLAN, run] + SCAN)
+        self.assertEqual(self.commands(), SCAN + [self.PLAN, self.CHECK, run] + SCAN)
         text = self.text(result)
         self.assertIn(f"1. Download {NEW} at commit cccccccccccc from Hugging Face to spark-2 (2 files, 212 GiB) and "
                       "check the SHA-256 of every file. The files become its home, the copy Pulsar keeps.", text)
@@ -454,7 +456,9 @@ class DownloadWithoutARecipe(Menu):
     def test_files_already_on_the_node_are_kept_without_a_download_and_a_saved_manifest_is_not_replaced(self):
         self.fixture("acquire-plan", acquire_plan("reuse", search=None))
         self.manifest().parent.mkdir(parents=True)
-        kept = json.dumps({"model_id": NEW, "snapshot_revision": COMMIT, "files": []})
+        from release_spec import build_snapshot_manifest
+        kept = json.dumps(build_snapshot_manifest(model_id=NEW, snapshot_revision=COMMIT, files=[
+            {"path": "weights.bin", "size": 3, "sha256": "b" * 64}]))
         self.manifest().write_text(kept)
         result = self.go("Keep the files found on spark-2", "Continue", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -473,9 +477,14 @@ class DownloadWithoutARecipe(Menu):
                             manifest_path(self.root, "org/team--model", COMMIT))
         self.fixture("acquire-plan", acquire_plan())
         self.manifest().parent.mkdir(parents=True)
-        # Another commit with the same first 12 characters, another model, and a file that is no manifest.
-        for other in (json.dumps({"model_id": NEW, "snapshot_revision": COMMIT[:12] + "d" * 28}),
-                      json.dumps({"model_id": "org/other", "snapshot_revision": COMMIT}), "not json"):
+        from release_spec import build_snapshot_manifest
+        rows = [{"path": "weights.bin", "size": 3, "sha256": "b" * 64}]
+        # Another commit with the same first 12 characters, another model, a file that names this model and
+        # commit but is not a valid manifest (the commands that take it would refuse it), and one that is no JSON.
+        for other in (json.dumps(build_snapshot_manifest(model_id=NEW, snapshot_revision=COMMIT[:12] + "d" * 28,
+                                                         files=rows)),
+                      json.dumps(build_snapshot_manifest(model_id="org/other", snapshot_revision=COMMIT, files=rows)),
+                      json.dumps({"model_id": NEW, "snapshot_revision": COMMIT, "files": []}), "not json"):
             self.manifest().write_text(other)
             result = self.go("Continue", "Back")
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -484,6 +493,25 @@ class DownloadWithoutARecipe(Menu):
                           f"Move this file away, then choose this again: {self.manifest()} Nothing was changed.", text)
             self.assertEqual(self.ran(), [])
             self.assertEqual(self.manifest().read_text(), other)
+
+    def test_files_that_were_to_be_kept_and_are_gone_at_the_run_never_become_a_download(self):
+        # Approved: keep the files found. Before the run the command's own preview says download.
+        self.fixture("acquire-plan", acquire_plan("reuse", search=None), nth=1)
+        self.fixture("acquire-plan", acquire_plan("download"), nth=2)
+        result = self.go("Keep the files found on spark-2", "Continue", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertEqual(self.commands(), SCAN + [self.PLAN, self.CHECK] + SCAN)
+        text = self.text(result)
+        self.assertIn("✗ Nothing ran: what the command would do changed after the plan was shown. Choose this again "
+                      "to see the plan as it is now.", text)
+        self.assertNotIn("Done:", text)
+        # A preview that fails at that moment stops the run the same way.
+        self.fixture("acquire-plan", acquire_plan(), nth=1)
+        self.fixture("acquire-plan", envelope(error={"code": "prerequisite_failed", "message": "no"}), rc=1, nth=2)
+        result = self.go("Download 212 GiB to spark-2", "Continue", "Back")
+        self.assertEqual(self.ran(), [])
+        self.assertIn("✗ Nothing ran:", self.text(result))
 
     def test_with_no_node_that_answered_it_offers_no_node_and_runs_nothing(self):
         nodes = [node(identity, host, unread=True) for identity, host in (("n0", "spark-1"), ("n1", "spark-2"))]

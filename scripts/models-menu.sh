@@ -279,7 +279,7 @@ download() {
 # run, 130 on Ctrl-C, else 0.
 download_page() {
   local title="Download a model" model ref host choice rc=0 interrupted
-  local action commit manifest save label
+  local action commit manifest save label now_action now_commit rest
   local -a hosts=() selector=() ran=() saved=()
   model=$(prompt_input "Which model on Hugging Face?" "ORG/NAME") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   if ! [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
@@ -320,6 +320,26 @@ download_page() {
   choice=$(PULSAR_CHOOSE_DEFAULT=0 choose_index "$title" "Cancel" "$label") \
     || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
   [ "$choice" = 1 ] || return 0
+  # The command's own preview again, now with the exact commit: the run goes
+  # ahead only when it still does what was approved. Files that were to be
+  # kept and are gone since would otherwise become a download nobody approved.
+  rc=0
+  spin "Checking that the plan still holds…" bash -c '"$@" 2>"$0" </dev/null' "$WORK/download.err" \
+    "$REPO_DIR/pulsar" model acquire --model-id "$model" --model-commit "$commit" --node "$host" --plan --json \
+    >"$WORK/download-check.json" || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  download plan --model "$model" --ref "$commit" --host "$host" --preview "$WORK/download-check.json" \
+    --preview-rc "$rc" --out "$WORK/download-check.facts" >/dev/null || true
+  now_action="" now_commit=""
+  [ ! -s "$WORK/download-check.facts" ] \
+    || IFS=$'\x1f' read -r now_action now_commit rest <"$WORK/download-check.facts"
+  if [ "$now_action" != "$action" ] || [ "$now_commit" != "$commit" ]; then
+    printf '\n✗ Nothing ran: what the command would do changed after the plan was shown. Choose this again to see the plan as it is now.\n' | text
+    # Something changed on the nodes, so the page looks again.
+    forget
+    wait_continue "$title" || return $?
+    return "$CHANGED"
+  fi
   # The run names the exact commit the preview printed, never the branch or tag.
   ran=(./pulsar model acquire --model-id "$model" --model-commit "$commit" --node "$host")
   saved=(--manifest "$manifest")
