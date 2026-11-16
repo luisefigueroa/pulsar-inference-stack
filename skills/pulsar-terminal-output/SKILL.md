@@ -58,6 +58,33 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
 - Change words only in human output. JSON fields and values, container labels
   and persisted records keep their names (see `AGENTS.md`).
 
+## Menus
+
+The decision and its reasons are under
+[Menu choices in the order of use](../../docs/DECISIONS.md#menu-choices-in-the-order-of-use-explained-in-place).
+
+- Order a menu's choices as an operator uses them, not by how often or how
+  urgently. Group them, and end each group but the last with a blank line (a
+  card that ends with a newline).
+- A choice earns its place when it is the only way to do something the operator
+  wants. Say why in the script's header comment.
+- A label names the outcome in the operator's words and tells two similar
+  choices apart in the same words: `Download a model that has no recipe yet…`,
+  `Get a model with a recipe ready to serve…`. It never needs the name of the
+  operation behind it, and `tests/test_cluster_menu.py` refuses the low-level
+  nouns.
+- Where a label cannot say what a choice does, give it one second line: a card
+  whose second line is four columns in, in lower case with no full stop, at
+  most 40 characters so that it stays one line at 44 columns. Say only what the
+  label does not: what it changes, or that it changes nothing. A choice whose
+  label says it all has none. `HINTS` and `page_cards` in
+  `scripts/models_page.py` are the model.
+- Paint the label in the `choice` role and leave the second line plain, so the
+  two differ without color.
+- A page above a menu keeps priority: when the page and the cards do not fit
+  the terminal's rows but the page and the labels do, show the labels alone
+  (`scripts/models-menu.sh`).
+
 ## Build
 
 - Print through `TerminalWriter`, `emit_help` or `emit_checks`, and don't
@@ -134,9 +161,12 @@ are under [Plain status words](../../docs/DECISIONS.md#plain-status-words-explai
 - Styles go in free text only. Shell parses Gum labels and prefixes such as
   `header\t`, and parses captured stderr (`lib.sh` strips `error: `). So error
   and warning labels are styled only on a real terminal, never for `always`.
-  The one exception is the catalog list's model name (`catalog_menu cards`),
-  bold in the `choice` role: the shell passes it to Gum without parsing it, and
-  Gum keeps it with `--no-strip-ansi`.
+  The exceptions are the catalog list's model name (`catalog_menu cards`) and
+  the labels of a menu whose choices have second lines (`models_page
+  choices`), bold in the `choice` role: the shell passes them to Gum without
+  parsing them, and Gum keeps them with `--no-strip-ansi`.
+- A wait for a card menu's text in a Gum test must not span the label's start:
+  the bold code sits between the `> ` cursor and the label.
 
 ## Verify
 

@@ -62,7 +62,7 @@ REVIEW = "**Review what changed…**"
 SETTINGS = "**Settings…**"
 RUNNING = "**Running services…**"
 MODELS = "**Models and disk space…**"
-FIND = "**Look for model files Pulsar has no record of…**"
+FIND = "**Record model files found on the nodes…**"
 
 # The status words these screens print. Each has a row under Catalog labels
 # in docs/OPERATIONS.md; tests/test_help.py checks it.
@@ -432,7 +432,7 @@ def disk_text(records: Records) -> str:
 # ---------------------------------------------------------------------------
 
 def files_suggestion(entries: list[dict]) -> str | None:
-    """Look for model files…, suggested when no catalog recipe has its files recorded on the cluster
+    """Record model files found on the nodes…, suggested when no catalog recipe has its files recorded on the cluster
     (no home in the catalog's saved records). Membership is saved wherever home shows this. An
     empty or unreadable catalog says nothing: unknown is not absent."""
     rows = [row for row in entries or [] if isinstance(row, dict) and not row.get("historical")]
@@ -592,7 +592,7 @@ def review(records: Records, *, width: int | None = None, serve: bool = False,
     SERVE is the screen Serve a model… shows before its list when the change
     check found a change: it adds Serve on the cluster as saved and, when a
     running service refuses the save, Stop it, save the change, then continue.
-    READY is the same screen for Get a model ready ahead of time…, which starts
+    READY is the same screen for Get a model with a recipe ready to serve…, which starts
     nothing: it offers Get it ready on the cluster as saved, and never the Stop,
     which would leave the cluster idle with nothing to start after it."""
     output = io.StringIO()
@@ -845,7 +845,7 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--choices", action="store_true")
             command.add_argument("--serve", action="store_true", help="the screen Serve a model… shows")
             command.add_argument("--ready", action="store_true",
-                                 help="the screen Get a model ready ahead of time… shows: no Stop")
+                                 help="the screen Get a model with a recipe ready to serve… shows: no Stop")
     args = parser.parse_args(argv)
     if args.command == "api-key":
         sys.stdout.write(api_key_text(args.repo_root, width=args.width))

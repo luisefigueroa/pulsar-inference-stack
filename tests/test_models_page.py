@@ -121,9 +121,10 @@ def purge_preview(*actions):
                                    "incomplete_preparations": []}}
 
 
-def cluster(rows, document, budget_document=None, *, archive_location="configured"):
+def cluster(rows, document, budget_document=None, *, archive_location="configured", saved=None):
+    # Ages are counted from NOW, when the fixtures were made, not from when a test runs.
     return mp.Cluster(rows, document, (budget_document or budget())["nodes"], names=NAMES,
-                      archive_location=archive_location)
+                      archive_location=archive_location, saved=saved, now=NOW)
 
 
 def flat(text):
@@ -214,18 +215,72 @@ class Page(unittest.TestCase):
     def test_without_an_archive_location_back_up_and_check_are_not_offered_and_the_page_says_where(self):
         configured = cluster([recipe()], files([ready_model()]))
         unset = cluster([recipe()], files([ready_model()]), archive_location="not-configured")
-        self.assertIn(("backup", "Back up a model…"), mp.page_choices(configured))
-        self.assertIn(("check", "Check the archives…"), mp.page_choices(configured))
+        self.assertIn(("backup", "Back up a model to the archive…"), mp.page_choices(configured))
+        self.assertIn(("check", "Check the archive copies…"), mp.page_choices(configured))
         labels = [label for _, label in mp.page_choices(unset)]
-        self.assertNotIn("Back up a model…", labels)
-        self.assertNotIn("Check the archives…", labels)
+        self.assertNotIn("Back up a model to the archive…", labels)
+        self.assertNotIn("Check the archive copies…", labels)
         self.assertIn(mp.BACKUPS_NEED, flat(mp.page(unset, width=100)))
 
     def test_files_no_recipe_uses_are_named_with_their_size(self):
         document = files([ready_model(), entry(LOOSE, "org/forgotten", [home("n2")], 50 * G)])
         text = flat(mp.page(cluster([recipe()], document), width=100))
-        self.assertIn("org/forgotten @ cccccccc · 50.0 GiB on spark-3 · no recipe in this catalog uses these files",
-                      text)
+        self.assertIn("org/forgotten @ cccccccc · 50.0 GiB on spark-3 · no recipe in this catalog uses these files "
+                      "· no archive recorded", text)
+
+    def test_the_choices_follow_a_models_life_on_the_cluster_in_four_groups(self):
+        found = cluster([recipe()], files([ready_model()]))
+        self.assertEqual([[action for action, _ in group] for group in mp.page_groups(found)],
+                         [["download", "ready"], ["keep", "backup", "check"], ["free"], ["find", "again", "back"]])
+        self.assertEqual([label for _, label in mp.page_choices(found)],
+                         ["Download a model that has no recipe yet…", "Get a model with a recipe ready to serve…",
+                          "Keep a model on the cluster…", "Back up a model to the archive…",
+                          "Check the archive copies…", "Free up space…", "Record model files found on the nodes…",
+                          "Look again (checks nodes now)", "Back"])
+
+    def test_a_choice_that_needs_it_has_a_second_line_and_a_group_ends_with_a_blank_line(self):
+        found = cluster([recipe()], files([ready_model()]))
+        cards = {action: card.split("\x1f") for action, _, card in mp.page_cards(found, 80)}
+        self.assertEqual(cards["download"], ["Download a model that has no recipe yet…",
+                                             "    files and hashes only, to one node"])
+        # The last choice of a group ends with an empty line; the last group does not.
+        self.assertEqual(cards["ready"], ["Get a model with a recipe ready to serve…",
+                                          "    files, copies and image; nothing starts", ""])
+        self.assertEqual(cards["check"], ["Check the archive copies…", "    compares hashes; changes nothing", ""])
+        self.assertEqual(cards["free"], ["Free up space…", "    remove a model's files or move them", ""])
+        # A label that says it all has no second line.
+        self.assertEqual((cards["backup"], cards["again"], cards["back"]),
+                         (["Back up a model to the archive…"], ["Look again (checks nodes now)"], ["Back"]))
+        # Without an archive location the group ends with the choice that is left.
+        unset = cluster([recipe()], files([ready_model()]), archive_location="not-configured")
+        self.assertEqual(dict((action, card) for action, _, card in mp.page_cards(unset, 80))["keep"].split("\x1f"),
+                         ["Keep a model on the cluster…", "    Free up space never removes it", ""])
+
+    def test_a_second_line_is_short_plain_and_one_line_at_44_columns(self):
+        for action, hint in mp.HINTS.items():
+            with self.subTest(action=action):
+                self.assertLessEqual(len(hint), 40)
+                self.assertEqual(hint, hint[0] + hint[1:].rstrip("."))
+                self.assertIsNone(FORBIDDEN.search(hint), hint)
+        found = cluster([recipe()], files([ready_model()]))
+        for width in (80, 60, 44):
+            for _, _, card in mp.page_cards(found, width):
+                lines = card.split("\x1f")
+                # The cursor gutter takes two columns before a card's first line.
+                self.assertTrue(len(lines[0]) + 2 <= width and all(len(line) <= width for line in lines[1:]), card)
+                self.assertLessEqual(len([line for line in lines if line]), 2, card)
+        # Narrower, a line wraps between words, under its own first column.
+        narrow = dict((action, card) for action, _, card in mp.page_cards(found, 32))
+        self.assertEqual(narrow["download"].split("\x1f"),
+                         ["Download a model that has no", "    recipe yet…", "    files and hashes only, to",
+                          "    one node"])
+
+    def test_only_a_label_is_painted_never_its_second_line(self):
+        found = cluster([recipe()], files([ready_model()]))
+        cards = dict((action, card) for action, _, card in mp.page_cards(found, 80, lambda line: f"<{line}>"))
+        self.assertEqual(cards["download"].split("\x1f"), ["<Download a model that has no recipe yet…>",
+                                                           "    files and hashes only, to one node"])
+        self.assertEqual(cards["back"], "<Back>")
 
 
 class FreeUpSpace(unittest.TestCase):
@@ -270,10 +325,10 @@ class FreeUpSpace(unittest.TestCase):
         self.assertIn("Nothing that is kept stops being kept, no archive is deleted", text)
         self.assertNotIn("unpinned", text)
         self.assertEqual(removable, [])
-        self.assertIn(("org/model is kept ready on spark-1, spark-2 and spark-3, so Free up space… does not offer it.",
-                       (f"unkeep:{SPEC}", "Stop keeping org/model ready")), blocked)
+        self.assertIn(("org/model is kept on spark-1, spark-2 and spark-3, so Free up space… does not offer it.",
+                       (f"unkeep:{SPEC}", "Stop keeping org/model")), blocked)
         self.assertEqual(mp.free_choices(cluster([recipe()], files([ready_model(pinned=True)]))),
-                         [(f"unkeep:{SPEC}", "Stop keeping org/model ready"), ("back", "Back")])
+                         [(f"unkeep:{SPEC}", "Stop keeping org/model"), ("back", "Back")])
 
     def test_a_container_pulsar_did_not_start_is_named_read_only(self):
         document = files([entry(MODEL, "org/model", [
@@ -515,14 +570,14 @@ class Plans(unittest.TestCase):
 
     def test_keep_and_stop_keeping_are_pin_and_unpin(self):
         found = cluster([recipe()], files([ready_model()]))
-        self.assertEqual(mp.intent_choices(found, "keep"), [(f"keep:{SPEC}", "Keep org/model ready"), ("back", "Back")])
+        self.assertEqual(mp.intent_choices(found, "keep"), [(f"keep:{SPEC}", "Keep org/model on the cluster"), ("back", "Back")])
         plan = mp.compose(found, f"keep:{SPEC}")
         self.assertEqual(plan["steps"][0]["command"], ["./pulsar", "model", "pin", SPEC, "--yes"])
         self.assertIn("Pulsar marks them as kept (pins them), so Free up space… never offers them",
                       flat(mp.render(plan, width=100)))
         kept = cluster([recipe()], files([ready_model(pinned=True)]))
         self.assertEqual(mp.intent_choices(kept, "keep"),
-                         [(f"unkeep:{SPEC}", "Stop keeping org/model ready"), ("back", "Back")])
+                         [(f"unkeep:{SPEC}", "Stop keeping org/model"), ("back", "Back")])
         self.assertEqual(mp.compose(kept, f"unkeep:{SPEC}")["steps"][0]["command"],
                          ["./pulsar", "model", "unpin", SPEC, "--yes"])
 
@@ -582,7 +637,7 @@ def prepare_preview(*actions):
 
 
 class LookForFiles(unittest.TestCase):
-    """Look for model files Pulsar has no record of…: one plan from the page's scan."""
+    """Record model files found on the nodes…: one plan from the page's scan."""
 
     def test_downloads_or_copies_that_never_finished_are_said_to_once(self):
         loose = {"path": "/fixture/homes/.pending-y", "kind": "incomplete", "reason": "incomplete staging"}
@@ -598,8 +653,8 @@ class LookForFiles(unittest.TestCase):
 
     def test_the_page_offers_it_and_says_where_files_with_no_record_are(self):
         found = cluster([recipe(home_node=None)], files([entry(MODEL, "org/model", [found_home("n1")], specs=[SPEC])]))
-        self.assertIn(("find", "Look for model files Pulsar has no record of…"), mp.page_choices(found))
-        self.assertIn("Files Pulsar has no record of are on spark-2; Look for model files Pulsar has no record of… "
+        self.assertIn(("find", "Record model files found on the nodes…"), mp.page_choices(found))
+        self.assertIn("Files Pulsar has no record of are on spark-2; Record model files found on the nodes… "
                       "records them.", flat(mp.page(found, width=100)))
 
     def test_a_home_found_with_no_record_is_one_step_through_downloads_own_reuse(self):
@@ -706,7 +761,7 @@ class LookForFiles(unittest.TestCase):
         self.assertIn("Files of org/model were found on spark-2 and spark-3. Download records one home and stops when "
                       "it finds two, so neither is recorded", text)
         self.assertIn("A copy of org/other on spark-2: the model has no home on the cluster, the copy Pulsar keeps, "
-                      "to record it against. Get a model ready ahead of time… restores or downloads it", text)
+                      "to record it against. Get a model with a recipe ready to serve… restores or downloads it", text)
         self.assertIn("org/forgotten @ cccccccc on spark-3 (50.0 GiB): no recipe in this catalog uses these files",
                       text)
         self.assertIn("A copy of org/draft @ cccccccc on spark-3 that no record names was made for a recipe outside "
@@ -748,6 +803,200 @@ class LookForFiles(unittest.TestCase):
                     for step in mp.compose(cluster([recipe()], files([entry(MODEL, "org/model", [
                         home("n0", binding()), lost_copy("n1")], specs=[SPEC])])), target)["steps"]]
         self.assertTrue(all("--adopt-unrecorded" in command for command in commands), commands)
+
+
+NEW = "n" * 64
+NEW_FILE = "/checkout/.pulsar/manifests/new/model@cccccccccccc.json"
+
+
+def new_model(*locations, archive=None):
+    """new/model, downloaded before it has a recipe: a home on spark-2 unless LOCATIONS are given."""
+    return entry(NEW, "new/model", list(locations) or [home("n1")], 100 * G, archive=archive)
+
+
+class FilesWithNoRecipe(unittest.TestCase):
+    """A home no recipe in the catalog uses: every choice for it selects it with its saved manifest file."""
+
+    def found(self, *entries, saved=True, **extra):
+        return cluster([recipe()], files([ready_model(), *(entries or [new_model()])]),
+                       saved={NEW: NEW_FILE} if saved else None, **extra)
+
+    def test_only_valid_manifest_files_saved_in_the_checkout_are_used(self):
+        import tempfile
+        from release_spec import build_snapshot_manifest  # noqa: PLC0415
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.assertEqual(mp.saved_manifests(root), {})
+            folder = root / ".pulsar" / "manifests" / "new"
+            folder.mkdir(parents=True)
+            document = build_snapshot_manifest(model_id="new/model", snapshot_revision="c" * 40, files=[
+                {"path": "weights.bin", "size": 3, "sha256": "b" * 64}])
+            (folder / "model@cccccccccccc.json").write_text(json.dumps(document))
+            (folder / "broken.json").write_text("{")
+            (folder / "other.json").write_text(json.dumps({**document, "total_bytes": document["total_bytes"] + 1}))
+            (folder / "notes.txt").write_text(json.dumps(document))
+            self.assertEqual(mp.saved_manifests(root),
+                             {document["manifest_id"]: str(folder / "model@cccccccccccc.json")})
+
+    def test_free_up_space_offers_its_removal_with_what_getting_it_back_takes(self):
+        removable, blocked = mp.free_options(self.found())
+        option = next(item for item in removable if item["target"] == f"files:{NEW}")
+        self.assertEqual(flat(option["text"]),
+                         "Remove new/model @ cccccccc from the cluster: frees 100 GiB. No recipe in this catalog uses "
+                         "these files. It deletes its home on spark-2, the copy Pulsar keeps. It has no verified "
+                         "archive, so getting it back means downloading it again (100 GiB). Its plan offers to back "
+                         "it up first.")
+        self.assertFalse([text for text, _ in blocked if "new/model" in text])
+        archived_ = mp.free_options(self.found(new_model(archive=archived())))[0]
+        self.assertIn("Its archive was verified 4 days ago, so it can be restored without the internet.",
+                      flat(next(item for item in archived_ if item["target"] == f"files:{NEW}")["text"]))
+
+    def test_without_its_saved_manifest_nothing_is_offered_and_the_page_says_what_is_missing(self):
+        removable, blocked = mp.free_options(self.found(saved=False))
+        self.assertFalse([item for item in removable if "new/model" in item["label"]])
+        self.assertIn("new/model @ cccccccc on spark-2 (100 GiB): no recipe in this catalog uses these files, and "
+                      "their manifest, the list of the files and their hashes, is not saved in this checkout, so this "
+                      "page does not remove them. With that file, ./pulsar model remove --manifest FILE --plan "
+                      "previews that.", [flat(text) for text, _ in blocked])
+        choices, lines = mp.backup_options(self.found(saved=False))
+        self.assertNotIn(f"backup-files:{NEW}", [target for target, _ in choices])
+        self.assertTrue(any(line.startswith("new/model @ cccccccc (no recipe in this catalog uses these files): no "
+                                            "archive recorded. This page cannot back it up: their manifest")
+                            for line in lines), lines)
+        with self.assertRaisesRegex(ValueError, "no longer saved in this checkout"):
+            mp.compose(self.found(saved=False), f"files:{NEW}")
+
+    def test_its_home_stays_while_something_uses_it_or_it_could_not_be_checked(self):
+        outside = binding("f" * 64)
+        cases = {
+            "copies made for a recipe outside this catalog use these files":
+                new_model(home("n1"), location("n2", "prepared", outside)),
+            "tool on spark-2 mounts these files": new_model(home("n1", users=[served("n1", managed=False, name="tool")])),
+            "the containers on spark-2 could not be checked": new_model(home("n1", container_references=None)),
+            "its files on spark-2 were not found": new_model(home("n1", state="missing")),
+            "its files on spark-2 could not be checked": new_model(home("n1", state="unknown")),
+        }
+        for reason, model in cases.items():
+            with self.subTest(reason=reason):
+                found = self.found(model)
+                removable, blocked = mp.free_options(found)
+                self.assertFalse([item for item in removable if item["target"].startswith("files:")])
+                self.assertTrue(any(flat(text).endswith(f"They stay: {reason}.") for text, _ in blocked), blocked)
+                self.assertIn(f"Blocked: Its home cannot go: {reason}.",
+                              flat(mp.render(mp.compose(found, f"files:{NEW}"))))
+        # A node that did not answer: nothing destructive is offered anywhere, said once.
+        unread = cluster([recipe()], files([ready_model(), new_model()],
+                                           nodes=[node("n0", "spark-1"), node("n1", "spark-2"),
+                                                  node("n2", "spark-3", unread=True)]), saved={NEW: NEW_FILE})
+        self.assertEqual(mp.free_options(unread)[0], [])
+        self.assertTrue(mp.compose(unread, f"files:{NEW}")["blocked"])
+
+    def test_removing_it_is_one_step_through_its_manifest_and_offers_to_back_it_up_first(self):
+        plan = mp.compose(self.found(), f"files:{NEW}")
+        self.assertEqual(plan["title"], "Remove new/model @ cccccccc from the cluster")
+        self.assertEqual([(step["kind"], step["command"], step["preview"]) for step in plan["steps"]],
+                         [("remove", ["./pulsar", "model", "remove", "--manifest", NEW_FILE, "--yes"],
+                           ["./pulsar", "model", "remove", "--manifest", NEW_FILE, "--plan", "--json"])])
+        self.assertEqual(mp.plan_choices(plan), [("cancel", "Cancel"), ("go", "Go ahead"),
+                                                 ("archive-first", "Back it up first, then remove it")])
+        text = flat(mp.render(plan))
+        self.assertIn("1. Delete the home of new/model @ cccccccc on spark-2 (100 GiB), the copy Pulsar downloaded "
+                      "or restored and keeps.", text)
+        self.assertIn("It has no verified archive, so getting it back means downloading it again (100 GiB).", text)
+        self.assertIn("No archive is deleted, and the saved manifest file stays.", text)
+        first = mp.compose(self.found(), f"files:{NEW}", archive_first=True)
+        self.assertEqual([step["command"][:5] for step in first["steps"]],
+                         [["./pulsar", "model", "archive", "create", "--manifest"],
+                          ["./pulsar", "model", "remove", "--manifest", NEW_FILE]])
+        self.assertTrue(all(step["preview_now"] for step in first["steps"]))
+        self.assertIn("Its archive is made first and stays", flat(mp.render(first)))
+        self.assertEqual(mp.plan_choices(first), [("cancel", "Cancel"), ("go", "Go ahead")])
+        # Archived already: no step makes an archive, and none is offered.
+        kept = mp.compose(self.found(new_model(archive=archived())), f"files:{NEW}", archive_first=True)
+        self.assertEqual([step["kind"] for step in kept["steps"]], ["remove"])
+        self.assertIn("Its archive stays, verified 4 days ago", flat(mp.render(kept)))
+        # Without an archive location the plan says where it is set and offers no backup.
+        unset = mp.compose(self.found(archive_location="not-configured"), f"files:{NEW}")
+        self.assertEqual(mp.plan_choices(unset), [("cancel", "Cancel"), ("go", "Go ahead")])
+        self.assertIn("Backing it up first needs the archive location", flat(mp.render(unset)))
+
+    def test_a_steps_own_preview_must_name_the_same_files_and_the_same_node(self):
+        plan = mp.compose(self.found(), f"files:{NEW}", archive_first=True)
+        archive, remove = plan["steps"]
+        removal = {"kind": "pulsar-home-removal-plan", "snapshot_manifest_id": NEW, "home": {"node_id": "n1"}}
+        self.assertEqual(mp.assess(remove, {"ok": True, "result": removal}), ("same", ""))
+        # The file is read again when the step's turn comes: another manifest in it is not what was approved.
+        self.assertEqual(mp.assess(remove, {"ok": True, "result": {**removal, "snapshot_manifest_id": "o" * 64}}),
+                         ("differs", "its manifest file names other files now than when the plan was made"))
+        self.assertEqual(mp.assess(remove, {"ok": True, "result": {**removal, "home": {"node_id": "n2"}}}, 0, NAMES)[0],
+                         "differs")
+        copy = {"kind": "pulsar-archive-plan", "snapshot_manifest_id": NEW, "home": {"node_id": "n1"}}
+        self.assertEqual(mp.assess(archive, {"ok": True, "result": copy}), ("same", ""))
+        self.assertEqual(mp.assess(archive, {"ok": True, "result": {**copy, "snapshot_manifest_id": "o" * 64}})[0],
+                         "differs")
+        self.assertEqual(mp.assess(remove, {"ok": False, "error": {"message": "no home is registered"}}, 2),
+                         ("blocked", "no home is registered"))
+
+    def test_back_up_and_check_offer_it_by_its_archive_state(self):
+        choices, lines = mp.backup_options(self.found())
+        self.assertIn((f"backup-files:{NEW}", "Back up new/model @ cccccccc"), choices)
+        self.assertIn("new/model @ cccccccc (no recipe in this catalog uses these files): no archive recorded.", lines)
+        plan = mp.compose(self.found(), f"backup-files:{NEW}")
+        self.assertEqual([(step["kind"], step["command"]) for step in plan["steps"]],
+                         [("archive", ["./pulsar", "model", "archive", "create", "--manifest", NEW_FILE, "--yes"])])
+        self.assertIn("1. Copy the files of new/model @ cccccccc from its home on spark-2 into the archive (100 GiB).",
+                      flat(mp.render(plan)))
+        # Not archived: nothing to check.
+        self.assertNotIn(f"check-files:{NEW}", [target for target, _ in mp.check_options(self.found())[0]])
+        archived_ = self.found(new_model(archive=archived()))
+        self.assertNotIn(f"backup-files:{NEW}", [target for target, _ in mp.backup_options(archived_)[0]])
+        self.assertIn((f"check-files:{NEW}", "Check the archive of new/model @ cccccccc"), mp.check_options(archived_)[0])
+        check = mp.compose(archived_, f"check-files:{NEW}")
+        self.assertEqual([(step["kind"], step["command"], step["preview"]) for step in check["steps"]],
+                         [("verify", ["./pulsar", "model", "archive", "verify", "--manifest", NEW_FILE], None)])
+        self.assertEqual(check["done"], "the archive of new/model @ cccccccc matched its expected file hashes")
+
+    def test_it_moves_off_a_node_past_its_reserve_to_any_node_with_room(self):
+        found = self.found(budget_document=budget(short=("n1",)))
+        move = next(item for item in mp.free_options(found)[0] if item["target"].startswith("move-files:"))
+        self.assertEqual(move["target"], f"move-files:{NEW}:n0")
+        self.assertTrue(flat(move["text"]).startswith("Move the files of new/model @ cccccccc from spark-2 to spark-1: "
+                                                      "frees 100 GiB on spark-2."))
+        plan = mp.compose(found, move["target"])
+        command = ["./pulsar", "model", "move", "--manifest", NEW_FILE, "--node", "spark-1"]
+        self.assertEqual([(step["kind"], step["command"], step["preview"]) for step in plan["steps"]],
+                         [("move", [*command, "--yes"], [*command, "--plan", "--json"])])
+        moved = {"kind": "pulsar-home-move-plan", "snapshot_manifest_id": NEW, "source_node": "n1",
+                 "destination_node": "n0", "transfer_route": "direct-ssh-roce"}
+        self.assertEqual(mp.assess(plan["steps"][0], {"ok": True, "result": moved}), ("same", ""))
+        self.assertEqual(mp.assess(plan["steps"][0], {"ok": True, "result": {**moved, "snapshot_manifest_id": "o" * 64}})[0],
+                         "differs")
+        # No saved manifest: no move is offered. No node short: none either.
+        short = self.found(saved=False, budget_document=budget(short=("n1",)))
+        self.assertFalse([item for item in mp.free_options(short)[0] if item["target"].startswith("move")])
+        self.assertFalse([item for item in mp.free_options(self.found())[0] if item["target"].startswith("move")])
+        with self.assertRaisesRegex(ValueError, "cannot be moved there"):
+            mp.compose(found, f"move-files:{NEW}:n1")
+
+    def test_its_labels_use_plain_words_and_its_screens_fit_80_60_and_44_columns(self):
+        long = entry(NEW, "organization-with-a-long-name/model-family-instruct-fp8", [home("n1")], 100 * G)
+        found = cluster([recipe()], files([ready_model(), long]), budget(short=("n1",)), saved={NEW: NEW_FILE})
+        labels = [label for _, label in mp.free_choices(found)]
+        labels += [label for intent in ("backup", "check") for _, label in mp.intent_choices(found, intent)]
+        self.assertTrue(any("model-family-instruct-fp8 @ cccccccc" in label for label in labels))
+        for label in labels:
+            self.assertIsNone(FORBIDDEN.search(label), label)
+        targets = [target for target, _ in mp.free_choices(found) + mp.intent_choices(found, "backup")
+                   if "files:" in target]
+        self.assertEqual(sorted(target.split(":")[0] for target in targets), ["backup-files", "files", "move-files"])
+        for width in (80, 60, 44):
+            with self.subTest(width=width):
+                texts = [mp.page(found, width=width), mp.free_screen(found, width=width),
+                         mp.intent_screen(found, "backup", width=width)]
+                texts += [mp.render(mp.compose(found, target), width=width) for target in targets]
+                texts.append(mp.render(mp.compose(found, f"files:{NEW}", archive_first=True), width=width))
+                for text in texts:
+                    self.assertTrue(all(len(line) <= width for line in text.splitlines()), text)
 
 
 class Widths(unittest.TestCase):

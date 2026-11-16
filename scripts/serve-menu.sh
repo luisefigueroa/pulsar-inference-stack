@@ -32,7 +32,7 @@
 #   --restart SPEC [--node NODE_ID]
 #                       Restart…: no change check and no list; a plan of Stop
 #                       then Start of that recipe on the nodes it runs on.
-# Models and disk space… opens it as Get a model ready ahead of time…:
+# Models and disk space… opens it as Get a model with a recipe ready to serve…:
 #   --ready             the same change check, list and plan, composed
 #                       without its Stop and Start (serve_plan.py compose
 #                       --ready-only); it exits 4 when the plan ran.
@@ -319,7 +319,7 @@ build_plan() {
   [ -z "$IMAGE_SOURCE" ] || args+=(--image-source "$IMAGE_SOURCE")
   [ -z "$SWITCH_FROM" ] || args+=(--stop "$SWITCH_FROM")
   [ "$MODE" != restart ] || args+=(--restart)
-  # Get a model ready ahead of time…: the same plan without its Stop and Start.
+  # Get a model with a recipe ready to serve…: the same plan without its Stop and Start.
   [ "$MODE" != ready ] || args+=(--ready-only)
   for name in "${NOT_FOUND[@]}"; do args+=(--not-found "$name"); done
   [ ! -e "$WORK/files.json" ] || args+=(--files "$WORK/files.json")

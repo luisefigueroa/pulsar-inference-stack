@@ -67,10 +67,17 @@ choose_index() {
     ctrl-c) return 130 ;;
     [0-9]*) printf '%s\n' "$answer" ;;
     *)
-      local index=0 option
+      local index=0 option first
       shift
       for option in "$@"; do
         [ "$option" != "$answer" ] || { printf '%s\n' "$index"; return 0; }
+        index=$((index+1))
+      done
+      # A card, a choice of several lines, is chosen by its first line.
+      index=0
+      for option in "$@"; do
+        first=${option%%$'\n'*}
+        [ "$option" = "$first" ] || [ "${first#"  "}" != "$answer" ] || { printf '%s\n' "$index"; return 0; }
         index=$((index+1))
       done
       echo "UNEXPECTED MENU ANSWER: $answer" >> "$CHOOSE_LOG"; return 1 ;;

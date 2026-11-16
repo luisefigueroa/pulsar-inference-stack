@@ -15,7 +15,7 @@
 #   Serve on the cluster as saved                  exits 20
 #   Stop MODEL, save the change, then continue     exits 21; shown when a
 #                                                  running service refuses the save
-# --ready is that screen for Get a model ready ahead of time…, which starts
+# --ready is that screen for Get a model with a recipe ready to serve…, which starts
 # nothing: Get it ready on the cluster as saved exits 20, and the Stop is not
 # offered, since nothing would start after it.
 set -euo pipefail

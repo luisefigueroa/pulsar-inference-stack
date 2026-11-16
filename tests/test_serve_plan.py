@@ -792,7 +792,7 @@ class CheckStep(unittest.TestCase):
         verdict, reason = self.check(plan, envelope(prepare_plan(("n0", "home-view"), ("n1", "copy"),
                                                                  eligible=False, details=[detail])))
         self.assertEqual(verdict, "blocked")
-        self.assertIn("Look for model files Pulsar has no record of… on Models and disk space…", reason)
+        self.assertIn("Record model files found on the nodes… on Models and disk space…", reason)
         self.assertNotIn("--adopt-unrecorded", reason)
 
     def test_the_image_is_skipped_when_already_there_and_differs_when_staged_elsewhere(self):

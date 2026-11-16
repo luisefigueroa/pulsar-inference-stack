@@ -202,8 +202,8 @@ def workflow() -> list[tuple[str, str]]:
         (LABELS["stop"], "Remove the *service*'s containers from every node; model files, *pins* and "
                          "*archives* are kept."),
         ("Back up",
-         "Copy each *home* of a model into the *archive* (**Models and disk space… → Back up a model…**), so "
-         "a model removed from the cluster comes back without the internet; **Check the archives…** verifies "
+         "Copy each *home* of a model into the *archive* (**Models and disk space… → Back up a model to the archive…**), so "
+         "a model removed from the cluster comes back without the internet; **Check the archive copies…** verifies "
          "them."),
         (LABELS["purge"],
          "Remove the spec's *prepared copies* to free space, keeping the *home* and *archives*; pinned or "
@@ -263,8 +263,8 @@ def emit_workflow(writer: TerminalWriter) -> None:
                 "order; each step checks first, and Pulsar stops and asks again if one would do more than the "
                 "plan says. **Running services…** shows what runs and how to connect to it, and restarts, switches "
                 "or stops it, after a plan that starts on Cancel or a question that starts on No. **Cluster…** checks the nodes and "
-                "saves a change to the cluster. After Pulsar's records were lost, **Models and disk space… → Look for "
-                "model files Pulsar has no record of…** records the files the nodes still hold, checking every file "
+                "saves a change to the cluster. After Pulsar's records were lost, **Models and disk space… → Record "
+                "model files found on the nodes…** records the files the nodes still hold, checking every file "
                 "first. **Help and troubleshooting… → Why will a model not start?** runs "
                 "Start's checks without starting and offers each fix. **Help and troubleshooting… → Advanced: "
                 "single operations…** runs each step on its own.", markup=True)

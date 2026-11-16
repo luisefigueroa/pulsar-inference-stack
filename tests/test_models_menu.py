@@ -17,12 +17,28 @@ from tests.test_models_page import (DRAFT, G, MODEL, OTHER, OTHER_FILES, SPEC, a
 from tests.test_serve_menu import Harness, build_root, root_environment  # noqa: E402
 from tests.test_serve_plan import envelope  # noqa: E402
 
-FIND = "Look for model files Pulsar has no record of…"
+FIND = "Record model files found on the nodes…"
 DOWNLOAD = "Download a model that has no recipe yet…"
-PAGE = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", DOWNLOAD,
-        "Keep a model ready…", FIND, "Look again (checks nodes now)", "Back"]
-WITH_ARCHIVES = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", DOWNLOAD,
-                 "Keep a model ready…", "Back up a model…", "Check the archives…", FIND, "Look again (checks nodes now)", "Back"]
+READY = "Get a model with a recipe ready to serve…"
+KEEP = "Keep a model on the cluster…"
+BACKUP = "Back up a model to the archive…"
+CHECK = "Check the archive copies…"
+
+
+def page_menu(*, archives=False, second_lines=True):
+    """The page's menu as the double logs it: each choice, then its second line where it has one."""
+    protect = [KEEP, "    Free up space never removes it"]
+    if archives:
+        protect += [BACKUP, CHECK, "    compares hashes; changes nothing"]
+    lines = ["Models and disk space", DOWNLOAD, "    files and hashes only, to one node",
+             READY, "    files, copies and image; nothing starts", *protect,
+             "Free up space…", "    remove a model's files or move them",
+             FIND, "    files Pulsar has no record of", "Look again (checks nodes now)", "Back"]
+    return [line for line in lines if second_lines or not line.startswith(" ")]
+
+
+PAGE = page_menu()
+WITH_ARCHIVES = page_menu(archives=True)
 SCAN = ["model files --json", "model budget --json"]
 
 
@@ -59,6 +75,13 @@ class Menu(Harness):
     def with_archive(self):
         return {"PULSAR_COLD_ROOT": str(self.archive)}
 
+    def again(self):
+        """Before another run of the menu in one test: it starts at its first answer, with its own logs."""
+        for name in ("answers.n", "choose.log", "pulsar.log"):
+            (self.root / name).unlink(missing_ok=True)
+        for count in self.fixtures.glob("*.count"):
+            count.unlink()
+
 
 class ThePage(Menu):
     def test_entering_reads_the_files_and_the_budget_once_and_shows_room_and_models(self):
@@ -78,8 +101,38 @@ class ThePage(Menu):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus(), [WITH_ARCHIVES])
 
+    def test_the_choices_are_grouped_and_a_blank_line_ends_each_group_but_the_last(self):
+        result = self.run_menu(["Back"], **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        logged = self.choose_log.read_text().split("-- end of menu --")[0].splitlines()[1:]
+        groups = [group.splitlines() for group in "\n".join(logged).split("\n\n")]
+        self.assertEqual([[line for line in group if not line.startswith(" ")] for group in groups],
+                         [[DOWNLOAD, READY], [KEEP, BACKUP, CHECK], ["Free up space…"],
+                          [FIND, "Look again (checks nodes now)", "Back"]])
+
+    def test_a_short_terminal_shows_the_labels_alone_so_the_page_stays_above_its_choices(self):
+        page_log = self.root / "paged.log"
+        result = self.run_menu(["Back"])
+        page = len(result.stdout.strip("\n").splitlines())
+        cards, labels = 15, 7  # the menu's rows with and without second lines and group gaps
+        # Rows for the page, a blank line, the choices and Gum's five rows.
+        for rows, second_lines, paged in ((page + 1 + cards + 5, True, False),
+                                          (page + 1 + cards + 4, False, False),
+                                          (page + 1 + labels + 5, False, False),
+                                          (page + 1 + labels + 4, True, True)):
+            with self.subTest(rows=rows):
+                self.again()
+                page_log.unlink(missing_ok=True)
+                result = self.run_menu(["Free up space…", "Back", "Back"], ROWS=str(rows), PAGE_LOG=str(page_log))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.menus()[0], page_menu(second_lines=second_lines))
+                # Too short for the labels alone too: the page opens in the pager, then the full choices.
+                self.assertEqual(page_log.exists() and "paged" in page_log.read_text().splitlines()[0:1], paged)
+                # A choice is reached by its label either way.
+                self.assertEqual(self.menus()[1][0], "Free up space")
+
     def test_screens_reuse_the_scan_until_a_plan_runs_or_look_again(self):
-        result = self.run_menu(["Free up space…", "Back", "Keep a model ready…", "Back", "Free up space…",
+        result = self.run_menu(["Free up space…", "Back", "Keep a model on the cluster…", "Back", "Free up space…",
                                 "Remove org/model from spark-2 and spark-3: frees 424 GiB", "Cancel", "Back",
                                 "Look again (checks nodes now)", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -95,7 +148,8 @@ class ThePage(Menu):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.commands(), SCAN + SCAN)
         text = self.text(result)
-        self.assertEqual(text.count("Models and disk space · checked less than a minute ago"), 2)
+        # The scan's age is counted from when the fixtures were made, so it is not part of what is compared.
+        self.assertEqual(text.count("Models and disk space · checked "), 2)
         self.assertEqual(text.count(" files not found on spark-3 · not kept · no archive recorded"), 2)
         self.assertNotIn("ready to start", text)
 
@@ -219,11 +273,11 @@ class FreeUpSpace(Menu):
 
     def test_a_kept_model_offers_only_to_stop_keeping_it_which_is_its_own_plan(self):
         self.fixture("files", envelope(files([ready_model(pinned=True)])))
-        result = self.run_menu(["Free up space…", "Stop keeping org/model ready", "Go ahead", "Continue", "Back",
+        result = self.run_menu(["Free up space…", "Stop keeping org/model", "Go ahead", "Continue", "Back",
                                 "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.menus()[1], ["Free up space", "Stop keeping org/model ready", "Back"])
-        self.assertIn("org/model is kept ready on spark-1, spark-2 and spark-3, so Free up space… does not offer it.",
+        self.assertEqual(self.menus()[1], ["Free up space", "Stop keeping org/model", "Back"])
+        self.assertIn("org/model is kept on spark-1, spark-2 and spark-3, so Free up space… does not offer it.",
                       self.text(result))
         # Unpinning is the operator's own choice and plan; nothing is purged with it.
         self.assertEqual(self.ran(), [f"model unpin {SPEC} --yes"])
@@ -249,12 +303,125 @@ class FreeUpSpace(Menu):
                       self.text(result))
 
 
+class FilesWithNoRecipe(Menu):
+    """A home no recipe uses, as Download a model that has no recipe yet… leaves it: the page reaches
+    it with the manifest file that download saved."""
+
+    def setUp(self):
+        super().setUp()
+        from release_spec import build_snapshot_manifest
+        manifest = build_snapshot_manifest(model_id="new/model", snapshot_revision="c" * 40, files=[
+            {"path": "weights.bin", "size": 3, "sha256": "b" * 64}])
+        self.files_id = manifest["manifest_id"]
+        self.manifest = self.root / ".pulsar" / "manifests" / "new" / "model@cccccccccccc.json"
+        self.manifest.parent.mkdir(parents=True)
+        self.manifest.write_text(json.dumps(manifest))
+        self.scan()
+        for key, kind in (("remove-plan", "pulsar-home-removal-plan"), ("archive-plan", "pulsar-archive-plan")):
+            self.fixture(key, envelope({"kind": kind, "snapshot_manifest_id": self.files_id,
+                                        "home": {"node_id": "n1"}, "eligible": True, "blockers": []}))
+
+    def scan(self, archive=None):
+        self.fixture("files", envelope(files([ready_model(), entry(self.files_id, "new/model", [home("n1")], 100 * G,
+                                                                   archive=archive)])))
+
+    REMOVE = "Remove new/model @ cccccccc from the cluster: frees 100 GiB"
+
+    def test_free_up_space_removes_it_through_its_manifest_after_backing_it_up_when_asked(self):
+        result = self.run_menu(["Free up space…", self.REMOVE, "Back it up first, then remove it", "Go ahead",
+                                "Continue", "Back", "Back"], **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.text(result)
+        self.assertIn("new/model @ cccccccc · 100 GiB on spark-2 · no recipe in this catalog uses these files · no "
+                      "archive recorded", text)
+        # The plan starts on Cancel; backing it up first is a choice of its own, never a default.
+        self.assertEqual(self.menus()[2], ["Free up space", "Cancel", "Go ahead", "Back it up first, then remove it"])
+        self.assertEqual(self.menus()[3], ["Free up space", "Cancel", "Go ahead"])
+        self.assertIn("Free up space\t0", self.default_log.read_text())
+        self.assertIn("Remove new/model @ cccccccc from the cluster Pulsar will:", text)
+        self.assertIn("1. Copy the files of new/model @ cccccccc from its home on spark-2 into the archive (100 GiB).",
+                      text)
+        self.assertIn("2. Delete the home of new/model @ cccccccc on spark-2 (100 GiB)", text)
+        self.assertEqual(self.ran(), [f"model archive create --manifest {self.manifest} --yes",
+                                      f"model remove --manifest {self.manifest} --yes"])
+        # Each step's own preview ran with the same file: for the first plan, for the plan that
+        # backs it up first, and again when each step's turn came.
+        archive, remove = (f"model archive create --manifest {self.manifest} --plan --json",
+                           f"model remove --manifest {self.manifest} --plan --json")
+        self.assertEqual([line for line in self.commands() if "--plan --json" in line],
+                         [remove, archive, remove, archive, remove])
+        self.assertIn("✓ Done: new/model @ cccccccc is removed from the cluster.", text)
+        # A long command breaks between its arguments, never inside the path.
+        self.assertIn("Same as: ./pulsar model archive create", text)
+        self.assertEqual(text.count(f"--manifest {self.manifest}"), 2)
+        self.assert_plain_choices()
+        self.assert_no_unapproved_authority()
+
+    def test_a_manifest_file_that_names_other_files_at_the_preview_stops_the_plan(self):
+        self.fixture("remove-plan", envelope({"kind": "pulsar-home-removal-plan", "snapshot_manifest_id": "o" * 64,
+                                              "home": {"node_id": "n1"}, "eligible": True, "blockers": []}))
+        result = self.run_menu(["Free up space…", self.REMOVE, "Cancel", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.menus()[2], ["Free up space", "Cancel"])
+        self.assertIn("Blocked: Step 1 cannot run as planned: its manifest file names other files now than when the "
+                      "plan was made.", self.text(result))
+        self.assertEqual(self.ran(), [])
+
+    def test_a_manifest_file_that_changes_before_its_step_runs_stops_before_anything_is_deleted(self):
+        self.fixture("remove-plan", envelope({"kind": "pulsar-home-removal-plan", "snapshot_manifest_id": "o" * 64,
+                                              "home": {"node_id": "n1"}, "eligible": True, "blockers": []}), nth=2)
+        result = self.run_menu(["Free up space…", self.REMOVE, "Go ahead", "Continue", "Back", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("✗ Step 1 did not run: its manifest file names other files now than when the plan was made.",
+                      self.text(result))
+        self.assertEqual(self.ran(), [])
+
+    def test_without_the_saved_file_nothing_is_offered_for_it(self):
+        self.manifest.unlink()
+        result = self.run_menu(["Free up space…", "Back", "Back"], **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn(self.REMOVE, self.menus()[1])
+        self.assertIn("their manifest, the list of the files and their hashes, is not saved in this checkout, so this "
+                      "page does not remove them.", self.text(result))
+        self.assertEqual(self.ran(), [])
+
+    def test_back_up_and_check_reach_it_by_the_same_file(self):
+        result = self.run_menu([BACKUP, "Back up new/model @ cccccccc", "Go ahead", "Continue", "Back", "Back"],
+                               **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Back up org/model", self.menus()[1])
+        self.assertEqual(self.ran(), [f"model archive create --manifest {self.manifest} --yes"])
+        self.assertIn("✓ Done: new/model @ cccccccc is backed up.", self.text(result))
+        self.scan(archive={"verified": True, "verified_at": "2020-01-01T00:00:00Z", "root": "/fixture/archive"})
+        self.again()
+        result = self.run_menu([CHECK, "Check the archive of new/model @ cccccccc", "Go ahead", "Continue", "Back",
+                                "Back"], **self.with_archive())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [f"model archive verify --manifest {self.manifest}"])
+        self.assertIn("✓ Done: the archive of new/model @ cccccccc matched its expected file hashes.",
+                      self.text(result))
+        self.assert_plain_choices()
+
+    def test_it_moves_off_a_node_past_its_reserve_by_the_same_file(self):
+        self.fixture("budget", envelope(budget(short=("n1",))))
+        self.fixture("move-plan", envelope({"kind": "pulsar-home-move-plan", "snapshot_manifest_id": self.files_id,
+                                            "source_node": "n1", "destination_node": "n0",
+                                            "transfer_route": "direct-ssh-roce"}))
+        move = "Move the files of new/model @ cccccccc from spark-2 to spark-1: frees 100 GiB on spark-2"
+        # At 80 columns the label is a card of two lines, chosen by its place.
+        result = self.run_menu(["Free up space…", "2", "Go ahead", "Continue", "Back", "Back"])
+        self.assertEqual(" ".join(" ".join(self.menus()[1][3:5]).split()), move)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [f"model move --manifest {self.manifest} --node spark-1 --yes"])
+        self.assertIn("✓ Done: the files of new/model @ cccccccc are on spark-1.", self.text(result))
+
+
 class Intents(Menu):
     def test_keep_a_model_ready_is_pin_by_that_name(self):
-        result = self.run_menu(["Keep a model ready…", "Keep org/model ready", "Go ahead", "Continue", "Back", "Back"])
+        result = self.run_menu(["Keep a model on the cluster…", "Keep org/model on the cluster", "Go ahead", "Continue", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.menus()[1], ["Keep a model ready", "Keep org/model ready", "Back"])
-        self.assertEqual(self.menus()[2], ["Keep a model ready", "Cancel", "Go ahead"])
+        self.assertEqual(self.menus()[1], ["Keep a model on the cluster", "Keep org/model on the cluster", "Back"])
+        self.assertEqual(self.menus()[2], ["Keep a model on the cluster", "Cancel", "Go ahead"])
         text = self.text(result)
         self.assertIn("Pulsar marks them as kept (pins them), so Free up space… never offers them and Purge refuses "
                       "them until you stop keeping it.", text)
@@ -273,7 +440,7 @@ class Intents(Menu):
         self.fixture("archive-plan", envelope({"kind": "pulsar-archive-plan", "home": {"node_id": "n1"}}), nth=2)
         self.fixture("archive-plan", envelope({"kind": "pulsar-archive-plan", "home": {"node_id": "n0"}}), nth=3)
         self.fixture("archive-plan", envelope({"kind": "pulsar-archive-plan", "home": {"node_id": "n1"}}), nth=4)
-        result = self.run_menu(["Back up a model…", "Back up org/model", "Go ahead", "Continue", "Back", "Back"],
+        result = self.run_menu(["Back up a model to the archive…", "Back up org/model", "Go ahead", "Continue", "Back", "Back"],
                                **self.with_archive())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.ran(), [f"model archive create {SPEC} --snapshot target --yes",
@@ -286,7 +453,7 @@ class Intents(Menu):
 
     def test_check_the_archives_runs_verify_with_nothing_to_preview(self):
         self.entries(recipe(archive=archived()))
-        result = self.run_menu(["Check the archives…", "Check the archives of org/model", "Go ahead", "Continue",
+        result = self.run_menu(["Check the archive copies…", "Check the archives of org/model", "Go ahead", "Continue",
                                 "Back", "Back"], **self.with_archive())
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.ran(), [f"model archive verify {SPEC}"])
@@ -294,7 +461,7 @@ class Intents(Menu):
         self.assertIn("✓ Done: every archive of org/model matched its expected file hashes.", self.text(result))
 
     def test_get_a_model_ready_opens_the_serve_plan_without_start_and_reuses_the_scan_on_back(self):
-        result = self.run_menu(["Get a model ready ahead of time…", "Back", "Back"])
+        result = self.run_menu(["Get a model with a recipe ready to serve…", "Back", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.menus()[1][0], "Get a model ready")
         self.assertEqual(self.menus()[2], PAGE)
@@ -311,8 +478,8 @@ class LookForFiles(Menu):
         self.fixture("prepare-plan", prepare_preview(("n0", "home-view"), ("n1", "adopt"), ("n2", "adopt")))
         result = self.run_menu([FIND, "Go ahead", "Continue", "Back"])
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.menus()[1], ["Look for model files", "Cancel", "Go ahead"])
-        self.assertIn("Look for model files" + chr(9) + "0", self.default_log.read_text().splitlines())
+        self.assertEqual(self.menus()[1], ["Record model files", "Cancel", "Go ahead"])
+        self.assertIn("Record model files" + chr(9) + "0", self.default_log.read_text().splitlines())
         text = self.text(result)
         self.assertIn("1. Record the files of org/model found on spark-1 (212 GiB) as its home, the copy Pulsar keeps. "
                       "Download checks them first; nothing is downloaded.", text)
@@ -353,7 +520,8 @@ class WithoutGum(unittest.TestCase):
                             "./pulsar model remove SPEC --plan", "./pulsar model move SPEC --node NODE --plan",
                             "./pulsar model pin SPEC --plan", "./pulsar model archive create SPEC --plan",
                             "./pulsar model archive verify SPEC", "./pulsar model acquire SPEC --node NODE --plan",
-                            "./pulsar model prepare SPEC --adopt-unrecorded --plan"):
+                            "./pulsar model prepare SPEC --adopt-unrecorded --plan",
+                            "./pulsar model remove --manifest FILE --plan"):
                 self.assertIn(f"  {command}", result.stderr)
             self.assertFalse((root / "pulsar.log").exists())
 
