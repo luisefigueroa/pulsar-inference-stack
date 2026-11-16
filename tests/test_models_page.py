@@ -1049,6 +1049,31 @@ class MoveAModel(unittest.TestCase):
                 self.assertEqual(choices, [("back", "Back")])
                 self.assertEqual(flat(lines[0]), f"new/model @ cccccccc (100 GiB) stays on spark-2: {reason}.")
 
+    def test_a_home_with_an_unfinished_copy_stays_here_and_in_free_up_space(self):
+        stage = {"path": "/fixture/views/.pending-x", "kind": "incomplete", "reason": "incomplete staging",
+                 "preparation_spec_id": OTHER, "container_references": []}
+        rows = [recipe(OTHER, "org/other", OTHER_FILES, home_node="n0", nodes=1)]
+        document = files([entry(OTHER_FILES, "org/other", [home("n0")], 60 * G, specs=[OTHER])],
+                         nodes=[node("n0", "spark-1"), node("n1", "spark-2", unfinished=[stage]), node("n2", "spark-3")])
+        choices, lines = mp.move_page_options(cluster(rows, document))
+        self.assertEqual(choices, [("back", "Back")])
+        self.assertEqual(flat(lines[0]), "org/other (60.0 GiB) stays on spark-1: an unfinished copy on spark-2 depends "
+                                         "on it, and a move never removes it. Free up space… clears it first.")
+        # Free up space… offers no move for it either, though its node is past its reserve.
+        short = cluster(rows, document, budget(short=("n0",)))
+        self.assertFalse([item for item in mp.free_options(short)[0] if item["target"].startswith("move")])
+
+    def test_a_node_only_saved_records_name_is_never_a_destination(self):
+        from model_library.file_inventory import OUTSIDE_MEMBERSHIP  # noqa: PLC0415
+        gone = {**node("n9", "retired", unread=True), "error": OUTSIDE_MEMBERSHIP}
+        document = files([new_model()], nodes=[node("n0", "spark-1"), node("n1", "spark-2"), gone])
+        found = cluster([recipe()], document, saved={NEW: NEW_FILE})
+        self.assertEqual(found.unread, [])
+        self.assertEqual([target for target, _ in mp.move_destinations(found, NEW)], [f"move-files:{NEW}:n0"])
+        # With no other node left, the home is said to stay instead of offering a node that cannot take it.
+        alone = cluster([recipe()], files([new_model()], nodes=[node("n1", "spark-2"), gone]), saved={NEW: NEW_FILE})
+        self.assertEqual(mp.move_page_options(alone)[0], [("back", "Back")])
+
     def test_a_node_that_did_not_answer_offers_no_move(self):
         document = files([new_model()], nodes=[node("n0", "spark-1"), node("n1", "spark-2"),
                                                node("n2", "spark-3", unread=True)])

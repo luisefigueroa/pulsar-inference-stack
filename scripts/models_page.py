@@ -900,7 +900,8 @@ def move_options(cluster: Cluster) -> list[dict]:
             home = next((location for location in entry.get("locations") or []
                          if location.get("registered_home") and location["node_id"] == short), None)
             if (home is None or home.get("state") != "present" or home.get("container_references") != []
-                    or any(location.get("bindings") for location in entry.get("locations") or [])):
+                    or any(location.get("bindings") for location in entry.get("locations") or [])
+                    or unfinished_on(cluster, entry)):
                 continue
             size = entry.get("payload_bytes")
             if type(size) is not int:
@@ -946,6 +947,13 @@ def move_spec(cluster: Cluster, entry: dict, node: str) -> tuple[str, Any] | Non
     return None
 
 
+def unfinished_on(cluster: Cluster, entry: dict) -> list[str]:
+    """Nodes with an unfinished copy recorded for a catalog recipe of ENTRY's files. Move home refuses
+    while one exists, as it does for a finished copy."""
+    return cluster.ordered(item["node_id"] for value in entry.get("catalog_specs") or []
+                           for item in cluster.unfinished(value.get("spec_id")))
+
+
 def move_destinations(cluster: Cluster, manifest: str) -> list[tuple[str, str]]:
     """(target, label) for each node that can take the home of MANIFEST's files: every node that
     answered but its own, where a recipe of the files may keep its home (move_spec; any node for
@@ -958,8 +966,11 @@ def move_destinations(cluster: Cluster, manifest: str) -> list[tuple[str, str]]:
         return []
     size, found = entry.get("payload_bytes"), []
     kind = "move" if entry.get("catalog_specs") else "move-files"
+    from model_library.file_inventory import OUTSIDE_MEMBERSHIP
+    # A node that only saved records name is no longer in the cluster: the command refuses it.
+    outside = {item["node_id"] for item in cluster.nodes if item.get("error") == OUTSIDE_MEMBERSHIP}
     for node in cluster.ordered(item["node_id"] for item in cluster.nodes):
-        if node == home["node_id"] or node in cluster.unread:
+        if node == home["node_id"] or node in cluster.unread or node in outside:
             continue
         if kind == "move" and move_spec(cluster, entry, node) is None:
             continue
@@ -1000,6 +1011,9 @@ def move_page_options(cluster: Cluster) -> tuple[list[tuple[str, str]], list[str
         elif bound:
             stays = (f"its copies on {cluster.hosts(bound)} depend on it, and a move never removes them. Free up "
                      "space… removes them first")
+        elif unfinished_on(cluster, entry):
+            stays = (f"an unfinished copy on {cluster.hosts(unfinished_on(cluster, entry))} depends on it, and a "
+                     "move never removes it. Free up space… clears it first")
         elif users:
             stays = f"{_list([item['name'] for item in users])} mounts these files"
         elif home.get("container_references") != []:
