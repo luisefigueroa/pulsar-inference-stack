@@ -61,7 +61,7 @@ refuse_second_copy() {
   found=$(printf '%s' "$ARCHIVE_SEARCH" | python3 -c 'import json,sys; a=json.load(sys.stdin)["archives"]; print(a[0]["manifest_path"] if a else "")')
   [ -z "$found" ] || die "an archive already holds $MODEL_ID at $REVISION ($(dirname "$found")); nothing was downloaded. Next: ./pulsar model restore --manifest $(printf '%q' "$found") --node $(human_node_name "$rank") --plan"
   if [ "$PLAN" -eq 0 ] && [ "$(json_fields "$ARCHIVE_SEARCH" state)" = unreadable ]; then
-    warn "the archive location could not be read, so whether it holds these files is unknown; the download continues"
+    warn "the archive location could not be read in full, so whether it holds these files is unknown; the download continues"
   fi
 }
 

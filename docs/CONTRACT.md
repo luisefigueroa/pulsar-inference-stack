@@ -727,7 +727,8 @@ Change note, 2026-11-15: `model acquire --plan --json` results gained `action`
 (`download` or `reuse`) and `archive_search`. With `--model-id` and
 `--model-commit` and no spec, `archive_search` is the `pulsar-archive-search`
 document (`state` is `searched`, `unreadable` or `not-configured`; `archives`
-lists what matched), and a plan with `action` `reuse` carries the `home` it
+lists what matched; `unread` counts archives whose manifest could not be read,
+and with no match they make the state `unreadable`), and a plan with `action` `reuse` carries the `home` it
 reuses; with a spec, `archive_search` is null. Without a spec, `--plan` and
 `--yes` are now refused with `prerequisite_failed` when an archive holds the
 model commit or when its home is on another node than the one named, and a

@@ -1308,7 +1308,7 @@ class ModelLibraryCLI(unittest.TestCase):
         self.assertEqual(plan["archive_search"]["state"], "unreadable")
         done = f.run("acquire", *commit, "--yes")
         self.success(done)
-        self.assertIn("the archive location could not be read, so whether it holds these files is unknown", done.stderr)
+        self.assertIn("the archive location could not be read in full, so whether it holds these files is unknown", done.stderr)
         f.env["PULSAR_COLD_ROOT"] = ""
         self.assertEqual(self.success(f.run("acquire", *commit, "--plan"))["action"], "reuse")
 

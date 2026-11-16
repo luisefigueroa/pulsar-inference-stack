@@ -145,7 +145,7 @@ def plan(preview, rc: int, *, model: str, ref: str, host: str, repo_root: Path, 
     if isinstance(search, dict) and search.get("state") == "searched":
         out.emit("The archive was searched and holds no copy of these files.")
     elif isinstance(search, dict) and search.get("state") == "unreadable":
-        out.emit("The archive location could not be read, so whether it holds these files is unknown.",
+        out.emit("The archive location could not be read in full, so whether it holds these files is unknown.",
                  "Not checked: ", "  ", prefix_role="warn")
     out.emit("Nothing is prepared for serving and nothing starts.")
     facts.update(action=action, commit=commit, manifest=str(saved), save=0 if kept else 1)
@@ -206,7 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     width = max(MIN_WIDTH, min(MAX_WIDTH, args.width or terminal_width()))
     if args.command == "nodes":
         from scripts.models_page import files_document
-        print("\n".join(nodes(files_document(args.files))))
+        for hostname in nodes(files_document(args.files)):
+            print(hostname)
         return 0
     if not MODEL.fullmatch(args.model):
         print("error: the model must be ORG/NAME", file=sys.stderr)

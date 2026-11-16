@@ -825,9 +825,10 @@ resolved first. `--plan` and `--yes` answer the same way:
 | Nowhere | The plan says `download from Hugging Face`, and `--yes` downloads. |
 
 The archive search reads each archive's manifest and hashes no model file. When
-the archive location cannot be read, whether it holds the files is unknown, not
-absent: the plan says the archive was not searched, and `--yes` warns and
-downloads. This check applies only when no spec is named. `model acquire
+the archive location, or the manifest of an archive in it, cannot be read and
+no archive that could be read holds the files, whether it holds them is
+unknown, not absent: the plan says the archive was not read in full, and
+`--yes` warns and downloads. This check applies only when no spec is named. `model acquire
 <spec-id>` is unchanged, so a download chosen in place of a restore still runs.
 
 While no spec names the files, select them with the saved manifest:

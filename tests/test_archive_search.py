@@ -42,7 +42,7 @@ class ArchiveSearch(unittest.TestCase):
         self.assertEqual(found["archives"], [{"snapshot_manifest_id": wanted["manifest_id"], "path": str(hub),
                                               "manifest_path": str(hub / "manifest.json"),
                                               "total_bytes": 3, "file_count": 1}])
-        self.assertEqual(found["skipped"], 0)
+        self.assertEqual((found["skipped"], found["unread"]), (0, 0))
         # No model file exists in these folders: the search read none.
 
     def test_no_location_and_an_empty_one_are_different_answers(self):
@@ -59,6 +59,22 @@ class ArchiveSearch(unittest.TestCase):
             (self.root / "pulsar-snapshots").chmod(0)
             self.addCleanup((self.root / "pulsar-snapshots").chmod, 0o700)
             self.assertEqual(find_archives(str(self.root), MODEL, COMMIT)["state"], "unreadable")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads every file")
+    def test_an_archive_whose_manifest_cannot_be_read_makes_no_match_unknown(self):
+        hidden = self.archive(manifest())
+        (hidden / "manifest.json").chmod(0)
+        self.addCleanup((hidden / "manifest.json").chmod, 0o600)
+        found = find_archives(str(self.root), MODEL, COMMIT)
+        # It may be the archive asked about, so the answer is not "no copy".
+        self.assertEqual((found["state"], found["archives"], found["unread"], found["skipped"]),
+                         ("unreadable", [], 1, 0))
+        # An archive that can be read and matches is still found.
+        other = build_snapshot_manifest(model_id=MODEL, snapshot_revision=COMMIT,
+                                        files=[{"path": "other.bin", "size": 5, "sha256": "c" * 64}])
+        self.archive(other)
+        found = find_archives(str(self.root), MODEL, COMMIT)
+        self.assertEqual((found["state"], len(found["archives"]), found["unread"]), ("searched", 1, 1))
 
     def test_staging_and_damaged_folders_never_match_and_never_stop_the_search(self):
         wanted = manifest()

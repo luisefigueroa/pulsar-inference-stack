@@ -419,7 +419,9 @@ class DownloadWithoutARecipe(Menu):
         commands = text.replace(" \\ ", " ")
         self.assertIn(f"./pulsar model archive create --manifest {self.manifest()} --plan", commands)
         self.assertIn(f"./pulsar model remove --manifest {self.manifest()} --plan", commands)
-        self.assertIn(f"Same as: ./pulsar {run}", commands)
+        # The command shown is the command that ran, and nothing more.
+        self.assertIn(f"Same as: ./pulsar {run} Models and disk space", commands)
+        self.assertNotIn("--repo-root", text)
         self.assertTrue(self.manifest().parent.is_dir())
         self.assert_plain_choices()
 
@@ -483,6 +485,15 @@ class DownloadWithoutARecipe(Menu):
             self.assertEqual(self.ran(), [])
             self.assertEqual(self.manifest().read_text(), other)
 
+    def test_with_no_node_that_answered_it_offers_no_node_and_runs_nothing(self):
+        nodes = [node(identity, host, unread=True) for identity, host in (("n0", "spark-1"), ("n1", "spark-2"))]
+        self.fixture("files", envelope(files([], nodes=nodes)))
+        result = self.run_menu([DOWNLOAD, NEW, "main", "Continue", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No node answered the check, so there is nowhere to download to.", self.text(result))
+        self.assertNotIn("Which node should keep the files?", [menu[0] for menu in self.menus()])
+        self.assertEqual(self.commands(), SCAN)
+
     def test_what_is_typed_never_reaches_a_command_unless_it_is_a_model_name_and_a_ref(self):
         for answers, words in (([DOWNLOAD, "org/new model; rm", "Continue", "Back"], "That is not a model name."),
                                ([DOWNLOAD, "--yes", "Continue", "Back"], "That is not a model name."),
@@ -499,8 +510,8 @@ class DownloadWithoutARecipe(Menu):
         result = self.go("Download 212 GiB to spark-2", "Continue", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
         text = self.text(result)
-        self.assertIn("Not checked: The archive location could not be read, so whether it holds these files is "
-                      "unknown.", text)
+        self.assertIn("Not checked: The archive location could not be read in full, so whether it holds these files "
+                      "is unknown.", text)
         self.assertIn(f"✗ {NEW} at commit cccccccccccc was not put on spark-2. The reason is above.", text)
         self.assertNotIn("✓ Done", text)
         # A preview that is not the plan this page reads never offers a run.

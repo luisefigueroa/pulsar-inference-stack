@@ -266,7 +266,13 @@ intent_page() {
 # Download a model that has no recipe yet
 # ---------------------------------------------------------------------------
 
-download() { python3 -m scripts.download_page "$@" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"}; }
+# The page's own options go before the arguments: outcome takes the command
+# that ran after "--", and nothing after that is an option.
+download() {
+  local command="$1"
+  shift
+  python3 -m scripts.download_page "$command" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"} "$@"
+}
 
 # download_page: the model, the commit and the node, then the command's own
 # preview with the cursor on Cancel, then the command. Returns CHANGED after a
