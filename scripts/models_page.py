@@ -63,6 +63,7 @@ from scripts.serve_plan import _facts, _list, envelope_result, load_json, shown 
 from scripts.terminal_format import MAX_WIDTH, MIN_WIDTH, TerminalWriter, terminal_width  # noqa: E402
 
 PLAN_KIND = "pulsar-storage-plan"
+DOWNLOAD_LABEL = "Download a model that has no recipe yet…"
 LABEL_WIDTH = 10
 # A no-break space keeps a size together when a sentence wraps; it prints as a space.
 KEEP = "\u00a0"
@@ -447,7 +448,7 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
 def page_choices(cluster: Cluster) -> list[tuple[str, str]]:
     """The page's choices: Free up space… first, then the intents, Look again and Back."""
     found = [("free", "Free up space…"), ("ready", "Get a model ready ahead of time…"),
-             ("keep", "Keep a model ready…")]
+             ("download", DOWNLOAD_LABEL), ("keep", "Keep a model ready…")]
     if cluster.archive_location == "configured":
         found += [("backup", "Back up a model…"), ("check", "Check the archives…")]
     return found + [("find", FIND_LABEL), ("again", "Look again (checks nodes now)"), ("back", "Back")]
@@ -596,8 +597,9 @@ def free_options(cluster: Cluster) -> tuple[list[dict], list[tuple[str, tuple[st
             continue
         where = cluster.hosts(location["node_id"] for location in entry["locations"])
         blocked.append((f"{clean(entry.get('model_id') or 'Unknown model')} @ {str(entry.get('model_commit') or '?')[:8]} "
-                        f"on {where} ({_size(entry.get('payload_bytes'))}): {STATUS_WORDS['unused']}, so Pulsar has no "
-                        "command that removes them.", None))
+                        f"on {where} ({_size(entry.get('payload_bytes'))}): {STATUS_WORDS['unused']}, so this page "
+                        "does not remove them. With their manifest, ./pulsar model remove --manifest FILE --plan "
+                        f"previews that; {DOWNLOAD_LABEL} saves that file.", None))
     removable.sort(key=lambda option: (option["size"] is None, -(option["size"] or 0)))
     return removable, blocked
 

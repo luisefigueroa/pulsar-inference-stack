@@ -76,6 +76,18 @@ choose_index() {
       echo "UNEXPECTED MENU ANSWER: $answer" >> "$CHOOSE_LOG"; return 1 ;;
   esac
 }
+# The next answer is what the operator typed; esc or nothing typed returns 1.
+prompt_input() {
+  local n answer
+  printf '%s\t%s\n' "$1" "${2:-}" >> "${INPUT_LOG:-/dev/null}"
+  n=$(cat "$ANSWERS.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$ANSWERS.n"
+  answer=$(sed -n "$((n + 1))p" "$ANSWERS")
+  case "$answer" in
+    ""|esc) return 1 ;;
+    ctrl-c) return 130 ;;
+    *) printf '%s\n' "$answer" ;;
+  esac
+}
 # Like the real one, it runs an executable (through env), never a shell function.
 page_output() { [ -z "${PAGE_LOG:-}" ] || echo paged >> "$PAGE_LOG"; shift; env "$@"; }
 wait_continue() {

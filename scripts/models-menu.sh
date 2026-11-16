@@ -15,6 +15,12 @@
 #   Get a model ready ahead of time…
 #                       Serve a model…'s plan without its Start
 #                       (scripts/serve-menu.sh --ready)
+#   Download a model that has no recipe yet…
+#                       model acquire --model-id ORG/NAME --model-commit COMMIT:
+#                       it asks the model, the commit and the node, shows the
+#                       command's own preview, then runs it with the exact
+#                       commit and saves the manifest (scripts/download_page.py).
+#                       The command refuses a second copy before it downloads.
 #   Keep a model ready… model pin, or model unpin to stop keeping it
 #   Back up a model…    model archive create, one step per required snapshot
 #   Check the archives… model archive verify, one step per archived snapshot
@@ -52,6 +58,7 @@ require_gum "Models and disk space…" \
   "./pulsar model archive verify SPEC" "check a model's archives" \
   "./pulsar model prepare SPEC --plan" "get a model ready ahead of time; then --yes" \
   "./pulsar model acquire SPEC --node NODE --plan" "look for model files: record a home found with no record; then --yes" \
+  "./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --plan" "download a model that has no recipe yet; then --manifest-out FILE --yes" \
   "./pulsar model prepare SPEC --adopt-unrecorded --plan" "look for model files: take over a copy no record names; then --yes"
 ui_keep_styles
 
@@ -256,6 +263,113 @@ intent_page() {
 }
 
 # ---------------------------------------------------------------------------
+# Download a model that has no recipe yet
+# ---------------------------------------------------------------------------
+
+# The page's own options go before the arguments: outcome takes the command
+# that ran after "--", and nothing after that is an option.
+download() {
+  local command="$1"
+  shift
+  python3 -m scripts.download_page "$command" --repo-root "$REPO_DIR" ${COLUMNS_SEEN:+--width "$COLUMNS_SEEN"} "$@"
+}
+
+# download_page: the model, the commit and the node, then the command's own
+# preview with the cursor on Cancel, then the command. Returns CHANGED after a
+# run, 130 on Ctrl-C, else 0.
+download_page() {
+  local title="Download a model" model ref host choice rc=0 interrupted
+  local action commit manifest save label now_action now_commit rest
+  local -a hosts=() selector=() ran=() saved=()
+  model=$(prompt_input "Which model on Hugging Face?" "ORG/NAME") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  if ! [[ "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    printf '\n✗ That is not a model name. Write it as on Hugging Face: the organization, a slash, the model.\n' | text
+    wait_continue "$title" || return $?
+    return 0
+  fi
+  ref=$(prompt_input "Which commit, branch or tag of $model?" "main") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  if ! [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+    printf '\n✗ That is not a commit, a branch or a tag.\n' | text
+    wait_continue "$title" || return $?
+    return 0
+  fi
+  mapfile -t hosts < <(download nodes --files "$FILES")
+  if [ "${#hosts[@]}" -eq 0 ]; then
+    printf '\n✗ No node answered the check, so there is nowhere to download to. Look again first.\n' | text
+    wait_continue "$title" || return $?
+    return 0
+  fi
+  choice=$(choose_index "Which node should keep the files?" "${hosts[@]}" "Back") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  [ "$choice" -lt "${#hosts[@]}" ] || return 0
+  host=${hosts[$choice]}
+  selector=(model acquire --model-id "$model" --model-commit "$ref" --node "$host")
+  rc=0
+  spin "Checking what the download would do…" bash -c '"$@" 2>"$0" </dev/null' "$WORK/download.err" \
+    "$REPO_DIR/pulsar" "${selector[@]}" --plan --json >"$WORK/download-preview.json" || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  echo
+  download plan --model "$model" --ref "$ref" --host "$host" --preview "$WORK/download-preview.json" \
+    --preview-rc "$rc" --out "$WORK/download.facts" || { wait_continue "$title" || return $?; return 0; }
+  IFS=$'\x1f' read -r action commit manifest save label <"$WORK/download.facts"
+  if [ "$action" = blocked ]; then
+    wait_continue "$title" || return $?
+    return 0
+  fi
+  # The cursor starts on Cancel: a download takes a deliberate move.
+  choice=$(PULSAR_CHOOSE_DEFAULT=0 choose_index "$title" "Cancel" "$label") \
+    || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
+  [ "$choice" = 1 ] || return 0
+  # The command's own preview again, now with the exact commit: the run goes
+  # ahead only when it still does what was approved. Files that were to be
+  # kept and are gone since would otherwise become a download nobody approved.
+  rc=0
+  spin "Checking that the plan still holds…" bash -c '"$@" 2>"$0" </dev/null' "$WORK/download.err" \
+    "$REPO_DIR/pulsar" model acquire --model-id "$model" --model-commit "$commit" --node "$host" --plan --json \
+    >"$WORK/download-check.json" || rc=$?
+  [ "$rc" -ne 130 ] || return 130
+  download plan --model "$model" --ref "$commit" --host "$host" --preview "$WORK/download-check.json" \
+    --preview-rc "$rc" --out "$WORK/download-check.facts" >/dev/null || true
+  now_action="" now_commit=""
+  [ ! -s "$WORK/download-check.facts" ] \
+    || IFS=$'\x1f' read -r now_action now_commit rest <"$WORK/download-check.facts"
+  if [ "$now_action" != "$action" ] || [ "$now_commit" != "$commit" ]; then
+    printf '\n✗ Nothing ran: what the command would do changed after the plan was shown. Choose this again to see the plan as it is now.\n' | text
+    # Something changed on the nodes, so the page looks again.
+    forget
+    wait_continue "$title" || return $?
+    return "$CHANGED"
+  fi
+  # The run names the exact commit the preview printed, never the branch or tag.
+  ran=(./pulsar model acquire --model-id "$model" --model-commit "$commit" --node "$host")
+  saved=(--manifest "$manifest")
+  if [ "$save" = 1 ]; then
+    mkdir -p -- "$(dirname "$manifest")"
+    ran+=(--manifest-out "$manifest")
+  else
+    saved+=(--kept)
+  fi
+  ran+=(--yes)
+  resolve "${ran[@]}"
+  printf '\n→ %s Ctrl-C requests interruption; this menu returns when the command exits.\n' \
+    "Putting $model on $host." | text
+  interrupted=0 rc=0
+  trap 'interrupted=1' INT
+  set +e
+  "${COMMAND[@]}"
+  rc=$?
+  set -e
+  trap - INT
+  [ "$interrupted" = 0 ] || [ "$rc" -gt 128 ] || rc=130
+  forget
+  echo
+  download outcome --model "$model" --commit "$commit" --host "$host" --action "$action" --rc "$rc" \
+    "${saved[@]}" -- "${ran[@]}"
+  wait_continue "$title" || return $?
+  return "$CHANGED"
+}
+
+# ---------------------------------------------------------------------------
 
 while true; do
   rc=0
@@ -281,6 +395,9 @@ while true; do
     check) intent_page check "Check the archives" || rc=$? ;;
     # One plan from the page's scan: what it can record, then what it cannot.
     find) plan_page "Look for model files" find || rc=$? ;;
+    download)
+      download_page || rc=$?
+      [ "$rc" -eq 130 ] || rc=0 ;;
     ready)
       # Serve a model…'s list and plan, without Start. It exits 4 when its plan
       # ran; then the page looks again, and otherwise reuses its scan.

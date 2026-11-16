@@ -409,6 +409,15 @@ def _plan(out: TerminalWriter, document: dict, operation: str, names: NodeNames,
             _home(out, candidate.get('home', candidate), names)
     if document.get('action') == 'reuse':
         out.field('Action', 'reuse matching existing files')
+    elif document.get('action') == 'download' and document.get('kind') == 'pulsar-acquisition-plan':
+        out.field('Action', 'download from Hugging Face')
+    search = document.get('archive_search')
+    if isinstance(search, dict):
+        # Unknown is not absent: an archive that could not be read was not searched.
+        out.field('Archive', {'searched': 'searched; it holds no copy of these files',
+                              'unreadable': 'not read in full, so whether it holds these files is unknown',
+                              'not-configured': 'not searched: no archive location is set'}
+                  .get(search.get('state'), 'not searched'))
     actions = {'reuse': 'reuse verified prepared files', 'home-view': 'use files from the home',
                'copy': 'copy and verify local files', 'bind': 'bind this recipe to existing verified files',
                'rebind': ("take over verified files prepared before the cluster's membership changed; "

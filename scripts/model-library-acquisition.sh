@@ -32,8 +32,47 @@ find_source_homes() {
   printf '%s\n' "$found"
 }
 
+# search_archives: the archives of MODEL_ID at REVISION in the effective archive
+# location, read under the shared configuration lock. Manifests only.
+search_archives() {
+  local -a location=(env -u PULSAR_COLD_ROOT)
+  [ "${_MODEL_ARCHIVE_PROCESS_DEFINED:-0}" != 1 ] || location=(env PULSAR_COLD_ROOT="$_MODEL_ARCHIVE_PROCESS_VALUE")
+  "${location[@]}" python3 -m model_library.configuration --repo-root "$REPO_DIR" run --allow-unconfigured -- \
+    python3 -m model_library.archive_search "$MODEL_ID" "$REVISION"
+}
+
+# refuse_second_copy EXISTING RANK: a download with no spec stops here, before
+# any model file is fetched, when the cluster or the archive already holds the
+# files somewhere the download would not reuse. A home the command reuses, on
+# the selected node or with no --node, is not refused. Sets ARCHIVE_SEARCH.
+refuse_second_copy() {
+  local existing="$1" rank="$2" count home_rank found
+  count=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
+  [ "$count" -le 1 ] || die "multiple managed homes match; resolve the duplicate before acquisition"
+  if [ "$count" -eq 1 ]; then
+    home_rank=$(model_physical_rank "$(printf '%s' "$existing" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["home"]["node_id"])')") \
+      || die "the home found is on a node outside the saved cluster"
+    if [ -n "$NODE" ] && [ "$home_rank" != "$rank" ]; then
+      die "$MODEL_ID at $REVISION already has a home on $(human_node_name "$home_rank"); nothing was downloaded. Next: run this command with --node $(human_node_name "$home_rank") to record that home and save its manifest"
+    fi
+    return 0
+  fi
+  ARCHIVE_SEARCH=$(search_archives) || die "the archive location could not be searched; nothing was downloaded"
+  found=$(printf '%s' "$ARCHIVE_SEARCH" | python3 -c 'import json,sys; a=json.load(sys.stdin)["archives"]; print(a[0]["manifest_path"] if a else "")')
+  [ -z "$found" ] || die "an archive already holds $MODEL_ID at $REVISION ($(dirname "$found")); nothing was downloaded. Next: ./pulsar model restore --manifest $(printf '%q' "$found") --node $(human_node_name "$rank") --plan"
+  if [ "$PLAN" -eq 0 ] && [ "$(json_fields "$ARCHIVE_SEARCH" state)" = unreadable ]; then
+    warn "the archive location could not be read in full, so whether it holds these files is unknown; the download continues"
+  fi
+}
+
 acquire_model() {
-  local rank source existing count candidate result stage checked registered original_manifest="$MANIFEST_JSON"
+  local rank source existing="" count candidate result stage checked registered original_manifest="$MANIFEST_JSON"
+  local action=download
+  ARCHIVE_SEARCH=null
+  # A manifest file that exists is never replaced: say so before anything is fetched.
+  if [ "$PLAN" -eq 0 ] && [ -n "$MANIFEST_OUT" ] && { [ -e "$MANIFEST_OUT" ] || [ -L "$MANIFEST_OUT" ]; }; then
+    die "manifest output $MANIFEST_OUT exists and is never replaced; nothing was changed. Name a new file"
+  fi
   require_cluster_nodes 1 >/dev/null || die "acquisition requires confirmed topology"
   resolve_node_selector
   rank=$(model_physical_rank "${NODE:-0}")
@@ -63,16 +102,30 @@ acquire_model() {
       return
     fi
   fi
+  # With no spec and an exact commit, look for the files before the Hub is asked.
+  if [ -z "$original_manifest" ] && [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+    existing=$(find_source_homes) || die "home presence could not be checked on every confirmed node"
+    refuse_second_copy "$existing" "$rank"
+  fi
   source=$(source_inventory_on_rank "$rank" "$MODEL_ID" "$REVISION") || die "cannot resolve selected source on selected node"
   REVISION=$(json_fields "$source" snapshot_revision)
   if [ -n "$MANIFEST_JSON" ]; then
     printf '%s' "$source" | python3 -c 'import json,sys; from model_library.source import compare_inventory_to_manifest; compare_inventory_to_manifest(json.load(sys.stdin),json.loads(sys.argv[1]))' "$MANIFEST_JSON" || die "source does not match selected spec"
   fi
-  existing=$(find_source_homes) || die "home presence could not be checked on every confirmed node"
+  if [ -z "$existing" ]; then
+    existing=$(find_source_homes) || die "home presence could not be checked on every confirmed node"
+    # A branch or tag is resolved now: the same check, still before any download.
+    [ -n "$original_manifest" ] || refuse_second_copy "$existing" "$rank"
+  fi
   count=$(printf '%s' "$existing" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')
   [ "$count" -le 1 ] || die "multiple managed homes match; resolve the duplicate before acquisition"
+  [ "$count" -eq 0 ] || action=reuse
   if [ "$PLAN" -eq 1 ]; then
-    emit_result "$(model_json kind pulsar-acquisition-plan model_id "$MODEL_ID" snapshot_revision "$REVISION" selected_node "${CLUSTER_NODE_IDS[$rank]}" source: "$source" existing_homes: "$existing")"
+    result=$(model_json kind pulsar-acquisition-plan action "$action" model_id "$MODEL_ID" snapshot_revision "$REVISION" selected_node "${CLUSTER_NODE_IDS[$rank]}" source: "$source" existing_homes: "$existing" archive_search: "$ARCHIVE_SEARCH")
+    if [ "$action" = reuse ]; then
+      result=$(printf '%s' "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); d["home"]=d["existing_homes"][0]["home"]; print(json.dumps(d))')
+    fi
+    emit_result "$result"
     return
   fi
   [ "$YES" -eq 1 ] || die "acquisition requires --yes after reviewing the exact commit and selected node"

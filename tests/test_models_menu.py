@@ -18,10 +18,11 @@ from tests.test_serve_menu import Harness, build_root, root_environment  # noqa:
 from tests.test_serve_plan import envelope  # noqa: E402
 
 FIND = "Look for model files Pulsar has no record of…"
-PAGE = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", "Keep a model ready…",
-        FIND, "Look again (checks nodes now)", "Back"]
-WITH_ARCHIVES = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", "Keep a model ready…",
-                 "Back up a model…", "Check the archives…", FIND, "Look again (checks nodes now)", "Back"]
+DOWNLOAD = "Download a model that has no recipe yet…"
+PAGE = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", DOWNLOAD,
+        "Keep a model ready…", FIND, "Look again (checks nodes now)", "Back"]
+WITH_ARCHIVES = ["Models and disk space", "Free up space…", "Get a model ready ahead of time…", DOWNLOAD,
+                 "Keep a model ready…", "Back up a model…", "Check the archives…", FIND, "Look again (checks nodes now)", "Back"]
 SCAN = ["model files --json", "model budget --json"]
 
 
@@ -355,6 +356,197 @@ class WithoutGum(unittest.TestCase):
                             "./pulsar model prepare SPEC --adopt-unrecorded --plan"):
                 self.assertIn(f"  {command}", result.stderr)
             self.assertFalse((root / "pulsar.log").exists())
+
+
+COMMIT = "c" * 40
+NEW = "org/new-model"
+
+
+def acquire_plan(action="download", search="searched", host="n1"):
+    document = {"kind": "pulsar-acquisition-plan", "action": action, "model_id": NEW, "snapshot_revision": COMMIT,
+                "selected_node": host, "existing_homes": [],
+                "source": {"model_id": NEW, "snapshot_revision": COMMIT,
+                           "files": [{"path": "config.json", "size": G}, {"path": "weights.bin", "size": 211 * G}]},
+                "archive_search": {"state": search, "archives": []} if search else None}
+    if action == "reuse":
+        document["home"] = {"node_id": host}
+    return envelope(document)
+
+
+class DownloadWithoutARecipe(Menu):
+    """Download a model that has no recipe yet…: model acquire with a model and a commit, never a spec."""
+    PLAN = f"model acquire --model-id {NEW} --model-commit main --node spark-2 --plan --json"
+    # The same preview again directly before the run, with the exact commit.
+    CHECK = f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --plan --json"
+
+    def manifest(self):
+        return self.root / ".pulsar" / "manifests" / "org" / f"new-model@{COMMIT[:12]}.json"
+
+    def run_menu(self, answers, *arguments, **extra):
+        # Each run of the menu starts at its first answer, with its own logs.
+        for name in ("answers.n", "choose.log", "pulsar.log"):
+            (self.root / name).unlink(missing_ok=True)
+        for count in self.fixtures.glob("*.count"):
+            count.unlink()
+        return super().run_menu(answers, *arguments, **extra)
+
+    def go(self, *last, **extra):
+        return self.run_menu([DOWNLOAD, NEW, "main", "spark-2", *last], **extra)
+
+    def test_it_asks_model_commit_and_node_then_runs_the_exact_commit_and_saves_the_manifest(self):
+        self.fixture("acquire-plan", acquire_plan())
+        result = self.go("Download 212 GiB to spark-2", "Continue", "Back",
+                         INPUT_LOG=str(self.root / "input.log"))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / "input.log").read_text().splitlines(),
+                         ["Which model on Hugging Face?\tORG/NAME",
+                          f"Which commit, branch or tag of {NEW}?\tmain"])
+        self.assertEqual(self.menus()[1], ["Which node should keep the files?", "spark-1", "spark-2", "spark-3", "Back"])
+        self.assertEqual(self.menus()[2], ["Download a model", "Cancel", "Download 212 GiB to spark-2"])
+        # The cursor starts on Cancel.
+        self.assertIn("Download a model\t0", self.default_log.read_text())
+        run = f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --manifest-out {self.manifest()} --yes"
+        # The branch names the preview only; the run names the commit it printed. Then the page looks again.
+        self.assertEqual(self.commands(), SCAN + [self.PLAN, self.CHECK, run] + SCAN)
+        text = self.text(result)
+        self.assertIn(f"1. Download {NEW} at commit cccccccccccc from Hugging Face to spark-2 (2 files, 212 GiB) and "
+                      "check the SHA-256 of every file. The files become its home, the copy Pulsar keeps.", text)
+        self.assertIn("2. Save the list of its files and their hashes (its manifest). A recipe written later for "
+                      f"this model starts from this file: {self.manifest()} The archive", text)
+        self.assertIn("The archive was searched and holds no copy of these files.", text)
+        self.assertIn("Nothing is prepared for serving and nothing starts.", text)
+        self.assertIn(f"✓ Done: {NEW} at commit cccccccccccc is on spark-2, downloaded and checked.", text)
+        self.assertIn("No recipe uses these files yet, so this page cannot back them up or remove them.", text)
+        # A long command breaks only between its arguments, each line but the last ending " \\".
+        commands = text.replace(" \\ ", " ")
+        self.assertIn(f"./pulsar model archive create --manifest {self.manifest()} --plan", commands)
+        self.assertIn(f"./pulsar model remove --manifest {self.manifest()} --plan", commands)
+        # The command shown is the command that ran, and nothing more.
+        self.assertIn(f"Same as: ./pulsar {run} Models and disk space", commands)
+        self.assertNotIn("--repo-root", text)
+        self.assertTrue(self.manifest().parent.is_dir())
+        self.assert_plain_choices()
+
+    def test_cancel_and_back_run_nothing(self):
+        self.fixture("acquire-plan", acquire_plan())
+        for answers in (["Cancel", "Back"], ["esc", "Back"]):
+            result = self.go(*answers)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [])
+        for answers in ([DOWNLOAD, "esc", "Back"], [DOWNLOAD, NEW, "esc", "Back"], [DOWNLOAD, NEW, "main", "Back", "Back"]):
+            result = self.run_menu(answers)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.commands(), SCAN)
+        self.assertFalse(self.manifest().parent.exists())
+
+    def test_a_refusal_of_a_second_copy_is_shown_as_the_command_said_it_and_nothing_runs(self):
+        reason = ("an archive already holds org/new-model at " + COMMIT + " (/archive/pulsar-snapshots/x); nothing "
+                  "was downloaded. Next: ./pulsar model restore --manifest /archive/pulsar-snapshots/x/manifest.json "
+                  "--node spark-2 --plan")
+        self.fixture("acquire-plan", envelope(error={"code": "prerequisite_failed", "message": reason}), rc=1)
+        result = self.go("Continue", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), SCAN + [self.PLAN])
+        text = self.text(result)
+        self.assertIn(f"✗ {NEW} at main was not downloaded to spark-2: an archive already holds", text)
+        self.assertIn("Next: ./pulsar model restore --manifest /archive/pulsar-snapshots/x/manifest.json", text)
+        self.assertIn("Nothing was changed.", text)
+        self.assertNotIn("Cancel", [label for menu in self.menus() for label in menu])
+
+    def test_files_already_on_the_node_are_kept_without_a_download_and_a_saved_manifest_is_not_replaced(self):
+        self.fixture("acquire-plan", acquire_plan("reuse", search=None))
+        self.manifest().parent.mkdir(parents=True)
+        from release_spec import build_snapshot_manifest
+        kept = json.dumps(build_snapshot_manifest(model_id=NEW, snapshot_revision=COMMIT, files=[
+            {"path": "weights.bin", "size": 3, "sha256": "b" * 64}]))
+        self.manifest().write_text(kept)
+        result = self.go("Keep the files found on spark-2", "Continue", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --yes"])
+        self.assertEqual(self.manifest().read_text(), kept)
+        text = self.text(result)
+        self.assertIn("Nothing is downloaded.", text)
+        self.assertIn(f"This file exists and is never replaced: {self.manifest()} Nothing is prepared", text)
+        self.assertIn(f"Its manifest was already in this file: {self.manifest()} No recipe uses", text)
+        self.assertIn("; nothing was downloaded.", text)
+
+    def test_a_file_that_is_not_this_models_manifest_is_never_used_and_never_replaced(self):
+        from scripts.download_page import manifest_path
+        # Two model names never share a path, whatever dashes they hold.
+        self.assertNotEqual(manifest_path(self.root, "org--team/model", COMMIT),
+                            manifest_path(self.root, "org/team--model", COMMIT))
+        self.fixture("acquire-plan", acquire_plan())
+        self.manifest().parent.mkdir(parents=True)
+        from release_spec import build_snapshot_manifest
+        rows = [{"path": "weights.bin", "size": 3, "sha256": "b" * 64}]
+        # Another commit with the same first 12 characters, another model, a file that names this model and
+        # commit but is not a valid manifest (the commands that take it would refuse it), and one that is no JSON.
+        for other in (json.dumps(build_snapshot_manifest(model_id=NEW, snapshot_revision=COMMIT[:12] + "d" * 28,
+                                                         files=rows)),
+                      json.dumps(build_snapshot_manifest(model_id="org/other", snapshot_revision=COMMIT, files=rows)),
+                      json.dumps({"model_id": NEW, "snapshot_revision": COMMIT, "files": []}), "not json"):
+            self.manifest().write_text(other)
+            result = self.go("Continue", "Back")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = self.text(result)
+            self.assertIn("exists and is not the manifest of this model and commit. This page never replaces a file. "
+                          f"Move this file away, then choose this again: {self.manifest()} Nothing was changed.", text)
+            self.assertEqual(self.ran(), [])
+            self.assertEqual(self.manifest().read_text(), other)
+
+    def test_files_that_were_to_be_kept_and_are_gone_at_the_run_never_become_a_download(self):
+        # Approved: keep the files found. Before the run the command's own preview says download.
+        self.fixture("acquire-plan", acquire_plan("reuse", search=None), nth=1)
+        self.fixture("acquire-plan", acquire_plan("download"), nth=2)
+        result = self.go("Keep the files found on spark-2", "Continue", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [])
+        self.assertEqual(self.commands(), SCAN + [self.PLAN, self.CHECK] + SCAN)
+        text = self.text(result)
+        self.assertIn("✗ Nothing ran: what the command would do changed after the plan was shown. Choose this again "
+                      "to see the plan as it is now.", text)
+        self.assertNotIn("Done:", text)
+        # A preview that fails at that moment stops the run the same way.
+        self.fixture("acquire-plan", acquire_plan(), nth=1)
+        self.fixture("acquire-plan", envelope(error={"code": "prerequisite_failed", "message": "no"}), rc=1, nth=2)
+        result = self.go("Download 212 GiB to spark-2", "Continue", "Back")
+        self.assertEqual(self.ran(), [])
+        self.assertIn("✗ Nothing ran:", self.text(result))
+
+    def test_with_no_node_that_answered_it_offers_no_node_and_runs_nothing(self):
+        nodes = [node(identity, host, unread=True) for identity, host in (("n0", "spark-1"), ("n1", "spark-2"))]
+        self.fixture("files", envelope(files([], nodes=nodes)))
+        result = self.run_menu([DOWNLOAD, NEW, "main", "Continue", "Back"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("No node answered the check, so there is nowhere to download to.", self.text(result))
+        self.assertNotIn("Which node should keep the files?", [menu[0] for menu in self.menus()])
+        self.assertEqual(self.commands(), SCAN)
+
+    def test_what_is_typed_never_reaches_a_command_unless_it_is_a_model_name_and_a_ref(self):
+        for answers, words in (([DOWNLOAD, "org/new model; rm", "Continue", "Back"], "That is not a model name."),
+                               ([DOWNLOAD, "--yes", "Continue", "Back"], "That is not a model name."),
+                               ([DOWNLOAD, NEW, "--plan", "Continue", "Back"], "That is not a commit, a branch or a tag.")):
+            result = self.run_menu(answers)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(words, self.text(result))
+        self.assertEqual(self.ran(), [])
+        self.assertFalse(any("acquire" in line for line in self.commands()))
+
+    def test_a_failed_or_unreadable_step_is_said_and_the_archive_that_could_not_be_read_too(self):
+        self.fixture("acquire-plan", acquire_plan(search="unreadable"))
+        self.fixture("acquire", rc=1)
+        result = self.go("Download 212 GiB to spark-2", "Continue", "Back")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.text(result)
+        self.assertIn("Not checked: The archive location could not be read in full, so whether it holds these files "
+                      "is unknown.", text)
+        self.assertIn(f"✗ {NEW} at commit cccccccccccc was not put on spark-2. The reason is above.", text)
+        self.assertNotIn("✓ Done", text)
+        # A preview that is not the plan this page reads never offers a run.
+        self.fixture("acquire-plan", envelope({"kind": "pulsar-acquisition-plan", "snapshot_revision": "main"}))
+        result = self.go("Continue", "Back")
+        self.assertIn("its preview could not be read", self.text(result))
+        self.assertEqual(self.ran(), [])
 
 
 if __name__ == "__main__":

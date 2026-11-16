@@ -247,7 +247,7 @@ below are for reading.
 | Models: archived, verified … ago | Every required set of the model's files has an archive, with the age of its last verification. A removed model comes back from it without the internet. |
 | Models: partly archived, archive seen, not verified, no archive recorded | Only some of its files have a verified archive; an archive was seen at the last check but not verified; or Pulsar has no record of an archive. **Back up a model…** makes the missing ones; **Check the archives…** verifies them. |
 | Models: in use by a container | A container mounts the model's files, even a stopped one. **Free up space…** does not offer them; **Running services…** stops a Pulsar service, and Pulsar never removes a container it did not start. |
-| Models: no recipe in this catalog uses these files | Files on the nodes that no catalog recipe needs. Pulsar has no command that removes them, so the page names them read-only. |
+| Models: no recipe in this catalog uses these files | Files on the nodes that no catalog recipe needs, such as a model downloaded before it has a recipe. The page names them read-only; with their manifest file, `./pulsar model remove --manifest FILE --plan` and `./pulsar model archive create --manifest FILE --plan` select them. |
 | Models: size unknown | The size could not be read, for example of a copy that never finished. It is not zero. |
 | Disk: room for … on … | What each node can still copy in the last saved storage budget, the smaller of disk free after the reserve and the copy budget left, with the budget's age. Nodes with the same room share a part. **Models and disk space…** shows the whole table. |
 | Disk: past its reserve or copy budget by, headroom not observed | The node is past its reserve or its copy budget by that amount, or the budget could not tell what it can still copy. |
@@ -791,6 +791,67 @@ discovery has limits:
 - It refuses when the folder is on another node than the one chosen with
   `--node`; choose the node that holds it.
 - It stops when a second matching folder exists on any node.
+
+### Download a model before it has a spec
+
+Acquisition does not need a spec. Name the Hugging Face model and the exact
+commit instead, and the command runs the same flow as above (the complete
+upstream inventory, private staging, the SHA-256 of every file, the snapshot
+manifest and the home record), then stops. It prepares nothing, freezes no
+spec and starts nothing.
+
+```sh
+./pulsar model acquire --model-id <org>/<name> --model-commit <ref> --node <node> --plan
+./pulsar model acquire --model-id <org>/<name> --model-commit <commit> --node <node> \
+  --manifest-out <file> --yes
+```
+
+`--plan` accepts a branch or tag and prints the exact 40-character commit; `--yes`
+requires that exact commit. `--manifest-out` saves the verified snapshot manifest
+to a new file (it never replaces one); the model library also keeps the manifest
+and the home record, keyed by model and commit. A `--manifest-out` file that
+exists stops the run before anything is fetched.
+
+Before it downloads, the command looks for the same model and commit on the
+cluster and in the archive location, so the files are not fetched twice. With
+an exact commit it looks before it asks Hugging Face; a branch or tag is
+resolved first. `--plan` and `--yes` answer the same way:
+
+| Where the files are | What happens |
+| --- | --- |
+| A home on the node named, or on any node when `--node` is left out | Nothing is downloaded. The home is checked against the upstream file list and recorded, and `--manifest-out` saves its manifest. The plan says `reuse matching existing files`. |
+| A home on another node than the one named | Refused. The message names that node; run the command with `--node` for it. |
+| An archive in the archive location | Refused. The message names the archive and the restore that uses it: `./pulsar model restore --manifest <archive>/manifest.json --node <node> --plan`. |
+| Nowhere | The plan says `download from Hugging Face`, and `--yes` downloads. |
+
+The archive search reads each archive's manifest and hashes no model file. When
+the archive location, or the manifest of an archive in it, cannot be read and
+no archive that could be read holds the files, whether it holds them is
+unknown, not absent: the plan says the archive was not read in full, and
+`--yes` warns and downloads. This check applies only when no spec is named. `model acquire
+<spec-id>` is unchanged, so a download chosen in place of a restore still runs.
+
+While no spec names the files, select them with the saved manifest:
+`./pulsar model archive create --manifest <file> --plan` backs them up and
+`./pulsar model remove --manifest <file> --plan` removes the home.
+
+In the menu this is **Models and disk space… → Download a model that has no
+recipe yet…**. It asks for the model, the commit, branch or tag, and the node,
+shows the command's own preview with the cursor on **Cancel**, then runs the
+command with the exact commit the preview printed. Directly before the run it
+takes that preview again and runs only when it still says what was approved,
+so a plan that kept files already on the node never becomes a download. It saves the manifest under
+`.pulsar/manifests/<org>/` in the checkout, which Git ignores. It never
+replaces a file there, and it uses a file already there only when that file is
+a valid manifest of the same model and commit; any other file stops the plan.
+
+The hand-off to a later spec is by identity, not by path. A spec whose snapshot
+names the same model and commit embeds the same manifest, so
+`./pulsar model acquire <spec-id> --snapshot target --node <node> --plan` then
+shows `reuse matching existing files` and `--yes` records the reuse without a
+download. The saved manifest file is the input for the spec's
+`snapshot_manifest`. A spec whose manifest differs from the verified files is
+refused rather than downloaded again.
 
 ### Prepare all serving nodes
 
@@ -1878,6 +1939,7 @@ archives…**.
 | --- | --- | --- |
 | **Free up space…** | What can go, largest gain first, each with what it frees and what it costs to get back; then what cannot go and why. Each line opens its plan. | `./pulsar model purge SPEC`, `model remove SPEC`, `model move SPEC --node NODE` |
 | **Get a model ready ahead of time…** | **Serve a model…**'s change check, list and plan, composed without Stop and Start: the files, the copies and the serving image. A change found on entry opens Review with **Get it ready on the cluster as saved**, never a Stop to save it, since nothing would start after it. | `./pulsar model acquire`/`restore`/`prepare`, `image stage` |
+| **Download a model that has no recipe yet…** | Asks for the model on Hugging Face, the commit, branch or tag, and the node; shows the command's own preview and starts on **Cancel**; then downloads and checks the files, or keeps files already on that node, and saves their manifest. The command refuses a second copy before it downloads; see [Download a model before it has a spec](#download-a-model-before-it-has-a-spec). | `./pulsar model acquire --model-id ORG/NAME --model-commit COMMIT --node NODE --manifest-out FILE --yes` |
 | **Keep a model ready…** | **Keep MODEL ready** marks its copies as kept so **Free up space…** never offers them; **Stop keeping MODEL ready** lifts it. | `./pulsar model pin SPEC`, `./pulsar model unpin SPEC` |
 | **Back up a model…** | One plan with a step for each required set of the model's files that has no verified archive; an archive already there is verified, never replaced. | `./pulsar model archive create SPEC --snapshot NAME` |
 | **Check the archives…** | One plan with a step for each archived set of the model's files, read and compared with their expected hashes; nothing is changed. | `./pulsar model archive verify SPEC --snapshot NAME` |
