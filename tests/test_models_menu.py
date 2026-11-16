@@ -378,7 +378,7 @@ class DownloadWithoutARecipe(Menu):
     PLAN = f"model acquire --model-id {NEW} --model-commit main --node spark-2 --plan --json"
 
     def manifest(self):
-        return self.root / ".pulsar" / "manifests" / f"org--new-model@{COMMIT[:12]}.json"
+        return self.root / ".pulsar" / "manifests" / "org" / f"new-model@{COMMIT[:12]}.json"
 
     def run_menu(self, answers, *arguments, **extra):
         # Each run of the menu starts at its first answer, with its own logs.
@@ -452,16 +452,36 @@ class DownloadWithoutARecipe(Menu):
     def test_files_already_on_the_node_are_kept_without_a_download_and_a_saved_manifest_is_not_replaced(self):
         self.fixture("acquire-plan", acquire_plan("reuse", search=None))
         self.manifest().parent.mkdir(parents=True)
-        self.manifest().write_text("kept")
+        kept = json.dumps({"model_id": NEW, "snapshot_revision": COMMIT, "files": []})
+        self.manifest().write_text(kept)
         result = self.go("Keep the files found on spark-2", "Continue", "Back")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.ran(), [f"model acquire --model-id {NEW} --model-commit {COMMIT} --node spark-2 --yes"])
-        self.assertEqual(self.manifest().read_text(), "kept")
+        self.assertEqual(self.manifest().read_text(), kept)
         text = self.text(result)
         self.assertIn("Nothing is downloaded.", text)
         self.assertIn(f"This file exists and is never replaced: {self.manifest()} Nothing is prepared", text)
         self.assertIn(f"Its manifest was already in this file: {self.manifest()} No recipe uses", text)
         self.assertIn("; nothing was downloaded.", text)
+
+    def test_a_file_that_is_not_this_models_manifest_is_never_used_and_never_replaced(self):
+        from scripts.download_page import manifest_path
+        # Two model names never share a path, whatever dashes they hold.
+        self.assertNotEqual(manifest_path(self.root, "org--team/model", COMMIT),
+                            manifest_path(self.root, "org/team--model", COMMIT))
+        self.fixture("acquire-plan", acquire_plan())
+        self.manifest().parent.mkdir(parents=True)
+        # Another commit with the same first 12 characters, another model, and a file that is no manifest.
+        for other in (json.dumps({"model_id": NEW, "snapshot_revision": COMMIT[:12] + "d" * 28}),
+                      json.dumps({"model_id": "org/other", "snapshot_revision": COMMIT}), "not json"):
+            self.manifest().write_text(other)
+            result = self.go("Continue", "Back")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = self.text(result)
+            self.assertIn("exists and is not the manifest of this model and commit. This page never replaces a file. "
+                          f"Move this file away, then choose this again: {self.manifest()} Nothing was changed.", text)
+            self.assertEqual(self.ran(), [])
+            self.assertEqual(self.manifest().read_text(), other)
 
     def test_what_is_typed_never_reaches_a_command_unless_it_is_a_model_name_and_a_ref(self):
         for answers, words in (([DOWNLOAD, "org/new model; rm", "Continue", "Back"], "That is not a model name."),

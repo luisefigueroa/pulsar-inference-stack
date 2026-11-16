@@ -838,8 +838,9 @@ In the menu this is **Models and disk space… → Download a model that has no
 recipe yet…**. It asks for the model, the commit, branch or tag, and the node,
 shows the command's own preview with the cursor on **Cancel**, then runs the
 command with the exact commit the preview printed. It saves the manifest under
-`.pulsar/manifests/` in the checkout, which Git ignores, and never replaces a
-file there.
+`.pulsar/manifests/<org>/` in the checkout, which Git ignores. It never
+replaces a file there, and it uses a file already there only when that file
+names the same model and commit; any other file stops the plan.
 
 The hand-off to a later spec is by identity, not by path. A spec whose snapshot
 names the same model and commit embeds the same manifest, so

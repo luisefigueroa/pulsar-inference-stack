@@ -18,10 +18,11 @@ choice's label, split by unit separators (0x1F); ACTION is `blocked` when
 nothing can run.
 
 The manifest of the files (their list with sizes and hashes) is saved under
-`.pulsar/manifests/` of the checkout, which Git ignores. A recipe written later
+`.pulsar/manifests/ORG/` of the checkout, which Git ignores. A recipe written later
 for the model takes it as its snapshot manifest, and `model remove` and `model
 archive create` select the files with it while no recipe names them. A file
-already there is kept, never replaced.
+already there is kept, never replaced, and is used only when it names the
+same model and commit; any other file there stops the plan.
 """
 from __future__ import annotations
 
@@ -51,8 +52,23 @@ KEEP = " "
 
 
 def manifest_path(repo_root: Path, model: str, commit: str) -> Path:
-    """Where this menu saves the manifest of MODEL at COMMIT."""
-    return Path(repo_root) / ".pulsar" / "manifests" / f"{model.replace('/', '--')}@{commit[:12]}.json"
+    """Where this menu saves the manifest of MODEL at COMMIT: a folder for the
+    organization, then the model's name. Neither part can hold a slash, so two
+    models never share a path. The name carries the commit's first 12 characters;
+    a file already there is used only when it names this model and commit."""
+    organization, name = model.split("/", 1)
+    return Path(repo_root) / ".pulsar" / "manifests" / organization / f"{name}@{commit[:12]}.json"
+
+
+def saved_manifest(path: Path, model: str, commit: str) -> str:
+    """`absent`, `same` (PATH is the manifest of MODEL at COMMIT) or `other`."""
+    if not (path.exists() or path.is_symlink()):
+        return "absent"
+    document = load_json(str(path))
+    if isinstance(document, dict) and document.get("model_id") == model \
+            and document.get("snapshot_revision") == commit:
+        return "same"
+    return "other"
 
 
 def nodes(files: dict | None) -> list[str]:
@@ -97,7 +113,16 @@ def plan(preview, rc: int, *, model: str, ref: str, host: str, repo_root: Path, 
     amount = f"{count:,} files, {size}" if count is not None else size
     what = f"{model} at commit {commit[:12]}"
     saved = manifest_path(repo_root, model, commit)
-    kept = saved.exists() or saved.is_symlink()
+    state = saved_manifest(saved, model, commit)
+    if state == "other":
+        # Never replaced, and never taken for this model's manifest.
+        out.emit(f"{what} was not put on {host}: the file where this page saves its manifest exists and is not the "
+                 "manifest of this model and commit. This page never replaces a file. Move this file away, then "
+                 "choose this again:", "✗ ", "  ", prefix_role="fail")
+        out.emit_command(shlex.quote(str(saved)), "  ", "    ")
+        out.emit("Nothing was changed.", "  ", "  ")
+        return output.getvalue().replace(KEEP, " "), facts
+    kept = state == "same"
     out.emit("Pulsar will:")
     if action == "download":
         out.emit(f"Download {what} from Hugging Face to {host} ({amount}) and check the SHA-256 of every file. "
