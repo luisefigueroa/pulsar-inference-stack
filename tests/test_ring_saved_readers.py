@@ -129,6 +129,10 @@ class InventoryAndStatus(unittest.TestCase):
         self.assertEqual({key: node['node_id'] for key, node in document['nodes'].items()},
                          {KEYS[node['rank']]: node['node_id'] for node in nodes})
         self.assertEqual(document['services'], [])
+        # A snapshot that is not there: an error line, no document, exit 1.
+        absent = fixture.run('inventory', '--from-fixture', str(fixture.root / 'absent.json'), '--json')
+        self.assertEqual((absent.returncode, absent.stdout), (1, ''), absent.stderr)
+        self.assertIn('error:', absent.stderr)
 
     def test_status_finds_a_one_node_service_on_the_opposite_node(self):
         fixture = ring(self)

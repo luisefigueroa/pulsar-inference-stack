@@ -106,6 +106,23 @@ class TopologyCommands(unittest.TestCase):
             result = multiple.run('topology', 'check', '--json')
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('SSH identity is not enrolled', result.stdout)
+            # Without recorded identities the trust check cannot run: an error line, no document, exit 1.
+            result = multiple.run('ssh-trust', 'check', '--json')
+            self.assertEqual((result.returncode, result.stdout), (1, ''), result.stderr)
+            self.assertIn('error:', result.stderr)
+
+    def test_a_failed_trust_check_prints_its_document_and_a_refused_one_an_error_line(self):
+        f = self.fixture
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('ssh-trust', 'check', '--json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        document = json.loads(result.stdout)
+        self.assertEqual((document['ok'], document['state']), (False, 'failed'))
+        assert_document_kind(self, 'ssh-trust.check', document)
+        # An unknown option is refused with exit 1, not 2, and prints no document.
+        result = f.run('ssh-trust', 'check', '--json', '--unknown')
+        self.assertEqual((result.returncode, result.stdout), (1, ''), result.stderr)
+        self.assertIn('error:', result.stderr)
 
     def test_fabric_address_drift_and_failed_discovery_ping_are_explicit(self):
         f = self.fixture
@@ -144,6 +161,9 @@ class TopologyCommands(unittest.TestCase):
         document = json.loads(result.stdout)
         self.assertEqual(document['result'], 'incomplete')
         self.assertEqual(document['saved_membership']['missing'][0]['node_id'], 'fixture-node-1')
+        # A member that did not answer is reported in the document, with exit 1.
+        self.assertEqual(result.returncode, 1, result.stderr)
+        assert_document_kind(self, 'topology.detect', document)
         result = f.run('topology', 'configure', '--yes')
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn('Missing confirmed node: fixture-rank-1 (position 1)', ' '.join(result.stdout.split()))
