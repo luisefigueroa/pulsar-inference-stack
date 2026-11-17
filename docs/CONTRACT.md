@@ -236,15 +236,25 @@ unambiguous active service selector.
 
 ## Public operations
 
-Document operations need no Docker, topology, model files, or clean checkout.
+Operations that only read or write documents, such as `spec` and `evidence`,
+need no Docker, topology, model files, or clean checkout.
 Execution operations independently check their live prerequisites.
 
 | Command family | Purpose |
 | --- | --- |
 | `spec example/freeze/verify/show/compare` | Author, validate, read, and compare serving specs |
+| `models list`, `models show SPEC` | Read the catalog with each spec's saved file and archive state; saved records only, no node is contacted |
 | `model acquire/prepare/info/restore/archive` | Existing explicit model-file lifecycle; use `--model-commit` for first acquisition |
+| `model check SPEC` | Check a spec's managed model files and archive, and save what it found as the spec's catalog observation |
 | `model budget` | Read prepared-copy storage usage, reserve and allowance on every confirmed node |
 | `model files [--json]` | Read managed model-file placement across confirmed nodes; preserve partial observations and inspect uncataloged downloads |
+| `inventory` | Read the service inventory: the containers, their ownership and the memory of every confirmed node. Each live run saves it on the controller |
+| `doctor` | Check this node, membership, every other confirmed node and the catalog; a spec's own launch checks stay with `start` |
+| `topology show` | Read the saved membership; no node is contacted |
+| `topology check` | Check every saved node and the fabric between them; saves nothing |
+| `topology detect [--candidate HOST ...]` | Discover machines without changing membership or SSH trust; with valid saved membership it saves the changes noticed |
+| `ssh-trust check` | Check each confirmed node's recorded SSH identity on its control and fabric addresses |
+| `configure archive-root show` | Read the archive location, where it is set and whether its directory can be read and written |
 | `start`, `status`, `stop` | Serve, inspect, or stop an owned service |
 | `logs SPEC [--node NODE \| --rank N] [--tail N] [--follow]` | Print recent output of an owned service's containers, including exited ones; human text only, no `--json`. Exits 1 when none exists and 3 when a node could not be observed |
 | `observe --service-id ID` | Verify all ranks and actual container configuration without mutation |
@@ -357,10 +367,54 @@ independently requests full hashes. Every required snapshot and rank must
 verify before a prepared set is ready. See [inspection behavior](OPERATIONS.md#inspect-a-running-service)
 and [file verification](OPERATIONS.md#verify-model-files).
 
-For non-streaming `--json` operations, stdout is one envelope with schema version
-1, `ok`, and either `result` or `error` (`code`, `message`, `details`). Human
-logging goes to stderr. Errors have nonzero exit status. Do not parse human
-messages to make lifecycle decisions.
+### Output forms
+
+Each operation prints its result in one output form, which
+`pulsar contract --json` lists in `operation_outputs`. An operation is named
+after its command, with dots for the spaces: `models list` is `models.list`.
+
+| Form | Operations | What the command prints |
+| --- | --- | --- |
+| `envelope` | Every operation not named in the rows below | Under `--json`, the envelope described next |
+| `document` | `models.list`, `models.show`, `inventory`, `doctor`, `topology.show`, `topology.check`, `topology.detect`, `ssh-trust.check`, `configure.archive-root.show` | Under `--json`, the command's own JSON document |
+| `text` | `logs` | Text for people; it has no `--json` |
+| `stream` | `resources` | JSON lines: a header, then samples or error records |
+
+For an operation whose form is `envelope`, stdout under `--json` is one
+envelope with schema version 1, `ok`, and either `result` or `error` (`code`,
+`message`, `details`). Human logging goes to stderr. Errors have nonzero exit
+status. Do not parse human messages to make lifecycle decisions.
+
+An operation whose form is `document` prints its own JSON document on stdout
+under `--json`. Nothing wraps it in the envelope, so a failure has no
+`error.code`. `kind` in `operation_outputs` is the `kind` that document
+carries, or null for `inventory` and `topology.detect`, whose documents carry
+none. `kind` is null for every other form too, also when an envelope's `result`
+has a `kind` of its own, as `model files` has. What a failure prints differs
+between these commands:
+
+| Operation | Document `kind` | Exit status when it prints its document | Exit status when it prints an error on stderr and no document |
+| --- | --- | --- | --- |
+| `models.list`, `models.show` | `pulsar-model-catalog` | 0 | 2: the spec is not in the catalog, a catalog spec or a saved record cannot be read, or the command line is wrong |
+| `inventory` | none | 0, also when another node did not answer; that node's entry in `nodes` has a `probe_status` other than `ok` | 1: Docker is unavailable on this node, the saved membership is missing or invalid, or the catalog holds an invalid spec. 2: an unknown argument |
+| `doctor` | `pulsar-doctor` | 0, or 1 when `result` is `fail` | 2: an unknown argument |
+| `topology.show` | `pulsar-topology-observation` | 0, or 1 when `status` is `missing` or `invalid` | 2: the command line is wrong |
+| `topology.check` | `pulsar-topology-observation` | 0, or 1 when `status` is `blocked`, `missing` or `invalid` | 2: the command line is wrong |
+| `topology.detect` | none | 0, or 1 when discovery found no usable cluster or is incomplete; `result` is `incomplete` when a confirmed node is missing, the fabric check failed or the saved SSH configuration cannot be used | 2: the command line is wrong |
+| `ssh-trust.check` | `topology-ssh-trust-check` | 0, or 1 when `ok` is false | 1: the check cannot start, because the saved membership or its SSH configuration cannot be used, SSH trust is not enrolled, or an option is unknown. 2: the check itself stopped with an error, such as a file it cannot read |
+| `configure.archive-root.show` | `pulsar-archive-root-configuration` | 0 | 2: the saved setting is not a literal value, or the command line is wrong |
+
+Parse stdout as the document only when it is not empty; an error without a
+document is on stderr. None of these commands reports a confirmed node that
+did not answer with exit 3. It is reported in the document: `topology check`
+(`status` `blocked`), `topology detect` (`result` `incomplete`) and
+`ssh-trust check` (`ok` false) then exit 1, `doctor` exits 1 when a check's
+`level` is `fail`, and `inventory` exits 0. `doctor`, `topology check` and
+`ssh-trust check` also exit 1 with their document when they found a problem,
+where a check whose form is `envelope`, such as `image check`, exits 0 with
+its report as the result. So read the document's own `status`, `result`, `ok`
+or `probe_status`: exit 1 alone does not tell a known "no" from a node that
+could not be observed.
 
 ### Cluster readiness and membership
 
@@ -529,6 +583,11 @@ Each exit status has one meaning, with or without `--json`:
 | 3 | The outcome is not established: a node could not be observed, a check could not run, or Stack found its own defect. |
 | 128+signal | Interrupted by the signal; see cancelled and cleanup_incomplete. |
 
+An operation whose output form is `document` prints no envelope and no
+`error.code`. [Output forms](#output-forms) lists the exit statuses of each
+such command; none of them reports a confirmed node that did not answer with
+exit 3.
+
 Without `--json`, `start`, `stop`, `status` and `model` run their operator
 scripts directly; they exit with the same statuses.
 
@@ -620,7 +679,7 @@ before relying on a command or format.
 | `draft_schema_versions`, `spec_schema_versions`, `historical_spec_schema_versions` | Draft and spec schemas this Stack reads. Historical specs are readable but cannot start. |
 | `observation_schema_versions`, `measurement_schema_versions`, `run_record_schema_versions`, `memory_estimate_schema_versions`, `serving_guard_schema_versions` | The document schemas this Stack reads and writes. |
 | `operations` | Public operations callers may use. Only completed, tested operations are listed. |
-| `operation_outputs` | How each operation prints its result, keyed by the names in `operations`. `form` is `envelope`, `document`, `text` or `stream`. `kind` is the `kind` of the JSON document that a `document` operation prints, or null when that document carries none; it is null for the other forms. |
+| `operation_outputs` | How each operation prints its result, keyed by the names in `operations`. `form` is `envelope`, `document`, `text` or `stream`, as [output forms](#output-forms) describes. `kind` is the `kind` of the JSON document that an operation of the form `document` prints, or null when that document carries none; it is null for the other forms. |
 | `baseline_policies`, `baseline_policy_digest` | Supported baseline suites and their fixed policy digests. The legacy field names baseline-v1's digest. |
 | `catalog` | Catalog rules: the maintainer decides membership (`authority`), every member passes `required_checks`, and state, review, evidence and launch compatibility are not gates. |
 | `diagnostics` | Optional assessments; they never change catalog membership. |
@@ -629,6 +688,14 @@ before relying on a command or format.
 | `start_check_ids` | The `id` of each check `start --json` reports in `checks`, in the order start runs them, described below. |
 | `deprecated_commands` | Aliases that still work, warn on stderr and are removed in CLI contract 2, each with its `replacement`. |
 | `deprecated_flags` | Flags that still parse, warn on stderr and change nothing; each `note` says what to do instead. They are removed in CLI contract 2. |
+
+Change note, 2026-11-17: `operations` gained twelve entries, after the earlier
+ones: `models.list`, `models.show`, `model.check`, `model.budget`,
+`model.files`, `inventory`, `doctor`, `topology.show`, `topology.check`,
+`topology.detect`, `ssh-trust.check` and `configure.archive-root.show`. The
+contract gained one field, `operation_outputs`. Nothing was removed or renamed,
+the contract keeps schema version 2, and no command's output or exit status
+changed.
 
 When `start --json` fails, the error is `prerequisite_failed` and `details`
 holds one record per start blocker: `field` is `blocker`, plus `blocker` (a
