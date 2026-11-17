@@ -21,6 +21,13 @@ EARLIER_OPERATIONS=['contract','spec.example','spec.freeze','spec.verify','spec.
 # The read commands added on 2026-11-17, in the order they follow the earlier ones.
 READ_OPERATIONS=['models.list','models.show','model.check','model.budget','model.files','inventory','doctor',
     'topology.show','topology.check','topology.detect','ssh-trust.check','configure.archive-root.show']
+# How an operation prints its result. With the form document, a command prints
+# its own JSON document under --json; the tests that run each of those commands
+# on fixtures compare the kind it prints with the contract
+# (tests/support/contract_output.py).
+OUTPUT_FORMS=('envelope','document','text','stream')
+DOCUMENT_FORM_OPERATIONS=['models.list','models.show','inventory','doctor','topology.show','topology.check',
+    'topology.detect','ssh-trust.check','configure.archive-root.show']
 
 
 class IntegrationContract(unittest.TestCase):
@@ -58,6 +65,41 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(operations[:34],EARLIER_OPERATIONS)
         self.assertEqual(len(READ_OPERATIONS),12)
         self.assertEqual(operations[34:46],READ_OPERATIONS)
+
+    def test_every_operation_has_one_output_form_and_only_a_document_names_a_kind(self):
+        document=integration_contract.contract()
+        outputs=document['operation_outputs']
+        self.assertIsInstance(outputs,dict)
+        self.assertEqual(sorted(outputs),sorted(document['operations']))
+        for operation,output in outputs.items():
+            with self.subTest(operation=operation):
+                self.assertEqual(set(output),{'form','kind'})
+                self.assertIn(output['form'],OUTPUT_FORMS)
+                if output['kind'] is not None:
+                    self.assertEqual(output['form'],'document')
+                    self.assertIsInstance(output['kind'],str)
+                    self.assertTrue(output['kind'])
+
+    def test_operations_that_print_no_envelope_are_the_ones_named_here(self):
+        outputs=integration_contract.contract()['operation_outputs']
+        by_form={form:[operation for operation,output in outputs.items() if output['form']==form]
+                 for form in OUTPUT_FORMS}
+        self.assertEqual(by_form['text'],['logs'])
+        self.assertEqual(by_form['stream'],['resources'])
+        self.assertEqual(by_form['document'],DOCUMENT_FORM_OPERATIONS)
+        # model check, budget and files run through the public CLI, which prints the envelope.
+        self.assertLessEqual({'model.check','model.budget','model.files'},set(by_form['envelope']))
+        self.assertEqual(len(by_form['envelope']),len(outputs)-len(DOCUMENT_FORM_OPERATIONS)-2)
+
+    def test_output_forms_cannot_differ_from_the_operation_list(self):
+        operations=integration_contract.contract()['operations']
+        # A form given to a name that is not an operation fails; it is not dropped.
+        with self.assertRaisesRegex(ValueError,'not an operation'):
+            integration_contract.operation_outputs([name for name in operations if name!='doctor'])
+        # An operation without a form of its own prints the envelope.
+        added=integration_contract.operation_outputs([*operations,'example.operation'])
+        self.assertEqual(added['example.operation'],{'form':'envelope','kind':None})
+        self.assertEqual(sorted(added),sorted([*operations,'example.operation']))
 
     def test_root_cli_emits_contract_json(self):
         result=subprocess.run([str(ROOT/'pulsar'),'contract','--json'],

@@ -18,9 +18,42 @@ from scripts.start_blockers import BLOCKERS
 from scripts.start_checks import CHECK_IDS
 from scripts.terminal_format import TerminalWriter
 
+# The operations that do not print the result envelope, each with its output
+# form and kind. An operation not named here prints the envelope under --json.
+# With the form document, a command prints its own JSON document under --json;
+# the kind here is the kind that document carries, or None when it carries
+# none. The tests that run each of these commands on fixtures compare what it
+# prints with this table.
+NON_ENVELOPE_OUTPUTS = {
+    'logs': ('text', None),  # Text for people; it has no --json.
+    'resources': ('stream', None),  # A stream of JSON lines (--jsonl).
+    'models.list': ('document', 'pulsar-model-catalog'),
+    'models.show': ('document', 'pulsar-model-catalog'),
+    'inventory': ('document', None),
+    'doctor': ('document', 'pulsar-doctor'),
+    'topology.show': ('document', 'pulsar-topology-observation'),
+    'topology.check': ('document', 'pulsar-topology-observation'),
+    'topology.detect': ('document', None),
+    'ssh-trust.check': ('document', 'topology-ssh-trust-check'),
+    'configure.archive-root.show': ('document', 'pulsar-archive-root-configuration'),
+}
+
+
+def operation_outputs(operations) -> dict:
+    """The output form of every operation, with the kind of the document it prints.
+
+    Built from the operation list, so the two cannot differ: every operation
+    gets an entry, and a form given to a name that is not an operation fails.
+    """
+    stray = sorted(set(NON_ENVELOPE_OUTPUTS) - set(operations))
+    if stray:
+        raise ValueError(f"an output form is given to {', '.join(stray)}, which is not an operation")
+    return {operation: dict(zip(('form', 'kind'), NON_ENVELOPE_OUTPUTS.get(operation, ('envelope', None))))
+            for operation in operations}
+
 
 def contract() -> dict:
-    return {
+    document = {
         'schema_version': 2,
         'kind': 'pulsar-stack-integration-contract',
         'cli_contract_versions': [1],
@@ -81,6 +114,8 @@ def contract() -> dict:
             'stop --retain-weights': {'note': 'stop always retains model files', 'removed_in_cli_contract': 2},
         },
     }
+    document['operation_outputs'] = operation_outputs(document['operations'])
+    return document
 
 
 def main(argv=None) -> int:

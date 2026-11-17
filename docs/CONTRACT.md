@@ -620,6 +620,7 @@ before relying on a command or format.
 | `draft_schema_versions`, `spec_schema_versions`, `historical_spec_schema_versions` | Draft and spec schemas this Stack reads. Historical specs are readable but cannot start. |
 | `observation_schema_versions`, `measurement_schema_versions`, `run_record_schema_versions`, `memory_estimate_schema_versions`, `serving_guard_schema_versions` | The document schemas this Stack reads and writes. |
 | `operations` | Public operations callers may use. Only completed, tested operations are listed. |
+| `operation_outputs` | How each operation prints its result, keyed by the names in `operations`. `form` is `envelope`, `document`, `text` or `stream`. `kind` is the `kind` of the JSON document that a `document` operation prints, or null when that document carries none; it is null for the other forms. |
 | `baseline_policies`, `baseline_policy_digest` | Supported baseline suites and their fixed policy digests. The legacy field names baseline-v1's digest. |
 | `catalog` | Catalog rules: the maintainer decides membership (`authority`), every member passes `required_checks`, and state, review, evidence and launch compatibility are not gates. |
 | `diagnostics` | Optional assessments; they never change catalog membership. |

@@ -23,6 +23,7 @@ from model_library.state import Store, view_key
 from model_library.integrity import StorageError
 from release_spec import pretty_json_bytes
 from scripts.terminal_format import TerminalWriter
+from tests.support.contract_output import assert_document_kind
 
 
 class Catalog(unittest.TestCase):
@@ -123,6 +124,30 @@ class Catalog(unittest.TestCase):
         self.assertEqual(browse.returncode, 0, browse.stderr)
         self.assertEqual(browse.stdout, listed.stdout)
         self.assertEqual(browse.stderr, "warning: the catalog menu needs Gum on this terminal; showing pulsar models list\n")
+
+    def test_models_list_and_show_print_the_document_the_contract_names(self):
+        spec = self.add_spec()
+        env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_", "GUM"))}
+        env.update(PULSAR_MODEL_LIBRARY_DIR=str(self.store.root), PULSAR_DOCKER="/bin/false", PULSAR_SSH="/bin/false",
+                   PYTHONDONTWRITEBYTECODE="1")
+        # A fixture catalog and an empty fixture store; the command reads nothing else.
+        roots = ["--repo-root", str(self.repo), "--state-root", str(self.store.root)]
+
+        def models(*args):
+            return subprocess.run([str(ROOT / "pulsar"), "models", *args, "--json", *roots], env=env, text=True,
+                                  capture_output=True, timeout=60)
+        for operation, args in (("models.list", ["list"]), ("models.show", ["show", spec["spec_id"]])):
+            with self.subTest(operation=operation):
+                result = models(*args)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                document = json.loads(result.stdout)
+                assert_document_kind(self, operation, document)
+                self.assertEqual([row["spec_id"] for row in document["entries"]], [spec["spec_id"]])
+        # A spec the catalog does not hold: an error line and exit 2, and no document.
+        absent = models("show", "f" * 64)
+        self.assertEqual((absent.returncode, absent.stdout), (2, ""), absent.stderr)
+        self.assertIn("error", absent.stderr)
+        self.assertFalse(self.store.root.exists())
 
     def test_copy_records_show_when_they_were_verified(self):
         from model_library.catalog import blocker_text, _details

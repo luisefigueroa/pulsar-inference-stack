@@ -20,6 +20,7 @@ from model_library.state import Store
 from model_library_fixture import Fixture as LibraryFixture
 from scripts import cluster_status, models_page, serve_plan, service_status, services_page
 from scripts import topology_manifest as tm
+from support.contract_output import assert_document_kind
 from support.topology_fixture import Fixture, as_mesh, ring_probes, shuffled
 from tests.test_ring_renumbering import save_ring
 
@@ -73,7 +74,10 @@ class RecordingSshIdentities(unittest.TestCase):
         self.assertEqual((saved['schema_version'], saved['validation']['class']), (2, tm.RING_CLASS))
         tm.validate_manifest(saved, require_verified=True, require_ssh_trust=True)
         # Each node's identity is checked over the links of its own cables.
-        self.assertEqual(json.loads(fixture.run('ssh-trust', 'check', '--json').stdout)['state'], 'pass')
+        checked = fixture.run('ssh-trust', 'check', '--json')
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(json.loads(checked.stdout)['state'], 'pass')
+        assert_document_kind(self, 'ssh-trust.check', json.loads(checked.stdout))
 
 
 class StorageImpact(unittest.TestCase):
@@ -121,6 +125,7 @@ class InventoryAndStatus(unittest.TestCase):
         result = fixture.run('inventory', '--from-fixture', str(path), '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         document = json.loads(result.stdout)
+        assert_document_kind(self, 'inventory', document)
         self.assertEqual({key: node['node_id'] for key, node in document['nodes'].items()},
                          {KEYS[node['rank']]: node['node_id'] for node in nodes})
         self.assertEqual(document['services'], [])

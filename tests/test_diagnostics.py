@@ -13,6 +13,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT));sys.path.insert(0,str(ROOT/'tests'))
 from test_runtime_binding import fixture
 from support import hf_double
+from support.contract_output import assert_document_kind
 
 
 class Diagnostics(unittest.TestCase):
@@ -127,6 +128,7 @@ ssh_node() {{
         result=self.run_tool('doctor.sh',['--json'])
         self.assertEqual(result.returncode,0,result.stderr)
         doc=json.loads(result.stdout);self.assertEqual(doc['kind'],'pulsar-doctor')
+        assert_document_kind(self,'doctor',doc)
         self.assertNotEqual(doc['result'],'fail')
         self.assertTrue(any(c['id']=='catalog' and '0 catalog' in c['message'] for c in doc['checks']))
         self.assertFalse((self.root/'mutations').exists())
@@ -137,6 +139,9 @@ ssh_node() {{
             with self.subTest(mode=mode):
                 self.assertNotEqual(result.returncode,0,result.stdout)
                 self.assertEqual(json.loads(result.stdout)['result'],'fail')
+                # A doctor that found a blocking issue still prints its document, and exits 1.
+                self.assertEqual(result.returncode,1,result.stderr)
+                assert_document_kind(self,'doctor',json.loads(result.stdout))
                 # Every failed row says what to do next, not only what is wrong.
                 failed=[c['message'] for c in json.loads(result.stdout)['checks'] if c['level']=='fail']
                 self.assertTrue(failed)
