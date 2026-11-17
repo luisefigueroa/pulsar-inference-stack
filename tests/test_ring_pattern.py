@@ -26,15 +26,17 @@ from model_library.node_names import NodeNames
 from scripts import serve_plan as serve, start_reasons
 
 # Recorded from the code before the ring pattern existed: each catalog spec's
-# node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). No
-# catalog spec declares the ring pattern, so every multi-node one still needs
-# every pair of its nodes cabled.
+# node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). These
+# specs do not declare the ring pattern, so every multi-node one still needs
+# every pair of its nodes cabled. The MiniMax-M3.1-Flash spec (949f8d18…),
+# added later, is the first catalog spec that declares it.
 CATALOG = {
     '139908cf23bbee82400df7eee3ec40e452d96ca223f6577661a7c07f40a6974d': ('1', 'single', '0'),
     '154ea1726af4dd9f4a9e4ef14be4d476d0c7082ff0851b6e5ab19e8921dd8b3f': ('3', 'roce-full-mesh', '2'),
     '1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435': ('2', 'roce-full-mesh', '2'),
     '27dc06de6e33042b164c8a4a2400cd02ec43e642e7ba8e116b905a5e72dd68b2': ('2', 'roce-full-mesh', '2'),
     '6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a': ('1', 'single', '0'),
+    '949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f': ('4', 'roce-ring', '2'),
     'b13b30c418f35c812dfbb69de48a01ef82b5545b1de290d2d9a03906164d257b': ('3', 'roce-full-mesh', '2'),
     'e5957c46d433180640165d888f7543ee31cb81dfb725e93b6259a4c83827dc60': ('3', 'roce-full-mesh', '2'),
 }
