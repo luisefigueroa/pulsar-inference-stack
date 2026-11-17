@@ -55,7 +55,10 @@ would name, a function no other choice of that menu has, and a label that says
 what it does to someone who does not know the operations behind it (pin, purge,
 prepare). A choice may repeat one of another menu when the page's own words
 send the operator to it, as **Get a model with a recipe ready to serve…**
-repeats a step of **Serve a model…**. Where
+repeats a step of **Serve a model…**. One operation may also serve two
+purposes on one menu: **Free up space…** offers the move of a home that makes
+room on a full node, and **Move a model to another node…** puts a home where
+the operator wants it at any time. Where
 a label cannot, the choice has one second line under it, as a status word has
 its hint (NN/g heuristics #6 and #10): indented, in lower case, at most 40
 characters, and plain while the label is bold, so the two differ without

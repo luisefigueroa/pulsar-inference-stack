@@ -10,8 +10,10 @@
 # unknown, not absent, and nothing destructive is offered while it does not
 # answer (scripts/models_page.py). The choices follow a model's life on the
 # cluster, in four groups. Each is here because the page's own words send the
-# operator to it; only Get a model with a recipe ready to serve… is also
-# reached another way (Serve a model…, without its Start):
+# operator to it. Two operations are reached another way too, each for another
+# purpose: Get a model with a recipe ready to serve… is Serve a model… without
+# its Start, and a home also moves from Free up space…, where the page offers
+# the move that makes room on a node past its reserve:
 #   Download a model that has no recipe yet…
 #                       model acquire --model-id ORG/NAME --model-commit COMMIT:
 #                       it asks the model, the commit and the node, shows the
@@ -21,6 +23,10 @@
 #   Get a model with a recipe ready to serve…
 #                       Serve a model…'s plan without its Start
 #                       (scripts/serve-menu.sh --ready)
+#   Move a model to another node…
+#                       model move to the node the operator names, at any time
+#                       (Free up space… offers a move only off a node past its
+#                       reserve): each home nothing depends on, or why it stays
 #
 #   Keep a model on the cluster…
 #                       model pin, or model unpin to stop keeping it
@@ -280,8 +286,20 @@ intent_page() {
     show "$(choice_rows "${labels[@]}")" screen "$intent" "${READ[@]}" || { rc=$?; [ "$rc" -ne 130 ] || return 130; }
     choice=$(choose_index "$title" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || return 130; return 0; }
     [ "${targets[$choice]}" != back ] || return 0
+    target=${targets[$choice]}
+    if [[ "$target" == pick:* ]]; then
+      # Move a model to another node…: the operator names the node; no plan chooses it.
+      local -a places=() hosts=()
+      while IFS=$'\t' read -r target label; do places+=("$target"); hosts+=("${label//$'\x1f'/$'\n'}"); done \
+        < <(view destinations --manifest "${targets[$choice]#pick:}")
+      [ "${#places[@]}" -gt 0 ] || continue
+      choice=$(choose_index "Which node should keep the files?" "${hosts[@]}" "Back") \
+        || { rc=$?; [ "$rc" -ne 130 ] || return 130; continue; }
+      [ "$choice" -lt "${#places[@]}" ] || continue
+      target=${places[$choice]}
+    fi
     rc=0
-    plan_page "$title" "${targets[$choice]}" || rc=$?
+    plan_page "$title" "$target" || rc=$?
     [ "$rc" -ne 130 ] || return 130
     [ "$rc" -ne "$CHANGED" ] || return "$CHANGED"
   done
@@ -430,6 +448,7 @@ while true; do
   case "${actions[$choice]}" in
     free) intent_page free "Free up space" || rc=$? ;;
     keep) intent_page keep "Keep a model on the cluster" || rc=$? ;;
+    move) intent_page move "Move a model to another node" || rc=$? ;;
     backup) intent_page backup "Back up a model to the archive" || rc=$? ;;
     check) intent_page check "Check the archive copies" || rc=$? ;;
     # One plan from the page's scan: what it can record, then what it cannot.
