@@ -10,6 +10,18 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path[:0]=[str(ROOT),str(ROOT/'scripts')]
 import integration_contract
 
+# The operations advertised before 2026-11-17, in their order. A caller may
+# rely on each one, so none leaves the list and none moves.
+EARLIER_OPERATIONS=['contract','spec.example','spec.freeze','spec.verify','spec.show','spec.compare',
+    'policy.show','evidence.measurement','evidence.evaluate','evidence.verify','evidence.summary',
+    'contribution.verify','privacy.check','privacy.commits','selftest','start','observe','resources',
+    'status','stop','logs','memory.verify','model.acquire','model.prepare','model.info','model.restore',
+    'model.archive.verify','guarded.template','guarded.validate','guarded.run','guarded.stop',
+    'guarded.reconcile','image.check','image.stage']
+# The read commands added on 2026-11-17, in the order they follow the earlier ones.
+READ_OPERATIONS=['models.list','models.show','model.check','model.budget','model.files','inventory','doctor',
+    'topology.show','topology.check','topology.detect','ssh-trust.check','configure.archive-root.show']
+
 
 class IntegrationContract(unittest.TestCase):
     def test_contract_names_schema_only_catalog_and_public_commands(self):
@@ -31,6 +43,21 @@ class IntegrationContract(unittest.TestCase):
         self.assertFalse(document['catalog']['evidence_gate'])
         self.assertTrue(document['catalog']['nullable_state'])
         self.assertTrue(document['catalog']['nullable_review'])
+
+    def test_operations_stay_a_flat_list_of_distinct_names_in_schema_two(self):
+        document=integration_contract.contract()
+        self.assertEqual(document['schema_version'],2)
+        operations=document['operations']
+        self.assertIsInstance(operations,list)
+        self.assertTrue(all(isinstance(operation,str) and operation for operation in operations),operations)
+        self.assertEqual(len(operations),len(set(operations)))
+
+    def test_earlier_operations_keep_their_place_and_the_read_commands_follow(self):
+        operations=integration_contract.contract()['operations']
+        self.assertEqual(len(EARLIER_OPERATIONS),34)
+        self.assertEqual(operations[:34],EARLIER_OPERATIONS)
+        self.assertEqual(len(READ_OPERATIONS),12)
+        self.assertEqual(operations[34:46],READ_OPERATIONS)
 
     def test_root_cli_emits_contract_json(self):
         result=subprocess.run([str(ROOT/'pulsar'),'contract','--json'],

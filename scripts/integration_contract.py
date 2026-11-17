@@ -39,7 +39,9 @@ def contract() -> dict:
                        'selftest', 'start', 'observe', 'resources', 'status', 'stop', 'logs', 'memory.verify',
                        'model.acquire', 'model.prepare', 'model.info', 'model.restore', 'model.archive.verify',
                        'guarded.template', 'guarded.validate', 'guarded.run', 'guarded.stop', 'guarded.reconcile',
-                       'image.check', 'image.stage'],
+                       'image.check', 'image.stage', 'models.list', 'models.show', 'model.check', 'model.budget',
+                       'model.files', 'inventory', 'doctor', 'topology.show', 'topology.check', 'topology.detect',
+                       'ssh-trust.check', 'configure.archive-root.show'],
         'baseline_policy_digest': APPROVED_POLICY_DIGEST,  # Legacy baseline-v1 field.
         'baseline_policies': dict(SUPPORTED_POLICY_DIGESTS),
         'catalog': {
