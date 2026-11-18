@@ -98,9 +98,10 @@ class Server:
             waiters = [waiter for waiter in self.waiters.values() if waiter.command is command]
             if waiters:
                 payload, is_error = self.commands.result(command)
+                # Forget it first: when the answer arrives, the private directory holds saved results only.
+                self.commands.forget(command)
                 for waiter in waiters:
                     self._answer(waiter, protocol.tool_result(payload, is_error=is_error))
-                self.commands.forget(command)
             elif not command.handle_returned:
                 self.commands.forget(command)  # Its call was cancelled, so nobody can ask for the result.
         now = time.monotonic()
