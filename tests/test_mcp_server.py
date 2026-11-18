@@ -105,6 +105,7 @@ class Results(unittest.TestCase):
             "two documents": ('{"a": 1}\n{"b": 2}\n', 0),
             "not a number JSON has": ('{"free": NaN}\n', 0),
             "a number out of range": ('{"free": 1e999}\n', 0),
+            "bytes that are not UTF-8": ('{"host": "fixture-\udcff"}\n', 0),
             "words and a failure": ("usage: fixture\n", 2),
         }
         for name, (printed, status) in cases.items():
@@ -114,8 +115,9 @@ class Results(unittest.TestCase):
                 # Not JSON where JSON was promised is a fault, also with exit status 0.
                 self.assertIs(result["isError"], True)
                 answer = session.checked_object(result)
+                # The text is what was printed, with a mark where a byte could not be read.
                 self.assertEqual((answer["output"], answer["text"], answer["exit_status"]),
-                                 (None, printed, status))
+                                 (None, printed.replace("\udcff", "\ufffd"), status))
 
     def test_a_command_that_printed_nothing_has_no_output_and_keeps_the_end_of_its_standard_error(self):
         session = Session(self)

@@ -145,6 +145,20 @@ class Handshake(unittest.TestCase):
         first = session.response("call-1")
         self.assertEqual(session.checked_object(first["result"])["output"]["name"], "one")
 
+    def test_an_id_that_still_waits_for_its_answer_cannot_be_used_again(self):
+        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "one", "started": True,
+                                                                        "release": True, "json": {"n": 1}}})
+        session.initialize()
+        call = {"jsonrpc": "2.0", "id": "same", "method": "tools/call",
+                "params": {"name": "pulsar_models_show", "arguments": {"spec_id": spec(1)}}}
+        session.send(call)
+        session.marker("one.started")
+        session.send(call)
+        self.assertEqual(session.read_message()["error"]["code"], -32600)
+        session.release("one")
+        self.assertEqual(session.checked_object(session.read_message()["result"])["output"], {"n": 1})
+        self.assertEqual(len(session.calls()), 1)  # The second line started nothing.
+
     def test_meta_keys_the_server_does_not_know_are_ignored(self):
         session = Session(self, plan={"topology show --json": {"json": TOPOLOGY}})
         meta = {"progressToken": "fixture-token", "example.invalid/trace": {"depth": 3}, "unknown": [1, 2]}

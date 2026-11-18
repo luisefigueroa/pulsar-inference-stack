@@ -141,6 +141,36 @@ class Cancel(Running):
         self.assertIn("the server killed the command's process group", answer["diagnostics"])
         self.assert_nothing_left(session, but=[session.process.pid])
 
+    def test_a_command_cancelled_in_its_first_moments_ends_at_once_and_has_no_output(self):
+        # No marker is waited for: SIGTERM may arrive before the supervisor or the command has started.
+        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "early", "release": True}})
+        session.initialize()
+        started = time.monotonic()
+        command_id = session.structured("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0})["command_id"]
+        result = session.call("pulsar_command_cancel", {"command_id": command_id})
+        # Whenever it arrived, the signal was not lost: nothing waited for the kill after the grace period.
+        self.assertLess(time.monotonic() - started, commands.GRACE_SECONDS)
+        self.assertIs(result["isError"], True)
+        answer = session.checked_object(result)
+        self.assertEqual((answer["state"], answer["exit_status"]), ("cancelled", 128 + signal.SIGTERM))
+        # It printed nothing, and that is no fault of its own: there is no text and no note.
+        self.assertEqual((answer["output"], answer["text"], answer["diagnostics"]), (None, None, ""))
+        self.assert_nothing_left(session, but=[session.process.pid])
+
+    def test_a_request_cancelled_in_the_same_write_as_its_call_ends_its_command_at_once(self):
+        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "early", "release": True}})
+        session.initialize()
+        call = {"jsonrpc": "2.0", "id": "early", "method": "tools/call",
+                "params": {"name": "pulsar_models_show", "arguments": {"spec_id": spec(1)}}}
+        cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "early"}}
+        started = time.monotonic()
+        session.send_line(json.dumps(call).encode() + b"\n" + json.dumps(cancel).encode())
+        session.wait_until(lambda: session.structured("pulsar_command_list") == {"commands": []},
+                           "the cancelled command has ended")
+        self.assertLess(time.monotonic() - started, commands.GRACE_SECONDS)
+        self.assertEqual([message for message in session.messages if message.get("id") == "early"], [])
+        self.assert_nothing_left(session, but=[session.process.pid])
+
     def test_a_cancel_for_a_call_that_already_answered_running_is_ignored(self):
         session = Session(self, plan=wrapper())
         session.initialize()
@@ -285,6 +315,26 @@ class KilledServer(Running):
         self.assertEqual(first.private_directories(), [])
 
 
+    def test_servers_that_start_at_the_same_moment_each_keep_a_directory_of_their_own(self):
+        first = Session(self, plan={"contract --json": {"json": envelope()}}, start=False)
+        sessions = [first, *(Session(self, base=first, start=False) for _ in range(7))]
+        for session in sessions:
+            session.start()  # None waits for another: each makes its directory while the others look for stale ones.
+        for session in sessions:
+            self.assertEqual(session.request("ping")["result"], {})
+        self.assertEqual(len(first.private_directories()), len(sessions))
+        for session in sessions:
+            session.initialize()
+            # Its directory is still there: the command's output files are made in it.
+            self.assertEqual(session.structured("pulsar_contract")["output"], envelope())
+        for session in sessions:
+            session.close_input()
+        for session in sessions:
+            self.assertEqual(session.wait_exit(), 0)
+            self.assertEqual(session.stderr(), "")
+        self.assertEqual(first.private_directories(), [])
+
+
 class Supervisor(unittest.TestCase):
     """supervisor.py by itself, with this test as its server."""
 
@@ -324,6 +374,33 @@ class Supervisor(unittest.TestCase):
         status, out, err = self.supervise("/bin/sh", "-c", f": > {marker}", server=1)
         self.assertEqual((status, out, err), (128 + signal.SIGTERM, "", ""))
         self.assertFalse(marker.exists())
+
+    def test_sigterm_at_any_moment_of_a_start_ends_the_command_without_waiting_for_the_kill(self):
+        grace = 20
+        # From before the supervisor's first instruction to after the command's: the signal is never lost.
+        for delay in (0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.06, 0.1):
+            with self.subTest(delay=delay):
+                argv = [sys.executable, "-B", str(ROOT / "mcp_server/supervisor.py"), str(os.getpid()), str(grace),
+                        sys.executable, "-c", "import time; time.sleep(60)"]
+                process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                           stderr=subprocess.PIPE, start_new_session=True, text=True)
+                self.addCleanup(lambda: process.stderr.close())
+                time.sleep(delay)
+                started = time.monotonic()
+                process.send_signal(signal.SIGTERM)
+                try:
+                    status = process.wait(PATIENCE)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    self.fail("the supervisor did not exit")
+                self.assertLess(time.monotonic() - started, grace)
+                # Ended by the signal itself before its handler was there, or after it passed the signal on.
+                self.assertIn(status, (-signal.SIGTERM, 128 + signal.SIGTERM))
+                self.assertEqual(process.stderr.read(), "")
+                # No process is left in the supervisor's group, which had its process ID.
+                self.assertFalse([pid for pid in map(int, filter(str.isdigit, os.listdir("/proc")))
+                                  if (state := process_state(pid)) and state[2] == process.pid and state[0] != "Z"])
 
     def test_a_wrong_command_line_is_a_usage_mistake(self):
         for arguments in ((), ("x", "5", "true")):
@@ -375,6 +452,12 @@ class Limits(Running):
         self.assertEqual((report["session"], report["group"]), (report["parent"], report["parent"]))
         self.assertNotIn(session.process.pid, (report["parent"], report["pid"]))
         self.assertNotEqual(report["session"], os.getsid(session.process.pid))
+        # The server and the supervisor hold signals back while they start a process. The command
+        # itself starts with none blocked and none ignored, so SIGTERM ends it.
+        self.assertEqual((report["sigterm"], report["sighup"], report["sigint_ignored"], report["blocked"]),
+                         ("default", "default", False, []))
+        # It inherits its three standard streams and nothing else: not the server's lock, pipes or files.
+        self.assertEqual(report["descriptors"], [0, 1, 2])
 
 
 class PrivateDirectory(Running):
@@ -453,13 +536,16 @@ class PrivateDirectory(Running):
         # What a starting server must leave alone, whatever its name says.
         other = base / "another-program"
         other.mkdir()
-        (base / "pulsar-mcp-a-file").write_text("not a directory\n")
-        (base / "pulsar-mcp-a-link").symlink_to(other)
+        (base / "pulsar-mcp-afile123").write_text("not a directory\n")
+        (base / "pulsar-mcp-alink123").symlink_to(other)
+        (base / "pulsar-mcp-open1234").mkdir(mode=0o755)  # Not owner-only: no server made it.
+        (base / "pulsar-mcp-longer-name").mkdir(mode=0o700)  # Not a name mkdtemp gives.
         self.assertTrue(Path(running_server.path).is_dir() and Path(dead_server.path).is_dir())
         os.close(dead_server._lock)  # The kernel does this when a server is killed.
         starting = commands.PrivateDirectory(str(base))
         self.assertEqual(sorted(path.name for path in base.iterdir()),
-                         sorted(["another-program", "pulsar-mcp-a-file", "pulsar-mcp-a-link",
+                         sorted(["another-program", "pulsar-mcp-afile123", "pulsar-mcp-alink123",
+                                 "pulsar-mcp-open1234", "pulsar-mcp-longer-name",
                                  Path(running_server.path).name, Path(starting.path).name]))
         for directory in (starting, running_server):
             self.assertEqual(mode(directory.path), 0o700)

@@ -82,11 +82,20 @@ if step.get("release"):  # Wait until the test lets go; give up after two minute
             sys.exit(70)
         time.sleep(0.01)
 if step.get("report"):
-    step["stdout"] = json.dumps({"kind": "fixture-report", "argv": argv, "stdin": os.readlink("/proc/self/fd/0"),
-                                 "pid": os.getpid(), "parent": os.getppid(), "group": os.getpgrp(),
-                                 "session": os.getsid(0)})
+    actions = {signal.SIG_DFL: "default", signal.SIG_IGN: "ignored"}
+    step["stdout"] = json.dumps({
+        "kind": "fixture-report", "argv": argv, "stdin": os.readlink("/proc/self/fd/0"),
+        "pid": os.getpid(), "parent": os.getppid(), "group": os.getpgrp(), "session": os.getsid(0),
+        # As the command found them: Python changes neither of these two when it starts.
+        "sigterm": actions.get(signal.getsignal(signal.SIGTERM), "handled"),
+        "sighup": actions.get(signal.getsignal(signal.SIGHUP), "handled"),
+        "sigint_ignored": signal.getsignal(signal.SIGINT) is signal.SIG_IGN,
+        "blocked": sorted(int(signum) for signum in signal.pthread_sigmask(signal.SIG_BLOCK, [])),
+        "descriptors": sorted(int(name) for name in os.listdir("/proc/self/fd"))[:-1]})
 sys.stderr.write(step.get("stderr", ""))
-sys.stdout.write(step.get("stdout", ""))
+sys.stderr.flush()
+# A lone low surrogate in the plan stands for one byte that is not UTF-8.
+sys.stdout.buffer.write(step.get("stdout", "").encode("utf-8", "surrogateescape"))
 sys.stdout.flush()
 sys.exit(step.get("exit", 0))
 '''

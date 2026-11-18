@@ -16,8 +16,10 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,8 @@ GRACE_SECONDS = 10.0  # From a command's SIGTERM to the kill of what is left of 
 BACKSTOP_SECONDS = 2.0  # After the grace period, how long the server waits for a supervisor before it kills.
 DIAGNOSTICS_BYTES = 4000  # How much of the end of standard error a result carries.
 DIRECTORY_PREFIX = "pulsar-mcp-"
+# A private directory as mkdtemp names it. Nothing else is ever removed.
+DIRECTORY_NAME = re.compile(re.escape(DIRECTORY_PREFIX) + r"[a-z0-9_]{8}")
 
 
 class NoPrivateDirectory(Exception):
@@ -48,15 +52,17 @@ def base_directory() -> str:
     """Where the private directory is made: the person's runtime directory, else
     the temporary directory. Never inside the checkout."""
     checkout = os.path.realpath(CHECKOUT)
+
+    def usable(candidate: str) -> bool:
+        return (os.path.isdir(candidate) and os.access(candidate, os.W_OK | os.X_OK)
+                and not _inside(os.path.realpath(candidate), checkout))
+
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    candidates = []
-    if runtime and os.path.isdir(runtime) and os.stat(runtime).st_uid == os.geteuid():
-        candidates.append(runtime)
-    candidates.append(tempfile.gettempdir())
-    for candidate in candidates:
-        path = os.path.realpath(candidate)
-        if os.path.isdir(path) and os.access(path, os.W_OK | os.X_OK) and not _inside(path, checkout):
-            return path
+    if runtime and usable(runtime) and os.stat(runtime).st_uid == os.geteuid():
+        return os.path.realpath(runtime)
+    temporary = tempfile.gettempdir()
+    if usable(temporary):
+        return os.path.realpath(temporary)
     raise NoPrivateDirectory("no writable runtime or temporary directory outside the checkout; "
                              "set TMPDIR to one")
 
@@ -109,15 +115,16 @@ class PrivateDirectory:
     def _remove_left_behind(self) -> None:
         for name in os.listdir(self.base):
             path = os.path.join(self.base, name)
-            if not name.startswith(DIRECTORY_PREFIX) or path == self.path:
+            if not DIRECTORY_NAME.fullmatch(name) or path == self.path:
                 continue
             try:
                 lock = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             except OSError:
                 continue  # Not a directory, not this person's, or already gone.
             try:
-                if os.fstat(lock).st_uid != os.geteuid():
-                    continue
+                found = os.fstat(lock)
+                if found.st_uid != os.geteuid() or stat.S_IMODE(found.st_mode) != 0o700:
+                    continue  # Not made the way a server makes its directory.
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # Fails while its server runs.
                 if _still_at(lock, path):
                     shutil.rmtree(path, ignore_errors=True)
@@ -174,11 +181,15 @@ def _finite(text):
     return number
 
 
-def parse_json(text: str):
-    """(True, value) when TEXT is JSON that can be sent on unchanged, else (False, None)."""
+def parse_json(printed: bytes):
+    """(True, value) when PRINTED is JSON that can be sent on unchanged, else (False, None).
+
+    Not so: bytes that are not UTF-8, the constants NaN and Infinity, and a
+    number too large to keep.
+    """
     try:
-        return True, json.loads(text, parse_constant=_refuse_constant, parse_float=_finite)
-    except (ValueError, RecursionError):
+        return True, json.loads(printed.decode("utf-8"), parse_constant=_refuse_constant, parse_float=_finite)
+    except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError.
         return False, None
 
 
@@ -287,7 +298,7 @@ class Commands:
             printed = stream.read()
         text = printed.decode("utf-8", errors="replace")
         expects_json = command.output_form != "text"
-        is_json, value = parse_json(text) if expects_json and printed.strip() else (False, None)
+        is_json, value = parse_json(printed) if expects_json and printed.strip() else (False, None)
         payload = {"operation": command.operation, "state": command.state, "exit_status": exit_status,
                    "output_form": command.output_form, "output": None, "text": None,
                    "diagnostics": self._diagnostics(command), "saved_to": None, "bytes": None, "outline": None,
