@@ -24,6 +24,19 @@ CANCELLED = {"schema_version": 1, "ok": False, "error": {
     "code": "cancelled", "message": "Stack command cancelled; local command and tracked node workers reaped",
     "details": [{"field": "$", "message": "fixture"}]}}
 
+# The server as shipped, except for one number: how long it waits, after the
+# grace period, before it kills a supervisor that has not exited. The shipped
+# two seconds would make the test that needs this wait take longer than that.
+SHORT_BACKSTOP = 0.2
+SHORT_BACKSTOP_LAUNCHER = """\
+import sys
+sys.dont_write_bytecode = True
+sys.path.insert(0, {root!r})
+from mcp_server import __main__ as server, commands
+commands.BACKSTOP_SECONDS = {seconds!r}
+sys.exit(server.main([]))
+"""
+
 
 def wrapper(number=1, **step):
     """A step in the wrapper style: it handles SIGTERM itself and prints the cancelled envelope."""
@@ -131,12 +144,19 @@ class Cancel(Running):
         self.assert_nothing_left(session, but=[session.process.pid])
 
     def test_the_server_kills_a_command_whose_supervisor_does_not_exit(self):
-        session = Session(self, steps=wrapper(sigterm="ignore"), grace=0.2)
+        self.assertEqual(commands.BACKSTOP_SECONDS, 2.0)  # What ships; this test's server waits less.
+        launcher = Path(self.enterContext(tempfile.TemporaryDirectory())) / "launcher.py"
+        launcher.write_text(SHORT_BACKSTOP_LAUNCHER.format(root=str(ROOT), seconds=SHORT_BACKSTOP))
+        grace = 0.2
+        session = Session(self, launcher=launcher, steps=wrapper(sigterm="ignore"), grace=grace)
         session.initialize()
         command_id = self.start_wrapper(session)
         supervisor = int(session.marker("wrapper-1.started").split()[1])
         os.kill(supervisor, signal.SIGSTOP)  # A supervisor that does nothing any more.
+        started = time.monotonic()
         answer = session.structured("pulsar_command_cancel", {"command_id": command_id})
+        # The server left the supervisor its grace period first, then its own wait.
+        self.assertGreaterEqual(time.monotonic() - started, grace + SHORT_BACKSTOP)
         self.assertEqual((answer["state"], answer["exit_status"]), ("cancelled", 128 + signal.SIGKILL))
         self.assertIn("the server killed the command's process group", answer["diagnostics"])
         self.assert_nothing_left(session, but=[session.process.pid])
