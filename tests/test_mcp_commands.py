@@ -40,12 +40,22 @@ sys.exit(server.main([]))
 # The server as shipped, except for what lets a test say when the wait of a call is over. Its clock
 # is ahead by the seconds a test writes to a file. And its loop does not wake by itself while a
 # command runs: with the shipped quarter of a second, a test could stop the server inside such a wake.
+# It starts no server when what it replaces is not there as it knows it. The server would then keep
+# its own clock or its own waking, and the test would pass without testing what it is for.
 MOVED_CLOCK_LAUNCHER = """\
 import sys
 import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, {root!r})
 from mcp_server import __main__ as server, commands
+
+for module in (server, commands):
+    if getattr(module, "time", None) is not time:
+        sys.exit("launcher: " + module.__name__ + " no longer reads its clock from an attribute named "
+                 "time that is the time module, which this launcher replaces")
+if getattr(server, "POLL_SECONDS", None) != 0.25:
+    sys.exit("launcher: POLL_SECONDS of " + server.__name__ + " is no longer the shipped 0.25, which "
+             "this launcher replaces")
 
 
 class Clock:
