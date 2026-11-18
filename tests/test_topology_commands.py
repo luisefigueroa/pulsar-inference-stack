@@ -17,6 +17,7 @@ import unittest.mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(ROOT/'tests'), str(ROOT/'scripts')]
+from support.contract_output import assert_document_kind
 from support.topology_fixture import Fixture, node_probe, prerequisites_answer
 import topology_actions
 
@@ -33,6 +34,7 @@ class TopologyCommands(unittest.TestCase):
         result = f.run('topology', 'show', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)['status'], 'saved')
+        assert_document_kind(self, 'topology.show', json.loads(result.stdout))
         self.assertEqual(f.calls(), [])
         self.assertEqual(f.path.read_bytes(), before)
         # TUI-12: nodes by hostname; the saved order is a position, never a rank.
@@ -55,6 +57,12 @@ class TopologyCommands(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual(json.loads(result.stdout)['status'], expected)
             self.assertEqual(f.calls(), [])
+            # A failed show or check still prints its document, and exits 1.
+            for operation, shown in (('topology.check', result), ('topology.show', f.run('topology', 'show', '--json'))):
+                self.assertEqual(shown.returncode, 1, shown.stderr)
+                self.assertEqual(json.loads(shown.stdout)['status'], expected)
+                assert_document_kind(self, operation, json.loads(shown.stdout))
+            self.assertEqual(f.calls(), [])
 
     def test_check_all_saved_nodes_uses_control_endpoints_and_does_not_save(self):
         f = self.fixture
@@ -62,6 +70,7 @@ class TopologyCommands(unittest.TestCase):
         result = f.run('topology', 'check', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([row['status'] for row in json.loads(result.stdout)['nodes']], ['ready', 'ready'])
+        assert_document_kind(self, 'topology.check', json.loads(result.stdout))
         ssh = [args for tool, args in f.calls() if tool == 'ssh']
         self.assertTrue(ssh)
         self.assertTrue(all('HostName=192.0.2.11' in args and 'StrictHostKeyChecking=yes' in args for args in ssh))
@@ -82,6 +91,9 @@ class TopologyCommands(unittest.TestCase):
                 document = json.loads(result.stdout)
                 self.assertEqual(document['status'], 'blocked')
                 self.assertEqual(len(document['nodes']), 2)
+                # A node that did not answer is reported as blocked, with exit 1 as for the others.
+                self.assertEqual(result.returncode, 1, result.stderr)
+                assert_document_kind(self, 'topology.check', document)
 
     def test_single_node_and_missing_trust_are_distinct(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -94,6 +106,23 @@ class TopologyCommands(unittest.TestCase):
             result = multiple.run('topology', 'check', '--json')
             self.assertNotEqual(result.returncode, 0)
             self.assertIn('SSH identity is not enrolled', result.stdout)
+            # Without recorded identities the trust check cannot run: an error line, no document, exit 1.
+            result = multiple.run('ssh-trust', 'check', '--json')
+            self.assertEqual((result.returncode, result.stdout), (1, ''), result.stderr)
+            self.assertIn('error:', result.stderr)
+
+    def test_a_failed_trust_check_prints_its_document_and_a_refused_one_an_error_line(self):
+        f = self.fixture
+        f.env['TOPOLOGY_UNREACHABLE'] = '1'
+        result = f.run('ssh-trust', 'check', '--json')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        document = json.loads(result.stdout)
+        self.assertEqual((document['ok'], document['state']), (False, 'failed'))
+        assert_document_kind(self, 'ssh-trust.check', document)
+        # An unknown option is refused with exit 1, not 2, and prints no document.
+        result = f.run('ssh-trust', 'check', '--json', '--unknown')
+        self.assertEqual((result.returncode, result.stdout), (1, ''), result.stderr)
+        self.assertIn('error:', result.stderr)
 
     def test_fabric_address_drift_and_failed_discovery_ping_are_explicit(self):
         f = self.fixture
@@ -108,6 +137,9 @@ class TopologyCommands(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(result.stdout)['result'], 'incomplete')
         self.assertTrue(json.loads(result.stdout)['discovery_issues'])
+        # An incomplete discovery still prints its document, and exits 1.
+        self.assertEqual(result.returncode, 1, result.stderr)
+        assert_document_kind(self, 'topology.detect', json.loads(result.stdout))
 
     def test_discovery_manual_candidates_is_non_saving_and_never_accepts_keys_from_environment(self):
         f = self.fixture
@@ -116,6 +148,7 @@ class TopologyCommands(unittest.TestCase):
         result = f.run('topology', 'detect', '--candidate', 'alias-1', '--candidate', 'unrelated', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(json.loads(result.stdout)['topology']['nodes']), 2)
+        assert_document_kind(self, 'topology.detect', json.loads(result.stdout))
         self.assertEqual(before, (f.path.read_bytes(), f.config.read_bytes()))
         self.assertTrue(all('StrictHostKeyChecking=accept-new' not in args for _, args in f.calls()))
 
@@ -128,6 +161,9 @@ class TopologyCommands(unittest.TestCase):
         document = json.loads(result.stdout)
         self.assertEqual(document['result'], 'incomplete')
         self.assertEqual(document['saved_membership']['missing'][0]['node_id'], 'fixture-node-1')
+        # A member that did not answer is reported in the document, with exit 1.
+        self.assertEqual(result.returncode, 1, result.stderr)
+        assert_document_kind(self, 'topology.detect', document)
         result = f.run('topology', 'configure', '--yes')
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertIn('Missing confirmed node: fixture-rank-1 (position 1)', ' '.join(result.stdout.split()))

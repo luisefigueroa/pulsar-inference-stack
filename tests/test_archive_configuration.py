@@ -10,12 +10,13 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from model_library import configuration as config
 from model_library.integrity import StorageError
+from tests.support.contract_output import assert_document_kind
 
 
 class ConfigurationTests(unittest.TestCase):
@@ -183,8 +184,24 @@ class ConfigurationTests(unittest.TestCase):
         self.assertNotIn('dotenv', text)
         state = json.loads(shown('show', '--json'))
         self.assertEqual((state['status'], state['source']), ('configured', 'dotenv'))
+        assert_document_kind(self, 'configure.archive-root.show', state)
+        # The public command prints the same document for the root it is pointed at.
+        env = {key: value for key, value in os.environ.items() if key != 'PULSAR_COLD_ROOT'}
+        result = subprocess.run([str(ROOT / 'pulsar'), 'configure', 'archive-root', 'show', '--json'],
+                                env={**env, 'PULSAR_SETUP_ROOT': str(self.repo), 'PYTHONDONTWRITEBYTECODE': '1'},
+                                text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), state)
         config.set_root(self.repo, '')
         self.assertIn('Status Disabled (archives are off)', ' '.join(shown('show').split()))
+        # A saved setting that is not a literal value: an error line, no document, exit 2.
+        (self.repo / '.env').write_text('PULSAR_COLD_ROOT=$(not-a-command)\n')
+        output, errors = io.StringIO(), io.StringIO()
+        with redirect_stdout(output), redirect_stderr(errors), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop('PULSAR_COLD_ROOT', None)
+            self.assertEqual(config.main(['--repo-root', str(self.repo), 'show', '--json']), 2)
+        self.assertEqual(output.getvalue(), '')
+        self.assertIn('error:', errors.getvalue())
 
 if __name__ == '__main__':
     unittest.main()

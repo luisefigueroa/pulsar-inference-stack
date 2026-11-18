@@ -75,6 +75,23 @@ class ModelLibraryCLI(unittest.TestCase):
             cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
         self.assertEqual((result.returncode,json.loads(result.stdout)['error']['code']),(2,'usage_error'))
 
+    def test_files_and_budget_json_print_the_envelope_the_contract_names(self):
+        from scripts import integration_contract
+        f=self.fixture();self.acquire_candidate(f)
+        outputs=integration_contract.contract()['operation_outputs']
+        for operation in ('files','budget'):
+            with self.subTest(operation=operation):
+                self.assertEqual(outputs[f'model.{operation}'],{'form':'envelope','kind':None})
+                # The storage script prints its own document; the public CLI returns it as the result.
+                document=self.success(f.run(operation))
+                result=subprocess.run([sys.executable,str(f.repo/'scripts/public_cli.py'),'model',operation,'--json'],
+                    cwd=f.repo,env=f.env,text=True,capture_output=True,timeout=120)
+                self.assertEqual(result.returncode,0,result.stderr)
+                envelope=json.loads(result.stdout)
+                self.assertEqual(set(envelope),{'schema_version','ok','result'})
+                self.assertEqual((envelope['schema_version'],envelope['ok']),(1,True))
+                self.assertEqual(set(envelope['result']),set(document))
+
     def test_long_operations_report_phases_on_stderr_only(self):
         f=self.fixture(nodes=2)
         acquired=f.acquire(1)
