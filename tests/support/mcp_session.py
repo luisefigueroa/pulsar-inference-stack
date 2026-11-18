@@ -18,6 +18,7 @@ A double says "I am ready" with a marker file. It writes the marker only after
 its signal handler is installed, or after its child was started, so a test
 that waits for the marker never sends a signal too early.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -25,9 +26,11 @@ import select
 import shutil
 import signal
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -358,6 +361,25 @@ class Session:
         while (message := self.read_message(timeout)) is not None:
             read.append(message)
         return read
+
+    # -- a client that stops reading
+
+    def shrink_output(self) -> int:
+        """Make the pipe that carries the server's output as small as the kernel
+        allows, which is one page, and return how many bytes it holds."""
+        return fcntl.fcntl(self.process.stdout.fileno(), fcntl.F_SETPIPE_SZ, 1)
+
+    def unread_bytes(self) -> int:
+        """How many bytes the server wrote that still wait in the pipe."""
+        waiting = fcntl.ioctl(self.process.stdout.fileno(), termios.FIONREAD, bytes(4))
+        return struct.unpack("i", waiting)[0]
+
+    def read_bytes_to_end(self) -> bytes:
+        """Every byte left in the pipe once the server has exited, whole lines or not."""
+        left = b""
+        while chunk := os.read(self.process.stdout.fileno(), 65536):
+            left += chunk
+        return left
 
     def response(self, request_id, timeout=PATIENCE) -> dict:
         """The response to REQUEST_ID; anything read on the way stays in messages."""

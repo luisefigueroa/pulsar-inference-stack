@@ -132,6 +132,37 @@ class ClientGone(Exception):
     """Standard output is closed: nobody reads the answers any more."""
 
 
+class SignalEndedWrite(Exception):
+    """SIGINT, SIGTERM or SIGHUP arrived during a write of Output.send: the
+    write was given up, and the session is over."""
+
+    def __init__(self, signum: int):
+        super().__init__(signum)
+        self.signum = signum
+
+
+# Whether a write of Output.send is in progress: Output sets the mark, and the
+# handler that Input installs reads it. The mark is the module's and not an
+# object's because Input is made before there is an Output, and a process has
+# one protocol stream and one handler for each signal. So neither class has to
+# know the other.
+_write_in_progress = False
+
+
+def _end_write(signum, _frame) -> None:
+    """The handler of the signals that end the session.
+
+    It does nothing, except during a write of Output.send: the loop cannot
+    take a signal while that write waits for the client. Then it ends the
+    write. It clears the mark first, so it raises at most once, and never in
+    the cleanup that follows.
+    """
+    global _write_in_progress
+    if _write_in_progress:
+        _write_in_progress = False
+        raise SignalEndedWrite(signum)
+
+
 class Output:
     """The protocol stream: one message per line, and nothing else, ever.
 
@@ -144,14 +175,24 @@ class Output:
         os.dup2(2, 1)
 
     def send(self, message: dict) -> None:
+        global _write_in_progress
         # ensure_ascii keeps the message one line of ASCII: no newline can be inside it.
         # allow_nan=False: nothing that is not JSON is ever written.
         data = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("ascii") + b"\n"
         try:
+            # The write waits for as long as the client keeps the stream open and
+            # does not read it. It goes on until the client reads, closes its end
+            # (then ClientGone) or sends SIGINT, SIGTERM or SIGHUP during the
+            # write: the handler then raises SignalEndedWrite. A closed standard
+            # input does not end the write, and neither does a signal that came
+            # before the write began: both wait for the loop.
+            _write_in_progress = True
             while data:  # A signal can cut a long write short.
                 data = data[os.write(self._fd, data):]
         except BrokenPipeError as gone:
             raise ClientGone() from gone
+        finally:
+            _write_in_progress = False
 
 
 class Input:
@@ -159,7 +200,11 @@ class Input:
 
     Python only notes a signal when it arrives, by writing its number to a
     pipe. wait() reads that pipe, so a signal is taken at one point of the
-    loop, between two lines: no answer is cut and none is lost.
+    loop, between two lines. One case is taken sooner: SIGINT, SIGTERM or
+    SIGHUP during a write of Output.send ends that write, and the session with
+    it, because the write may wait for a client that reads nothing. So an
+    answer is cut only when the client was not reading it and a signal ended
+    the session; what was read and not answered by then gets no answer.
     """
 
     def __init__(self):
@@ -170,8 +215,9 @@ class Input:
         os.set_blocking(noted, False)
         signal.set_wakeup_fd(noted, warn_on_full_buffer=False)
         # SIGCHLD only wakes the loop, so that a command that ended is seen at once.
-        for signum in (*END_SIGNALS, signal.SIGCHLD):
-            signal.signal(signum, lambda _signum, _frame: None)
+        signal.signal(signal.SIGCHLD, lambda _signum, _frame: None)
+        for signum in END_SIGNALS:
+            signal.signal(signum, _end_write)
 
     def wait(self, timeout: float | None):
         """Wait up to TIMEOUT seconds (None: as long as it takes).

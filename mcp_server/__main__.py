@@ -272,6 +272,8 @@ def main(argv: list[str] | None = None, tools=TOOLS) -> int:
         return server.serve()
     except protocol.ClientGone:
         return 0  # Standard output closed: the session is over, as when standard input closes.
+    except protocol.SignalEndedWrite as ended:
+        return 128 + ended.signum  # The signal ended a write: the same exit status as when the loop takes it.
     finally:
         try:
             server.end()

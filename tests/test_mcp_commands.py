@@ -265,6 +265,42 @@ class SessionEnd(Running):
     def test_sighup_with_standard_input_open_cancels_every_running_command_then_the_server_exits(self):
         self.end_with(lambda session: os.kill(session.process.pid, signal.SIGHUP), 128 + signal.SIGHUP)
 
+    def end_a_waiting_write_with(self, signum):
+        """A client that stops reading its answers, then ends the session with a signal."""
+        session = Session(self, steps=wrapper())
+        capacity = session.shrink_output()
+        session.initialize()
+        self.start_wrapper(session)
+        double, supervisor = (int(word) for word in session.marker("wrapper-1.started").split())
+        identities = [(pid, process_state(pid)[3]) for pid in (double, supervisor)]
+        directory, = session.private_directories()
+        # Every answer so far was read, so the pipe is empty. A ping is answered with its id, and
+        # this id alone is as long as the pipe holds: the one answer cannot be written whole.
+        session.send({"jsonrpc": "2.0", "id": "i" * capacity, "method": "ping"})
+        # Nothing is read. A full pipe says where the server is: in the write of that answer, which
+        # goes no further.
+        session.wait_until(lambda: session.unread_bytes() == capacity, "the server's write has filled the pipe")
+        started = time.monotonic()
+        os.kill(session.process.pid, signum)
+        self.assertEqual(session.wait_exit(), 128 + signum)
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(session.marker("wrapper-1.sigterm"), "")  # The running command was cancelled.
+        self.assert_gone(session, *identities)
+        self.assert_nothing_left(session)
+        self.assertFalse(directory.exists())
+        self.assertEqual(session.stderr(), "")
+        # The write was given up where it waited: the pipe holds the start of that answer and no more.
+        self.assertEqual(session.read_bytes_to_end(), (b'{"jsonrpc":"2.0","id":"' + b"i" * capacity)[:capacity])
+
+    def test_sigint_ends_the_session_of_a_client_that_stopped_reading_its_answers(self):
+        self.end_a_waiting_write_with(signal.SIGINT)
+
+    def test_sigterm_ends_the_session_of_a_client_that_stopped_reading_its_answers(self):
+        self.end_a_waiting_write_with(signal.SIGTERM)
+
+    def test_sighup_ends_the_session_of_a_client_that_stopped_reading_its_answers(self):
+        self.end_a_waiting_write_with(signal.SIGHUP)
+
     def test_the_end_of_a_session_ends_a_shell_style_command_and_its_child(self):
         session = Session(self, double="shell")
         session.initialize()
