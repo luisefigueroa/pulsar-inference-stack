@@ -404,7 +404,7 @@ class Supervisor(unittest.TestCase):
                         sys.executable, "-c", "import time; time.sleep(60)"]
                 process = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                            stderr=subprocess.PIPE, start_new_session=True, text=True)
-                self.addCleanup(lambda: process.stderr.close())
+                self.addCleanup(process.stderr.close)  # This round's pipe, not the last round's.
                 time.sleep(delay)
                 started = time.monotonic()
                 process.send_signal(signal.SIGTERM)
