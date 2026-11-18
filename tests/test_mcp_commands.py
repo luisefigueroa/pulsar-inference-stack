@@ -26,7 +26,7 @@ CANCELLED = {"schema_version": 1, "ok": False, "error": {
 
 
 def wrapper(number=1, **step):
-    """A plan step in the wrapper style: it handles SIGTERM itself and prints the cancelled envelope."""
+    """A step in the wrapper style: it handles SIGTERM itself and prints the cancelled envelope."""
     return {f"models show {spec(number)} --json": {"name": f"wrapper-{number}", "started": True, "release": True,
                                                     "sigterm": "envelope", "json": envelope({"number": number}),
                                                     **step}}
@@ -69,7 +69,7 @@ class Running(unittest.TestCase):
 
 class Cancel(Running):
     def test_a_cancelled_request_ends_its_command_and_gets_no_answer(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         cancelled = session.post_call("pulsar_models_show", {"spec_id": spec(1)})
         session.marker("wrapper-1.started")
@@ -87,7 +87,7 @@ class Cancel(Running):
         self.assert_nothing_left(session)
 
     def test_cancel_returns_what_a_wrapper_style_command_printed_when_it_got_sigterm(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         command_id = self.start_wrapper(session)
         started = time.monotonic()
@@ -117,7 +117,7 @@ class Cancel(Running):
         self.assert_nothing_left(session, but=[session.process.pid])
 
     def test_a_command_that_ignores_sigterm_is_killed_after_the_grace_period_and_the_result_says_so(self):
-        session = Session(self, plan=wrapper(sigterm="ignore"), grace=0.3)
+        session = Session(self, steps=wrapper(sigterm="ignore"), grace=0.3)
         session.initialize()
         command_id = self.start_wrapper(session)
         started = time.monotonic()
@@ -131,7 +131,7 @@ class Cancel(Running):
         self.assert_nothing_left(session, but=[session.process.pid])
 
     def test_the_server_kills_a_command_whose_supervisor_does_not_exit(self):
-        session = Session(self, plan=wrapper(sigterm="ignore"), grace=0.2)
+        session = Session(self, steps=wrapper(sigterm="ignore"), grace=0.2)
         session.initialize()
         command_id = self.start_wrapper(session)
         supervisor = int(session.marker("wrapper-1.started").split()[1])
@@ -143,7 +143,7 @@ class Cancel(Running):
 
     def test_a_command_cancelled_in_its_first_moments_ends_at_once_and_has_no_output(self):
         # No marker is waited for: SIGTERM may arrive before the supervisor or the command has started.
-        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "early", "release": True}})
+        session = Session(self, steps={f"models show {spec(1)} --json": {"name": "early", "release": True}})
         session.initialize()
         started = time.monotonic()
         command_id = session.structured("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0})["command_id"]
@@ -158,7 +158,7 @@ class Cancel(Running):
         self.assert_nothing_left(session, but=[session.process.pid])
 
     def test_a_request_cancelled_in_the_same_write_as_its_call_ends_its_command_at_once(self):
-        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "early", "release": True}})
+        session = Session(self, steps={f"models show {spec(1)} --json": {"name": "early", "release": True}})
         session.initialize()
         call = {"jsonrpc": "2.0", "id": "early", "method": "tools/call",
                 "params": {"name": "pulsar_models_show", "arguments": {"spec_id": spec(1)}}}
@@ -172,7 +172,7 @@ class Cancel(Running):
         self.assert_nothing_left(session, but=[session.process.pid])
 
     def test_a_cancel_for_a_call_that_already_answered_running_is_ignored(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         first = session.post_call("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0})
         command_id = session.checked_object(session.response(first)["result"])["command_id"]
@@ -190,7 +190,7 @@ class Cancel(Running):
         self.assertEqual([message for message in session.messages if message.get("id") == waiting], [])
 
     def test_a_command_cancelled_by_the_cancel_tool_still_answers_the_call_that_waits_for_it(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         original = session.post_call("pulsar_models_show", {"spec_id": spec(1)})
         session.marker("wrapper-1.started")
@@ -205,7 +205,7 @@ class Cancel(Running):
                              ("cancelled", 128 + signal.SIGTERM, CANCELLED))
 
     def test_cancel_of_a_command_that_already_ended_returns_its_result_as_finished(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         command_id = self.start_wrapper(session)
         session.release("wrapper-1")
@@ -217,7 +217,7 @@ class Cancel(Running):
 
 class SessionEnd(Running):
     def end_with(self, end, status):
-        session = Session(self, plan={**wrapper(1), **wrapper(2)})
+        session = Session(self, steps={**wrapper(1), **wrapper(2)})
         session.initialize()  # The server answers only after its signal handlers are installed.
         for number in (1, 2):
             self.start_wrapper(session, number)
@@ -257,7 +257,7 @@ class SessionEnd(Running):
         self.assert_nothing_left(session)
 
     def test_a_closed_standard_output_ends_the_session_like_a_closed_input(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         self.start_wrapper(session)
         session.process.stdout.close()
@@ -269,7 +269,7 @@ class SessionEnd(Running):
 
 class KilledServer(Running):
     def test_a_killed_server_ends_a_wrapper_style_command_with_sigterm(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         session.initialize()
         self.start_wrapper(session)
         double, supervisor = (int(word) for word in session.marker("wrapper-1.started").split())
@@ -291,7 +291,7 @@ class KilledServer(Running):
         self.assert_nothing_left(session)
 
     def test_a_starting_server_removes_a_killed_servers_directory_and_leaves_a_running_ones(self):
-        first = Session(self, plan=wrapper())
+        first = Session(self, steps=wrapper())
         first.initialize()
         kept, = first.private_directories()
         killed = Session(self, base=first)
@@ -307,7 +307,7 @@ class KilledServer(Running):
         self.assertEqual(first.private_directories(), sorted([kept, own]))
         self.assertFalse(left.exists())
         # The running server's directory still works.
-        first.plan({"contract --json": {"json": envelope()}})
+        first.steps({"contract --json": {"json": envelope()}})
         self.assertEqual(first.structured("pulsar_contract")["output"], envelope())
         for session in (third, first):
             session.close_input()
@@ -316,7 +316,7 @@ class KilledServer(Running):
 
 
     def test_servers_that_start_at_the_same_moment_each_keep_a_directory_of_their_own(self):
-        first = Session(self, plan={"contract --json": {"json": envelope()}}, start=False)
+        first = Session(self, steps={"contract --json": {"json": envelope()}}, start=False)
         sessions = [first, *(Session(self, base=first, start=False) for _ in range(7))]
         for session in sessions:
             session.start()  # None waits for another: each makes its directory while the others look for stale ones.
@@ -415,7 +415,7 @@ class Limits(Running):
         steps = {}
         for number in range(1, 6):
             steps.update(wrapper(number))
-        session = Session(self, plan=steps)
+        session = Session(self, steps=steps)
         session.initialize()
         ids = [self.start_wrapper(session, number) for number in range(1, 5)]
         self.assertEqual(ids, ["command-1", "command-2", "command-3", "command-4"])
@@ -443,7 +443,7 @@ class Limits(Running):
         self.assertEqual(self.start_wrapper(session, 5), "command-5")
 
     def test_a_command_reads_dev_null_and_runs_in_a_session_apart_from_the_server(self):
-        session = Session(self, plan={"topology show --json": {"report": True}})
+        session = Session(self, steps={"topology show --json": {"report": True}})
         session.initialize()
         report = session.structured("pulsar_topology_show")["output"]
         self.assertEqual(report["stdin"], "/dev/null")
@@ -462,7 +462,7 @@ class Limits(Running):
 
 class PrivateDirectory(Running):
     def test_the_private_directory_is_outside_the_checkout_owner_only_and_gone_after_exit(self):
-        session = Session(self, plan=wrapper())
+        session = Session(self, steps=wrapper())
         self.assertEqual(session.request("ping")["result"], {})
         directory, = session.private_directories()  # Made before the first answer.
         self.assertEqual((mode(directory), directory.stat().st_uid), (0o700, os.geteuid()))
@@ -487,7 +487,7 @@ class PrivateDirectory(Running):
         printed = json.dumps(large, indent=1) + "\n"
         self.assertGreater(len(printed), commands.SIZE_LIMIT_BYTES)
         small = {"kind": "pulsar-model-catalog", "specs": rows[:10]}
-        session = Session(self, plan={
+        session = Session(self, steps={
             f"models show {spec(1)} --json": {"stdout": printed, "exit": 1, "stderr": "a note\n"},
             f"models show {spec(2)} --json": {"json": small},
             f"models show {spec(3)} --json": {"stdout": "word " * 8000}})

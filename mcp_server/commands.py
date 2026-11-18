@@ -188,11 +188,14 @@ def _finite(text):
 def parse_json(printed: bytes):
     """(True, value) when PRINTED is JSON that can be sent on unchanged, else (False, None).
 
-    Not so: bytes that are not UTF-8, the constants NaN and Infinity, and a
-    number too large to keep.
+    Not so: bytes that are not UTF-8, the constants NaN and Infinity, a number
+    too large to keep, and nesting deeper than this program can read or write.
     """
     try:
-        return True, json.loads(printed.decode("utf-8"), parse_constant=_refuse_constant, parse_float=_finite)
+        value = json.loads(printed.decode("utf-8"), parse_constant=_refuse_constant, parse_float=_finite)
+        # It must also fit into an answer, which nests it a few levels deeper.
+        json.dumps([[[[[[[[value]]]]]]]], allow_nan=False)
+        return True, value
     except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError.
         return False, None
 

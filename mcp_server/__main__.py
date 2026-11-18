@@ -45,6 +45,11 @@ POLL_SECONDS = 0.25  # While a command runs, the loop looks at least this often;
 CONTRACT_COMMAND = ("contract", "--json")
 
 
+def cli_path() -> str:
+    """The pulsar file whose commands the tools run: this checkout's own, unless a test names a double."""
+    return os.path.abspath(os.environ.get(CLI_VARIABLE) or CHECKOUT / "pulsar")
+
+
 class Waiter:
     """A `tools/call` that has not been answered: it waits for a command."""
 
@@ -255,7 +260,6 @@ def main(argv: list[str] | None = None, tools=TOOLS) -> int:
                 raise ValueError
         except ValueError:
             return usage_mistake(f"{GRACE_VARIABLE} must be a number of seconds, more than 0", json_output=False)
-    cli = os.path.abspath(os.environ.get(CLI_VARIABLE) or CHECKOUT / "pulsar")
     source = protocol.Input()  # Takes the signals from here on, so the directory below is always removed.
     try:
         directory = running_commands.PrivateDirectory()
@@ -263,7 +267,7 @@ def main(argv: list[str] | None = None, tools=TOOLS) -> int:
         from scripts.terminal_format import error_line
         error_line(f"pulsar mcp cannot keep command output: {failure}", tag="mcp")
         return 1
-    server = Server(tools, running_commands.Commands(cli, directory.path, grace), source, protocol.Output())
+    server = Server(tools, running_commands.Commands(cli_path(), directory.path, grace), source, protocol.Output())
     try:
         return server.serve()
     except protocol.ClientGone:

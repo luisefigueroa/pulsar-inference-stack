@@ -12,10 +12,13 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from tests.support.mcp_session import CONTRACT, PULSAR, SPEC, TOPOLOGY, Session, envelope, spec
+from mcp_server import __main__ as server
+from tests.support.mcp_session import (CONTRACT, PULSAR, SPEC, TOPOLOGY, Session, checked_double, envelope,
+                                       environment, make_home, spec, write_double)
 
 RESULT_FIELDS = ["operation", "state", "exit_status", "output_form", "output", "text", "diagnostics",
                  "saved_to", "bytes", "outline", "command_id"]
@@ -44,7 +47,7 @@ class Results(unittest.TestCase):
                    3: envelope(code="check_incomplete")}
         for status, document in printed.items():
             with self.subTest(exit_status=status):
-                session.plan({"contract --json": {"json": document, "exit": status, "stderr": f"log {status}\n"}})
+                session.steps({"contract --json": {"json": document, "exit": status, "stderr": f"log {status}\n"}})
                 result = session.call("pulsar_contract")
                 self.assertIs(result["isError"], status != 0)
                 answer = session.checked_object(result)
@@ -57,7 +60,7 @@ class Results(unittest.TestCase):
 
     def test_a_document_with_exit_status_1_is_the_output_and_an_error(self):
         blocked = {**TOPOLOGY, "status": "missing"}
-        session = Session(self, plan={"topology show --json": {"json": blocked, "exit": 1}})
+        session = Session(self, steps={"topology show --json": {"json": blocked, "exit": 1}})
         session.initialize()
         result = session.call("pulsar_topology_show")
         self.assertIs(result["isError"], True)
@@ -72,7 +75,7 @@ class Results(unittest.TestCase):
         launcher.write_text(TEXT_TOOL_LAUNCHER.format(root=str(ROOT)))
         # The same bytes from both commands; they happen to be JSON.
         printed = json.dumps({"kind": "fixture", "line": "2026-01-01 fixture-node-1 ready"}) + "\n"
-        session = Session(self, launcher=launcher, plan={
+        session = Session(self, launcher=launcher, steps={
             f"models show {SPEC} --json": {"stdout": printed},
             f"logs {SPEC} --tail 20": {"stdout": printed},
             f"logs {SPEC}": {"stdout": "line one\nline two\n", "exit": 3}})
@@ -110,7 +113,7 @@ class Results(unittest.TestCase):
         }
         for name, (printed, status) in cases.items():
             with self.subTest(name):
-                session.plan({"topology show --json": {"stdout": printed, "exit": status}})
+                session.steps({"topology show --json": {"stdout": printed, "exit": status}})
                 result = session.call("pulsar_topology_show")
                 # Not JSON where JSON was promised is a fault, also with exit status 0.
                 self.assertIs(result["isError"], True)
@@ -119,11 +122,20 @@ class Results(unittest.TestCase):
                 self.assertEqual((answer["output"], answer["text"], answer["exit_status"]),
                                  (None, printed.replace("\udcff", "\ufffd"), status))
 
+    def test_output_nested_deeper_than_can_be_passed_on_is_text_and_the_server_goes_on(self):
+        printed = "[" * 15000 + "]" * 15000 + "\n"  # Below the size limit.
+        session = Session(self, steps={"topology show --json": {"stdout": printed}})
+        session.initialize()
+        answer = session.structured("pulsar_topology_show")
+        # How deep a Python reads differs. Either way the output is passed on whole, or as text; never half.
+        self.assertIn((answer["output"] is None, answer["text"]), ((True, printed), (False, None)))
+        self.assertEqual(session.request("ping")["result"], {})
+
     def test_a_command_that_printed_nothing_has_no_output_and_keeps_the_end_of_its_standard_error(self):
         session = Session(self)
         session.initialize()
         tail = "error: the spec is not in the catalog\n"
-        session.plan({f"models show {SPEC} --json": {"stderr": "x" * 5000 + tail, "exit": 2}})
+        session.steps({f"models show {SPEC} --json": {"stderr": "x" * 5000 + tail, "exit": 2}})
         result = session.call("pulsar_models_show", {"spec_id": SPEC})
         self.assertIs(result["isError"], True)
         answer = session.checked_object(result)
@@ -131,7 +143,7 @@ class Results(unittest.TestCase):
         self.assertEqual(len(answer["diagnostics"]), 4000)
         self.assertTrue(answer["diagnostics"].endswith(tail))
         # Nothing printed with exit status 0 is no result either.
-        session.plan({f"models show {SPEC} --json": {}})
+        session.steps({f"models show {SPEC} --json": {}})
         self.assertIs(session.call("pulsar_models_show", {"spec_id": SPEC})["isError"], True)
 
     def test_a_command_that_cannot_be_run_is_a_result_with_the_reason(self):
@@ -154,7 +166,7 @@ class SlowCommands(unittest.TestCase):
                                                         "json": {"kind": "fixture", "number": number}, **step}}
 
     def test_a_slow_command_is_running_and_then_command_get_returns_its_result(self):
-        session = Session(self, plan=self.slow())
+        session = Session(self, steps=self.slow())
         session.initialize()
         result = session.call("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0})
         self.assertIs(result["isError"], False)
@@ -183,7 +195,7 @@ class SlowCommands(unittest.TestCase):
         self.assertEqual(len(session.calls()), 1)
 
     def test_a_call_waits_wait_seconds_before_it_answers_running(self):
-        session = Session(self, plan=self.slow())
+        session = Session(self, steps=self.slow())
         session.initialize()
         started = time.monotonic()
         running = session.structured("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0.3})
@@ -195,7 +207,7 @@ class SlowCommands(unittest.TestCase):
         self.assertEqual(still["state"], "running")
 
     def test_a_result_that_ended_unasked_waits_for_command_get(self):
-        session = Session(self, plan=self.slow(exit=1))
+        session = Session(self, steps=self.slow(exit=1))
         session.initialize()
         session.structured("pulsar_models_show", {"spec_id": spec(1), "wait_seconds": 0})
         session.release("slow-1")
@@ -219,7 +231,7 @@ class SlowCommands(unittest.TestCase):
             self.assertIn("argument command_id is required", session.call(tool)["content"][0]["text"])
 
     def test_server_info_names_the_pulsar_file_it_runs_and_returns_its_contract(self):
-        session = Session(self, plan={"contract --json": {"json": CONTRACT}})
+        session = Session(self, steps={"contract --json": {"json": CONTRACT}})
         session.initialize()
         result = session.call("pulsar_mcp_server_info")
         self.assertIs(result["isError"], False)
@@ -236,15 +248,13 @@ class Usage(unittest.TestCase):
     start, its double could run nothing."""
 
     def setUp(self):
-        self.home = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        (self.home / "runtime").mkdir(mode=0o700)
-        self.env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_"))}
-        self.env.update(PULSAR_MCP_CLI="/bin/false", XDG_RUNTIME_DIR=str(self.home / "runtime"),
-                        TMPDIR=str(self.home), COLUMNS="80", PYTHONDONTWRITEBYTECODE="1")
+        self.home = make_home(self)
+        self.env = {**environment(self.home, write_double(self.home)), "COLUMNS": "80"}
 
     def run_mcp(self, *args, stdin=subprocess.DEVNULL):
+        self.assertEqual(self.env["PULSAR_MCP_CLI"], str(checked_double(self.env["PULSAR_MCP_CLI"])))
         process = subprocess.Popen([str(PULSAR), *args], stdin=stdin, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, env=self.env, cwd=self.home, text=True,
+                                   stderr=subprocess.PIPE, env=self.env, cwd=self.home / "work", text=True,
                                    start_new_session=True)
         try:
             out, err = process.communicate(timeout=60)
@@ -253,6 +263,7 @@ class Usage(unittest.TestCase):
             process.communicate()
             self.fail(f"pulsar {' '.join(args)} did not exit")
         self.assertEqual(list((self.home / "runtime").iterdir()), [], "no server was to start")
+        self.assertFalse((self.home / "calls.jsonl").exists(), "no command was to run")
         return process.returncode, out, err
 
     def test_help_prints_the_usage_and_exits_0_with_or_without_json(self):
@@ -311,6 +322,50 @@ class Usage(unittest.TestCase):
         status, out, err = self.run_mcp("mcp")
         self.assertEqual((status, out), (2, ""))
         self.assertIn("PULSAR_MCP_GRACE_SECONDS must be a number of seconds", err)
+
+
+class WhichPulsar(unittest.TestCase):
+    """The server runs its own checkout's pulsar; a test never lets it."""
+
+    def test_the_server_runs_the_pulsar_file_of_its_own_checkout_unless_a_double_is_named(self):
+        # Asked in this process; nothing is started.
+        for value in (None, ""):
+            with self.subTest(PULSAR_MCP_CLI=value):
+                env = {key: item for key, item in os.environ.items() if key != "PULSAR_MCP_CLI"}
+                if value is not None:
+                    env["PULSAR_MCP_CLI"] = value
+                with mock.patch.dict(os.environ, env, clear=True):
+                    self.assertEqual(server.cli_path(), str(PULSAR.resolve()))
+        with mock.patch.dict(os.environ, {"PULSAR_MCP_CLI": "/fixture/pulsar-double"}):
+            self.assertEqual(server.cli_path(), "/fixture/pulsar-double")
+        self.assertEqual(server.CHECKOUT, ROOT.resolve())
+
+    def test_no_test_starts_a_server_without_a_double(self):
+        home = make_home(self)
+        absent = home / "absent-double"
+        plain = home / "not-executable"
+        plain.write_text("#!/bin/sh\n")
+        plain.chmod(0o600)
+        for double in (PULSAR, ROOT / "scripts" / "selftest.sh", absent, plain, home, "", None):
+            with self.subTest(double=double):
+                with self.assertRaises(AssertionError):
+                    checked_double(double)
+                with self.assertRaises(AssertionError):
+                    environment(home, double)
+        for double in (PULSAR, absent):
+            with self.subTest(session=double):
+                with self.assertRaises(AssertionError):
+                    Session(self, double=double)
+        # A session whose double was swapped for the real file after it was made does not start either.
+        session = Session(self, start=False)
+        session.env["PULSAR_MCP_CLI"] = str(PULSAR)
+        with self.assertRaises(AssertionError):
+            session.start()
+        session.double = PULSAR
+        with self.assertRaises(AssertionError):
+            session.start()
+        self.assertIsNone(session.process)
+        self.assertEqual(list((home / "runtime").iterdir()), [])
 
 
 if __name__ == "__main__":

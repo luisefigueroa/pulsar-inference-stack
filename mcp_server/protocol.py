@@ -12,6 +12,7 @@ Standard library only.
 from __future__ import annotations
 
 import json
+import math
 import os
 import select
 import signal
@@ -56,13 +57,21 @@ def error(request_id, code: int, message: str) -> dict:
 
 
 def valid_id(value) -> bool:
-    """A request id is a string or a number, never null and never a boolean."""
-    return isinstance(value, (str, int, float)) and not isinstance(value, bool)
+    """A request id is a string or a number, never null and never a boolean.
+    A number too large to keep is refused: it could not be written back as JSON."""
+    if isinstance(value, float):
+        return math.isfinite(value)
+    return isinstance(value, (str, int)) and not isinstance(value, bool)
 
 
 def id_key(request_id) -> str:
     """One key per request id: the string "1" and the number 1 are different ids."""
     return json.dumps(request_id)
+
+
+def _not_json(name):
+    """NaN and Infinity are not JSON, though Python's reader would take them."""
+    raise ValueError(name)
 
 
 def parse(text: str):
@@ -73,8 +82,8 @@ def parse(text: str):
     None when nothing is to be sent back.
     """
     try:
-        message = json.loads(text)
-    except ValueError:
+        message = json.loads(text, parse_constant=_not_json)
+    except (ValueError, RecursionError):  # Not JSON, or nested deeper than this program can read.
         return None, error(None, PARSE_ERROR, "Parse error: the line is not JSON")
     if not isinstance(message, dict):
         return None, error(None, INVALID_REQUEST, "Invalid Request: a message is one JSON object")
@@ -108,7 +117,7 @@ def initialize_result(params: dict) -> dict:
 def tool_result(payload: dict, *, is_error: bool) -> dict:
     """A tool's one object, as structured content and as the same JSON in a text block."""
     return {
-        "content": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"))}],
+        "content": [{"type": "text", "text": json.dumps(payload, separators=(",", ":"), allow_nan=False)}],
         "structuredContent": payload,
         "isError": is_error,
     }
@@ -136,7 +145,8 @@ class Output:
 
     def send(self, message: dict) -> None:
         # ensure_ascii keeps the message one line of ASCII: no newline can be inside it.
-        data = json.dumps(message, separators=(",", ":")).encode("ascii") + b"\n"
+        # allow_nan=False: nothing that is not JSON is ever written.
+        data = json.dumps(message, separators=(",", ":"), allow_nan=False).encode("ascii") + b"\n"
         try:
             while data:  # A signal can cut a long write short.
                 data = data[os.write(self._fd, data):]

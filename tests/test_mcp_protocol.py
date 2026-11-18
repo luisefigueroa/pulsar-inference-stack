@@ -33,6 +33,11 @@ class Parse(unittest.TestCase):
             '{"id": 7}': (protocol.INVALID_REQUEST, 7),
             '{"id": 7, "method": 3}': (protocol.INVALID_REQUEST, 7),
             '{"id": 7, "method": "tools/list", "params": []}': (protocol.INVALID_PARAMS, 7),
+            # An id that could not be written back as JSON.
+            '{"id": NaN, "method": "ping"}': (protocol.PARSE_ERROR, None),
+            '{"id": Infinity, "method": "ping"}': (protocol.PARSE_ERROR, None),
+            '{"id": 1e999, "method": "ping"}': (protocol.INVALID_REQUEST, None),
+            '{"id": 7, "method": "ping", "params": {"x": -Infinity}}': (protocol.PARSE_ERROR, None),
         }
         for line, (code, request_id) in cases.items():
             with self.subTest(line=line):
@@ -47,13 +52,19 @@ class Parse(unittest.TestCase):
             with self.subTest(line=line):
                 self.assertEqual(protocol.parse(line), (None, None))
 
+    def test_a_line_nested_too_deep_to_read_is_an_error_not_a_crash(self):
+        message, response = protocol.parse('{"id": 7, "method": "ping", "params": ' + "[" * 100000 + "]" * 100000 + "}")
+        self.assertIsNone(message)
+        # A Python that can read this deep finds params that are no object instead.
+        self.assertIn(response["error"]["code"], (protocol.PARSE_ERROR, protocol.INVALID_PARAMS))
+
     def test_the_string_one_and_the_number_one_are_different_ids(self):
         self.assertNotEqual(protocol.id_key("1"), protocol.id_key(1))
 
 
 class Handshake(unittest.TestCase):
     def test_the_handshake_opens_lists_and_calls(self):
-        session = Session(self, plan={"contract --json": {"json": CONTRACT}})
+        session = Session(self, steps={"contract --json": {"json": CONTRACT}})
         opened = session.initialize()["result"]
         self.assertEqual(opened["protocolVersion"], "2025-11-25")
         # Tools only: no resources and no prompts.
@@ -102,7 +113,7 @@ class Handshake(unittest.TestCase):
         self.assertEqual(len(session.request("tools/list")["result"]["tools"]), len(TOOL_NAMES))
 
     def test_only_the_methods_of_the_handshake_form_are_answered(self):
-        session = Session(self, plan={"contract --json": {"json": CONTRACT}})
+        session = Session(self, steps={"contract --json": {"json": CONTRACT}})
         self.assertEqual(session.request("ping")["result"], {})  # Also before initialize.
         for method in ("tools/list", "tools/call"):
             self.assertEqual(session.request(method, {"name": "pulsar_contract"})["error"]["code"], -32600, method)
@@ -127,7 +138,7 @@ class Handshake(unittest.TestCase):
         steps = {f"models show {spec(number)} --json": {"name": name, "started": True, "release": True,
                                                          "json": {"kind": "fixture", "name": name}}
                  for number, name in ((1, "one"), (2, "two"))}
-        session = Session(self, plan=steps)
+        session = Session(self, steps=steps)
         session.initialize()
         requests = [{"jsonrpc": "2.0", "id": f"call-{number}", "method": "tools/call",
                      "params": {"name": "pulsar_models_show", "arguments": {"spec_id": spec(number)}}}
@@ -146,7 +157,7 @@ class Handshake(unittest.TestCase):
         self.assertEqual(session.checked_object(first["result"])["output"]["name"], "one")
 
     def test_an_id_that_still_waits_for_its_answer_cannot_be_used_again(self):
-        session = Session(self, plan={f"models show {spec(1)} --json": {"name": "one", "started": True,
+        session = Session(self, steps={f"models show {spec(1)} --json": {"name": "one", "started": True,
                                                                         "release": True, "json": {"n": 1}}})
         session.initialize()
         call = {"jsonrpc": "2.0", "id": "same", "method": "tools/call",
@@ -160,7 +171,7 @@ class Handshake(unittest.TestCase):
         self.assertEqual(len(session.calls()), 1)  # The second line started nothing.
 
     def test_meta_keys_the_server_does_not_know_are_ignored(self):
-        session = Session(self, plan={"topology show --json": {"json": TOPOLOGY}})
+        session = Session(self, steps={"topology show --json": {"json": TOPOLOGY}})
         meta = {"progressToken": "fixture-token", "example.invalid/trace": {"depth": 3}, "unknown": [1, 2]}
         opened = session.request("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
                                                 "clientInfo": {"name": "fixture-client", "version": "0"},
@@ -204,11 +215,14 @@ class Handshake(unittest.TestCase):
 
     def test_standard_output_holds_only_protocol_messages_one_per_line(self):
         noise = "plain words on standard output\n{not json}\n"
-        session = Session(self, plan={
+        session = Session(self, steps={
             "contract --json": {"stdout": noise, "stderr": "words on standard error\n", "exit": 3},
             "topology show --json": {"json": {"text": "line one\nline two   é 😀"}}})
         session.send_line(b"this line is not JSON")
         session.send_line(b'{"jsonrpc": "2.0", "id": 1, "method": "ini\xff\xfe"}')
+        session.send_line(b'{"jsonrpc": "2.0", "id": NaN, "method": "ping"}')
+        session.send_line(b'{"jsonrpc": "2.0", "id": 1e999, "method": "ping"}')
+        session.send_line(b'{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": ' + b"[" * 100000 + b"]" * 100000 + b"}")
         session.initialize()
         session.request("tools/list")
         self.assertEqual(session.structured("pulsar_contract")["text"], noise)
@@ -221,7 +235,7 @@ class Handshake(unittest.TestCase):
         self.assertEqual(session.wait_exit(), 0)
         self.assertTrue(session.raw.endswith(b"\n"))
         lines = session.raw.split(b"\n")[:-1]
-        self.assertEqual(len(lines), 8)  # Two bad lines, six requests: one line for each, and no other.
+        self.assertEqual(len(lines), 11)  # Five bad lines, six requests: one line for each, and no other.
         for line in lines:
             self.assertTrue(line.isascii() and line.strip() == line and line, line)
             message = json.loads(line)

@@ -2,12 +2,14 @@
 
 Every test starts the server through Session, which refuses to run without a
 double: a server left to its default would run this checkout's real pulsar
-commands. The doubles print synthetic JSON only.
+commands. A test that runs `pulsar mcp` where no server is to start, such as
+on a terminal, takes the same environment() and so the same refusal. The
+doubles print synthetic JSON only.
 
 Two styles of double, written into the test's own directory:
 
 - python_double: the wrapper style. Like scripts/public_cli.py it can handle
-  SIGTERM itself and print a `cancelled` error envelope. A plan file says what
+  SIGTERM itself and print a `cancelled` error envelope. A steps file says what
   it does for each command line.
 - shell_double: the direct shell style. A Bash script with no trap that starts
   one child and waits for it.
@@ -20,6 +22,7 @@ import json
 import os
 from pathlib import Path
 import select
+import shutil
 import signal
 import stat
 import subprocess
@@ -33,7 +36,7 @@ PULSAR = ROOT / "pulsar"
 PATIENCE = 60.0
 
 PYTHON_DOUBLE = r'''#!/usr/bin/env python3
-"""A stand-in for the pulsar file: it does what plan.json says for its command line."""
+"""A stand-in for the pulsar file: it does what steps.json says for its command line."""
 import json
 import os
 import signal
@@ -44,8 +47,8 @@ home = os.environ["MCP_DOUBLE_DIR"]
 argv = sys.argv[1:]
 with open(os.path.join(home, "calls.jsonl"), "a") as calls:
     calls.write(json.dumps(argv) + "\n")
-with open(os.path.join(home, "plan.json")) as plan:
-    step = json.load(plan).get(" ".join(argv))
+with open(os.path.join(home, "steps.json")) as steps:
+    step = json.load(steps).get(" ".join(argv))
 if step is None:
     print("double: no step for: " + " ".join(argv), file=sys.stderr)
     sys.exit(64)
@@ -94,7 +97,7 @@ if step.get("report"):
         "descriptors": sorted(int(name) for name in os.listdir("/proc/self/fd"))[:-1]})
 sys.stderr.write(step.get("stderr", ""))
 sys.stderr.flush()
-# A lone low surrogate in the plan stands for one byte that is not UTF-8.
+# A lone low surrogate in a step stands for one byte that is not UTF-8.
 sys.stdout.buffer.write(step.get("stdout", "").encode("utf-8", "surrogateescape"))
 sys.stdout.flush()
 sys.exit(step.get("exit", 0))
@@ -151,83 +154,97 @@ def running(pid: int, started: str | None = None) -> bool:
     return state is not None and state[0] != "Z" and (started is None or state[3] == started)
 
 
+def checked_double(double) -> Path:
+    """DOUBLE as a path, or AssertionError: no test runs `pulsar mcp` without a
+    double, and nothing inside the checkout, such as its pulsar file, is one."""
+    if not double:
+        raise AssertionError("refusing to run pulsar mcp without a double of the pulsar file")
+    path = Path(double).resolve()
+    if not path.is_file() or not os.access(path, os.X_OK):
+        raise AssertionError(f"the CLI double {path} is not an executable file")
+    if os.path.commonpath([path, ROOT.resolve()]) == str(ROOT.resolve()):
+        raise AssertionError(f"refusing to run pulsar mcp: {path} is inside the checkout, not a double")
+    return path
+
+
+def environment(home, double) -> dict:
+    """The environment of every `pulsar mcp` a test runs. HOME is the test's own directory.
+
+    PULSAR_MCP_CLI names the double. The runtime and temporary directories are
+    the test's own, so no server under test looks at the person's. If the real
+    pulsar were reached after all, the other doubles would stop it at its first step.
+    """
+    home = Path(home)
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_"))}
+    env.update(
+        PULSAR_MCP_CLI=str(checked_double(double)), MCP_DOUBLE_DIR=str(home),
+        XDG_RUNTIME_DIR=str(home / "runtime"), TMPDIR=str(home / "tmp"), PYTHONDONTWRITEBYTECODE="1",
+        PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false",
+        CLUSTER_TOPOLOGY_FILE=str(home / "absent-topology.json"),
+        PULSAR_MODEL_LIBRARY_DIR=str(home / "absent-library"))
+    return env
+
+
+def make_home(test) -> Path:
+    """A directory for one test, outside the checkout, with the directories environment() names."""
+    home = Path(tempfile.mkdtemp(prefix="mcp-test-"))
+    test.addCleanup(shutil.rmtree, home, ignore_errors=True)
+    for name in ("runtime", "tmp", "work"):
+        (home / name).mkdir(mode=0o700)
+    (home / "steps.json").write_text("{}")
+    return home
+
+
+def write_double(home, name="pulsar-double.py", text=None) -> Path:
+    path = Path(home) / name
+    path.write_text(PYTHON_DOUBLE if text is None else text)
+    path.chmod(0o700)
+    return path
+
+
 class Session:
     """One server process and the test's end of its standard input and output."""
 
-    def __init__(self, test, double=None, *, plan=None, grace=None, base=None, launcher=None, start=True):
+    def __init__(self, test, double=None, *, steps=None, grace=None, base=None, launcher=None, start=True):
         self.test = test
-        self.home = Path(base.home if base else tempfile.mkdtemp(prefix="mcp-test-"))
-        if base is None:
-            test.addCleanup(self._remove_home)
-            for name in ("runtime", "tmp", "work"):
-                (self.home / name).mkdir(mode=0o700)
-            (self.home / "plan.json").write_text("{}")
+        self.home = base.home if base else make_home(test)
         self.runtime = self.home / "runtime"
         if double == "shell":
-            double = self.shell_double()
+            double = write_double(self.home, "pulsar-shell-double.sh", SHELL_DOUBLE)
         elif double is None and base is None:
-            double = self.python_double()
+            double = write_double(self.home)
         elif double is None:
             double = base.double
-        self.double = self._checked_double(double)
-        if plan is not None:
-            self.plan(plan)
-        env = {key: value for key, value in os.environ.items() if not key.startswith(("PULSAR_", "CLUSTER_"))}
-        env.update(
-            PULSAR_MCP_CLI=str(self.double), MCP_DOUBLE_DIR=str(self.home),
-            XDG_RUNTIME_DIR=str(self.runtime), TMPDIR=str(self.home / "tmp"), PYTHONDONTWRITEBYTECODE="1",
-            # If the real pulsar were reached after all, these doubles would stop it at its first step.
-            PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false",
-            CLUSTER_TOPOLOGY_FILE=str(self.home / "absent-topology.json"),
-            PULSAR_MODEL_LIBRARY_DIR=str(self.home / "absent-library"))
+        self.double = checked_double(double)
+        if steps is not None:
+            self.steps(steps)
+        self.env = environment(self.home, self.double)
         if grace is not None:
-            env["PULSAR_MCP_GRACE_SECONDS"] = str(grace)
-        self.env = env
+            self.env["PULSAR_MCP_GRACE_SECONDS"] = str(grace)
         self.command = [sys.executable, "-B", str(launcher)] if launcher else [str(PULSAR), "mcp"]
         self.process = None
         self.raw = b""  # Every byte the server wrote to standard output.
         self.messages = []  # Every message read so far, in order.
         self._unread = b""
         self._next_id = 0
-        self.stderr_path = self.home / f"server-{len(list(self.home.glob('server-*')))}.stderr"
+        descriptor, path = tempfile.mkstemp(prefix="server-", suffix=".stderr", dir=self.home)
+        os.close(descriptor)
+        self.stderr_path = Path(path)
         test.addCleanup(self.stop)
         if start:
             self.start()
 
-    # -- the doubles
-
-    def _write_double(self, name, text):
-        path = self.home / name
-        path.write_text(text)
-        path.chmod(0o700)
-        return path
-
-    def python_double(self):
-        return self._write_double("pulsar-double.py", PYTHON_DOUBLE)
-
-    def shell_double(self):
-        return self._write_double("pulsar-shell-double.sh", SHELL_DOUBLE)
-
-    def _checked_double(self, double):
-        """No server is started without a double, and the checkout's pulsar is not one."""
-        path = Path(double).resolve()
-        if not path.is_file() or not os.access(path, os.X_OK):
-            raise AssertionError(f"the CLI double {path} is not an executable file")
-        if os.path.commonpath([path, ROOT.resolve()]) == str(ROOT.resolve()):
-            raise AssertionError(f"refusing to start the server: {path} is inside the checkout, not a double")
-        return path
-
-    def plan(self, steps: dict) -> None:
+    def steps(self, added: dict) -> None:
         """What the python double does for each command line, such as "topology show --json"."""
-        written = json.loads((self.home / "plan.json").read_text())
-        for line, step in steps.items():
+        written = json.loads((self.home / "steps.json").read_text())
+        for line, step in added.items():
             if "json" in step:
                 step = {**step, "stdout": json.dumps(step["json"]) + "\n"}
                 del step["json"]
             written[line] = step
-        path = self.home / "plan.json.part"
+        path = self.home / "steps.json.part"
         path.write_text(json.dumps(written))
-        path.replace(self.home / "plan.json")
+        path.replace(self.home / "steps.json")
 
     def calls(self) -> list:
         """The command lines the python double was run with, in order."""
@@ -237,7 +254,7 @@ class Session:
     # -- the process
 
     def start(self):
-        if self.env.get("PULSAR_MCP_CLI") != str(self.double):
+        if self.env.get("PULSAR_MCP_CLI") != str(checked_double(self.double)):
             raise AssertionError("refusing to start the server without PULSAR_MCP_CLI pointing at a double")
         with open(self.stderr_path, "wb") as errors:
             self.process = subprocess.Popen(self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -287,10 +304,6 @@ class Session:
                 except ProcessLookupError:
                     pass
             time.sleep(0.02)
-
-    def _remove_home(self):
-        import shutil
-        shutil.rmtree(self.home, ignore_errors=True)
 
     def fail(self, message):
         """Stop everything, then fail with the server's standard error."""
