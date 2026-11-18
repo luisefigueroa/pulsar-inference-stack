@@ -83,6 +83,8 @@ REFERENCE = [
         ("pulsar inventory menu", "Select a running catalog service for live status or a confirmed stop.")]),
     ("Contributors and integrations", [
         ("pulsar contract", "Show the versioned stack/workbench integration contract."),
+        ("pulsar mcp", "Serve read-only tools to an agent harness over standard input and output; each tool "
+                       "runs one of these commands and changes nothing."),
         ("pulsar spec example|freeze|verify|compare", "Author and inspect a complete JSON serving spec."),
         ("pulsar memory verify --file FILE --spec-file FILE",
          "Validate an explicit estimate of resident weights for the exact spec."),
