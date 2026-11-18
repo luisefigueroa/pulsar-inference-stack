@@ -96,15 +96,19 @@ class PrivateDirectory:
     def _make(self) -> tuple[str, int]:
         for _ in range(100):
             path = tempfile.mkdtemp(prefix=DIRECTORY_PREFIX, dir=self.base)
-            lock = os.open(path, os.O_RDONLY | os.O_DIRECTORY)  # Not inherited by any command.
+            # Until the lock below is held, a server that starts at the same
+            # moment takes the new directory for one left behind and removes
+            # it. Then make another.
+            try:
+                lock = os.open(path, os.O_RDONLY | os.O_DIRECTORY)  # Not inherited by any command.
+            except OSError:
+                continue
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 if _still_at(lock, path):
                     return path, lock
             except OSError:
                 pass
-            # A server that started at the same moment took the new directory
-            # for one left behind, and removes it. Make another.
             os.close(lock)
             try:
                 os.rmdir(path)
