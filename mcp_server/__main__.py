@@ -71,7 +71,9 @@ class Server:
 
     def serve(self) -> int:
         """Run until the session ends. Returns the exit status: 0 at the end of
-        input, 128 plus its number after a signal."""
+        input, 128 plus its number after a signal. Once wait() has reported such
+        a signal, an answer that would be written raises
+        protocol.SignalEndedWrite instead."""
         while True:
             lines, end = self.source.wait(self._timeout())
             # Look at which commands ended before the lines are handled: a command's end and a call
@@ -283,7 +285,7 @@ def main(argv: list[str] | None = None, tools=TOOLS) -> int:
     except protocol.ClientGone:
         return 0  # Standard output closed: the session is over, as when standard input closes.
     except protocol.SignalEndedWrite as ended:
-        return 128 + ended.signum  # The signal ended a write: the same exit status as when the loop takes it.
+        return 128 + ended.signum  # A signal ended the output: the exit status the loop returns for that signal.
     finally:
         try:
             server.end()

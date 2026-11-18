@@ -334,7 +334,7 @@ class SessionEnd(Running):
         started = time.monotonic()
         os.kill(session.process.pid, signum)
         self.assertEqual(session.wait_exit(), 128 + signum)
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.monotonic() - started, commands.GRACE_SECONDS)  # Ended by SIGTERM, not killed.
         self.assertEqual(session.marker("wrapper-1.sigterm"), "")  # The running command was cancelled.
         self.assert_gone(session, *identities)
         self.assert_nothing_left(session)
@@ -351,6 +351,40 @@ class SessionEnd(Running):
 
     def test_sighup_ends_the_session_of_a_client_that_stopped_reading_its_answers(self):
         self.end_a_waiting_write_with(signal.SIGHUP)
+
+    def test_no_answer_is_written_once_a_signal_that_ends_the_session_has_arrived(self):
+        session = Session(self, steps=wrapper())
+        capacity = session.shrink_output()
+        session.initialize()
+        self.start_wrapper(session)
+        double, supervisor = (int(word) for word in session.marker("wrapper-1.started").split())
+        identities = [(pid, process_state(pid)[3]) for pid in (double, supervisor)]
+        directory, = session.private_directories()
+        session.post_call("pulsar_command_get", {"command_id": "command-1"})  # Waits for the command.
+        # A ping whose answer fits the empty pipe and leaves room for eight bytes more. Once it is
+        # there, the call before it was read too, and no other answer can be written whole.
+        filler = b'{"jsonrpc":"2.0","id":"' + b"i" * (capacity - 46) + b'","result":{}}\n'
+        session.send({"jsonrpc": "2.0", "id": "i" * (capacity - 46), "method": "ping"})
+        session.wait_until(lambda: session.unread_bytes() == len(filler) == capacity - 8,
+                           "the answer to the ping is in the pipe")
+        # A stopped server finds all of this together when it goes on: the command has ended, so
+        # the call that waits for it has an answer, and SIGTERM has arrived.
+        server = session.process.pid
+        os.kill(server, signal.SIGSTOP)
+        session.wait_until(lambda: process_state(server)[0] == "T", "the server is stopped")
+        session.release("wrapper-1")
+        session.wait_until(lambda: (process_state(supervisor) or ())[:2] == ("Z", server),
+                           "the command has ended and its supervisor waits for the server to collect it")
+        os.kill(server, signal.SIGTERM)  # It waits until the server goes on.
+        os.kill(server, signal.SIGCONT)
+        # The answer is not begun. Its write would wait for a client that reads nothing, and the
+        # signal, which came before it, could not end it.
+        self.assertEqual(session.wait_exit(), 128 + signal.SIGTERM)
+        self.assert_gone(session, *identities)
+        self.assert_nothing_left(session)
+        self.assertFalse(directory.exists())
+        self.assertEqual(session.stderr(), "")
+        self.assertEqual(session.read_bytes_to_end(), filler)
 
     def test_the_end_of_a_session_ends_a_shell_style_command_and_its_child(self):
         session = Session(self, double="shell")
