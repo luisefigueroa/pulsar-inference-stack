@@ -154,9 +154,14 @@ library_hot_info_for_profile() {
     def interrupted_launch(self,root,envfile,env,spec,phase,signum):
         """Run the real cluster launcher, send SIGNUM in PHASE, and return what it reported.
 
-        Doubles stand in for Docker, SSH and the health endpoint; each touches
-        a marker so the signal arrives in the intended phase."""
-        import signal,time
+        Doubles stand in for Docker, SSH, the health endpoint and the wait
+        between two health checks. The double of the phase sets a marker and
+        then becomes the real sleep, so the signal finds the launcher waiting
+        for one command that the signal ends. The marker is a redirection and
+        the sleep is exec'd: a double that starts a child after its marker can
+        lose the signal for that child, or take the child's normal exit as the
+        answer to the signal, and sleep on."""
+        import shutil,signal,time
         from scripts import start_blockers
         with envfile.open('a') as stream:
             stream.write('''
@@ -168,24 +173,31 @@ port_free() { return 0; }
 container_state_exact() { echo running; }
 ''')
         binaries=root/'bin';binaries.mkdir()
+        real_sleep=shutil.which('sleep')
         doubles={
             # A remote docker run that hangs in the launching phase.
-            'ssh':f'#!/usr/bin/env bash\ntouch {root}/ssh-running\n'
-                  + ('sleep 30\n' if phase=='launching' else '')+'echo '+'a'*64+'\n',
+            'ssh':f'#!/usr/bin/env bash\n: >{root}/ssh-running\n'
+                  + (f'exec {real_sleep} 30\n' if phase=='launching' else 'echo '+'a'*64+'\n'),
             'docker-run':f'#!/usr/bin/env bash\nif [ "$1" = run ]; then echo {"b"*64}; else exec python3 {root}/docker.py "$@"; fi\n',
-            # The marker follows the second poll, so the first poll's progress line has printed.
-            'curl':f'#!/usr/bin/env bash\n[ ! -e {root}/polled-once ] || touch {root}/health-polled\n'
-                   f'touch {root}/polled-once\nexit 7\n'}
+            'curl':f'#!/usr/bin/env bash\n: >{root}/polled-once\nexit 7\n',
+            # The wait that follows a health check: its marker comes after the
+            # first check's progress line. The signal is sent here and not just
+            # after a check, where the launcher runs command substitutions:
+            # measured with bash 5.2.21, a SIGINT sent then is sometimes not
+            # answered by the trap, and the launcher goes on checking.
+            'sleep':f'#!/usr/bin/env bash\n[ ! -e {root}/polled-once ] || : >{root}/health-waiting\n'
+                    f'exec {real_sleep} "$@"\n'}
         for name,body in doubles.items():
             (binaries/name).write_text(body);(binaries/name).chmod(0o755)
         blockers=root/'blockers.jsonl'
+        # The wait is long, so a signal sent late still finds the launcher in it.
         env={**env,'PATH':f"{binaries}:{env['PATH']}",'PULSAR_SSH':str(binaries/'ssh'),
              'PULSAR_DOCKER':str(binaries/'docker-run'),'PULSAR_START_BLOCKERS_FILE':str(blockers),
-             'WAIT_ATTEMPTS':'100','WAIT_SECONDS':'1','LOAD_PROGRESS_LOG_SECONDS':'0'}
+             'WAIT_ATTEMPTS':'100','WAIT_SECONDS':'10','LOAD_PROGRESS_LOG_SECONDS':'0'}
         process=subprocess.Popen(['bash',str(ROOT/'cluster/start-cluster.sh'),spec['spec_id'],'--skip-preflight'],
                                  cwd=ROOT,env=env,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                                  start_new_session=True)
-        marker=root/('ssh-running' if phase=='launching' else 'health-polled')
+        marker=root/('ssh-running' if phase=='launching' else 'health-waiting')
         deadline=time.monotonic()+30
         while not marker.exists() and process.poll() is None and time.monotonic()<deadline:
             time.sleep(.05)
@@ -215,7 +227,7 @@ container_state_exact() { echo running; }
                 if phase=='loading':
                     # TUI-31: the wait reports each rank's container state.
                     self.assertIn('health check 1 of 100 · all 2 ranks running\n',stderr)
-                    self.assertIn('up to 100 health checks, 1 s apart',stdout)
+                    self.assertIn('up to 100 health checks, 10 s apart',stdout)
 
     def test_required_snapshots_through_public_observation_and_launcher(self):
         for nodes in (1,2):
