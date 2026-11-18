@@ -37,6 +37,32 @@ commands.BACKSTOP_SECONDS = {seconds!r}
 sys.exit(server.main([]))
 """
 
+# The server as shipped, except for what lets a test say when the wait of a call is over. Its clock
+# is ahead by the seconds a test writes to a file. And its loop does not wake by itself while a
+# command runs: with the shipped quarter of a second, a test could stop the server inside such a wake.
+MOVED_CLOCK_LAUNCHER = """\
+import sys
+import time
+sys.dont_write_bytecode = True
+sys.path.insert(0, {root!r})
+from mcp_server import __main__ as server, commands
+
+
+class Clock:
+    @staticmethod
+    def monotonic():
+        try:
+            with open({ahead!r}) as ahead:
+                return time.monotonic() + float(ahead.read())
+        except FileNotFoundError:
+            return time.monotonic()
+
+
+server.time = commands.time = Clock
+server.POLL_SECONDS = 3600.0
+sys.exit(server.main([]))
+"""
+
 
 def wrapper(number=1, **step):
     """A step in the wrapper style: it handles SIGTERM itself and prints the cancelled envelope."""
@@ -190,6 +216,31 @@ class Cancel(Running):
         self.assertLess(time.monotonic() - started, commands.GRACE_SECONDS)
         self.assertEqual([message for message in session.messages if message.get("id") == "early"], [])
         self.assert_nothing_left(session, but=[session.process.pid])
+
+    def test_a_cancel_that_arrives_when_the_wait_of_its_call_is_over_still_ends_the_command(self):
+        directory = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        ahead, launcher = directory / "clock-ahead", directory / "launcher.py"
+        launcher.write_text(MOVED_CLOCK_LAUNCHER.format(root=str(ROOT), ahead=str(ahead)))
+        session = Session(self, launcher=launcher, steps=wrapper())
+        session.initialize()
+        call = session.post_call("pulsar_models_show", {"spec_id": spec(1)})
+        session.marker("wrapper-1.started")
+        server = session.process.pid
+        # The command runs, so its call was read. A server that sleeps now is in the wait of its
+        # loop, and nothing wakes it: no line, no signal, and the wait of the call lasts a minute.
+        session.wait_until(lambda: process_state(server)[0] == "S", "the server waits in its loop")
+        os.kill(server, signal.SIGSTOP)
+        session.wait_until(lambda: process_state(server)[0] == "T", "the server is stopped")
+        # When the server goes on, the wait of the call is over and the cancel is there, together.
+        ahead.write_text("3600")
+        session.notify("notifications/cancelled", {"requestId": call})
+        os.kill(server, signal.SIGCONT)
+        self.assertEqual(session.request("ping")["result"], {})
+        # The cancel counts: the call is not answered `running`, and its command ends with it.
+        self.assertEqual([message for message in session.messages if message.get("id") == call], [])
+        session.marker("wrapper-1.sigterm")
+        session.wait_until(lambda: session.structured("pulsar_command_list") == {"commands": []},
+                           "the cancelled command has ended")
 
     def test_a_cancel_for_a_call_that_already_answered_running_is_ignored(self):
         session = Session(self, steps=wrapper())
@@ -497,6 +548,35 @@ class Limits(Running):
         session.release("wrapper-3")
         self.assertEqual(session.structured("pulsar_command_get", {"command_id": "command-3"})["state"], "finished")
         self.assertEqual(self.start_wrapper(session, 5), "command-5")
+
+    def test_a_fifth_command_is_started_when_one_of_the_four_ended_before_its_call_was_read(self):
+        steps = {}
+        for number in range(1, 6):
+            steps.update(wrapper(number))
+        session = Session(self, steps=steps)
+        session.initialize()
+        for number in range(1, 5):
+            self.start_wrapper(session, number)
+        server = session.process.pid
+        supervisor = int(session.marker("wrapper-3.started").split()[1])
+        # A stopped server reads no line and collects no child, so what happens meanwhile is all
+        # there together when it goes on: the end of one command, and the call for a fifth.
+        os.kill(server, signal.SIGSTOP)
+        session.wait_until(lambda: process_state(server)[0] == "T", "the server is stopped")
+        session.release("wrapper-3")
+        session.wait_until(lambda: (process_state(supervisor) or ())[:2] == ("Z", server),
+                           "the command has ended and its supervisor waits for the server to collect it")
+        fifth = session.post_call("pulsar_models_show", {"spec_id": spec(5), "wait_seconds": 0})
+        os.kill(server, signal.SIGCONT)
+        result = session.response(fifth)["result"]
+        self.assertIs(result["isError"], False, result)  # Started, not refused: only three were running.
+        answer = session.checked_object(result)
+        self.assertEqual((answer["state"], answer["command_id"]), ("running", "command-5"))
+        session.marker("wrapper-5.started")
+        self.assertEqual({row["command_id"]: row["state"]
+                          for row in session.structured("pulsar_command_list")["commands"]},
+                         {"command-1": "running", "command-2": "running", "command-3": "finished",
+                          "command-4": "running", "command-5": "running"})
 
     def test_a_command_reads_dev_null_and_runs_in_a_session_apart_from_the_server(self):
         session = Session(self, steps={"topology show --json": {"report": True}})

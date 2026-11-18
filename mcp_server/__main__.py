@@ -74,6 +74,12 @@ class Server:
         input, 128 plus its number after a signal."""
         while True:
             lines, end = self.source.wait(self._timeout())
+            # Look at which commands ended before the lines are handled: a command's end and a call
+            # can wake the loop together, and the call is then counted against the commands that
+            # still run as of when the server reads it. A command can still end a moment after this
+            # look. The calls whose wait is over are answered after the lines, as before: a cancel
+            # that arrives together with the end of its call's wait still ends the command.
+            self._settle_ended()
             for line in lines:
                 self._receive(line)
             self._settle()
@@ -99,6 +105,16 @@ class Server:
 
     def _settle(self) -> None:
         """Answer the calls whose command ended, then those whose wait is over."""
+        self._settle_ended()
+        now = time.monotonic()
+        for waiter in list(self.waiters.values()):
+            if waiter.deadline is not None and now >= waiter.deadline:
+                waiter.command.handle_returned = True
+                self._answer(waiter, protocol.tool_result(self.commands.running_result(waiter.command),
+                                                           is_error=False))
+
+    def _settle_ended(self) -> None:
+        """Answer the calls whose command ended, and drop an ended command nobody can ask for."""
         for command in self.commands.poll():
             waiters = [waiter for waiter in self.waiters.values() if waiter.command is command]
             if waiters:
@@ -109,12 +125,6 @@ class Server:
                     self._answer(waiter, protocol.tool_result(payload, is_error=is_error))
             elif not command.handle_returned:
                 self.commands.forget(command)  # Its call was cancelled, so nobody can ask for the result.
-        now = time.monotonic()
-        for waiter in list(self.waiters.values()):
-            if waiter.deadline is not None and now >= waiter.deadline:
-                waiter.command.handle_returned = True
-                self._answer(waiter, protocol.tool_result(self.commands.running_result(waiter.command),
-                                                           is_error=False))
 
     def _answer(self, waiter: Waiter, body: dict) -> None:
         del self.waiters[protocol.id_key(waiter.request_id)]
