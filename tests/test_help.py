@@ -26,7 +26,7 @@ COMMANDS = [
     ("help",), ("help", "terms"), ("help", "workflow"),
     ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
     ("status", "--help"), ("logs", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
-    ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
+    ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"), ("mcp", "--help"),
     ("image", "--help"), ("guarded", "--help"),
     ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
     ("observe", "--help"), ("policy", "--help"), ("selftest", "--help"),
@@ -68,7 +68,8 @@ class Help(unittest.TestCase):
     def test_help_leads_with_usage_then_one_sentence_then_aligned_options(self):
         for args in (("models", "--help"), ("status", "--help"), ("stop", "--help"), ("start", "--help"),
                      ("image", "--help"), ("guarded", "--help"), ("memory", "--help"),
-                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help")):
+                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
+                     ("mcp", "--help")):
             with self.subTest(command=args[0]):
                 text = self.run_help(args, 80)
                 lines = text.splitlines()

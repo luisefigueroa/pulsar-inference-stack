@@ -64,6 +64,8 @@ case "$command" in
   logs) exec "$REPO_DIR/scripts/logs.sh" "$@" ;;
   doctor) exec "$REPO_DIR/scripts/doctor.sh" "$@" ;;
   contract) exec python3 "$REPO_DIR/scripts/integration_contract.py" "$@" ;;
+  # The server an agent harness starts; it runs these commands as subprocesses.
+  mcp) exec python3 "$REPO_DIR/mcp_server/__main__.py" "$@" ;;
   spec) exec python3 "$REPO_DIR/scripts/document_cli.py" "$@" ;;
   release)
     for arg in "$@"; do
