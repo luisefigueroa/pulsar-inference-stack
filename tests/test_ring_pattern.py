@@ -29,8 +29,10 @@ from scripts import serve_plan as serve, start_reasons
 # node count and launch requirement (TOPOLOGY_CLASS, MIN_RAILS_PER_PAIR). These
 # specs do not declare the ring pattern, so every multi-node one still needs
 # every pair of its nodes cabled. The MiniMax-M3.1-Flash spec (949f8d18…),
-# added later, is the first catalog spec that declares it.
+# added later, is the first catalog spec that declares it; the four-node
+# DeepSeek-V4.1-Flash-1017 spec (027160dd…) is the second.
 CATALOG = {
+    '027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419': ('4', 'roce-ring', '2'),
     '139908cf23bbee82400df7eee3ec40e452d96ca223f6577661a7c07f40a6974d': ('1', 'single', '0'),
     '154ea1726af4dd9f4a9e4ef14be4d476d0c7082ff0851b6e5ab19e8921dd8b3f': ('3', 'roce-full-mesh', '2'),
     '1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435': ('2', 'roce-full-mesh', '2'),
