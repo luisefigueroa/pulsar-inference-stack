@@ -26,7 +26,7 @@ COMMANDS = [
     ("help",), ("help", "terms"), ("help", "workflow"),
     ("models", "--help"), ("model", "--help"), ("start", "--help"), ("stop", "--help"),
     ("status", "--help"), ("logs", "--help"), ("inventory", "--help"), ("doctor", "--help"), ("topology", "--help"),
-    ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"),
+    ("ssh-trust", "--help"), ("configure", "archive-root", "--help"), ("contract", "--help"), ("mcp", "--help"),
     ("image", "--help"), ("guarded", "--help"),
     ("memory", "--help"), ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
     ("observe", "--help"), ("policy", "--help"), ("selftest", "--help"),
@@ -51,7 +51,8 @@ class Help(unittest.TestCase):
             # Help never reaches a node, Docker or saved state; these doubles would fail if it did.
             env.update(COLUMNS=str(width), CLUSTER_TOPOLOGY_FILE=str(root / "absent-topology.json"),
                        PULSAR_MODEL_LIBRARY_DIR=str(root / "absent-library"),
-                       PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false", PYTHONDONTWRITEBYTECODE="1")
+                       PULSAR_SSH="/bin/false", PULSAR_DOCKER="/bin/false", PULSAR_MCP_CLI="/bin/false",
+                       PYTHONDONTWRITEBYTECODE="1")
             result = subprocess.run([str(ROOT / "pulsar"), *args], env=env, stdin=subprocess.DEVNULL,
                                     text=True, capture_output=True, timeout=60)
             self.assertEqual(result.returncode, 0, (args, result.stderr))
@@ -68,7 +69,8 @@ class Help(unittest.TestCase):
     def test_help_leads_with_usage_then_one_sentence_then_aligned_options(self):
         for args in (("models", "--help"), ("status", "--help"), ("stop", "--help"), ("start", "--help"),
                      ("image", "--help"), ("guarded", "--help"), ("memory", "--help"),
-                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help")):
+                     ("evidence", "--help"), ("privacy", "--help"), ("contribution", "--help"),
+                     ("mcp", "--help")):
             with self.subTest(command=args[0]):
                 text = self.run_help(args, 80)
                 lines = text.splitlines()
@@ -375,7 +377,7 @@ class Styles(unittest.TestCase):
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(("PULSAR_", "CLUSTER_")) and key != "NO_COLOR"}
         env.update(COLUMNS=str(width), PYTHONDONTWRITEBYTECODE="1", PULSAR_SSH="/bin/false",
-                   PULSAR_DOCKER="/bin/false", **values)
+                   PULSAR_DOCKER="/bin/false", PULSAR_MCP_CLI="/bin/false", **values)
         result = subprocess.run([str(ROOT / "pulsar"), *args], env=env, stdin=subprocess.DEVNULL,
                                 text=True, capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
