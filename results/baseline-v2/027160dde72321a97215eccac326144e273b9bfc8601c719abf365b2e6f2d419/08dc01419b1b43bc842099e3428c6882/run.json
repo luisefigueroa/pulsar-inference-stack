@@ -1,0 +1,390 @@
+{
+  "error_codes": [],
+  "gates": [
+    {
+      "ended_at": "2026-11-17T23:24:16.903161Z",
+      "name": "verify-snapshot-manifest",
+      "rc": 0,
+      "started_at": "2026-11-17T23:24:06.938399Z"
+    },
+    {
+      "ended_at": "2026-11-17T23:24:37.475418Z",
+      "name": "serve-smoke",
+      "rc": 0,
+      "started_at": "2026-11-17T23:24:16.903243Z"
+    },
+    {
+      "ended_at": "2026-11-17T23:28:49.495013Z",
+      "name": "run-gates",
+      "rc": 0,
+      "started_at": "2026-11-17T23:24:37.475435Z"
+    },
+    {
+      "ended_at": "2026-11-17T23:41:47.319950Z",
+      "name": "evaluate-gsm8k",
+      "rc": 0,
+      "started_at": "2026-11-17T23:28:49.495028Z"
+    },
+    {
+      "ended_at": "2026-11-18T00:41:56.923371Z",
+      "name": "validate-soak",
+      "rc": 0,
+      "started_at": "2026-11-17T23:41:47.319968Z"
+    }
+  ],
+  "input_sha256": {
+    "dataset": "ee7b8da9e381df27b9e3f7758a159ab2bdaa4dbaa910546cbbc47e0cb44e4f59",
+    "policy": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0"
+  },
+  "kind": "pulsar-baseline-run",
+  "measurement_sha256": {
+    "benchmark-serving": "9a4be88992c46279a81e4aecdf1442c659597ae42832587af33b423ab76a76a0",
+    "compare-captures": "31e3dc50437a1a0366a7536640c2818265b03b0af9bbe44543a55086066a8c86",
+    "evaluate-gsm8k": "290bb7c42f78bfcbeed4eee38ec0b9b1835d2130d433c9eb3b09526bfcc0c9a4",
+    "serve-smoke": "f2cd6734c413bc9646ffa09e1d4ad70a012881b99d8d1db61ad8f220851f58b9",
+    "validate-soak": "d90df1a2dc5e7da53f1533c6138490124acad9da0ec22a8b0398a04ad2d0ce7e",
+    "verify-snapshot-manifest": "f6b0b1030a7c92e7da524660d6ee9d695569e0c29760a07ce8ae48e0045968b6"
+  },
+  "observation_complete": true,
+  "outcome": "pass",
+  "policy_digest": "a4b3095c26e9b2636b7406d73b1ed4a310673fe75e3a862d2f5a41c0b9ecbdb0",
+  "ranks_after": [
+    {
+      "boot_witness": "da179d310331f6a2e8b71eaedf5cc23c197e108377d89a514b17d32f7bc4d2ed",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "1a059078a85c6dad5b106650e137d4086ed2f3ae4291b2162c86ddab73dd427a",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 1,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "a7cc94c67f13f67a37eca758748a311d8c88cef8ac277dbf1c77ab3396d0634d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 2,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "2cc259d7d294fd1352687439530d24bee9cbc37d0bbdc1115bee58cd1d4873cd",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 3,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    }
+  ],
+  "ranks_before": [
+    {
+      "boot_witness": "da179d310331f6a2e8b71eaedf5cc23c197e108377d89a514b17d32f7bc4d2ed",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 0,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "1a059078a85c6dad5b106650e137d4086ed2f3ae4291b2162c86ddab73dd427a",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 1,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "a7cc94c67f13f67a37eca758748a311d8c88cef8ac277dbf1c77ab3396d0634d",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 2,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    },
+    {
+      "boot_witness": "2cc259d7d294fd1352687439530d24bee9cbc37d0bbdc1115bee58cd1d4873cd",
+      "container_configuration": {
+        "accelerator_access": "all",
+        "cpu_limit_nanos": 0,
+        "devices": [
+          "infiniband"
+        ],
+        "healthcheck": {
+          "interval_seconds": 30,
+          "path": "/health",
+          "retries": 3,
+          "start_period_seconds": 1800,
+          "timeout_seconds": 5
+        },
+        "ipc_mode": "host",
+        "memory_limit_bytes": 0,
+        "network_mode": "host",
+        "restart_max_retries": 0,
+        "restart_policy": "no",
+        "shm_size_bytes": null,
+        "ulimits": {
+          "memlock": {
+            "hard": -1,
+            "soft": -1
+          },
+          "stack": {
+            "hard": 67108864,
+            "soft": 67108864
+          }
+        }
+      },
+      "files_verified": true,
+      "image_digest": "sha256:b0a66ba6b2762bdd7b9d04708e52aef1e170b296d2ef3fa4a37dfb62e8b0cc7d",
+      "owned": true,
+      "rank": 3,
+      "running": true,
+      "snapshot_manifest_id": "d1e53ca3ff56eaa1d7c73686c49b71bb5dac733e63270578c0a3299496963cc4",
+      "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419"
+    }
+  ],
+  "run_id": "08dc01419b1b43bc842099e3428c6882",
+  "same_boot": true,
+  "schema_version": 3,
+  "spec_id": "027160dde72321a97215eccac326144e273b9bfc8601c719abf365b2e6f2d419",
+  "stack_observers": [
+    {
+      "stack_commit": "8fb9da97434ae99574c8a0503a8bdf6326df6e93",
+      "working_tree_dirty": true
+    },
+    {
+      "stack_commit": "8fb9da97434ae99574c8a0503a8bdf6326df6e93",
+      "working_tree_dirty": true
+    }
+  ],
+  "workbench_commit": "795529f7d96a4e891e510e8ba9ad045e7202d4c9"
+}
