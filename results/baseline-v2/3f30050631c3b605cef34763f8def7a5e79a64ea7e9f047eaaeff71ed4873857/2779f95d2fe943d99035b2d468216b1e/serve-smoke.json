@@ -1,0 +1,22 @@
+{
+  "completion": "complete",
+  "kind": "pulsar-validator-measurement",
+  "operation": "serve-smoke",
+  "program": "validate/serve_smoke.py",
+  "reason": "completed",
+  "schema_version": 1,
+  "serve-smoke": {
+    "completion": {
+      "completion": "complete",
+      "reason": "completed"
+    },
+    "health": {
+      "completion": "complete",
+      "reason": "completed"
+    },
+    "warmup": {
+      "completion": "complete",
+      "reason": "completed"
+    }
+  }
+}
