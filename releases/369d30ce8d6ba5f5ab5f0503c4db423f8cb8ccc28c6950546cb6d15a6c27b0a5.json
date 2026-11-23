@@ -1,0 +1,153 @@
+{
+  "kind": "pulsar-serving-spec",
+  "recipe": {
+    "container": {
+      "accelerator_access": "all",
+      "cpu_limit_nanos": 0,
+      "devices": [],
+      "healthcheck": {
+        "interval_seconds": 30,
+        "path": "/health",
+        "retries": 3,
+        "start_period_seconds": 1800,
+        "timeout_seconds": 5
+      },
+      "ipc_mode": "host",
+      "memory_limit_bytes": 0,
+      "network_mode": "bridge",
+      "restart_max_retries": 0,
+      "restart_policy": "no",
+      "shm_size_bytes": null,
+      "ulimits": {
+        "memlock": {
+          "hard": -1,
+          "soft": -1
+        },
+        "stack": {
+          "hard": 67108864,
+          "soft": 67108864
+        }
+      }
+    },
+    "container_env": [
+      "FLASHINFER_NVCC_THREADS=1",
+      "HF_HUB_OFFLINE=1",
+      "MAX_JOBS=2",
+      "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True",
+      "VLLM_LOGGING_LEVEL=INFO"
+    ],
+    "engine_args": [
+      "--gpu-memory-utilization",
+      "0.5",
+      "--max-model-len",
+      "262144",
+      "--max-num-seqs",
+      "8",
+      "--enable-auto-tool-choice",
+      "--tool-call-parser",
+      "inkling",
+      "--reasoning-parser",
+      "inkling"
+    ],
+    "geometry": {
+      "fabric": "local",
+      "nodes": 1,
+      "platform_id": "dgx-spark-gb10",
+      "pp": 1,
+      "tp": 1
+    },
+    "image_digest": "sha256:7a46a81f0539b4a1b407fe2c29abbe0b130eeee4e4597f4ed357863af9e36086",
+    "model": {
+      "model_commit": "b85c3cfa615fc413cc9af3379f491b963f3b586a",
+      "model_id": "thinkingmachines/Inkling-2-Mini",
+      "snapshot_manifest": {
+        "file_count": 14,
+        "files": [
+          {
+            "path": ".gitattributes",
+            "sha256": "34448b82c17d60fec9b65b1f093c115ddbaadc04beb1b0140b6bfed2e012a930",
+            "size": 1570
+          },
+          {
+            "path": "README.md",
+            "sha256": "e3b8db13cbe1e3638988a7b26e51a7e2b857c1bbc8ffcaeba251bdbc696e9142",
+            "size": 54870
+          },
+          {
+            "path": "chat_template.jinja",
+            "sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+            "size": 6868
+          },
+          {
+            "path": "config.json",
+            "sha256": "a7a349601f0984c4abf999c480ef775d8567d21f5f84b4e8a3e035b44f288dc2",
+            "size": 2722
+          },
+          {
+            "path": "generation_config.json",
+            "sha256": "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
+            "size": 98
+          },
+          {
+            "path": "hf_quant_config.json",
+            "sha256": "7c656207d3ce37879c7be209a036b0dde43bf01f78159bff06880b868ed57143",
+            "size": 67924
+          },
+          {
+            "path": "model-00001-of-00001.safetensors",
+            "sha256": "65e60f51aa1284d4fb022584908c315270334d991828bb774af60584523539d1",
+            "size": 19526019168
+          },
+          {
+            "path": "model.safetensors.index.json",
+            "sha256": "c1631065b7b00787993522dddc66a68b3abee869192977fb3dcb796e63bc5838",
+            "size": 109300
+          },
+          {
+            "path": "mtp.safetensors",
+            "sha256": "7c3b651317f01f73bcf4e1dceba66ef8b7e1a1eac6bc171e882e690a4b10a1d2",
+            "size": 635801416
+          },
+          {
+            "path": "processor_config.json",
+            "sha256": "d7350adce18c8be4b607f261c8f0f7eabbf720bb7aaf648a43d4f8372bbacc2d",
+            "size": 461
+          },
+          {
+            "path": "special_tokens_map.json",
+            "sha256": "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
+            "size": 529
+          },
+          {
+            "path": "tiktoken/tokenizer.model",
+            "sha256": "f170372dd655728909228220d77cf6b8104a59f38a91262a7d2c4027906ec0d8",
+            "size": 3386494
+          },
+          {
+            "path": "tokenizer.json",
+            "sha256": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+            "size": 26178678
+          },
+          {
+            "path": "tokenizer_config.json",
+            "sha256": "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
+            "size": 13235
+          }
+        ],
+        "kind": "model-library-snapshot-manifest",
+        "manifest_id": "393574ffab2ba3d8b47b5f0b2ad99b6b8da476f6a2967bd47b17bccac0099f3a",
+        "model_id": "thinkingmachines/Inkling-2-Mini",
+        "schema_version": 1,
+        "snapshot_revision": "b85c3cfa615fc413cc9af3379f491b963f3b586a",
+        "total_bytes": 20191643333
+      }
+    }
+  },
+  "review": null,
+  "schema_version": 2,
+  "source": {
+    "image_repository": "vllm/vllm-openai"
+  },
+  "spec_id": "369d30ce8d6ba5f5ab5f0503c4db423f8cb8ccc28c6950546cb6d15a6c27b0a5",
+  "state": "candidate"
+}
