@@ -37,6 +37,8 @@ CATALOG = {
     '154ea1726af4dd9f4a9e4ef14be4d476d0c7082ff0851b6e5ab19e8921dd8b3f': ('3', 'roce-full-mesh', '2'),
     '1559076fd5af3001369b871b3ce983bf199ac0053c674e119a4a6acabd2ec435': ('2', 'roce-full-mesh', '2'),
     '27dc06de6e33042b164c8a4a2400cd02ec43e642e7ba8e116b905a5e72dd68b2': ('2', 'roce-full-mesh', '2'),
+    '369d30ce8d6ba5f5ab5f0503c4db423f8cb8ccc28c6950546cb6d15a6c27b0a5': ('1', 'single', '0'),
+    '3f30050631c3b605cef34763f8def7a5e79a64ea7e9f047eaaeff71ed4873857': ('1', 'single', '0'),
     '6c1066bd2007917b90c586dc56fba5fe0e4b52ca877b3b7e8c11c266a5cd8d9a': ('1', 'single', '0'),
     '949f8d185c94b3ba15a78ad9e6151a22d9b8b70ef20d036c5f18ef38cd9a1d8f': ('4', 'roce-ring', '2'),
     'b13b30c418f35c812dfbb69de48a01ef82b5545b1de290d2d9a03906164d257b': ('3', 'roce-full-mesh', '2'),
