@@ -145,6 +145,11 @@ Staging verifies the image on the selected serving nodes. It does not launch
 or replace a service. For an image already held locally, see
 [image staging options](docs/OPERATIONS.md#check-and-stage-the-image).
 
+The [Inkling 2 Mini specs](docs/IMAGE_PROVENANCE_VLLM_NIGHTLY_647A7686.md#catalog-image)
+pin an upstream vLLM nightly that Pulsar does not mirror. If upstream removes
+the pinned digest, a fresh pull will fail. An existing verified copy may still
+be usable via the staging options above. Do not substitute a newer nightly.
+
 ### 5. Start, use, and stop the service
 
 Configure any API authentication before starting; see
