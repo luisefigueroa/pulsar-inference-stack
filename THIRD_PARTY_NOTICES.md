@@ -8,11 +8,12 @@ licenses of those components and of model weights.
 ## Serving images
 
 The seven catalog specs at Stack commit
-`aaf343ed71eab43194eb8d57f794ee08cc654fbb` and the MiniMax spec
-`949f8d185c94…` reference six distinct images.
+`aaf343ed71eab43194eb8d57f794ee08cc654fbb`, the MiniMax spec
+`949f8d185c94…` and the two Inkling-2-Mini specs `369d30ce8d6b…` and
+`3f30050631c3…` reference seven distinct images.
 The pages below identify the exact image, its upstream base and sources, and
 the patches carried by Pulsar. The two DeepSeek specs share one image record,
-and so do the two Nemotron 3.5 Super VL specs.
+and so do the two Nemotron 3.5 Super VL specs and the two Inkling-2-Mini specs.
 
 | Catalog model | Image and provenance | Main upstream credits |
 | --- | --- | --- |
@@ -22,14 +23,15 @@ and so do the two Nemotron 3.5 Super VL specs.
 | MiMo V2.6 Flash RL | [Pulsar MiMo image](docs/IMAGE_PROVENANCE_MIMO_V2_6_FLASH.md), manifest `4c87d448318a…` | vLLM contributors; ScitiX InstantTensor; NVIDIA; bundled dependency authors |
 | GLM 5.3 Flash NVFP4 | [Pulsar GLM image](docs/IMAGE_PROVENANCE_GLM_5_3_FLASH.md), manifest `7ffa2e55ce2e…` | vLLM contributors; FlashInfer; NVIDIA; bundled dependency authors |
 | MiniMax M3.1 Flash | [Pulsar MiniMax image](docs/IMAGE_PROVENANCE_MINIMAX_M3_1_FLASH.md), manifest `268b14f1473e…` | vLLM contributors and the MiniMax-M3.1-Flash model support (#64111); NVIDIA; bundled dependency authors |
+| Inkling-2-Mini | [Official vLLM nightly image of commit 647a7686](docs/IMAGE_PROVENANCE_VLLM_NIGHTLY_647A7686.md), index `7a46a81f0539…` | vLLM Team and contributors, including the Inkling 2 Mini model support (#69028); NVIDIA; bundled dependency authors |
 
 The abbreviated digests in this table are navigation aids. Use the complete
 identities in the linked records and specs. Registry manifest and configuration
 metadata were checked on 2026-10-21, on 2026-11-11 for the vLLM 0.32.0
-image, and on 2026-11-16 for the MiniMax image. Build and patch details also use retained build records; the individual
+image, on 2026-11-16 for the MiniMax image, and on 2026-11-23 for the vLLM nightly image. Build and patch details also use retained build records; the individual
 pages state the limits of that evidence.
 
-All six images use vLLM and include software from other projects. Credit also
+All seven images use vLLM and include software from other projects. Credit also
 belongs to NVIDIA for CUDA, to Ubuntu and Debian contributors for system
 components, and to the authors of PyTorch, Transformers, Triton, FlashInfer,
 and their dependencies where included. Each component retains its own license
