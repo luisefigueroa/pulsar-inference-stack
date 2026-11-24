@@ -944,6 +944,12 @@ the other serving nodes. The tag must be in the pinned image's repository and
 resolve to that exact digest and image ID. A destination tag conflict fails;
 the export never falls back to a registry pull. See the [image contract](CONTRACT.md#documents-and-identity).
 
+The [Inkling 2 Mini specs](IMAGE_PROVENANCE_VLLM_NIGHTLY_647A7686.md#catalog-image)
+pin an upstream vLLM nightly that Pulsar does not mirror. If upstream removes
+the pinned digest, a fresh pull will fail, including a pull to add the missing
+pinned name. An existing copy may still be usable if it passes the exact
+reference check on the selected nodes. Do not substitute a newer nightly.
+
 ### Check prerequisites and start
 
 If the service should require authentication, configure `VLLM_API_KEY` (or
