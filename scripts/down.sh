@@ -130,6 +130,8 @@ if [ "$TARGET" = --all ]; then
 fi
 [[ "$TARGET" =~ ^[0-9a-f]{64}$ ]] || usage_die "stop requires the complete 64-character spec id (./pulsar models list --json)"
 acquire_model_library_lifecycle_lock exclusive
+storage_overview_changed service
+trap 'storage_overview_changed service' EXIT
 load_cluster_topology || die "confirmed topology is required for safe stop"
 [ "$CLUSTER_TOPOLOGY_COUNT" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || die "confirmed topology is required for safe stop"
 # The records again, under the lock: one saved since the first read is stopped

@@ -480,6 +480,14 @@ release_model_library_locks() {
   fi
 }
 
+# The browsing cache is optional. Only a menu creates its change markers.
+storage_overview_changed() {
+  local marker="$PULSAR_MODEL_LIBRARY_DIR/.storage-overview/$1"
+  if [[ -f "$marker" && ! -L "$marker" ]]; then
+    touch -c -- "$marker" || warn "the storage menu could not be notified"
+  fi
+}
+
 # Serialize home changes against preparation and launch.
 acquire_model_library_lifecycle_lock() {
   local mode="${1:-shared}" timeout lock_dir lock_path lock_parent lock_fd

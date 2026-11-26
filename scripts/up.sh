@@ -761,6 +761,13 @@ EOF
   exit 0
 fi
 
+# Tell open storage menus that container references can change during launch.
+storage_overview_changed service
+if [ -z "${PULSAR_LAUNCH_PLAN_OUT:-}" ]; then
+  trap 'rm -f "${PLAN_FILE:-}"; storage_overview_changed service' EXIT
+else
+  trap 'storage_overview_changed service' EXIT
+fi
 # --- launch ---
 if [ -n "${PULSAR_MEMORY_ESTIMATE_JSON:-}" ]; then
   launch_flags+=(--memory-estimate-frozen "$PULSAR_MEMORY_ESTIMATE_JSON")

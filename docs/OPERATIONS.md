@@ -1911,10 +1911,15 @@ None of these choices passes `--replace`, `--pull-image` or
 
 ### Models and disk space…
 
-**Models and disk space…** reads the model files (`./pulsar model files
---json`) and the storage budget (`./pulsar model budget --json`) once on entry,
-as the Model files page does, and reuses them on every screen below until a
-plan runs or **Look again (checks nodes now)** is chosen. Its page:
+**Models and disk space…** shows the latest file scan and storage budget with their ages.
+Opening this overview starts background checks for the rest of the menu session.
+**Check and manage** reuses each result if it is less than a minute old when requested.
+A storage change makes both checks due. A service change makes the file scan due.
+If another session is checking the same data, the menu shares its results.
+A slow check can finish even if the other result ages past a minute during the wait.
+If the shared cache is unavailable, the controls check the nodes directly.
+**Look again (checks nodes now)** and returning from a storage operation request fresh observations.
+Each operation still checks its plan against the nodes before changing storage.
 
 ```
 Models and disk space

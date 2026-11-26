@@ -164,13 +164,15 @@ def files_document(path: str | None) -> dict | None:
     return document
 
 
-def budget_nodes(path: str | None) -> list[dict] | None:
-    """The storage budget's nodes, or None when it was not observed."""
+def budget_observation(path: str | None) -> tuple[list[dict] | None, str | None]:
+    """Nodes and optional check time from the menu's budget report or a CLI response."""
     document, _ = envelope_result(load_json(path))
     if not isinstance(document, dict) or document.get("kind") != "pulsar-storage-budget":
-        return None
+        return None, None
     nodes = document.get("nodes")
-    return [node for node in nodes if isinstance(node, dict)] if isinstance(nodes, list) else None
+    if not isinstance(nodes, list):
+        return None, None
+    return [node for node in nodes if isinstance(node, dict)], document.get("observed_at")
 
 
 def saved_manifests(repo_root: Path) -> dict[str, str]:
@@ -202,7 +204,7 @@ class Cluster:
     def __init__(self, entries: list[dict], files: dict, budget: list[dict] | None, *,
                  names: NodeNames | None = None, archive_location: str = "not-configured", now=None,
                  pairs: list[tuple[str, str]] = (), topology_id: str | None = None,
-                 saved: dict[str, str] | None = None):
+                 saved: dict[str, str] | None = None, budget_checked_at: str | None = None):
         self.saved = dict(saved or {})
         from model_library.file_inventory import _unread
         # A saved ring's neighbouring pairs (serve_plan.ring_pairs) and the saved
@@ -211,6 +213,7 @@ class Cluster:
         self.entries = [row for row in entries if not row.get("historical")]
         self.catalog = {row["spec_id"]: row for row in self.entries}
         self.files = files
+        self.budget_checked_at = budget_checked_at
         self.nodes = [node for node in files.get("nodes") or [] if isinstance(node, dict)]
         self.snapshots = [entry for entry in files.get("snapshots") or [] if isinstance(entry, dict)]
         self.by_manifest = {entry["snapshot_manifest_id"]: entry for entry in self.snapshots}
@@ -520,7 +523,11 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
     out = TerminalWriter(width=width, stream=output)
     age = age_text(age_seconds(cluster.files.get("observed_at"), cluster.now)) \
         if cluster.files.get("observed_at") else "not observed"
-    out.emit(f"Models and disk space · checked {age}", role="heading")
+    if cluster.budget_checked_at:
+        out.emit("Models and disk space", role="heading")
+        out.emit(f"Files checked {age} · Budget checked {age_text(age_seconds(cluster.budget_checked_at, cluster.now))}")
+    else:
+        out.emit(f"Models and disk space · checked {age}", role="heading")
     rows = room_lines(cluster)
     column = max([len(host) for host, _, _ in rows] + [7]) + 2
     hang = " " * (LABEL_WIDTH + column)
@@ -556,11 +563,13 @@ def page(cluster: Cluster, *, width: int | None = None) -> str:
         # Catalog files the scan found that no record names: on no line above, so said here.
         out.emit(f"Files Pulsar has no record of are on {cluster.hosts(holders)}; {FIND_LABEL} records them.",
                  label(), more)
-    if first:
+    if first and cluster.unread:
+        out.emit("No model files were confirmed. Files on unchecked nodes are unknown.", label(), indent)
+    elif first:
         out.emit(f"No model in the catalog has files on the cluster. Serve a model… or {READY_LABEL} brings one.",
                  label(), indent)
     others = [row for row in cluster.entries if row["spec_id"] not in shown_specs]
-    if others and shown_specs:
+    if others and shown_specs and not cluster.unread:
         out.emit(f"{_count(len(others), 'other recipe')} in the catalog {'has' if len(others) == 1 else 'have'} no "
                  "files on the cluster.", indent, indent)
     if shown_specs:
@@ -2036,17 +2045,21 @@ def _cluster(args, entries: list[dict]) -> Cluster:
     files = files_document(args.files)
     if files is None:
         raise ValueError("the model files scan could not be read")
-    location = args.archive_location
+    nodes, checked_at = budget_observation(args.budget)
+    return observed_cluster(args.repo_root, entries, files, nodes, args.archive_location, budget_checked_at=checked_at)
+
+
+def observed_cluster(repo_root, entries, files, budget, location=None, *, budget_checked_at=None):
     if location is None:
         from scripts.serve_plan import _archive_location
-        location = _archive_location(args.repo_root)
-    names = NodeNames.saved(args.repo_root)
+        location = _archive_location(repo_root)
+    names = NodeNames.saved(repo_root)
     ring = {}
     if names.ring:
         from scripts.serve_plan import _saved_topology, _topology_id, ring_pairs
-        ring = {"pairs": ring_pairs(_saved_topology(args.repo_root)), "topology_id": _topology_id(args.repo_root)}
-    return Cluster(entries, files, budget_nodes(args.budget), names=names, archive_location=location,
-                   saved=saved_manifests(args.repo_root), **ring)
+        ring = {"pairs": ring_pairs(_saved_topology(repo_root)), "topology_id": _topology_id(repo_root)}
+    return Cluster(entries, files, budget, names=names, archive_location=location,
+                   saved=saved_manifests(repo_root), budget_checked_at=budget_checked_at, **ring)
 
 
 def main(argv: list[str] | None = None) -> int:

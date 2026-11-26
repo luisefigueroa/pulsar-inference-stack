@@ -3,10 +3,9 @@
 # cluster with its size, where it is, and whether it is ready, kept and
 # archived; then what to do about them, each answered with a plan.
 #
-# Entering reads the model files (./pulsar model files --json) and the storage
-# budget (./pulsar model budget --json) once, as the Model files page does, and
-# reuses them until a plan runs or Look again is chosen, so no screen probes
-# twice in a row. A node that did not answer makes its files and room
+# Check and manage shares the overview's file scan and storage budget. Look
+# again and the return from a plan request a new observation. Direct entry
+# without the overview reads both commands here. A node that did not answer makes its files and room
 # unknown, not absent, and nothing destructive is offered while it does not
 # answer (scripts/models_page.py). The choices follow a model's life on the
 # cluster, in four groups. Each is here because the page's own words send the
@@ -106,10 +105,20 @@ resolve() {
 # ---------------------------------------------------------------------------
 
 FILES="$WORK/files.json" BUDGET="$WORK/budget.json" CATALOG="$WORK/catalog.json" FILES_AT=0 FILES_ERROR=""
+REFRESH=()
 READ=(--files "$FILES" --budget "$BUDGET" --catalog "$CATALOG")
 capture() {
   local rc=0
   [ "$FILES_AT" -eq 0 ] || return 0
+  if [[ -n ${PULSAR_MENU_SESSION:-} ]]; then
+    python3 -u "$REPO_DIR/scripts/storage_overview.py" manage "$WORK" "${REFRESH[@]}" 2>"$WORK/files.err" || rc=$?
+    case "$rc" in
+      0) FILES_AT=$(date +%s) FILES_ERROR=""; return 0 ;;
+      10) rc=0 ;;  # The overview could not use its cache. Check the nodes directly.
+      130) return 130 ;;
+      *) FILES_ERROR=$(<"$WORK/files.err"); FILES_ERROR=${FILES_ERROR:-the storage check failed}; return 0 ;;
+    esac
+  fi
   if ! "$REPO_DIR/pulsar" models list --json >"$CATALOG"; then
     FILES_ERROR="the catalog could not be read; the reason is above"
     return 0
@@ -132,7 +141,7 @@ capture() {
   FILES_AT=$(date +%s) FILES_ERROR=""
 }
 # A plan that ran, or Look again, makes the scan stale.
-forget() { FILES_AT=0; }
+forget() { FILES_AT=0; REFRESH=(--again); }
 view() { models "$@" "${READ[@]}"; }
 
 # show CHOICE_ROWS ARGS...: the screen scripts/models_page.py ARGS prints, above

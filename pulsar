@@ -46,10 +46,12 @@ case "$command" in
     ;;
 esac
 case "$command" in
-  "") exec "$REPO_DIR/scripts/home.sh" ;;
-  gum)
-    deprecated gum pulsar
-    refuse_json_for_menu "the Pulsar menu" "./pulsar help" "$@"
+  ""|gum)
+    if [ "$command" = gum ]; then
+      deprecated gum pulsar
+      refuse_json_for_menu "the Pulsar menu" "./pulsar help" "$@"
+    fi
+    if [ -t 0 ] && [ -t 1 ]; then exec python3 "$REPO_DIR/scripts/menu_session.py"; fi
     exec "$REPO_DIR/scripts/home.sh" ;;
   wizard)
     deprecated wizard "pulsar models"

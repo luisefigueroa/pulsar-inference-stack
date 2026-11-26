@@ -160,7 +160,9 @@ esac
 if [ "$PLAN" -eq 0 ] && [ "$OP" != files ]; then
   case "$OP:$ARCHIVE_ACTION" in
     info:|budget:|archive:verify) acquire_model_library_lifecycle_lock shared ;;
-    *) acquire_model_library_lifecycle_lock exclusive ;;
+    *) acquire_model_library_lifecycle_lock exclusive
+       storage_overview_changed storage
+       trap 'storage_overview_changed storage' EXIT ;;
   esac
 fi
 case "$OP" in

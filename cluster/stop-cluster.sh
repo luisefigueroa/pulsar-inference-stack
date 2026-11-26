@@ -12,6 +12,8 @@ SCRIPT_NAME=stop
 ARG="${1:-}"
 [ -n "$ARG" ] || { echo "usage: $0 SPEC_ID|--all" >&2; exit 2; }
 acquire_model_library_lifecycle_lock exclusive
+storage_overview_changed service
+trap 'storage_overview_changed service' EXIT
 
 if [ "$ARG" = --all ]; then
   load_cluster_topology || exit 1
