@@ -1,4 +1,5 @@
 """Storage browsing, external changes, failed checks and bounded refresh."""
+from contextlib import nullcontext
 import fcntl
 import os
 from pathlib import Path
@@ -14,9 +15,9 @@ import termios
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from scripts import storage_overview as so
+from scripts import menu_session, storage_overview as so
 from tests.test_models_page import budget, files, node
 
 
@@ -166,6 +167,53 @@ class StorageOverview(unittest.TestCase):
 
 
 class StorageMenuSession(unittest.TestCase):
+    def test_collector_with_unavailable_cache_waits_for_another_visit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            request = Path(tmp) / "storage-request"
+            request.touch()
+            starts = []
+            home = Mock(returncode=0)
+            ticks = iter(range(25))
+            timer = Mock()
+
+            def home_status():
+                tick = next(ticks, 24)
+                timer.monotonic.return_value = tick
+                if tick == 12:
+                    os.utime(request, ns=(1, 1))  # A later visit requests a retry.
+                return 0 if tick == 24 else None
+
+            def start(argv, **kwargs):
+                if argv[0] != "bash":
+                    return home
+                starts.append(timer.monotonic.return_value)
+                return Mock(returncode=10, **{"poll.return_value": 10})
+
+            home.poll.side_effect = home_status
+            with patch.object(menu_session.tempfile, "TemporaryDirectory", return_value=nullcontext(tmp)), \
+                    patch.object(menu_session.subprocess, "Popen", side_effect=start), \
+                    patch.object(menu_session.signal, "signal"), patch.object(menu_session, "time", timer):
+                self.assertEqual(menu_session.session(), 0)
+            self.assertEqual(starts, [0, 12])
+
+    def test_unavailable_cache_keeps_direct_checks_without_requesting_a_collector(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            unavailable = root / "file"
+            unavailable.touch()
+            screen = Mock()
+            screen.getmaxyx.return_value = (24, 80)
+            screen.getch.return_value = ord("m")
+            with patch.dict(os.environ, PULSAR_MODEL_LIBRARY_DIR=str(unavailable)):
+                self.assertEqual(so.view(screen, root), 10)
+                self.assertFalse((root / "storage-request").exists())
+                worker = subprocess.run([sys.executable, str(so.ROOT / "scripts/storage_overview.py"), "collect"],
+                                        capture_output=True, timeout=5)
+                self.assertEqual(worker.returncode, 10, worker.stderr)
+            with patch.dict(os.environ, PULSAR_MODEL_LIBRARY_DIR=str(root / "library")):
+                self.assertEqual(so.view(screen, root), 10)
+                self.assertTrue((root / "storage-request").is_file())
+
     def test_interactive_entry_starts_one_requested_collector_and_reaps_it_on_exit(self):
         for args in ([], ["gum"]):
             with self.subTest(args=args), tempfile.TemporaryDirectory() as tmp:

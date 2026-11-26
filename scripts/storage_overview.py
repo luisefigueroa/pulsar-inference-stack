@@ -238,7 +238,8 @@ def view(screen, session):
         cache = StorageCache(ROOT)
     except (ValueError, OSError):
         cache = None
-    (session / "storage-request").touch()
+    else:
+        (session / "storage-request").touch()
     screen.keypad(True)
     screen.timeout(300)
     offset = 0
@@ -295,7 +296,10 @@ def view(screen, session):
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["collect"]:
-            collect(StorageCache(ROOT))
+            try:
+                collect(StorageCache(ROOT))
+            except (OSError, StorageError):
+                sys.exit(10)  # Direct checks remain available to the menu.
         elif sys.argv[1:2] == ["manage"]:
             try:
                 cache = StorageCache(ROOT)
