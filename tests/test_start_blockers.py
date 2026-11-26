@@ -348,6 +348,7 @@ class StartScenarios(unittest.TestCase):
         # Start reads the saved service records (none here) for one service per spec.
         shutil.copyfile(ROOT / "scripts/service_state.py", self.root / "scripts/service_state.py")
         (self.root / "scripts/lib.sh").write_text(LIB + lib_function("start_blocker")
+                                                   + lib_function("storage_overview_changed")
                                                    + lib_function("launch_plan_service_id")
                                                    + lib_function("engine_memory_refusal"))
         for name, body in (("scripts/check-image.sh", IMAGE), ("scripts/check-weights.sh", WEIGHTS),
