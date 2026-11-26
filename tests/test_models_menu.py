@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from model_library.state import now  # noqa: E402
 from tests.test_models_page import (DRAFT, G, MODEL, OTHER, OTHER_FILES, SPEC, archived, binding, budget,  # noqa: E402
                                     entry, files, found_home, home, location, lost_copy, node, prepare_preview,
                                     purge_preview, ready_model, recipe)
@@ -65,7 +66,7 @@ class Menu(Harness):
         self.archive = self.root / "archive"
         self.archive.mkdir()
         self.entries(recipe())
-        self.fixture("files", envelope(files([ready_model()])))
+        self.fixture("files", envelope(dict(files([ready_model()]), observed_at=now())))
         self.fixture("budget", envelope(budget()))
         self.fixture("purge-plan", purge_plan("n1", "n2"))
         self.fixture("pin-plan", retention_plan("pin", False))
@@ -173,6 +174,53 @@ class ThePage(Menu):
         self.assertIn("✗ Models and disk space could not be checked: the model files scan exited 3",
                       self.text(result))
         self.assertEqual(self.menus(), [["Models and disk space", "Look again", "Back"]])
+
+
+class SharedStorageMenu(Menu):
+    MENUS = (*Menu.MENUS, "storage_overview.py")
+
+    def test_unwritable_refresh_lock_falls_back_to_direct_node_checks(self):
+        env = {"PULSAR_MENU_SESSION": str(self.root)}
+        self.assertEqual(self.run_menu(["Back"], **env).returncode, 0)
+        directory = Path(root_environment(self.root)["PULSAR_MODEL_LIBRARY_DIR"]) / ".storage-overview"
+        lock = directory / "refresh.lock"
+        if os.geteuid() == 0:
+            # Root bypasses file permissions. A directory also prevents opening this lock for writing.
+            lock.unlink()
+            lock.mkdir()
+        else:
+            lock.chmod(0o400)
+        (directory / "storage").touch()
+        self.again()
+        result = self.run_menu(["Back"], **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), SCAN)
+        self.assertEqual(self.menus(), [PAGE])
+
+    def test_revisit_uses_saved_checks_and_look_again_runs_both(self):
+        env = {"PULSAR_MENU_SESSION": str(self.root)}
+        result = self.run_menu(["Back"], **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), SCAN)
+        self.again()
+        result = self.run_menu(["Look again (checks nodes now)", "Back"], **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.commands(), SCAN)
+        self.assertEqual(self.menus(), [PAGE, PAGE])
+        self.assertEqual(self.text(result).count("Checking model files on every node"), 1)
+        self.assertIn("Files checked less than a minute ago · Budget checked less than a minute ago", self.text(result))
+
+    def test_cached_page_still_rechecks_an_approved_purge_before_execution(self):
+        env = {"PULSAR_MENU_SESSION": str(self.root)}
+        self.assertEqual(self.run_menu(["Back"], **env).returncode, 0)
+        self.again()
+        self.fixture("purge-plan", purge_plan("n0", "n1", "n2"), nth=2)
+        result = self.run_menu(["Free up space…", "Remove org/model from spark-2 and spark-3: frees 424 GiB",
+                                "Go ahead", "Continue", "Back", "Back"], **env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("it would also delete copies on spark-1", self.text(result))
+        self.assertEqual(self.commands(), [f"model purge {SPEC} --plan --json"] * 2 + SCAN)
+        self.assertEqual(self.ran(), [])
 
 
 class FreeUpSpace(Menu):

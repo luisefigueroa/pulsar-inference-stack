@@ -167,7 +167,13 @@ if [ "$complete" = 1 ]; then
   case "$choice" in
     0) "$REPO_DIR/scripts/serve-menu.sh" ;;
     1) "$REPO_DIR/scripts/services-menu.sh" ;;
-    2) "$REPO_DIR/scripts/models-menu.sh" ;;
+    2) if [[ -n ${PULSAR_MENU_SESSION:-} ]]; then
+         python3 "$REPO_DIR/scripts/storage_overview.py" view
+         overview_rc=$?
+         if [[ $overview_rc == 10 ]]; then "$REPO_DIR/scripts/models-menu.sh"; else (exit "$overview_rc"); fi
+       else
+         "$REPO_DIR/scripts/models-menu.sh"
+       fi ;;
     3) "$REPO_DIR/scripts/cluster-menu.sh" ;;
     4) help_menu ;;
     *) exit 0 ;;

@@ -955,12 +955,14 @@ class BundledGumModels(BundledGum):
     def fixture(self):
         import shlex
         from tests.test_models_page import budget, files, ready_model, recipe  # noqa: PLC0415
+        from model_library.state import now
         from tests.test_serve_menu import build_root, root_environment  # noqa: PLC0415
         from tests.test_serve_plan import envelope  # noqa: PLC0415
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         build_root(root, ("models-menu.sh", "serve-menu.sh"), gum=True)
         (root / "catalog.json").write_text(json.dumps({"entries": [recipe()]}))
-        for key, document in (("files", envelope(files([ready_model()]))), ("budget", envelope(budget())),
+        current_files = dict(files([ready_model()]), observed_at=now())
+        for key, document in (("files", envelope(current_files)), ("budget", envelope(budget())),
                               ("purge-plan", envelope({"plan": {
                                   "kind": "pulsar-purge-plan", "eligible": True, "blockers": [], "views": [],
                                   "actions": [{"node_id": "n1", "action": "remove-copy"},
