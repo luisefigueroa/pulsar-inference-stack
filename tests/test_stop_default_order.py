@@ -219,10 +219,86 @@ def running(ranks, *, probes, reasons=(), complete=True):
 class Inventory(Scenario):
     """`./pulsar inventory --json` through the live collection, on the doubles."""
 
+    def test_incomplete_running_state_cannot_authorize_stop(self):
+        self.service(1, [1])
+        self.service(1, [3], variant=1)
+        container = self.cluster.containers[-1]
+        for state in ({"Status": "running"}, {"Running": "false", "Status": "exited"}):
+            with self.subTest(state=state):
+                container["inspect_state"] = state
+                self.cluster.write()
+                result = self.cluster.pulsar("inventory", "--json")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inv = json.loads(result.stdout)
+                self.assertEqual(inv["nodes"]["rank-3"]["probe_status"], "docker-error")
+                service, = inv["services"]
+                self.assertEqual(service["ranks"][0]["node"], "worker")
+                self.assertFalse(service["safe_to_stop"])
+
+    def test_missing_local_running_state_ends_inventory_before_remote_probes(self):
+        self.service(1, [0])
+        self.cluster.containers[0]["inspect_state"] = {"Status": "running"}
+        self.cluster.write()
+        self.cluster.forget_calls()
+        result = self.cluster.pulsar("inventory", "--json")
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("container inventory failed", result.stderr)
+        self.assertEqual(self.cluster.calls()["ssh"], [])
+
+    def test_failed_container_pid_lookup_preserves_unknown_ownership_on_its_node(self):
+        self.service(1, [3])
+        self.service(1, [3], variant=1)
+        known, other = self.cluster.containers
+        known["host_pids"] = [41]
+        gpu = self.cluster.root / "bin" / "nvidia-smi"
+        gpu.write_text('#!/bin/sh\nprintf "41, model, 12\\n42, worker, 20\\n"\n')
+        for pids, unknown in ((None, True), ([], False)):
+            with self.subTest(pids=pids):
+                other["host_pids"] = pids
+                self.cluster.write()
+                result = self.cluster.pulsar("inventory", "--json")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inv = json.loads(result.stdout)
+                def on_node(key, node):
+                    return [p["pid"] for p in inv.get(key, []) if p["node"] == node]
+                self.assertEqual(on_node("unmanaged_gpu_processes", "worker"), [41, 42])
+                self.assertEqual(on_node("unmanaged_gpu_processes", "rank-3"), [] if unknown else [42])
+                self.assertEqual(on_node("unknown_gpu_processes", "rank-3"), [42] if unknown else [])
+                by_id = {r["container_id"]: r for s in inv["services"] for r in s["ranks"]}
+                self.assertEqual(by_id[known["id"]]["gpu_memory"]["pids"], [41])
+                self.assertEqual(by_id[other["id"]]["gpu_memory"]["status"], "unavailable" if unknown else "unmatched")
+                self.assertTrue(all(s["safe_to_stop"] for s in inv["services"]))
+
     def inventory(self):
         result = self.cluster.pulsar('inventory', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(self.named(json.dumps(summary(json.loads(result.stdout)))))
+
+    def test_one_request_per_remote_node_including_when_a_node_fails(self):
+        self.service(1, [3], name='one')
+        missing = self.cluster.nodes[2]['node_id']
+        remotes = [node['node_id'] for node in self.cluster.nodes[1:]]
+        for env, status in (({}, 'ok'), ({'SERVICE_UNREACHABLE': missing}, 'unreachable'),
+                            ({'SERVICE_DOCKER_DOWN': missing}, 'docker-error'),
+                            ({'SERVICE_TRUNCATED_INVENTORY': missing}, 'unknown')):
+            with self.subTest(status=status):
+                self.cluster.forget_calls()
+                result = self.cluster.pulsar('inventory', '--json', **env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inventory = json.loads(result.stdout)
+                self.assertEqual([node for node, _ in self.cluster.calls()['ssh']], remotes)
+                self.assertEqual({k: v['probe_status'] for k, v in inventory['nodes'].items()},
+                                 {'head': 'ok', 'worker': 'ok', 'rank-2': status, 'rank-3': 'ok'})
+                self.assertEqual(inventory['nodes']['rank-2']['mem_available_gib'],
+                                 100 if status in ('ok', 'docker-error') else None)
+                if status == 'ok':
+                    self.assertIsNone(inventory['worker']['reason'])
+                else:
+                    self.assertEqual(inventory['worker']['reason'], inventory['nodes']['rank-2']['probe_reason'])
+                service, = inventory['services']
+                self.assertEqual(service['ranks'][0]['node'], 'rank-3')
+                self.assertEqual(service['safe_to_stop'], status == 'ok')
 
     def test_default_order_services(self):
         self.service(1, [2], name='one')

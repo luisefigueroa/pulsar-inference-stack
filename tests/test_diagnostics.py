@@ -674,6 +674,32 @@ port_free() { printf '%s %s\n' "$1" "${2:-local}" >>"$DIAG_ROOT/checked-ports"; 
             service=json.loads(result.stdout)['services'][0]
             self.assertFalse(service['safe_to_stop']);self.assertFalse(service['complete'])
 
+    def test_status_and_inventory_report_unknown_gpu_ownership(self):
+        raw = self.raw_inventory()
+        raw['containers'][0]['host_pids'] = None
+        raw['gpu_processes'] = [dict(node='head', pid=41, process_name='worker', used_memory_mib=20)]
+        inventory = self.inventory(raw)
+        self.assertEqual(inventory.returncode, 0, inventory.stderr)
+        report = self.run_tool('inventory.sh', ['--from-fixture', str(self.root/'inventory-raw.json')])
+        self.assertEqual(report.returncode, 0, report.stderr)
+        self.assertIn('GPU OWNERSHIP UNKNOWN', report.stdout)
+        self.assertIn('PID 41', report.stdout)
+        path = self.root / 'inventory.json'
+        path.write_text(inventory.stdout)
+        api = self.root / 'api.json'
+        api.write_text('{"data":[]}')
+        env = {'QUICK_STATUS_INVENTORY_JSON': str(path), 'QUICK_STATUS_API_JSON': str(api)}
+        for flags in (['--json'], []):
+            result = self.run_tool('quick-status.sh', flags, extra=env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if flags:
+                status = json.loads(result.stdout)
+                self.assertEqual(status['unknown_gpu_process_count'], 1)
+                self.assertEqual(status['unmanaged_gpu']['count'], 0)
+            else:
+                self.assertIn('GPU ownership unknown for 1', ' '.join(result.stdout.split()))
+                self.assertNotIn('no unmanaged GPU', result.stdout)
+
     def test_quick_status_does_not_call_stopped_containers_nonblocking(self):
         raw=self.raw_inventory()
         for c in raw['containers']:c['running']=False;c['status']='exited'

@@ -212,10 +212,15 @@ if args[:1] == ["inspect"] and len(args) == 2:
     print(json.dumps([{"Id": c["id"], "Name": "/" + c["name"],
                        "Config": {"Labels": c["labels"], "Image": c.get("image", "example/image"),
                                   "Cmd": c.get("cmd", [])},
-                       "State": {"Running": c["state"] == "running", "Status": c["state"]}}]))
+                       "State": c.get("inspect_state", {"Running": c["state"] == "running", "Status": c["state"]})}]))
     sys.exit(0)
 if args[:1] == ["top"]:
+    pids = find(args[1]).get("host_pids", [])
+    if pids is None:
+        sys.exit(1)
     print("PID")
+    for pid in pids:
+        print(pid)
     sys.exit(0)
 if args[:2] == ["rm", "-f"]:
     trace("docker rm " + ("by id" if len(args[2]) == 64 else "by name"))
@@ -250,6 +255,13 @@ if node in os.environ.get("SERVICE_UNREACHABLE", "").split(","):
     print(f"ssh: connect to host {alias} port 22: Connection timed out", file=sys.stderr)
     sys.exit(255)
 command = args[-1]
+if command == "python3 -":
+    if node == os.environ.get("SERVICE_TRUNCATED_INVENTORY"):
+        sys.stdin.read()
+        print('{"containers":')
+        sys.exit(0)
+    # Run the shipped node collector with this node's Docker, GPU and memory fixtures.
+    command = 'python3 - docker nvidia-smi "$SERVICE_FIXTURE/meminfo"'
 if args[args.index("--") + 2:] == ["python3", "-"]:
     # The host versions an observation records, from the fixture.
     with open(os.path.join(root, "trace.log"), "a") as stream:
@@ -512,6 +524,7 @@ class ServiceCluster:
         self.store = Store(self.root / 'model-library')
         self.releases = self.root / 'releases'
         self.releases.mkdir()
+        (self.root / 'meminfo').write_text("MemAvailable: 104857600 kB\nMemTotal: 104857600 kB\n")
         for name, body in (('docker', DOCKER), ('ssh', SSH), ('nvidia-smi', NVIDIA_SMI)):
             path = self.root / 'bin' / name
             path.write_text(body)

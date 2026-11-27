@@ -188,6 +188,10 @@ class Projection(unittest.TestCase):
         self.assertEqual(inventory_menu.gpu_process_parts(data), (3, [("fixture-local", 44032 * 1024 ** 2)]))
         self.assertEqual(inventory_menu.gpu_process_text(data), "3 · 43.0 GiB on fixture-local · read-only")
         self.assertEqual(inventory_menu.gpu_process_text(snapshot()), "0")
+        data["unknown_gpu_processes"] = [{"node": "worker", "pid": 4}]
+        text = " ".join(" ".join(inventory_menu.view(data, CATALOG, width=80)).split())
+        self.assertIn("GPU processes with unknown ownership 1", text)
+        self.assertIn("Unmanaged GPU processes 3", text)
 
     # R4, reversing TUI-77's read-only line by maintainer decision: a Pulsar
     # service outside the catalog is a row, and Stop asks its own question.

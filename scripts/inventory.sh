@@ -125,431 +125,89 @@ PY
 }
 
 # ---------------------------------------------------------------------------
-# Remote/local probes (read-only)
+# Live observation. Each remote receives the same read-only collector on stdin.
+# Rank order and identity come from the confirmed topology on this controller.
 # ---------------------------------------------------------------------------
-_ssh_worker_raw() {
-  local host="$1"
-  shift
-  "$INVENTORY_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "$@"
-}
-
-mem_available_gib_cmd() {
-  # stdout: number or empty on failure
-  if [ -r /proc/meminfo ]; then
-    awk '/MemAvailable:/ {printf "%.2f", $2/1048576}' /proc/meminfo 2>/dev/null || true
-    return
-  fi
-  echo ""
-}
-
-mem_total_gib_cmd() {
-  # stdout: MemTotal GiB or empty on failure (additive inventory field)
-  if [ -r /proc/meminfo ]; then
-    awk '/MemTotal:/ {printf "%.2f", $2/1048576}' /proc/meminfo 2>/dev/null || true
-    return
-  fi
-  echo ""
-}
-
-collect_gpu_processes_local() {
-  # CSV lines: pid,process_name,used_memory_mib  (used_memory may be empty/N/A)
-  if ! command -v "$INVENTORY_NVIDIA_SMI" >/dev/null 2>&1; then
-    return 0
-  fi
-  "$INVENTORY_NVIDIA_SMI" \
-    --query-compute-apps=pid,process_name,used_gpu_memory \
-    --format=csv,noheader,nounits 2>/dev/null || true
-}
-
-collect_gpu_processes_remote() {
-  local host="$1"
-  _ssh_worker_raw "$host" \
-    "command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null || true" \
-    2>/dev/null || true
-}
-
-# Inspect one node: print NDJSON container records (filtered fields only).
-collect_containers_node() {
-  local node="$1"  # head|worker
-  local mode="$2"  # local|remote
-  local host="${3:-}"
-
-  local ids
-  if [ "$mode" = local ]; then
-    if ! ids=$("$INVENTORY_DOCKER" ps -aq 2>/dev/null); then
-      warn "$node Docker container enumeration failed"
-      return 1
-    fi
-  else
-    if ! ids=$(_ssh_worker_raw "$host" "docker ps -aq" 2>/dev/null); then
-      warn "$node Docker container enumeration failed"
-      return 1
-    fi
-  fi
-  [ -n "$ids" ] || return 0
-
-  local id
-  for id in $ids; do
-    local raw pids
-    if [ "$mode" = local ]; then
-      raw=$("$INVENTORY_DOCKER" inspect "$id" 2>/dev/null) || return 1
-      [ -n "$raw" ] || return 1
-      # host PIDs via docker top (first column after header)
-      pids=$("$INVENTORY_DOCKER" top "$id" -eo pid 2>/dev/null \
-        | awk 'NR>1 && $1 ~ /^[0-9]+$/ {print $1}' || true)
-    else
-      raw=$(_ssh_worker_raw "$host" "docker inspect $(printf '%q' "$id")" 2>/dev/null) || return 1
-      [ -n "$raw" ] || return 1
-      pids=$(_ssh_worker_raw "$host" \
-        "docker top $(printf '%q' "$id") -eo pid 2>/dev/null | awk 'NR>1 && \$1 ~ /^[0-9]+\$/ {print \$1}' || true" \
-        2>/dev/null || true)
-    fi
-
-    # Write inspect JSON to a temp file (avoid ARG_MAX; heredoc owns stdin).
-    local insp
-    insp=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-insp.XXXXXX")
-    printf '%s' "$raw" >"$insp"
-    NODE="$node" PIDS="$pids" INSP_PATH="$insp" python3 - <<'PY'
-import json, os, sys
-
-try:
-    with open(os.environ["INSP_PATH"], encoding="utf-8") as f:
-        data = json.load(f)
-except Exception:
-    sys.exit(0)
-if isinstance(data, list):
-    if not data:
-        sys.exit(0)
-    data = data[0]
-
-labels_all = (data.get("Config") or {}).get("Labels") or {}
-owned_keys = (
-    "io.pulsar.gb10.managed",
-    "io.pulsar.gb10.conf",
-    "io.pulsar.gb10.rank",
-    "io.pulsar.gb10.world-size",
-    "io.pulsar.gb10.topology",
-    "io.pulsar.gb10.node-id",
-    "io.pulsar.gb10.weight-source",
-    "io.pulsar.gb10.weight-owner",
-    "io.pulsar.gb10.weight-config",
-    "io.pulsar.gb10.model-revision",
-    "io.pulsar.gb10.model-identity-status",
-    "io.pulsar.gb10.launch-contract",
-    "io.pulsar.gb10.spec-decode",
-    "io.pulsar.gb10.spec-id",
-    "io.pulsar.gb10.selected-spec-id",
-    "io.pulsar.gb10.launch-plan",
-)
-labels = {k: labels_all[k] for k in owned_keys if k in labels_all and labels_all[k] is not None}
-
-name = (data.get("Name") or "").lstrip("/")
-image = (data.get("Config") or {}).get("Image") or ""
-cmd = (data.get("Config") or {}).get("Cmd") or []
-state = data.get("State") or {}
-running = bool(state.get("Running"))
-status = state.get("Status") or ("running" if running else "exited")
-cid = data.get("Id") or ""
-
-# Relevance filter: vLLM name/image/cmd or stack ownership labels.
-managed = str(labels.get("io.pulsar.gb10.managed", "")).lower() == "true"
-name_l = name.lower()
-image_l = image.lower()
-cmd_s = " ".join(str(x) for x in cmd).lower()
-relevant = (
-    managed
-    or "vllm" in name_l
-    or "vllm" in image_l
-    or "vllm" in cmd_s
-    or "--served-model-name" in cmd_s
-    or any(str(x) == "--model" for x in cmd)
-)
-if not relevant:
-    sys.exit(0)
-
-pids = []
-for p in os.environ.get("PIDS", "").split():
-    try:
-        pids.append(int(p))
-    except ValueError:
-        pass
-
-rec = {
-    "node": os.environ["NODE"],
-    "id": cid,
-    "name": name,
-    "running": running,
-    "status": status,
-    "image": image,
-    "cmd": cmd if isinstance(cmd, list) else [],
-    "labels": labels,
-    "host_pids": pids,
-}
-print(json.dumps(rec, separators=(",", ":")))
-PY
-    rm -f "$insp"
-  done
-}
-
-parse_gpu_csv_to_json_lines() {
-  local node="$1"
-  # stdin: nvidia-smi csv. Must not feed stdin to `python3 <<EOF` (heredoc
-  # steals stdin); buffer the pipe first.
-  local csv
-  csv=$(cat || true)
-  NODE="$node" CSV_DATA="$csv" python3 - <<'PY'
-import json, os
-node = os.environ["NODE"]
-for line in os.environ.get("CSV_DATA", "").splitlines():
-    line = line.strip()
-    if not line:
-        continue
-    parts = [p.strip() for p in line.split(",")]
-    if len(parts) < 2:
-        continue
-    try:
-        pid = int(parts[0])
-    except ValueError:
-        continue
-    name = parts[1] if len(parts) > 1 else ""
-    mem = None
-    if len(parts) > 2:
-        m = parts[2].replace("MiB", "").strip()
-        if m and m.upper() != "N/A" and m != "[N/A]":
-            try:
-                mem = int(float(m))
-            except ValueError:
-                mem = None
-    print(json.dumps({
-        "node": node,
-        "pid": pid,
-        "process_name": name,
-        "used_memory_mib": mem,
-        "status": "ok",
-    }, separators=(",", ":")))
-PY
-}
-
-collect_live_snapshot() {
-  local profiles_json worker_ip worker_status worker_reason topology_count
-  local local_hostname
-  profiles_json=$(build_profile_catalog_json) || return 1
-
-  if ! "$INVENTORY_DOCKER" info >/dev/null 2>&1; then
-    warn "Docker is unavailable on this node — inventory is incomplete; no lifecycle action is safe"
-    return 1
-  fi
-
+collect_live_snapshot() (
+  local dir rank host name rc
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/pulsar-inventory.XXXXXX") || return 1
+  trap 'rm -rf -- "$dir"' EXIT
+  build_profile_catalog_json >"$dir/profiles.json" || return 1
   load_cluster_topology || { warn "confirmed topology is invalid; inventory cannot claim complete ownership"; return 1; }
-  topology_count="$CLUSTER_TOPOLOGY_COUNT"
-  [ "$topology_count" -gt 0 ] && [ -n "$CLUSTER_TOPOLOGY_ID" ] || { warn "confirmed topology is required for inventory"; return 1; }
-  local_hostname="${CLUSTER_NODE_HOSTNAMES[0]:-}"
-  if [ -z "$local_hostname" ]; then
-    local_hostname=$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo localhost)
-  fi
-  worker_ip=""
-  worker_status="unset"
-  worker_reason="no other nodes confirmed"
-  if [ "$topology_count" -gt 1 ]; then
-    worker_ip="${CLUSTER_NODE_SSH_HOSTS[1]}"
-    worker_status="ok"
-    worker_reason=""
-  fi
-
-  local tmp_c tmp_g tmp_n profiles_file
-  tmp_c=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-c.XXXXXX")
-  tmp_g=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-g.XXXXXX")
-  tmp_n=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-n.XXXXXX")
-  profiles_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-prof.XXXXXX")
-  : >"$tmp_c"
-  : >"$tmp_g"
-  : >"$tmp_n"
-
-  local head_mem head_total head_node_id head_ssh_host head_control_ip
-  head_mem=$(mem_available_gib_cmd)
-  head_total=$(mem_total_gib_cmd)
-  [ -n "$head_mem" ] || head_mem=null
-  [ -n "$head_total" ] || head_total=null
-  head_node_id="${CLUSTER_NODE_IDS[0]:-}"
-  head_ssh_host="${CLUSTER_NODE_SSH_HOSTS[0]:-local}"
-  head_control_ip="${CLUSTER_NODE_CONTROL_IPS[0]:-127.0.0.1}"
-  printf 'head\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t0\n' \
-    "$local_hostname" "$head_mem" "$head_total" \
-    "$([ "$head_mem" = null ] && echo unavailable || echo ok)" \
-    "$([ "$head_mem" = null ] && echo unavailable || echo proc_meminfo)" \
-    ok "" "$head_node_id" "$head_ssh_host" "$head_control_ip" >>"$tmp_n"
-
-  if ! collect_containers_node head local >>"$tmp_c"; then
-    warn "container inventory failed on this node"
-    return 1
-  fi
-  collect_gpu_processes_local \
-    | parse_gpu_csv_to_json_lines head >>"$tmp_g" || true
-
-  if [ "$topology_count" -le 1 ]; then
-    printf 'worker\t\tnull\tnull\tunset\tunset\tunset\tno other nodes confirmed\t\t\t\t\n' \
-      >>"$tmp_n"
-  fi
-
-  local rank host node_name node_hostname node_label rank_mem rank_total rank_mem_status
-  local rank_mem_source rank_status rank_reason node_id control_ip
-  for ((rank = 1; rank < topology_count; rank++)); do
-    host="${CLUSTER_NODE_SSH_HOSTS[$rank]}"
-    if [ "$rank" = 1 ]; then
-      node_name=worker
+  [[ $CLUSTER_TOPOLOGY_COUNT -gt 0 && -n $CLUSTER_TOPOLOGY_ID ]] || { warn "confirmed topology is required for inventory"; return 1; }
+  for ((rank=0; rank<CLUSTER_TOPOLOGY_COUNT; rank++)); do
+    host=${CLUSTER_NODE_SSH_HOSTS[$rank]}
+    rc=0
+    if [[ $rank == 0 ]]; then
+      name=head
+      python3 "$REPO_DIR/scripts/inventory_node.py" --local "$INVENTORY_DOCKER" "$INVENTORY_NVIDIA_SMI" \
+        >"$dir/$rank.json" || return 1
     else
-      node_name="rank-$rank"
+      if [[ $rank == 1 ]]; then name=worker; else name=rank-$rank; fi
+      "$INVENTORY_SSH" "${PULSAR_SSH_OPTS[@]}" -- "$host" "python3 -" \
+        <"$REPO_DIR/scripts/inventory_node.py" >"$dir/$rank.json" 2>/dev/null || rc=$?
     fi
-    node_hostname="${CLUSTER_NODE_HOSTNAMES[$rank]:-$host}"
-    node_id="${CLUSTER_NODE_IDS[$rank]:-}"
-    control_ip="${CLUSTER_NODE_CONTROL_IPS[$rank]:-}"
-    rank_mem=null
-    rank_total=null
-    rank_mem_status=unreachable
-    rank_mem_source=unreachable
-    rank_status=unreachable
-    node_label="$node_hostname"
-    rank_reason="$node_label · SSH unreachable ($host)"
-
-    if _ssh_worker_raw "$host" true >/dev/null 2>&1; then
-      rank_mem=$(_ssh_worker_raw "$host" \
-        "awk '/MemAvailable:/ {printf \"%.2f\", \$2/1048576}' /proc/meminfo" \
-        2>/dev/null || true)
-      rank_total=$(_ssh_worker_raw "$host" \
-        "awk '/MemTotal:/ {printf \"%.2f\", \$2/1048576}' /proc/meminfo" \
-        2>/dev/null || true)
-      if [ -n "$rank_mem" ]; then
-        rank_mem_status=ok
-        rank_mem_source=ssh_proc_meminfo
-      else
-        rank_mem=null
-        rank_mem_status=unavailable
-        rank_mem_source=unavailable
-      fi
-      [ -n "$rank_total" ] || rank_total=null
-      collect_gpu_processes_remote "$host" \
-        | parse_gpu_csv_to_json_lines "$node_name" >>"$tmp_g" || true
-
-      if _ssh_worker_raw "$host" "docker info >/dev/null 2>&1"; then
-        rank_status=ok
-        rank_reason=""
-        if ! collect_containers_node "$node_name" remote "$host" >>"$tmp_c"; then
-          rank_status=docker-error
-          rank_reason="$node_label · Docker container inventory failed ($host)"
-        fi
-      else
-        rank_status=docker-error
-        rank_reason="$node_label · reachable, but Docker is unavailable ($host)"
-      fi
-    fi
-
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$node_name" "$node_hostname" "$rank_mem" "$rank_total" \
-      "$rank_mem_status" "$rank_mem_source" \
-      "$rank_status" "$rank_reason" "$node_id" "$host" "$control_ip" "$rank" \
-      >>"$tmp_n"
-    if [ "$rank_status" != ok ]; then
-      worker_status="$rank_status"
-      worker_reason="${worker_reason:+$worker_reason; }$rank_reason"
-    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$rank" "$name" "${CLUSTER_NODE_HOSTNAMES[$rank]}" \
+      "${CLUSTER_NODE_IDS[$rank]}" "$host" "${CLUSTER_NODE_CONTROL_IPS[$rank]}" "$rc" >>"$dir/nodes.tsv"
   done
-
-  printf '%s' "$profiles_json" >"$profiles_file"
-  # The saved service records, read here and never from a node: they say which
-  # nodes a service recorded off the default node order runs on.
-  local records_file
-  records_file=$(mktemp "${TMPDIR:-/tmp}/pulsar-inv-records.XXXXXX")
-  if ! python3 "$REPO_DIR/scripts/service_state.py" bindings --state-root "$PULSAR_MODEL_LIBRARY_DIR" \
-      >"$records_file"; then
+  if ! python3 "$REPO_DIR/scripts/service_state.py" bindings --state-root "$PULSAR_MODEL_LIBRARY_DIR" >"$dir/records.json"; then
     warn "the saved service records cannot be read; a service recorded off the default node order shows as a mismatch"
-    printf '[]' >"$records_file"
+    printf '[]\n' >"$dir/records.json"
   fi
-  RECORDS_FILE="$records_file" \
-  PROFILES_FILE="$profiles_file" \
-  WORKER_IP_V="$worker_ip" \
-  WORKER_STATUS="$worker_status" \
-  WORKER_REASON="$worker_reason" \
-  TOPOLOGY_ID_V="${CLUSTER_TOPOLOGY_ID:-}" \
-  NODES_FILE="$tmp_n" \
-  CONTAINERS_FILE="$tmp_c" \
-  GPU_FILE="$tmp_g" \
-  python3 - <<'PY_SNAPSHOT'
+  python3 - "$dir" "$CLUSTER_TOPOLOGY_ID" <<'PY_SNAPSHOT'
 import json
-import os
+import sys
+from pathlib import Path
+from scripts.inventory_node import read_sample
 
-
-def load_ndjson(path):
-    rows = []
-    with open(path, encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
-
-
-def number(value):
-    if value in ("", "null", None):
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        return None
-
-
-with open(os.environ["PROFILES_FILE"], encoding="utf-8") as handle:
-    profiles = json.load(handle)
-
-nodes = {}
-with open(os.environ["NODES_FILE"], encoding="utf-8") as handle:
-    for line in handle:
-        parts = line.rstrip("\n").split("\t", 11)
-        while len(parts) < 12:
-            parts.append("")
-        (
-            name,
-            hostname,
-            available,
-            total,
-            status,
-            source,
-            probe_status,
-            probe_reason,
-            node_id,
-            ssh_host,
-            control_ip,
-            topology_index,
-        ) = parts
-        nodes[name] = {
-            "hostname": hostname or None,
-            "node_id": node_id or None,
-            "ssh_host": ssh_host or None,
-            "control_ip": control_ip or None,
-            "topology_index": int(topology_index) if topology_index else None,
-            "local": name == "head",
-            "confirmed": bool(node_id) or name == "head",
-            "mem_available_gib": number(available),
-            "mem_total_gib": number(total),
-            "mem_status": status,
-            "mem_source": source,
-            "probe_status": probe_status or "unknown",
-            "probe_reason": probe_reason or None,
-        }
-
-print(json.dumps({
-    "profiles": profiles,
-    "topology_id": os.environ.get("TOPOLOGY_ID_V") or None,
-    "worker_ip": os.environ.get("WORKER_IP_V") or None,
-    "worker_status": os.environ["WORKER_STATUS"],
-    "worker_reason": os.environ.get("WORKER_REASON") or None,
-    "nodes": nodes,
-    "containers": load_ndjson(os.environ["CONTAINERS_FILE"]),
-    "gpu_processes": load_ndjson(os.environ["GPU_FILE"]),
-    "service_records": json.load(open(os.environ["RECORDS_FILE"], encoding="utf-8")),
-}))
+directory = Path(sys.argv[1])
+nodes, containers, processes = {}, [], []
+worker_ip, worker_status, worker_reason = None, "unset", "no other nodes confirmed"
+for line in (directory / "nodes.tsv").read_text().splitlines():
+    rank, name, hostname, node_id, host, control_ip, rc = line.split("\t")
+    local = rank == "0"
+    sample = None
+    status, reason = "unknown", f"{hostname} · inventory probe did not return a complete reading ({host})"
+    if rc == "255":
+        status, reason = "unreachable", f"{hostname} · SSH unreachable ({host})"
+    elif rc == "0":
+        try:
+            sample = read_sample(directory / f"{rank}.json")
+        except (OSError, ValueError, KeyError, TypeError, OverflowError):
+            if local:
+                sys.exit("the local inventory probe returned an invalid response")
+    available, total = None, None
+    mem_status = mem_source = "unreachable" if status == "unreachable" else "unavailable"
+    if sample is not None:
+        available, total = sample["mem_available_gib"], sample["mem_total_gib"]
+        mem_status = "ok" if available is not None else "unavailable"
+        mem_source = ("proc_meminfo" if local else "ssh_proc_meminfo") if available is not None else "unavailable"
+        containers.extend(dict(row, node=name) for row in sample["containers"])
+        processes.extend(dict(row, node=name) for row in sample["gpu_processes"])
+        status, reason = "ok", None
+        if sample["docker_status"] != "ok":
+            status = "docker-error"
+            problem = "reachable, but Docker is unavailable" if sample["docker_status"] == "unavailable" else "Docker container inventory failed"
+            reason = f"{hostname} · {problem} ({host})"
+    nodes[name] = dict(hostname=hostname or None, node_id=node_id or None, ssh_host=host or None,
+                       control_ip=control_ip or None, topology_index=int(rank), local=local,
+                       confirmed=bool(node_id) or local, mem_available_gib=available, mem_total_gib=total,
+                       mem_status=mem_status, mem_source=mem_source, probe_status=status, probe_reason=reason)
+    if name == "worker":
+        worker_ip, worker_status, worker_reason = host, "ok", ""
+    if not local and status != "ok":
+        worker_status = status
+        worker_reason = "; ".join(filter(None, (worker_reason, reason)))
+if len(nodes) == 1:
+    nodes["worker"] = dict(hostname=None, node_id=None, ssh_host=None, control_ip=None, topology_index=None,
+                           local=False, confirmed=False, mem_available_gib=None, mem_total_gib=None,
+                           mem_status="unset", mem_source="unset", probe_status="unset", probe_reason=worker_reason)
+print(json.dumps(dict(profiles=json.loads((directory / "profiles.json").read_text()), topology_id=sys.argv[2],
+                      worker_ip=worker_ip, worker_status=worker_status, worker_reason=worker_reason or None, nodes=nodes,
+                      containers=containers, gpu_processes=processes,
+                      service_records=json.loads((directory / "records.json").read_text()))))
 PY_SNAPSHOT
-  rm -f "$tmp_c" "$tmp_g" "$tmp_n" "$profiles_file" "$records_file"
-}
+)
 
 # ---------------------------------------------------------------------------
 # Classifier (pure; fixture- and live-snapshot compatible)
@@ -954,9 +612,14 @@ for g in gpu_procs:
     gpu_by_node[node][pid] = g
 
 claimed_gpu = set()  # (node, pid)
+incomplete_gpu_nodes = {node for node, info in nodes_info.items()
+                        if info.get("probe_status") not in (None, "ok", "unset")}
 
 def measure_gpu(c):
     node = c.get("node") or "head"
+    if c.get("running") and "host_pids" in c and c["host_pids"] is None:
+        incomplete_gpu_nodes.add(node)
+        return {"measured_mib": None, "source": "unavailable", "status": "unavailable", "pids": []}
     host_pids = set()
     for p in c.get("host_pids") or []:
         try:
@@ -1393,16 +1056,20 @@ for key, ranks_list in sorted(groups.items(), key=lambda kv: kv[0]):
 
 # --- unmanaged GPU processes (read-only diagnostics) -----------------------
 unmanaged = []
+unknown_gpu = []
 for node, by_pid in sorted(gpu_by_node.items()):
     for pid, g in sorted(by_pid.items()):
         if (node, pid) in claimed_gpu:
             continue
-        unmanaged.append({
+        unknown = node in incomplete_gpu_nodes
+        processes = unknown_gpu if unknown else unmanaged
+        processes.append({
             "node": node,
             "pid": pid,
             "process_name": g.get("process_name") or "",
             "used_memory_mib": g.get("used_memory_mib"),
-            "note": "read-only diagnostic; not stack-managed — no kill action",
+            "note": ("Pulsar could not verify process ownership on this node" if unknown else
+                     "read-only diagnostic; not stack-managed — no kill action"),
         })
 
 inv = {
@@ -1418,6 +1085,8 @@ inv = {
     "services": services,
     "unmanaged_gpu_processes": unmanaged,
 }
+if unknown_gpu:
+    inv["unknown_gpu_processes"] = unknown_gpu
 json.dump(inv, sys.stdout, indent=2)
 print()
 PY
@@ -1751,20 +1420,22 @@ else:
             subsequent_indent="  ",
         )
 
-unmanaged = inv.get("unmanaged_gpu_processes") or []
-print()
-if unmanaged:
-    measured = [u.get("used_memory_mib") for u in unmanaged]
+def show_gpu_processes(title, processes, description):
+    print()
+    if not processes:
+        section(title, "none observed")
+        return
+    measured = [u.get("used_memory_mib") for u in processes]
     measured = [m for m in measured if isinstance(m, (int, float))]
     aggregate = f" · {int(sum(measured)):,} MiB" if measured else ""
-    noun = "process" if len(unmanaged) == 1 else "processes"
-    section("UNMANAGED GPU", f"{len(unmanaged)} {noun}{aggregate}")
+    noun = "process" if len(processes) == 1 else "processes"
+    section(title, f"{len(processes)} {noun}{aggregate}")
     emit(
-        "Read-only; Pulsar will not stop these processes.",
+        description,
         initial_indent="  ",
         subsequent_indent="  ",
     )
-    for u in unmanaged:
+    for u in processes:
         mem = u.get("used_memory_mib")
         mem_s = f"{int(mem):,} MiB" if isinstance(mem, (int, float)) else "n/a"
         process_path = str(u.get("process_name") or "?")
@@ -1776,7 +1447,11 @@ if unmanaged:
         )
         if verbose and process_path != process_name:
             field("path", process_path, indent=4)
-else:
-    section("UNMANAGED GPU", "none observed")
+
+show_gpu_processes("UNMANAGED GPU", inv.get("unmanaged_gpu_processes") or [],
+                   "Read-only; Pulsar will not stop these processes.")
+if inv.get("unknown_gpu_processes"):
+    show_gpu_processes("GPU OWNERSHIP UNKNOWN", inv["unknown_gpu_processes"],
+                       "Pulsar could not verify which container owns these processes.")
 PY
 fi
