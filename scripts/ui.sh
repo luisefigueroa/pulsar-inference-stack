@@ -596,6 +596,7 @@ _UI_PAGER_LINES=8
 # shows a spinner while a slow command runs. COMMAND must be an executable,
 # not a shell function: it runs with COLUMNS set to the pager's text width.
 # Returns the command's status, or 130 after Ctrl-C while it runs or in the
+# pager. An optional PAGE_OUTPUT_HINT appears above the content only inside the
 # pager. Each call sets PAGE_OUTPUT_IN_PLACE to 1 when the output printed in
 # place and stays on screen (short output, or a pager that could not open),
 # and to 0 when the pager showed it and closed; it stays empty when nothing
@@ -636,7 +637,10 @@ page_output() {
     PAGE_OUTPUT_IN_PLACE=1
   else
     _ui_gum_pager_style_args
-    _ui_gum pager "${GUM_PAGER_STYLE_ARGS[@]}" <"$out" || pager_rc=$?
+    _ui_gum pager "${GUM_PAGER_STYLE_ARGS[@]}" < <(
+      if [ -n "${PAGE_OUTPUT_HINT:-}" ]; then printf '%s\n' "$PAGE_OUTPUT_HINT"; fi
+      cat -- "$out"
+    ) || pager_rc=$?
     PAGE_OUTPUT_IN_PLACE=0
     # A pager that could not open must not hide the output.
     if [ "$pager_rc" -ne 0 ] && [ "$pager_rc" -ne 130 ]; then
