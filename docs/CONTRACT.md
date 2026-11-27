@@ -416,6 +416,18 @@ its report as the result. So read the document's own `status`, `result`, `ok`
 or `probe_status`: exit 1 alone does not tell a known "no" from a node that
 could not be observed.
 
+For service inventory, Docker must report a Boolean running state for each
+relevant container. An incomplete local container inventory exits 1.
+An incomplete remote inventory sets that node's `probe_status` to `docker-error`
+and prevents the inventory from authorizing a stop.
+
+When Docker cannot list processes for a running container, its rank reports
+`gpu_memory.status` as `unavailable`. Confirmed GPU process matches remain valid.
+The optional `unknown_gpu_processes` list holds observed processes with unverified
+ownership on that node. Only confirmed unmatched processes appear in
+`unmanaged_gpu_processes`. A failed process lookup alone does not change
+`safe_to_stop`.
+
 ### Cluster readiness and membership
 
 `doctor --json` keeps `kind: "pulsar-doctor"` and schema version 1. Each check

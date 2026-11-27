@@ -313,6 +313,9 @@ overview = {
     "inference_smoke": False,
 }
 
+if inv.get("unknown_gpu_processes"):
+    overview["unknown_gpu_process_count"] = len(inv["unknown_gpu_processes"])
+
 if primary:
     exp = primary.get("expected_ranks") or []
     obs = primary.get("observed_ranks") or []
@@ -419,6 +422,9 @@ if ug["count"]:
         unmanaged_s += f" ({ug['measured_mib_aggregate']:,} MiB)"
 else:
     unmanaged_s = "no unmanaged GPU"
+if overview.get("unknown_gpu_process_count"):
+    unknown_s = f"GPU ownership unknown for {overview['unknown_gpu_process_count']}"
+    unmanaged_s = f"{unmanaged_s} · {unknown_s}" if ug["count"] else unknown_s
 
 st = overview["stale_managed"]
 if st["count"]:

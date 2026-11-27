@@ -285,6 +285,8 @@ def view(inventory, catalog, spec_id=None, *, width=None, now=None):
         if len(read_only) > 3:
             writer.emit(f"and {len(read_only) - 3} more in Show full inventory", "", "  ")
         writer.emit(f"Unmanaged GPU processes {gpu_process_text(inventory)}", "", "  ")
+        if inventory.get("unknown_gpu_processes"):
+            writer.emit(f"GPU processes with unknown ownership {len(inventory['unknown_gpu_processes'])}", "", "  ")
         unavailable = unobserved_hosts(inventory)
         if unavailable:
             writer.field("Not observed", ", ".join(unavailable))
