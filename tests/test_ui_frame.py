@@ -291,6 +291,16 @@ class UiFrame(unittest.TestCase):
         (pager,) = self.gum_calls()
         self.assertNotIn("foreground", pager)
 
+    def test_pager_hint_only_appears_inside_the_pager(self):
+        hint = "↑/↓ scroll · q storage actions"
+        self.page(20, 0, PAGE_OUTPUT_HINT=hint)
+        self.assertEqual(self.pager_input.read_text().splitlines()[:2], [hint, "out 1"])
+        for lines, rc in ((3, "0"), (20, "1")):
+            with self.subTest(lines=lines, rc=rc):
+                result = self.page(lines, 0, PAGE_OUTPUT_HINT=hint, GUM_PAGER_RC=rc)
+                self.assertIn("out 1", result.stdout)
+                self.assertNotIn(hint, result.stdout)
+
     def test_a_slow_command_shows_a_spinner_before_its_output(self):
         result = self.page(20, 0, title="Checking fixture nodes…")
         self.assertEqual(result.stdout, "rc=0\n")

@@ -450,7 +450,8 @@ while true; do
       || [ $((lines + 1 + ${#labels[@]} + 5)) -gt "$rows" ]; then
     labels=("${cards[@]}")
   fi
-  [ -z "$screen" ] || show_screen "$(choice_rows "${labels[@]}")" "$screen" page "${READ[@]}" \
+  [ -z "$screen" ] || PAGE_OUTPUT_HINT='↑/↓ scroll · q storage actions' \
+    show_screen "$(choice_rows "${labels[@]}")" "$screen" page "${READ[@]}" \
     || { rc=$?; [ "$rc" -ne 130 ] || exit 130; }
   choice=$(choose_index "Models and disk space" "${labels[@]}") || { rc=$?; [ "$rc" -ne 130 ] || exit 130; exit 0; }
   rc=0
