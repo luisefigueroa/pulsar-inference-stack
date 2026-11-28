@@ -11,3 +11,6 @@ __pycache__/
 experiments/
 exports/
 *.log
+.claude/worktrees/
+.claude/settings.local.json
+.ruff_cache/
