@@ -217,6 +217,45 @@ class ParallelRunner(unittest.TestCase):
             self.assertEqual(result.returncode, 2, args)
             self.assertIn("usage: scripts/selftest.sh [--checks-only] [--jobs N]", result.stderr)
 
+    def _make_selftest_checkout(self):
+        td = tempfile.TemporaryDirectory(prefix="stack-selftest-")
+        self.addCleanup(td.cleanup)
+        repo = Path(td.name)
+        scripts = repo / "scripts"
+        scripts.mkdir(parents=True)
+        (scripts / "selftest.sh").write_text((ROOT / "scripts" / "selftest.sh").read_text())
+        for stub in ("check-catalog.py", "check_publishable_privacy.py"):
+            (scripts / stub).write_text("import sys\nsys.exit(0)\n")
+        return repo
+
+    def test_selftest_checks_only_skips_claude_worktrees_and_cache_dirs(self):
+        repo = self._make_selftest_checkout()
+        for rel in (".claude/worktrees/wip/broken.py", ".ruff_cache/broken.py"):
+            path = repo / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("def broken(:\n")
+        bad_sh = repo / ".claude/worktrees/wip/broken.sh"
+        bad_sh.write_text("if then fi\n")
+        good_skill = repo / "skills/example/helper.py"
+        good_skill.parent.mkdir(parents=True, exist_ok=True)
+        good_skill.write_text("VALUE = 1\n")
+
+        result = subprocess.run(["bash", str(repo / "scripts" / "selftest.sh"), "--checks-only"],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Python and shell syntax checks passed", result.stdout)
+
+    def test_selftest_checks_only_still_rejects_syntax_errors_in_source_dirs(self):
+        for rel, body in (("skills/example/broken.py", "def broken(:\n"),
+                          ("scripts/broken.sh", "if then fi\n")):
+            repo = self._make_selftest_checkout()
+            target = repo / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(body)
+            result = subprocess.run(["bash", str(repo / "scripts" / "selftest.sh"), "--checks-only"],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0, rel)
+
 
 if __name__ == "__main__":
     unittest.main()
