@@ -29,18 +29,26 @@ else
 fi
 python3 - "$ROOT" <<'PY'
 import ast
+import os
 from pathlib import Path
 import subprocess
 import sys
 root = Path(sys.argv[1])
-ignored = {'.git', '.venv', '.pulsar', '.model-library', 'experiments', 'exports', '__pycache__'}
-for path in sorted(root.rglob('*')):
-    if ignored.intersection(path.relative_to(root).parts) or not path.is_file():
-        continue
-    if path.suffix == '.py':
-        ast.parse(path.read_text(), filename=str(path))
-    elif path.suffix == '.sh' or path.name == 'pulsar':
-        subprocess.run(['bash', '-n', str(path)], check=True)
+ignored = {
+    '.git', '.venv', '.pulsar', '.model-library', '.claude', '.ruff_cache',
+    'experiments', 'exports', '__pycache__',
+}
+for base, dirs, files in os.walk(root):
+    dirs[:] = sorted(name for name in dirs if name not in ignored)
+    base_path = Path(base)
+    for name in sorted(files):
+        path = base_path / name
+        if path.is_symlink() or not path.is_file():
+            continue
+        if path.suffix == '.py':
+            ast.parse(path.read_text(), filename=str(path))
+        elif path.suffix == '.sh' or path.name == 'pulsar':
+            subprocess.run(['bash', '-n', str(path)], check=True)
 print('Python and shell syntax checks passed')
 PY
 python3 scripts/check-catalog.py --repo-root "$ROOT"
